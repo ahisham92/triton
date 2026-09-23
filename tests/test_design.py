@@ -229,7 +229,7 @@ def test_light_loads_get_minimum_steel():
 def test_design_uses_resultant_moment_and_concrete_sign():
     # Plaxis tension (+1000 kN) becomes -1000 kN in the design sign; M = hypot(3000, 4000).
     sheets = pile_sheets([(1, 0.0, 1000.0, 3000.0, 4000.0)], [(1, 0.0, 300.0, 900.0, 1200.0)])
-    d = design_pile("Pile(1)", PileInput(head_level=1.0), DesignSettings(), sheets)
+    d = design_pile("Pile(1)", PileInput(head_level=1.0, crack_width_limit=0.3), DesignSettings(), sheets)
     assert d.passed
     assert d.governing["N_kN"] == -1000.0 and d.governing["M_kNm"] == 5000.0
     assert d.governing["M_Rd_kNm"] >= 5000.0

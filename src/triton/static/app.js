@@ -729,6 +729,7 @@ async function renderDesignTab(host) {
       <button id="run-design" ${els.length ? "" : "disabled"}>Design the elements</button>
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
+      <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec files (.ads per pile part)</a>
       ${Object.values(sec().elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
       <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile, combi wall, beam or slab elements first."}</span>
     </div><div id="design-out"></div>`;
@@ -762,6 +763,8 @@ function renderResults(res) {
   const slabs = res.slabs || [];
   const link = document.getElementById("cages");
   if (link) link.hidden = !res.piles.length && !walls.length;
+  const ads = document.getElementById("ads");
+  if (ads) ads.hidden = !res.piles.length && !walls.length;
   const sets = document.getElementById("sets");
   if (sets) sets.hidden = !res.piles.length && !walls.length && !spws.length && !beams.length;
   const rows = res.piles

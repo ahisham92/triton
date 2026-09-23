@@ -582,7 +582,11 @@ def crack_summary(pile: PileInput, settings: DesignSettings, qp: pd.DataFrame, s
             continue
         rings = [RingSpec(g["count"], g["diameter"], g["radius"], 0.0) for g in cage["rings"]]
         a = Arrangement(tuple(rings), 1, 0.0, 0.0)
-        parts.append(rows.join(crack_widths(pile, a, settings, rows)).assign(cage=cage["label"]))
+        part = rows.join(crack_widths(pile, a, settings, rows)).assign(cage=cage["label"])
+        parts.append(part)
+        out.setdefault("stations", []).append(
+            {"top": top, "bottom": bottom, "wk_mm": round(float(part["wk"].max()), 3)}
+        )
     if not parts:
         return out
     f = pd.concat(parts)

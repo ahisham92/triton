@@ -170,7 +170,7 @@ def test_design_beam_with_supports_and_export():
     assert d["passed"] and d["utilisation"] <= 1
     # The 5000 kNm/m peak lies inside the pile at y = 6 and is left out.
     assert d["bending"]["extremes"]["Mv"]["max"] < 1000
-    assert set(d["cracks"]) == {"bottom"} and d["cracks"]["bottom"]["limit"] == 0.3
+    assert set(d["cracks"]) == {"bottom"} and d["cracks"]["bottom"]["limit"] == 0.2
     assert d["restraint"]["R"] == pytest.approx(restraint_factor(30, 1.5), abs=1e-3)
     assert d["shear"]["link"]["legs"] >= 2 and d["transverse"]["bottom"]["label"].startswith("Ø")
     assert d["steel"]["kg_per_m3"] > 0

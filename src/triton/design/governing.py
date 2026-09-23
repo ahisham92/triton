@@ -133,11 +133,37 @@ def station_sets(
                 "top": top,
                 "bottom": bottom,
                 "cage": cage["label"],
+                "rings": cage["rings"],
+                "governing": _governing(pile, settings, arrangement, u_rows, util),
                 "uls": pick_sets(u_rows, util, "most utilised"),
                 "qp": placeholder_sets() if no_crack else pick_sets(q_rows, None, "largest resultant M"),
             }
         )
     return out
+
+
+def _governing(
+    pile: PileInput, settings: DesignSettings, arrangement, rows: pd.DataFrame, util
+) -> dict | None:
+    """The station's most utilised ULS point with MRd at its N, as in the design office summary tables."""
+    from .piles import _accidental, _section
+
+    if util is None or rows.empty:
+        return None
+    i = int(np.nanargmax(util))
+    g = rows.iloc[i]
+    sec = _section(pile, arrangement, settings, bool(_accidental(rows.iloc[[i]])[0]))
+    n, m = float(g["N"]), float(np.hypot(g["M_2"], g["M_3"]))
+    m_rd = sec.moment_capacity(n)
+    return {
+        "utilisation": round(float(util[i]), 3),
+        "combination": str(g["combination"]),
+        "z": round(float(g["Z"]), 2),
+        "N_kN": round(n, 1),
+        "M_kNm": round(m, 1),
+        "M_Rd_kNm": round(m_rd, 1),
+        "moment_ratio": round(m / m_rd, 3) if m_rd > 0 else None,
+    }
 
 
 def steel_sets(frame: pd.DataFrame, kind: str) -> dict[str, Any]:

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
-from . import durability
+from . import adsec, durability
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
 from .design.runner import factored_elements, run_section
@@ -20,7 +20,15 @@ from .design.spw import workbook as spw_workbook
 from .elements import ElementType
 from .geometry import section_geometry
 from .materials import catalogue
-from .project import DesignSettings, Project, ProjectInfo, Section
+from .project import (
+    CombiWallInput,
+    DesignSettings,
+    PileInput,
+    Project,
+    ProjectInfo,
+    Section,
+    with_project_grades,
+)
 from .reader import UnsupportedWorkbook
 from .store import ProjectNotFound, ProjectStore
 from .validation import ImportResult, import_workbook
@@ -285,6 +293,38 @@ def governing_sets_export(project_id: str, section_id: str) -> Response:
         governing_workbook(project.info.name, section.name, results),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}-governing-sets.xlsx"'},
+    )
+
+
+@app.get(SECTION + "/design/adsec.zip")
+def adsec_export(project_id: str, section_id: str) -> Response:
+    """AdSec 8.3 files (.ads), one per pile part and combi wall infill part, with its 7 QP and 7 ULS loads."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    results = store().load_results(project_id, section_id)
+    if results is None:
+        raise HTTPException(404, "This section has not been designed yet.")
+    d = project.design
+    info = {}
+    for name, e in section.elements.items():
+        if isinstance(e, PileInput):
+            p = with_project_grades(e, d.materials, d.durability)
+            info[name] = {"diameter": p.diameter, "concrete": p.concrete, "cover": p.cover}
+        elif isinstance(e, CombiWallInput):
+            w = with_project_grades(e, d.materials, d.durability)
+            info[f"{name} infill"] = {
+                "diameter": w.tube_diameter - 2 * w.tube_thickness,
+                "concrete": w.concrete,
+                "cover": w.cover,
+            }
+    files = adsec.section_files(project.info.name, section.name, results, info, d.reinforcement.grade)
+    if not files:
+        raise HTTPException(404, "No designed piles or combi wall infill in this section.")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name}").strip("_") or "project"
+    return Response(
+        adsec.zip_files(files),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{name}-adsec.zip"'},
     )
 
 

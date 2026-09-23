@@ -17,8 +17,13 @@ thickness per exposed face, interpolated between the tabulated lives:
     casing, combi tube  zone of high attack (low water and splash)
     sheet piles         zone of permanent immersion or intertidal
 
-BS 6349-1-4 tables are not loaded yet; choosing BS 6349 keeps the values that
-are set until they are.
+BS 6349 (Ahmed's N25185 design report, section 3.4):
+
+    covers      75 mm for piling members and members against the ground, 50 mm for the
+                superstructure (slab and beams). Not tied to the design life.
+    corrosion   BS 6349-1-4:2021 mean values, 50 years: 4.5 mm/side in the splash zone
+                (casing and combi tube) and 2.5 mm/side in continuous immersion (sheet
+                piles). Other lives scale in proportion, as the values are constant rates.
 """
 
 from __future__ import annotations
@@ -70,13 +75,25 @@ def en1993_5_corrosion(life: int) -> dict[str, float]:
     return {"casing": at(HIGH_ATTACK), "combi_tube": at(HIGH_ATTACK), "sheet_pile_per_face": at(IMMERSION)}
 
 
+BS6349_COVERS = {"piles": 75.0, "combi_infill": 75.0, "slab_top": 50.0, "slab_bottom": 50.0, "beams": 50.0}
+BS6349_SPLASH = 4.5 / 50  # mm per side per year
+BS6349_IMMERSION = 2.5 / 50
+
+
+def bs6349_covers(life: int) -> dict[str, float]:
+    return dict(BS6349_COVERS)
+
+
+def bs6349_corrosion(life: int) -> dict[str, float]:
+    splash, immersed = round(BS6349_SPLASH * life, 2), round(BS6349_IMMERSION * life, 2)
+    return {"casing": splash, "combi_tube": splash, "sheet_pile_per_face": immersed}
+
+
 def defaults(cover_code: str, corrosion_code: str, life: int) -> dict[str, Any]:
-    """Covers and corrosion for the codes and life; None where the code's table is not loaded."""
+    """Covers and corrosion allowances for the chosen codes and design life."""
+    covers = en1992_covers(life) if cover_code == "en1992" else bs6349_covers(life)
+    corrosion = en1993_5_corrosion(life) if corrosion_code == "en1993_5" else bs6349_corrosion(life)
     notes = []
-    covers = en1992_covers(life) if cover_code == "en1992" else None
-    corrosion = en1993_5_corrosion(life) if corrosion_code == "en1993_5" else None
-    if covers is None:
-        notes.append("BS 6349-1-4 covers are not loaded yet: the covers set are kept.")
-    if corrosion is None:
-        notes.append("BS 6349-1-4 corrosion rates are not loaded yet: the allowances set are kept.")
+    if cover_code == "bs6349":
+        notes.append("BS 6349 covers are the project values (75 mm piling, 50 mm superstructure).")
     return {"covers": covers, "corrosion": corrosion, "notes": notes}

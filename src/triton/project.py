@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .durability import en1992_covers, en1993_5_corrosion
+from .durability import bs6349_corrosion, bs6349_covers
 from .elements import ElementType, parse_sheet_name
 from .materials import (
     BAR_DIAMETERS,
@@ -61,11 +61,17 @@ class PartialFactors(_Model):
     gamma_s_accidental: float = Field(1.0, title="γs accidental / seismic", ge=1)
     gamma_m0: float = Field(1.0, title="γM0 steel cross-section", ge=1)
     gamma_m1: float = Field(1.0, title="γM1 steel buckling", ge=1)
-    alpha_cc: float = Field(0.85, title="αcc long-term factor", gt=0, le=1)
+    alpha_cc: float = Field(
+        1.0,
+        title="αcc long-term factor",
+        gt=0,
+        le=1,
+        description="1.0 as in the AdSec files and capacity sheets.",
+    )
     deduct_bar_area: bool = Field(
-        True,
+        False,
         title="Deduct the concrete displaced by the bars",
-        description="Off: the gross concrete area, as in some capacity sheets.",
+        description="Off (default): the gross concrete area, as AdSec and the capacity sheets take it.",
     )
 
 
@@ -208,51 +214,58 @@ class Materials(_Model):
     sheet_pile_steel: SheetPileGrade = Field("S355GP", title="Sheet pile steel grade")
 
 
-_EN_COVERS = en1992_covers(50)
-_EN_CORROSION = en1993_5_corrosion(50)
+_COVERS = bs6349_covers(50)
+_CORROSION = bs6349_corrosion(50)
 
 
 class Covers(_Model):
     """Project covers to the outer bars' links. Each element uses these unless it sets its own."""
 
-    piles: float = _mm("Piles", _EN_COVERS["piles"], gt=0, description="EN 1992: XS3, at least 75 mm.")
-    combi_infill: float = _mm(
-        "Combi wall infill", _EN_COVERS["combi_infill"], gt=0, description="EN 1992: XS2, inside the tube."
+    piles: float = _mm(
+        "Piles", _COVERS["piles"], gt=0, description="BS 6349: 75 mm; EN 1992: XS3, at least 75 mm."
     )
-    slab_top: float = _mm("Slab top", _EN_COVERS["slab_top"], gt=0, description="EN 1992: XS1.")
-    slab_bottom: float = _mm("Slab bottom", _EN_COVERS["slab_bottom"], gt=0, description="EN 1992: XS3.")
-    beams: float = _mm("Beams", _EN_COVERS["beams"], gt=0, description="EN 1992: XS3.")
+    combi_infill: float = _mm(
+        "Combi wall infill", _COVERS["combi_infill"], gt=0, description="BS 6349: 75 mm; EN 1992: XS2."
+    )
+    slab_top: float = _mm("Slab top", _COVERS["slab_top"], gt=0, description="BS 6349: 50 mm; EN 1992: XS1.")
+    slab_bottom: float = _mm(
+        "Slab bottom", _COVERS["slab_bottom"], gt=0, description="BS 6349: 50 mm; EN 1992: XS3."
+    )
+    beams: float = _mm("Beams", _COVERS["beams"], gt=0, description="BS 6349: 50 mm; EN 1992: XS3.")
 
 
 class CorrosionAllowances(_Model):
     """Loss of steel thickness over the design life. Each element uses these unless it sets its own."""
 
     casing: float = _mm(
-        "Pile casing", _EN_CORROSION["casing"], ge=0, description="EN 1993-5: sea water, zone of high attack."
+        "Pile casing",
+        _CORROSION["casing"],
+        ge=0,
+        description="BS 6349-1-4:2021: splash zone. EN 1993-5: zone of high attack.",
     )
     combi_tube: float = _mm(
         "Combi wall tube",
-        _EN_CORROSION["combi_tube"],
+        _CORROSION["combi_tube"],
         ge=0,
-        description="EN 1993-5: sea water, zone of high attack.",
+        description="BS 6349-1-4:2021: splash zone. EN 1993-5: zone of high attack.",
     )
     sheet_pile_per_face: float = _mm(
         "Sheet piles, per face",
-        _EN_CORROSION["sheet_pile_per_face"],
+        _CORROSION["sheet_pile_per_face"],
         ge=0,
-        description="EN 1993-5: sea water, permanent immersion or intertidal.",
+        description="BS 6349-1-4:2021: continuous immersion. EN 1993-5: permanent immersion or intertidal.",
     )
 
 
 class Durability(_Model):
     cover_code: Literal["en1992", "bs6349"] = Field(
-        "en1992",
+        "bs6349",
         title="Covers from",
         description="Choosing the code or changing the design life fills in the covers below; "
         "they can still be edited.",
     )
     corrosion_code: Literal["en1993_5", "bs6349"] = Field(
-        "en1993_5",
+        "bs6349",
         title="Corrosion allowances from",
         description="Choosing the code or changing the design life fills in the allowances below.",
     )
@@ -326,7 +339,9 @@ _PROJECT_VALUE = "Empty: the project value from Design settings (Covers and corr
 
 class _ConcreteSection(_Model):
     concrete: ConcreteGrade | None = Field(None, title="Concrete grade", description=_PROJECT_GRADE)
-    crack_width_limit: float = _mm("Crack width limit wk (QP)", 0.3, gt=0, le=0.5)
+    crack_width_limit: float = _mm(
+        "Crack width limit wk (QP)", 0.2, gt=0, le=0.5, description="0.2 mm in the BS 6349 design reports."
+    )
 
 
 class Casing(_Model):
@@ -573,10 +588,10 @@ class SlabInput(_ConcreteSection):
         le=1,
         description="Empty: from the length between joints and the thickness (ACI 207.2R).",
     )
-    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.3, gt=0, le=0.5)
+    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.2, gt=0, le=0.5)
     crack_width_limit_bottom: float = _mm(
         "Crack width limit wk (QP), bottom face",
-        0.3,
+        0.2,
         gt=0,
         le=0.5,
         description="e.g. tighter where the soffit is in the splash zone",
@@ -604,10 +619,10 @@ class BeamInput(_ConcreteSection):
         le=1,
         description="Empty: from the length between joints and the depth (edge restraint, ACI 207.2R).",
     )
-    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.3, gt=0, le=0.5)
+    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.2, gt=0, le=0.5)
     crack_width_limit_bottom: float = _mm(
         "Crack width limit wk (QP), bottom face",
-        0.3,
+        0.2,
         gt=0,
         le=0.5,
         description="e.g. tighter where the soffit is in the splash zone",

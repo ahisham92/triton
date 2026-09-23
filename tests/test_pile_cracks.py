@@ -52,7 +52,8 @@ def test_pile_crack_width_in_pure_tension():
 
 def test_pile_design_checks_cracks_outside_the_casing():
     uls = [(i + 1, -1.0 * i, -3000.0, 2500.0 * math.exp(-i / 4), 0.0) for i in range(21)]
-    plain = design_pile("Pile(1)", PileInput(head_level=0.0), DesignSettings(), pile_sheets(uls)).to_dict()
+    pile = PileInput(head_level=0.0, crack_width_limit=0.3)
+    plain = design_pile("Pile(1)", pile, DesignSettings(), pile_sheets(uls)).to_dict()
     c = plain["cracks"]
     assert c["passed"] and 0 < c["wk_mm"] <= c["limit_mm"] and c["governing"]["z"] == 0.0
     assert c["profile"][0]["z"] == 0.0 and c["governing"]["cage"]

@@ -88,7 +88,10 @@ def test_slab_design_with_zones_punching_and_restraint():
         "Pile(1)-QP": piles_at(pts, 1000.0),
     }
     wb = import_sheets(raw)
-    els = {"Deck": SlabInput(thickness=800), "Pile(1)": PileInput(head_level=2.7)}
+    els = {
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
     res = run_section(DesignSettings(), Section(elements=els), wb)
     (d,) = res["slabs"]
     assert d["passed"], d["notes"]
@@ -139,7 +142,8 @@ def deck_workbook():
 
 
 def design_deck(**slab):
-    els = {"Deck": SlabInput(thickness=800, **slab), "Pile(1)": PileInput(head_level=2.7)}
+    limits = {"crack_width_limit": 0.3, "crack_width_limit_bottom": 0.3} | slab
+    els = {"Deck": SlabInput(thickness=800, **limits), "Pile(1)": PileInput(head_level=2.7)}
     return run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
 
 
