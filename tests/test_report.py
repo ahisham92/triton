@@ -47,6 +47,26 @@ def test_report_follows_the_office_layout(designed):
     assert not any(b.text.startswith("Appendix") for b in short.blocks if b.kind == "h1")
 
 
+def test_combi_tube_rows_and_corrosion_zones_as_the_office_tables():
+    from test_combi import combi_sheets
+
+    from triton.project import CombiWallInput
+
+    section = Section(name="S", elements={"Combi Wall": CombiWallInput(top_level_to_ignore=0.0)})
+    results = run_section(DesignSettings(), section, combi_sheets())
+    results["run_at"] = "2026-09-23T22:00"
+    rep = build_report(Project(sections=[section]), section, results, "summary")
+    captions = [b.text for b in rep.blocks if b.kind == "caption"]
+    assert captions[0].startswith("Table 2-1: Loss of thickness of the Combi Wall tube")
+    zones = next(b for b in rep.blocks if b.kind == "table" and b.headers[0] == "Level (m)")
+    assert zones.rows[-1] == ["-25 to -39", "1.75", "1.75", "14.5"]
+    summary = next(b for b in rep.blocks if b.kind == "table" and b.headers[0] == "Element")
+    bending, interaction = summary.rows[:2]
+    assert bending[0].startswith("Combi Wall – steel tube") and "interaction" in interaction[0]
+    num = [float(v.replace(",", "")) for v in bending[2:5]]
+    assert num[0] == pytest.approx(abs(num[1]) / num[2], abs=2e-3)
+
+
 @pytest.mark.parametrize("fmt", ["docx", "pdf", "xlsx"])
 def test_renderers_write_files(designed, fmt):
     project, section, results = designed

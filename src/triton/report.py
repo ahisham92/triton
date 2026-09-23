@@ -229,10 +229,50 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
                 "BS 6349-1-4:2021 mean values" if d.corrosion_code == "bs6349" else "BS EN 1993-5 Table 4.2",
             ),
             ("Pile casing", f"{co.casing:g} mm over {s.design_life_years} years"),
-            ("Combi wall tube", f"{co.combi_tube:g} mm over {s.design_life_years} years"),
+            (
+                "Combi wall tube",
+                "by zone, in the table below"
+                if any(
+                    getattr(e, "corrosion_zones", None)
+                    for e in section.elements.values()
+                    if e.kind == "combi_wall"
+                )
+                else f"{co.combi_tube:g} mm over {s.design_life_years} years",
+            ),
             ("Sheet piles, per face", f"{co.sheet_pile_per_face:g} mm over {s.design_life_years} years"),
         ]
     )
+    n_tab = 0
+    for name, el in section.elements.items():
+        zones = getattr(el, "corrosion_zones", None)
+        if not zones:
+            continue
+        top = "top"
+        rows = []
+        if el.kind == "combi_wall":
+            for z in zones:
+                rows.append(
+                    [
+                        f"{top} to {z.bottom_level:g}",
+                        z.outside,
+                        z.inside,
+                        el.tube_thickness - z.outside - z.inside,
+                    ]
+                )
+                top = f"{z.bottom_level:g}"
+            n_tab += 1
+            r.caption(
+                f"Table 2-{n_tab}: Loss of thickness of the {name} tube, over {s.design_life_years} years"
+            )
+            r.table(["Level (m)", "Outside (mm)", "Inside (mm)", "Remaining wall (mm)"], rows)
+            r.p("The last zone continues to the toe.")
+        elif el.kind == "sheet_pile_wall":
+            for z in zones:
+                rows.append([f"{top} to {z.bottom_level:g}", z.front, z.back])
+                top = f"{z.bottom_level:g}"
+            n_tab += 1
+            r.caption(f"Table 2-{n_tab}: Loss of thickness of the {name}, over {s.design_life_years} years")
+            r.table(["Level (m)", "Front face (mm)", "Back face (mm)"], rows)
     r.h(2, "2.4 Partial factors and design assumptions")
     r.kv(
         [
@@ -305,14 +345,22 @@ def _sections(r: Report, section: Section, res: dict) -> None:
         t = w.get("tube") or {}
         g = t.get("governing") or {}
         if t:
+            zone = f", {g['zone']}" if g.get("zone") else ""
+            m, mrd = (None if v is None else float(v) for v in (g.get("M_kNm"), g.get("M_Rd_kNm")))
+            combo = _sheet(w["element"], g.get("combination"))
+            if m is not None and mrd:
+                # As the office tables: bending alone, then with the N–M (and buckling) interaction.
+                rows.append(
+                    [f"{w['element']} – steel tube{zone}", "N.A", round(abs(m) / mrd, 3), m, mrd, combo]
+                )
             rows.append(
                 [
-                    f"{w['element']} – steel tube",
+                    f"{w['element']} – steel tube{zone} (considering interaction between moment and normal)",
                     "N.A",
                     t.get("utilisation"),
-                    g.get("M_kNm"),
-                    g.get("M_Rd_kNm"),
-                    _sheet(w["element"], g.get("combination")),
+                    m,
+                    mrd,
+                    combo,
                 ]
             )
         rows += _part_rows(f"{w['element']} – infill", w.get("infill") or {}, w["element"])
@@ -934,16 +982,12 @@ def _beam(r: Report, b: dict) -> None:
         r.table(
             ["Case", "Slab (mm)", "P beam (kN)", "P slab (kN)", "P (kN)", "T (kN)", "As req (mm²)", "Ratio"],
             [
-                [
-                    c["case"],
-                    c["slab_thickness_mm"],
-                    c["P_beam_kN"],
-                    c["P_slab_kN"],
-                    c["P_kN"],
-                    c["T_kN"],
-                    c["As_req_mm2"],
-                    c["utilisation"],
+                [c["case"]]
+                + [
+                    float(c[k])
+                    for k in ("slab_thickness_mm", "P_beam_kN", "P_slab_kN", "P_kN", "T_kN", "As_req_mm2")
                 ]
+                + [c["utilisation"]]
                 for c in tr["cases"]
             ],
         )
