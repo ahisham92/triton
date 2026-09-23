@@ -14,7 +14,9 @@ from pydantic import BaseModel, ValidationError
 
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
-from .design.runner import run_section
+from .design.runner import factored_elements, run_section
+from .design.spw import workbook as spw_workbook
+from .elements import ElementType
 from .materials import catalogue
 from .project import DesignSettings, Project, ProjectInfo, Section
 from .reader import UnsupportedWorkbook
@@ -273,4 +275,28 @@ def governing_sets_export(project_id: str, section_id: str) -> Response:
         governing_workbook(project.info.name, section.name, results),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}-governing-sets.xlsx"'},
+    )
+
+
+@app.get(SECTION + "/spw.xlsx")
+def spw_export(project_id: str, section_id: str) -> Response:
+    """Sheet pile wall straining actions (Plaxis sign, multipliers applied) for the sheet pile program."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    wb = store().load_workbook(project_id, section_id)
+    if wb is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    elements = factored_elements(section, wb)
+    spw = [
+        name
+        for name, combos in elements.items()
+        if any(s.parsed and s.parsed.spec.type is ElementType.SHEET_PILE_WALL for s in combos.values())
+    ]
+    if not spw:
+        raise HTTPException(404, "The workbook has no sheet pile wall sheets.")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name} {spw[0]}").strip("_")
+    return Response(
+        spw_workbook(project.info.name, section.name, spw[0], elements[spw[0]]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}-straining-actions.xlsx"'},
     )

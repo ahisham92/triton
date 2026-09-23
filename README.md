@@ -43,6 +43,9 @@ Each element gets its own inputs:
 combi wall infill concrete, tube and casing steel, and sheet pile steel. An element can set its own
 grade instead; left at *Project grade*, it follows the project value.
 
+Pile links are unified by default: one spacing over the whole pile, the closest one needed
+anywhere (Design settings, *Links along the pile*; *Zoned* spaces them by need instead).
+
 Project-wide settings: partial factors, bar sizes to try, spacing limits, and whether the
 reinforcement is chosen for the least steel or the lowest cost. Projects are saved as JSON
 in `data/projects/`, with each section's checked workbook and results in
@@ -135,6 +138,15 @@ with N and M2, and the most utilised point (ULS: highest N–M utilisation with 
 QP: largest resultant moment until crack width is checked). N is in the concrete (AdSec) sign
 convention, Plaxis N × −1. The combi wall infill gets the same sets with its share of the actions.
 
+## Sheet pile wall
+
+Triton does not design the sheet pile wall; the office uses the ArcelorMittal program.
+**Download SPW straining actions (Excel)** on the Design tab
+(`GET /api/projects/{id}/sections/{section}/spw.xlsx`) gives the plate results with the section's
+load multipliers applied and N in the Plaxis sign (steel element): a *Governing* sheet with the
+maximum and minimum of every action per combination and the other actions at the same node, and one
+*Envelope* sheet per combination with the maximum and minimum across the wall at each level.
+
 ## Combi wall
 
 Between the front beam soffit and the infill bottom level (default −25 m) every straining action,
@@ -163,7 +175,7 @@ One sheet per element and load combination, named `<Element>-<Combination>`:
 | `Combi Wall` | beam + embedded beam | N, Q_12, Q_13, M_1, M_2, M_3 |
 | `Pile(n)` | embedded beam | N, Q_12, Q_13, M_1, M_2, M_3 |
 | `Deck` | plate | as SPW |
-| `Front Beam`, `Rear Beam` | plate | as SPW |
+| `Front Beam`, `Rear Beam`, `Transverse Beam` (optional, also `Trans Beam(1)`) | plate | as SPW |
 
 Combinations: `PT-B-*` / `PT-C-*` are ULS (Set B / Set C), `QP` is quasi-permanent SLS
 (crack width only). Seismic and accidental sheets are recognised by name.

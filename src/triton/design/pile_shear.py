@@ -156,6 +156,11 @@ def design_shear(
     if (need_band > 0).any() and asw / need_band.max() < MIN_LINK_SPACING - 1e-9:
         notes.append(f"Ø{link:g} links would be closer than {MIN_LINK_SPACING:g} mm: use larger links.")
 
+    if settings.piles.links == "unified":
+        # One spacing over the whole pile: the closest one needed anywhere.
+        j = int(np.argmin(spacing))
+        spacing[:] = spacing[j]
+        reason[:] = reason[j]
     out_zones = _zones(head, toe, spacing, reason, link)
     hoop_len = math.pi * (D - 2 * pile.cover - link) / 1000  # m
     weight = sum((zz["top"] - zz["bottom"]) * 1000 / zz["spacing_mm"] * hoop_len for zz in out_zones)

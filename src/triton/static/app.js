@@ -348,13 +348,13 @@ function optionLabel(key, o) {
 
 function prettyOption(o) {
   const map = { crack_only: "Crack width only", structural: "Structural (shares load)", min_steel: "Least steel",
-    lap: "Lapped", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
+    lap: "Lapped", unified: "Unified", zoned: "Zoned", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
     min_cost: "Lowest cost", uniform: "Uniform slab", column_and_field: "Column and field strips" };
   return map[o] || o;
 }
 
 const KIND_LABEL = { pile: "Pile", combi_wall: "Combi wall", sheet_pile_wall: "Sheet pile wall", slab: "Slab",
-  front_beam: "Front beam", rear_beam: "Rear beam" };
+  front_beam: "Front beam", rear_beam: "Rear beam", transverse_beam: "Transverse beam" };
 
 // ---------------------------------------------------------------- sections tab
 function renderSections(host) {
@@ -649,6 +649,7 @@ async function renderDesignTab(host) {
       <button id="run-design" ${els.length ? "" : "disabled"}>Design piles and combi wall</button>
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets (Excel)</a>
+      ${Object.values(sec().elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
       <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile or combi wall elements first."}</span>
     </div><div id="design-out"></div>`;
   document.getElementById("run-design").onclick = async () => {

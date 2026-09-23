@@ -25,6 +25,7 @@ class ElementType(StrEnum):
     SLAB = "slab"
     FRONT_BEAM = "front_beam"
     REAR_BEAM = "rear_beam"
+    TRANSVERSE_BEAM = "transverse_beam"
     PORTAL_FRAME = "portal_frame"
 
 
@@ -74,6 +75,11 @@ _PATTERNS: list[tuple[re.Pattern[str], ElementSpec]] = [
     (
         re.compile(r"^Rear\s*Beam$", re.I),
         ElementSpec(ElementType.REAR_BEAM, ResultKind.PLATE, "edge_beam", True, PLATE_ACTIONS),
+    ),
+    (
+        # Optional: not every project has transverse beams. Assumed plates like the other beams.
+        re.compile(r"^Trans(verse)?\s*Beam(\s*\(\s*\d+\s*\))?$", re.I),
+        ElementSpec(ElementType.TRANSVERSE_BEAM, ResultKind.PLATE, "transverse_beam", True, PLATE_ACTIONS),
     ),
     (
         re.compile(r"^Portal\s*Frame$", re.I),

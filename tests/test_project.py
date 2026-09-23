@@ -30,6 +30,8 @@ def test_structural_steel_yield_drops_above_16mm():
 def test_default_elements_by_name():
     assert isinstance(default_element("Pile(3)"), PileInput)
     assert default_element("Rear Beam").kind == "rear_beam"
+    assert default_element("Transverse Beam(2)").kind == "transverse_beam"
+    assert default_element("Trans Beam").kind == "transverse_beam"
     assert default_element("Portal Frame") is None
     assert default_element("Notes") is None
 

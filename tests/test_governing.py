@@ -88,3 +88,37 @@ def test_no_crack_check_gives_qp_rows_of_ones():
     pile = PileInput(head_level=0.0, casing=Casing(top_level=0.0, bottom_level=-4.0))
     d = design_pile("Pile(1)", pile, DesignSettings(), pile_sheets(LOADS)).to_dict()
     assert d["governing_sets"][-1]["qp"][0]["N_kN"] == pytest.approx(3000.0)
+
+
+def test_spw_export(tmp_path, monkeypatch):
+    from conftest import plate_sheet
+    from fastapi.testclient import TestClient
+    from test_design import xlsx_bytes
+
+    from triton.api import app
+
+    monkeypatch.setenv("TRITON_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    p = client.post("/api/projects", json={"info": {"name": "Berth"}, "element_names": ["SPW"]}).json()
+    sid = p["sections"][0]["id"]
+    url = f"/api/projects/{p['id']}/sections/{sid}"
+    assert client.get(f"{url}/spw.xlsx").status_code == 409
+    # A 1.35 multiplier on the Set B sheet; SPW keeps the Plaxis sign of N.
+    p["sections"][0]["load_factors"] = [{"factor": 1.35, "sheets": ["SPW-PT-B-Apron"]}]
+    assert client.put(f"/api/projects/{p['id']}", json=p).status_code == 200
+    data = xlsx_bytes({"SPW-PT-B-Apron": plate_sheet(scale=2.0), "SPW-QP": plate_sheet()})
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
+    r = client.get(f"{url}/spw.xlsx")
+    assert (
+        r.status_code == 200
+        and "Berth_Section_1_SPW-straining-actions.xlsx" in r.headers["content-disposition"]
+    )
+    wb = load_workbook(io.BytesIO(r.content))
+    assert wb.sheetnames == ["Governing", "Envelope PT-B-Apron", "Envelope QP"]
+    rows = list(wb["Governing"].iter_rows(min_row=4, values_only=True))
+    header, first = rows[0], rows[1]
+    assert header[:6] == ("Combination", "Case", "Node", "Y (m)", "Z (m)", "N_1")
+    qp = [r for r in rows[1:] if r[0] == "QP" and r[1] == "max N_1"][0]
+    b = [r for r in rows[1:] if r[0] == "PT-B-Apron" and r[1] == "max N_1"][0]
+    assert b[5] == pytest.approx(qp[5] * 2.0 * 1.35, rel=1e-3)
+    assert first[0] == "PT-B-Apron"

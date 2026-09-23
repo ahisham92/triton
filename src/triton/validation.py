@@ -91,7 +91,7 @@ def _sheet_summary(s: SheetData) -> dict[str, Any]:
 
 
 def _element_sort_key(e: str) -> tuple[int, str]:
-    order = ["SPW", "Combi Wall", "Pile", "Deck", "Front Beam", "Rear Beam", "Portal Frame"]
+    order = ["SPW", "Combi Wall", "Pile", "Deck", "Front Beam", "Rear Beam", "Trans", "Portal Frame"]
     for i, prefix in enumerate(order):
         if e.startswith(prefix):
             return i, e

@@ -19,12 +19,13 @@ def rows(loads):
     return out
 
 
-def design(loads, **pile):
+def design(loads, links="zoned", **pile):
     sheets = import_sheets({"Pile(1)-PT-B-Apron": rows(loads), "Pile(1)-QP": rows(loads)}).elements()[
         "Pile(1)"
     ]
     settings = DesignSettings()
     settings.piles.curtail = False
+    settings.piles.links = links
     return design_pile("Pile(1)", PileInput(head_level=0.0, **pile), settings, sheets).to_dict()
 
 
@@ -82,4 +83,12 @@ def test_steel_totals_include_links():
     d = design(column())
     st = d["steel"]
     assert st["total_kg"] == pytest.approx(st["longitudinal_kg"] + st["links_kg"], abs=0.2)
-    assert st["kg_per_m3"] == pytest.approx(st["total_kg"] / (math.pi * 0.36 * 20), rel=1e-3)
+    assert st["kg_per_m3"] == pytest.approx(st["total_kg"] / (math.pi * 0.36 * 20), abs=0.05)
+
+
+def test_unified_links_use_one_spacing():
+    zoned = design(column())["shear"]
+    (one,) = design(column(), links="unified")["shear"]["zones"]
+    assert (one["top"], one["bottom"]) == (0.0, -20.0)
+    assert one["spacing_mm"] == min(z["spacing_mm"] for z in zoned["zones"])
+    assert DesignSettings().piles.links == "unified"

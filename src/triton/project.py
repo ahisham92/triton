@@ -147,6 +147,12 @@ class PileReinforcement(_Model):
         "Above 4% only with couplers.",
         json_schema_extra={"unit": "%"},
     )
+    links: Literal["unified", "zoned"] = Field(
+        "unified",
+        title="Links along the pile",
+        description="Unified: one spacing over the whole pile, the closest one needed anywhere. "
+        "Zoned: closer links only where shear, the slab connection or laps need them.",
+    )
     curtail: bool = Field(True, title="Reduce the reinforcement down the pile")
     curtailment: Literal["least_steel", "standard_lengths"] = Field(
         "least_steel",
@@ -358,7 +364,7 @@ class SlabInput(_ConcreteSection):
 
 
 class BeamInput(_ConcreteSection):
-    kind: Literal["front_beam", "rear_beam"] = "front_beam"
+    kind: Literal["front_beam", "rear_beam", "transverse_beam"] = "front_beam"
     width: float = _mm("Beam width", 2000.0, gt=0)
     depth: float = _mm("Beam depth", 2000.0, gt=0)
     cover: float = _mm("Cover", 75.0, gt=0)
@@ -384,6 +390,7 @@ _KIND_FOR_TYPE = {
     ElementType.SLAB: SlabInput,
     ElementType.FRONT_BEAM: BeamInput,
     ElementType.REAR_BEAM: BeamInput,
+    ElementType.TRANSVERSE_BEAM: BeamInput,
 }
 
 
