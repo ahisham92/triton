@@ -1010,8 +1010,10 @@ function alerts(res) {
       if (!r.passed) add("unsafe", d.element, `restraint crack ${k.replace("_", " ")} ${fmt(r.wk, 2)} mm of ${fmt(r.limit, 2)}`);
     }
   }
+  // From the run itself, so the alert matches the results shown (older runs: the section as saved).
   const s = state?.project ? sec() : null;
-  if (s && [s.x_min, s.x_max, s.y_min, s.y_max].every((v) => v == null))
+  const zone = res.working_zone ?? (s && [s.x_min, s.x_max, s.y_min, s.y_max].some((v) => v != null));
+  if (s && res.run_at && !zone)
     add("limit", s.name, "no working zone set, so results up to the model's boundaries are included: set it on the Sections tab");
   const rank = { unsafe: 0, limit: 1, safe: 2 };
   return out.sort((a, b) => rank[a.level] - rank[b.level]);

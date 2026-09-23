@@ -194,4 +194,7 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
         "beams": beams,
         "slabs": slabs,
         "skipped": skipped,
+        "working_zone": any(
+            v is not None for v in (section.x_min, section.x_max, section.y_min, section.y_max)
+        ),
     }

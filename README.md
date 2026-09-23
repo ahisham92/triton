@@ -4,15 +4,62 @@ Structural design of marine structure elements from Plaxis 3D straining actions.
 Upload the geotechnical team's workbook and Triton checks it, designs each element
 to Eurocode (EC2 / EC3) with BS 6349, and reports reinforcement and utilization ratios.
 
-So far it covers **importing and checking the workbook**, **project setup** (sections, materials and design settings for each element) the **design of piles** (N–M cages, reductions down the pile, shear links) and the **combi wall** (reinforced infill and steel tube).
+It covers the whole office flow: create a project and its shared data (grades, covers, corrosion,
+design settings), add sections and their elements, upload each section's workbook and map its
+sheets, then design the **piles**, **combi wall** (reinforced infill and steel tube), **front, rear
+and transverse beams** (with bollard ties and the truss between king piles) and the **deck slab**
+(column and field strips, punching, crane areas). Each run gives reinforcement and utilisation per
+element and exports the calculation report (Word, PDF or Excel, summary or detailed), the governing
+sets and `.ads` files for AdSec, the sheet pile wall actions for ArcelorMittal Durability and the pile
+cages for Revit.
 
 ## Run it
 
+Triton is a small web app that runs on one computer and is used in the browser. It needs Python 3.11
+or later and nothing else (no database, no internet once installed).
+
+**On your own PC (Windows)**
+
+1. Install Python 3.11 or later from python.org, ticking *Add python.exe to PATH*.
+2. Get the code: download the repository as a ZIP from GitHub (Code → Download ZIP) and unzip it,
+   e.g. to `C:\Triton`, or `git clone https://github.com/ahisham92/triton.git`.
+3. In a Command Prompt in that folder, once:
+   ```bat
+   py -m venv .venv
+   .venv\Scripts\activate
+   pip install -e .
+   ```
+4. To start it (each time):
+   ```bat
+   .venv\Scripts\activate
+   triton serve --data C:\Triton\projects
+   ```
+   and open http://127.0.0.1:8000. Stop it with Ctrl+C.
+
+**For the team (one office PC or server)**
+
+Run `triton serve --host 0.0.0.0 --port 8000 --data D:\Triton\projects` on the machine that keeps the
+projects, and colleagues open `http://<that machine's name>:8000`. Allow port 8000 through the
+Windows firewall. There are no user accounts: anyone who can reach the port can open and change
+projects, so keep it on the office network. Back up the data folder; each project is one JSON file
+plus its stored workbooks.
+
+**Linux or macOS:** the same with `python3 -m venv .venv`, `source .venv/bin/activate`.
+
+**Updating:** download or `git pull` the new version and run `pip install -e .` again. Projects in the
+data folder are kept; new settings take their defaults.
+
+**Large workbooks:** the upload has no size limit of its own. The 32 MB Section 01a workbook imports
+in about 15 s and designs in about 20 s using about 200 MB of memory; a full 107 MB workbook takes
+roughly three times as long. A workbook is read once on upload and stored with its section, so later
+design runs do not read it again. If Triton runs behind a reverse proxy (IIS, nginx), raise the
+proxy's request size limit (e.g. `client_max_body_size 200m`).
+
+**Command line and tests**
+
 ```bash
-pip install -e ".[dev]"
-triton serve            # web app on http://127.0.0.1:8000
-triton check "Section 01a.xlsb"   # same checks from the command line
-pytest                  # tests
+triton check "Section 01a.xlsb"   # the upload checks, printed
+pip install -e ".[dev]" && pytest  # tests
 ```
 
 ## Project setup
