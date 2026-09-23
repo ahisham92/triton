@@ -314,6 +314,7 @@ def _section(pile: PileInput, a: Arrangement, settings: DesignSettings, accident
         tuple(Ring(r.count, r.diameter, r.radius) for r in a.rings),
         ConcreteLaw(fck, gamma_c, pf.alpha_cc),
         SteelLaw(fyk, gamma_s),
+        deduct=pf.deduct_bar_area,
     )
 
 

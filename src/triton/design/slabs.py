@@ -276,6 +276,38 @@ def average_peaks(f: pd.DataFrame, piles: list[tuple]) -> pd.DataFrame:
     return f
 
 
+def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, list, list]:
+    """The mesh alone, then the mesh with additional bars, least steel first.
+
+    Additional bars go between the mesh bars: in every second gap, in every gap, in every gap in two
+    layers, or also under the mesh bars (three per gap, two layers). For crack widths the mix has
+    the equivalent Ø of 7.12 and the largest gap between tension bars. Returns (options as
+    (mm²/m, Ø, spacing, layers), Ø setting the depth, labels).
+    """
+    area, phi_b, s_b, layers_b = mesh
+    n_b = layers_b * 1000 / s_b
+    out = [(mesh, phi_b, label(mesh))]
+    for phi_a in settings.reinforcement.bar_diameters:
+        if phi_a < 10 or s_b / 2 - max(phi_a, phi_b) < settings.reinforcement.min_clear_spacing:
+            continue
+        for n_a, spacing, lay, text in (
+            (1000 / s_b, s_b / 2, layers_b, f"Ø{phi_a} @ {s_b:g}"),
+            (1000 / (2 * s_b), s_b, layers_b, f"Ø{phi_a} @ {2 * s_b:g}"),
+            (2000 / s_b, s_b / 2, max(layers_b, 2), f"Ø{phi_a} @ {s_b:g} in 2 layers"),
+            (
+                3000 / s_b,
+                s_b / 2,
+                max(layers_b, 2),
+                f"Ø{phi_a} @ {s_b:g} in 2 layers + Ø{phi_a} under the mesh",
+            ),
+        ):
+            phi_eq = (n_b * phi_b**2 + n_a * phi_a**2) / (n_b * phi_b + n_a * phi_a)
+            o = (area + n_a * math.pi * phi_a**2 / 4, phi_eq, spacing, lay)
+            out.append((o, max(phi_a, phi_b), text))
+    out = out[:1] + sorted(out[1:], key=lambda t: t[0][0] * (1 + 0.1 * (t[0][3] - 1)))
+    return [t[0] for t in out], [t[1] for t in out], [t[2] for t in out]
+
+
 def _touch(pieces: list[list], k: int, n: int) -> bool:
     lo, hi = sorted((k, n))
     return pieces[lo][1] + 1 == pieces[hi][0]
@@ -291,6 +323,7 @@ def zones_for(
     along: str,
     min_zone: float = 2.5,
     basic: int | None = None,
+    labels: list[str] | None = None,
 ) -> dict:
     """Basic mesh and zones for one layer.
 
@@ -366,7 +399,7 @@ def zones_for(
             {
                 "x": [round(xr[0], 2), round(xr[1], 2)],
                 "y": [round(yr[0], 2), round(yr[1], 2)],
-                "label": label(o),
+                "label": labels[lvl] if labels else label(o),
                 "as_mm2_per_m": round(o[0]),
             }
         )
@@ -727,72 +760,123 @@ def design_slab(
         a_min = max(0.26 * conc.fctm / fyk, 0.0013) * 1000 * d
         need = pd.DataFrame({"i": uls_m["i"], "j": uls_m["j"], "req": np.maximum(a_req, a_min)})
         cell = need.groupby(["i", "j"])["req"].max().reset_index()
-        # Each option's area worth at the design depth: bigger bars and a second layer sit deeper in.
-        d_opt = np.array(
-            [
-                h - covers[face] - phi / 2 - (phi if direction == "y" else 0) - (nl - 1) * (phi + 25) / 2
-                for _, phi, _, nl in options
-            ]
-        )
-        eff = areas * np.minimum(d_opt / d, 1.0)
-        # ok[cell, option]: strong enough, QP cracks within the face's limit, restraint cracks too.
-        ok = eff[None, :] >= cell["req"].to_numpy()[:, None] - 1e-6
-        strength_ok = ok.copy()
-        restraint_ok = np.array(
-            [
-                slab_restraint(o, face, direction, covers, h, settings, conc, R)["wk"] <= limits[face] + 1e-9
-                for o in options
-            ]
-        )
+        nq = pos = None
         if wq is not None:
             nq = qp_m["Nx" if direction == "x" else "Ny"].to_numpy()
-            mq = wq[layer]
             key = pd.MultiIndex.from_arrays([qp_m["i"], qp_m["j"]])
             pos = pd.MultiIndex.from_arrays([cell["i"], cell["j"]]).get_indexer(key)
-            crack_ok = np.ones_like(ok)
-            for oi, (a_o, phi, sp, nl) in enumerate(options):
-                dd = h - covers[face] - phi / 2 - (phi if direction == "y" else 0) - (nl - 1) * (phi + 25) / 2
-                w = crack_widths(mq, nq, a_o, phi, sp, h, dd, covers[face], conc, e_eff)
-                bad = pos[(w > limits[face] + 1e-9) & (pos >= 0)]
-                crack_ok[bad, oi] = False
-            ok &= crack_ok
-        ok &= restraint_ok[None, :]
-        first = lambda m: np.where(m.any(axis=1), m.argmax(axis=1), len(options) - 1)  # noqa: E731
+
+        def assess(
+            opts: list[tuple],
+            dphi: list[float],
+            face=face,
+            direction=direction,
+            d=d,
+            cell=cell,
+            layer=layer,
+            nq=nq,
+            pos=pos,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            """Area worth at depth d, and ok[cell, option] for strength alone and for all checks.
+
+            Bigger bars and a second layer sit deeper in, so they count for less. Options are
+            (mm²/m, Ø for cracks, spacing for cracks, layers); ``dphi`` is the Ø setting the depth.
+            """
+            ar = np.array([o[0] for o in opts])
+            d_opt = np.array(
+                [
+                    h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
+                    for o, f in zip(opts, dphi, strict=True)
+                ]
+            )
+            eff = ar * np.minimum(d_opt / d, 1.0)
+            strength = eff[None, :] >= cell["req"].to_numpy()[:, None] - 1e-6
+            ok = strength.copy()
+            if wq is not None:
+                crack_ok = np.ones_like(ok)
+                for oi, o in enumerate(opts):
+                    w = crack_widths(wq[layer], nq, o[0], o[1], o[2], h, d_opt[oi], covers[face], conc, e_eff)
+                    crack_ok[pos[(w > limits[face] + 1e-9) & (pos >= 0)], oi] = False
+                ok &= crack_ok
+            rest = np.array(
+                [
+                    slab_restraint(o, face, direction, covers, h, settings, conc, R)["wk"]
+                    <= limits[face] + 1e-9
+                    for o in opts
+                ]
+            )
+            return eff, strength, ok & rest[None, :], rest
+
+        eff, strength_ok, ok, mesh_rest = assess(options, [o[1] for o in options])
+        first = lambda m: np.where(m.any(axis=1), m.argmax(axis=1), m.shape[1] - 1)  # noqa: E731
         cell["idx"] = first(ok)
         cell["uidx"] = first(strength_ok)
         req_eff = cell["req"].to_numpy()
-        if slab.strips == "column_and_field" and len(pile_x) > 1 and len(pile_y) > 1:
+        strips = slab.strips == "column_and_field" and len(pile_x) > 1 and len(pile_y) > 1
+        if strips:
             # Average the need over each strip's width (Annex I).
             across = "j" if direction == "x" else "i"
             lines = pile_y if direction == "x" else pile_x
             origin = y0 if direction == "x" else x0
             centre = origin + (cell[across].to_numpy() + 0.5) * size
-            strip = _strips(centre, lines)
-            along_key = "i" if direction == "x" else "j"
-            avg = (
-                pd.Series(eff[cell["idx"].to_numpy()])
-                .groupby([cell[along_key].to_numpy(), strip])
-                .transform("mean")
-            )
-            ok = (eff[None, :] >= avg.to_numpy()[:, None] - 1e-6) & restraint_ok[None, :]
-            req_eff = (
-                pd.Series(req_eff).groupby([cell[along_key].to_numpy(), strip]).transform("mean").to_numpy()
-            )
+            groups = [cell["i" if direction == "x" else "j"].to_numpy(), _strips(centre, lines)]
+            avg = pd.Series(eff[cell["idx"].to_numpy()]).groupby(groups).transform("mean").to_numpy()
+            ok = (eff[None, :] >= avg[:, None] - 1e-6) & ok.any(axis=0)[None, :]
+            req_eff = pd.Series(req_eff).groupby(groups).transform("mean").to_numpy()
             cell["idx"] = first(ok)
         forced = options.index(meshes[layer]) if layer in meshes else None
-        z = zones_for(
-            cell, ok, options, size, x0, y0, "X" if direction == "x" else "Y", slab.min_zone_length, forced
-        )
+        along = "X" if direction == "x" else "Y"
+        mode = getattr(slab, f"layout_{layer}")
+        if mode == "mesh_only":
+            # One mesh strong enough everywhere.
+            fits = np.flatnonzero(ok.all(axis=0))
+            b = forced if forced is not None else (int(fits[0]) if len(fits) else len(options) - 1)
+            z = zones_for(cell, ok, options, size, x0, y0, along, size, b)
+            z["zones"], z["cell_index"] = [], np.full(len(cell), b)
+            opts, eff_all, labels = options, eff, [label(o) for o in options]
+        else:
+            # A mesh everywhere, and additional bars between its bars where it is not enough. The mesh
+            # is the one with the least steel overall, its additional bars included.
+            target = req_eff if strips else cell["req"].to_numpy()
+            min_clear = settings.reinforcement.min_clear_spacing
+            cands = (
+                [forced]
+                if forced is not None
+                else [
+                    k for k, o in enumerate(options) if o[2] / 2 - max(o[1], 10) >= min_clear and mesh_rest[k]
+                ]
+                or [int(np.argmax(mesh_rest))]
+            )
+            best = None
+            for k in cands:
+                combos, dphi, labels = additional_options(options[k], settings)
+                eff2, _, ok2, _ = assess(combos, dphi)
+                ok2 = (eff2[None, :] >= target[:, None] - 1e-6) & (ok2 | strips)
+                idx = first(ok2)
+                ar = np.array([o[0] for o in combos])
+                # A cell nothing fits is priced at twice the heaviest bars, so that a few cells a thicker
+                # slab must solve do not drive the mesh everywhere.
+                short = np.where(ok2.any(axis=1), 1.0, 2.0)
+                cost = float((ar[idx] * np.where(idx > 0, 1 + PREMIUM, 1.0) * short).sum())
+                if best is None or cost < best[0] - 1e-6:
+                    best = (cost, k, combos, labels, eff2, ok2)
+            _, b, opts, labels, eff_all, ok2 = best
+            z = zones_for(
+                cell.assign(idx=first(ok2)), ok2, opts, size, x0, y0, along, slab.min_zone_length, 0, labels
+            )
+            for zz in z["zones"]:
+                zz["additional_mm2_per_m"] = round(zz["as_mm2_per_m"] - options[b][0])
         z["basic"]["set_by"] = "user" if forced is not None else "least steel"
-        chosen = z.pop("cell_index")  # the bars each cell gets: the basic mesh or its zone's
-        prov = areas[chosen]
-        ratio = req_eff / eff[chosen]
+        z["mode"] = mode
+        chosen = z.pop("cell_index")  # the bars each cell gets: the mesh, or the mesh with additional bars
+        prov = np.array([o[0] for o in opts])[chosen]
+        ratio = req_eff / eff_all[chosen]
         util = ratio.max()
         if util > 1 + 1e-6:
             w = int(np.argmax(ratio))
             wx, wy = x0 + (cell["i"].iloc[w] + 0.5) * size, y0 + (cell["j"].iloc[w] + 0.5) * size
             notes.append(
-                f"{LAYER_TEXT[layer].capitalize()}: the heaviest bars ({label(options[-1])}) are not enough "
+                f"{LAYER_TEXT[layer].capitalize()}: the heaviest bars ({labels[-1]}) are not enough "
                 f"at X {wx:.1f}, Y {wy:.1f} ({util:.2f}): a thicker slab or a haunch is needed there."
             )
         crack_gov = int((areas[cell["idx"].to_numpy()] > areas[cell["uidx"].to_numpy()] + 1e-6).sum())
@@ -809,7 +893,7 @@ def design_slab(
                 "i": cell["i"],
                 "j": cell["j"],
                 "a": prov,
-                "used": req_eff / eff[chosen],  # bending steel needed over provided; cracking can need more
+                "used": ratio,  # bending steel needed over provided; cracking can need more
             }
         )
     if worst_k > K_BAL:

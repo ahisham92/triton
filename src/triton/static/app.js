@@ -975,9 +975,9 @@ function slabCard(d) {
     ${(d.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${v3dSlot(d.element)}
     <h3 style="margin-top:18px">Bars per metre</h3>
-    <div class="scroll"><table><tr><th>Layer</th><th>Basic mesh</th><th>Zones</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
+    <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (between the mesh bars)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
       ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)${l.basic.set_by === "user" ? "<br><span class=\"status\">your mesh</span>" : ""}</td>
-        <td>${l.zones.length ? `${l.zones.length}: ${esc([...new Set(l.zones.map((z) => z.label))].join(", "))}` : "none"}</td>
+        <td>${l.mode === "mesh_only" ? "mesh only (your choice)" : l.zones.length ? `${l.zones.length} zones: ${esc([...new Set(l.zones.map((z) => z.label))].join(", "))}` : "none needed"}</td>
         <td class="cell ${l.utilisation <= 1 ? "ok" : "error"}">${fmt(l.utilisation, 2)}</td><td>${fmt(l.cells_set_by_cracks)} cells</td><td>${fmt(l.d_mm)} mm</td></tr>`).join("")}
     </table></div>
     <div class="row" style="margin:10px 0 4px">${Object.keys(layers).map((k, i) => `<button class="quiet${i ? "" : " on"}" data-layer="${k}">${esc(LAYER_NAME[k] || k)}</button>`).join("")}</div>
@@ -1088,10 +1088,10 @@ function slabPlan(el, d, key) {
   const X = (x) => pad + (x - x0) * sc, Y = (y) => H - pad - (y - y0) * sc;
   const labels = [...new Set(l.zones.map((z) => z.label))].sort((a, b) => l.zones.find((z) => z.label === a).as_mm2_per_m - l.zones.find((z) => z.label === b).as_mm2_per_m);
   const shade = (lab) => `rgba(214,48,39,${0.25 + 0.6 * (labels.indexOf(lab) + 1) / Math.max(labels.length, 1)})`;
-  const zones = l.zones.map((z) => `<rect x="${X(z.x[0])}" y="${Y(z.y[1])}" width="${(z.x[1] - z.x[0]) * sc}" height="${(z.y[1] - z.y[0]) * sc}" fill="${shade(z.label)}"><title>${esc(z.label)} (${fmt(z.as_mm2_per_m)} mm²/m), X ${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}, Y ${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</title></rect>`).join("");
+  const zones = l.zones.map((z) => `<rect x="${X(z.x[0])}" y="${Y(z.y[1])}" width="${(z.x[1] - z.x[0]) * sc}" height="${(z.y[1] - z.y[0]) * sc}" fill="${shade(z.label)}"><title>Additional ${esc(z.label)} (${fmt(z.additional_mm2_per_m ?? z.as_mm2_per_m)} mm²/m, ${fmt(z.as_mm2_per_m)} mm²/m with the mesh), X ${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}, Y ${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</title></rect>`).join("");
   const piles = (d.punching || []).map((q) => `<circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.r_u1_mm / 1000) * sc}" class="${q.needs_reinforcement ? "pp-out" : "pp-u1"}"><title>${esc(q.pile)}: u1 at 2d${q.needs_reinforcement ? ", needs punching links" : ""}</title></circle>
     <circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.D_mm / 2000) * sc}" fill="none" stroke="var(--text)" stroke-width="1.5"><title>${esc(q.pile)}</title></circle>`).join("");
-  el.innerHTML = `<div class="chart-title">${esc(LAYER_NAME[key] || key)}: basic ${esc(l.basic.label)}${labels.length ? `, zones ${esc(labels.join(", "))}` : ""}</div>
+  el.innerHTML = `<div class="chart-title">${esc(LAYER_NAME[key] || key)}: mesh ${esc(l.basic.label)} everywhere${labels.length ? `, plus additional ${esc(labels.join(", "))} in the shaded zones` : ""}</div>
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Slab plan of ${esc(key)}">
       <rect x="${X(x0)}" y="${Y(y1)}" width="${(x1 - x0) * sc}" height="${(y1 - y0) * sc}" fill="var(--miss-bg)" stroke="var(--muted)"/>
       ${zones}${piles}

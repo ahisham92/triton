@@ -95,6 +95,7 @@ class CircularSection:
     concrete: ConcreteLaw
     steel: SteelLaw
     strips: int = 400
+    deduct: bool = True  # deduct the concrete displaced by the bars
     _cache: dict = field(default_factory=dict, compare=False, hash=False, repr=False)
 
     @property
@@ -151,7 +152,9 @@ class CircularSection:
 
         yb, ab = self._bars(rotation)
         eps_s = eps_top[:, None] - curvature[:, None] * yb[None, :]
-        ss = self.steel.stress(eps_s) - self.concrete.stress(eps_s)  # deduct displaced concrete
+        ss = self.steel.stress(eps_s)
+        if self.deduct:
+            ss = ss - self.concrete.stress(eps_s)  # the concrete displaced by the bars
         n_s = (ss * ab).sum(axis=1)
         m_s = (ss * ab * (self.diameter / 2 - yb)).sum(axis=1)
         return n_c + n_s, m_c + m_s

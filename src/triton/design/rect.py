@@ -66,6 +66,7 @@ class RectSection:
     concrete: ConcreteLaw
     steel: SteelLaw
     strips: int = 200
+    deduct: bool = True  # deduct the concrete displaced by the bars
     _cache: dict = field(default_factory=dict, compare=False, hash=False, repr=False)
 
     @property
@@ -87,7 +88,9 @@ class RectSection:
         n_c = sc.sum(axis=1) * a
         m_c = (sc * (H / 2 - y)).sum(axis=1) * a
         eps_s = eps_top[:, None] - curvature[:, None] * yb[None, :]
-        ss = self.steel.stress(eps_s) - self.concrete.stress(eps_s)
+        ss = self.steel.stress(eps_s)
+        if self.deduct:
+            ss = ss - self.concrete.stress(eps_s)
         n_s = (ss * self.bars.area).sum(axis=1)
         m_s = (ss * self.bars.area * (H / 2 - yb)).sum(axis=1)
         return n_c + n_s, m_c + m_s

@@ -62,6 +62,11 @@ class PartialFactors(_Model):
     gamma_m0: float = Field(1.0, title="γM0 steel cross-section", ge=1)
     gamma_m1: float = Field(1.0, title="γM1 steel buckling", ge=1)
     alpha_cc: float = Field(0.85, title="αcc long-term factor", gt=0, le=1)
+    deduct_bar_area: bool = Field(
+        True,
+        title="Deduct the concrete displaced by the bars",
+        description="Off: the gross concrete area, as in some capacity sheets.",
+    )
 
 
 class ReinforcementSettings(_Model):
@@ -507,7 +512,23 @@ class SlabInput(_ConcreteSection):
         "pile diameter wide round each pile.",
     )
     min_zone_length: float = _m(
-        "Shortest zone", 2.5, gt=0, description="Shortest length of a zone of heavier bars along its bars."
+        "Shortest additional bars", 2.5, gt=0, description="Shortest length of a zone of additional bars."
+    )
+    layout_bottom_x: Literal["mesh_and_additional", "mesh_only"] = Field(
+        "mesh_and_additional",
+        title="Bottom along X",
+        description="A mesh with additional bars, or a mesh only.",
+    )
+    layout_bottom_y: Literal["mesh_and_additional", "mesh_only"] = Field(
+        "mesh_and_additional",
+        title="Bottom along Y",
+        description="A mesh with additional bars, or a mesh only.",
+    )
+    layout_top_x: Literal["mesh_and_additional", "mesh_only"] = Field(
+        "mesh_and_additional", title="Top along X", description="A mesh with additional bars, or a mesh only."
+    )
+    layout_top_y: Literal["mesh_and_additional", "mesh_only"] = Field(
+        "mesh_and_additional", title="Top along Y", description="A mesh with additional bars, or a mesh only."
     )
     mesh_bottom_x: SlabMesh | None = Field(
         None, title="Basic mesh, bottom along X", description="Empty: the mesh with the least steel."

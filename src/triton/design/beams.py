@@ -692,7 +692,9 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
                     np.full(n, math.pi * phi**2 / 4 * 1000 / s / n),
                 )
             )
-        return RectSection(1000.0, h, Bars.join(*bars), cl, sl, strips=120)
+        return RectSection(
+            1000.0, h, Bars.join(*bars), cl, sl, strips=120, deduct=settings.partial_factors.deduct_bar_area
+        )
 
     as_min = as_min_beam(conc.fctm, fyk, 1000, d_of(16))
     ti = bi = next(i for i, o in enumerate(options) if o[0] >= as_min)
@@ -858,7 +860,9 @@ def design_beam(
     mh = mom["Mh"].to_numpy(float)
     for _ in range(400):
         cage = Cage(tops[ti], tops[bi], sides[si])
-        sec = RectSection(g.b, g.h, cage_bars(g, cage, dg), cl, sl)
+        sec = RectSection(
+            g.b, g.h, cage_bars(g, cage, dg), cl, sl, deduct=settings.partial_factors.deduct_bar_area
+        )
         u = sec.utilisation(n, mv, mh)
         cracks = crack_check(sec, g, cage, qp_m, e_eff, conc)
         restr = restraint_check(beam, settings, g, cage, conc)

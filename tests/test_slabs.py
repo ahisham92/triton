@@ -166,3 +166,17 @@ def test_slab_user_meshes_punching_depth_crane_and_peaks():
     avg = design_deck(peaks="average")
     most = lambda r: max([z["as_mm2_per_m"] for z in r["layers"]["top_x"]["zones"]] or [0])  # noqa: E731
     assert most(avg) < most(plain)
+
+
+def test_mesh_with_additional_bars_or_mesh_only():
+    d = design_deck()
+    top = d["layers"]["top_x"]
+    assert top["mode"] == "mesh_and_additional" and top["zones"]
+    # Zones add bars between the mesh bars; the mesh itself stays everywhere.
+    assert all(0 < z["additional_mm2_per_m"] < z["as_mm2_per_m"] for z in top["zones"])
+    assert all(
+        z["as_mm2_per_m"] - z["additional_mm2_per_m"] == top["basic"]["as_mm2_per_m"] for z in top["zones"]
+    )
+    only = design_deck(layout_top_x="mesh_only")["layers"]["top_x"]
+    assert only["mode"] == "mesh_only" and not only["zones"] and only["utilisation"] <= 1
+    assert only["basic"]["as_mm2_per_m"] >= max(z["as_mm2_per_m"] for z in top["zones"]) * 0.8

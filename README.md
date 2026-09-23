@@ -117,7 +117,11 @@ if that is the chosen objective.
   laps or couplers, lap length (45φ) and the maximum steel ratio (4%, more only with couplers). Each pile can also fix the number of
   bars in its outer row (e.g. 26 for a 1200 mm pile).
 - Section: EN 1992-1-1 parabola-rectangle concrete, bilinear steel with a horizontal top branch, strain
-  limits of 6.1, displaced concrete deducted (the AdSec EC2 defaults). M is the resultant of M_2 and M_3.
+  limits of 6.1, displaced concrete deducted (the AdSec EC2 defaults; Design settings can use the
+  gross area instead). M is the resultant of M_2 and M_3.
+- Checked against Ahmed's capacities sheet (1200 mm pile, C40/50, B500): with the sheet's αcc = 1.0,
+  gross concrete area and bars 60 mm clear of the face, single-row curves agree within 0.2% on
+  average and 2.3% at worst (`tests/test_capacity_sheet.py`).
 - Utilisation is measured along the ray from the origin to each (N, M) point, taking the worst bar
   orientation (a bar on the bending axis, and midway between bars of each row).
 - Seismic and accidental combinations use γc 1.2 and γs 1.0.
@@ -266,14 +270,15 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   and along Y), with the in-plane N of each direction. Where K exceeds K' = 0.167 the opposite
   face's bars are designed as compression steel. Each bar option is taken at its own depth, so a
   second layer or a bigger bar counts for less.
-- **Four basic meshes and zones:** bottom and top, along X and along Y. The slab is split into a
-  grid of cells (1 m by default) only to find where each mesh is not enough: each cell gets the
-  cheapest bars that pass strength, the QP crack width at that face and restraint cracking. Each
-  basic mesh is the one with the least steel overall once zoned cells pay a 10% premium, or the
-  mesh you enter (value engineering). Cells that need more get heavier bars in zones: runs along
-  the bars are split where the bars change, pieces shorter than the shortest zone (2.5 m by
-  default) take their heavier neighbour's bars, and matching runs merge into rectangles. Bars are
-  Ø10 to Ø32; a second layer only for Ø25 and up.
+- **Mesh and additional bars:** four meshes, bottom and top, along X and along Y, each laid over
+  the whole slab. The slab is split into a grid of cells (1 m by default) only to find where a mesh
+  is not enough: there, additional bars go between the mesh bars (at the mesh spacing or every
+  second gap), sized for strength, the QP crack width at that face (Ø and spacing of the mix,
+  7.12) and restraint cracking. Each mesh is the one with the least steel overall, or the mesh you
+  enter (value engineering). For each layer you choose a mesh with additional bars (default) or a
+  mesh only, strong enough everywhere. Additional bars run in zones at least 2.5 m long (setting):
+  shorter pieces take their heavier neighbour's bars, and matching runs merge into rectangles.
+  Bars are Ø10 to Ø32; a second mesh layer only for Ø25 and up.
 - **Moments at the pile faces:** designed as they are, or averaged over a ring one pile diameter
   wide round each pile, per combination (slab setting).
 - **Mobile crane:** areas with the extra factored actions from the SAP model (factored crane minus
