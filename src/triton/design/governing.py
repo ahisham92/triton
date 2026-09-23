@@ -10,12 +10,20 @@ and for ULS and QP separately there are seven sets:
     most utilised    ULS: highest N–M utilisation with the station's cage
                      QP: largest resultant moment, until crack width is checked
 
-Where there is no crack width check (a station inside a steel casing, the combi
-wall infill), the seven QP sets are 1s so the office's AdSec template still has
-its 14 rows.
+The maxima and minima are taken over every combination of the element, not per
+combination, and the most utilised row is kept even when it repeats one of the
+six extremes. Points inside a steel casing have no crack width check, so they
+are left out of the QP sets; where nothing is left (a station inside the
+casing, the combi wall infill), the seven QP sets are 1s so the office's AdSec
+template still has its 14 rows.
 
 N follows the concrete (AdSec) sign convention: compression positive, i.e. the
 Plaxis N multiplied by -1. M2 and M3 are the Plaxis values.
+
+Steel elements (the combi wall tube, the sheet pile wall) are not designed with
+these sets, so they get ten ULS rows instead: maximum and minimum N, M2, M3 and
+the two shears, each with the other actions at the same point, in the Plaxis
+sign.
 """
 
 from __future__ import annotations
@@ -28,6 +36,13 @@ import pandas as pd
 
 from ..importer import SheetData
 from ..project import DesignSettings, PileInput
+
+# Plaxis columns of the five steel actions (N, M2, M3, Q1, Q2) for beam and plate results.
+STEEL_COLUMNS = {
+    "beam": ("N", "M_2", "M_3", "Q_12", "Q_13"),
+    "plate": ("N_1", "M_11", "M_22", "Q_13", "Q_23"),
+}
+STEEL_KEYS = ("N", "M2", "M3", "Q1", "Q2")
 
 EXTREMES = (
     ("max N", "N", True),
@@ -108,6 +123,10 @@ def station_sets(
         arrangement = SimpleNamespace(rings=[SimpleNamespace(**r) for r in cage["rings"]])
         u_rows = uls[(uls["Z"] <= top + 1e-9) & (uls["Z"] >= bottom - 1e-9)]
         q_rows = qp[(qp["Z"] <= top + 1e-9) & (qp["Z"] >= bottom - 1e-9)] if not qp.empty else qp
+        if pile.casing is not None and not q_rows.empty:
+            c = pile.casing
+            q_rows = q_rows[(q_rows["Z"] > c.top_level + 1e-9) | (q_rows["Z"] < c.bottom_level - 1e-9)]
+        no_crack = cased(pile, top, bottom) or (pile.casing is not None and q_rows.empty)
         util = _utilisation(pile, arrangement, settings, u_rows) if len(u_rows) else None
         out.append(
             {
@@ -115,14 +134,52 @@ def station_sets(
                 "bottom": bottom,
                 "cage": cage["label"],
                 "uls": pick_sets(u_rows, util, "most utilised"),
-                "qp": (
-                    placeholder_sets()
-                    if cased(pile, top, bottom)
-                    else pick_sets(q_rows, None, "largest resultant M")
-                ),
+                "qp": placeholder_sets() if no_crack else pick_sets(q_rows, None, "largest resultant M"),
             }
         )
     return out
+
+
+def steel_sets(frame: pd.DataFrame, kind: str) -> dict[str, Any]:
+    """Ten ULS rows of a steel element: max and min of N, M2, M3, Q1 and Q2 over all combinations.
+
+    ``frame`` holds every ULS point with a ``combination`` column; ``kind`` is "beam" or "plate".
+    """
+    cols = STEEL_COLUMNS[kind]
+    out = {"columns": dict(zip(STEEL_KEYS, cols, strict=True)), "rows": []}
+    if frame.empty or not set(cols) <= set(frame.columns):
+        return out
+    frame = frame.reset_index(drop=True)
+    for key, col in zip(STEEL_KEYS, cols, strict=True):
+        for label, i in (("max", frame[col].idxmax()), ("min", frame[col].idxmin())):
+            p = frame.loc[i]
+            row = {
+                "case": f"{label} {key}",
+                "combination": str(p["combination"]),
+                "node": int(p["Node"]) if pd.notna(p.get("Node")) else None,
+                "z": round(float(p["Z"]), 2),
+            }
+            row.update({k: round(float(p[c]), 1) for k, c in zip(STEEL_KEYS, cols, strict=True)})
+            out["rows"].append(row)
+    return out
+
+
+def steel_header(columns: dict[str, str]) -> list[str]:
+    """Column titles of the steel rows, naming the Plaxis column where it differs (e.g. "Q1 (Q_12)")."""
+    heads = [k if columns[k].replace("_", "") == k else f"{k} ({columns[k]})" for k in STEEL_KEYS]
+    return ["Criterion", *heads, "Combination", "z (m)", "Node"]
+
+
+def uls_frame(sheets: dict[str, SheetData]) -> pd.DataFrame:
+    """Every ULS point of an element (QP sheets left out) with its combination."""
+    from ..elements import CombinationType, combination_type
+
+    parts = [
+        s.frame.assign(combination=c)
+        for c, s in sheets.items()
+        if combination_type(c) is not CombinationType.SLS_QP and not s.frame.empty
+    ]
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
 
 
 def qp_loads(sheets: dict[str, SheetData], head_level: float | None, above: float) -> pd.DataFrame:
@@ -131,59 +188,96 @@ def qp_loads(sheets: dict[str, SheetData], head_level: float | None, above: floa
     return PileLoads.from_sheets(sheets, head_level, above, qp=True).frame
 
 
-HEADER = [
-    "Station top (m)",
-    "Station bottom (m)",
-    "Cage",
-    "Limit state",
-    "Case",
-    "Combination",
-    "Node",
-    "z (m)",
-    "N (kN, compression +)",
+CONCRETE_HEADER = [
+    "Criterion",
+    "N (kN)",
     "M2 (kNm)",
     "M3 (kNm)",
-    "N–M utilisation",
+    "Combination",
+    "z (m)",
+    "Node",
+    "Utilisation",
 ]
-FIELDS = ("case", "combination", "node", "z", "N_kN", "M2_kNm", "M3_kNm", "utilisation")
 
 
 def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
-    """One sheet per pile element and combi wall infill with its governing sets."""
+    """Governing straining actions laid out for copy and paste into AdSec.
+
+    ``Concrete``: for each pile and combi wall infill (and each station where the cage
+    changes down the element), its name, then 7 QP rows and 7 ULS rows underneath.
+    ``Steel``: for each combi wall tube and sheet pile wall, its name and 10 ULS rows.
+    """
     import io
 
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
+    bold = Font(bold=True)
     wb = Workbook()
-    wb.remove(wb.active)
+    ws = wb.active
+    ws.title = "Concrete"
+    ws.append([f"{project} · {section} · concrete elements"])
+    ws.append(
+        ["N in the concrete (AdSec) sign convention: Plaxis N × −1, compression +. M2, M3 as in Plaxis."]
+    )
     designs = [(p["element"], p) for p in results.get("piles", [])]
     designs += [(f"{w['element']} infill", w["infill"]) for w in results.get("combi_walls", [])]
     for name, d in designs:
-        ws = wb.create_sheet(_sheet_name(name, wb.sheetnames))
-        ws.append([f"{project} · {section} · {name}"])
-        ws.append(["N in the concrete (AdSec) sign convention: Plaxis N × −1. M2, M3 as in Plaxis."])
-        ws.append([])
-        ws.append(HEADER)
-        for c in ws[4]:
-            c.font = Font(bold=True)
-        for st in d.get("governing_sets") or []:
-            for state, rows in (("ULS", st["uls"]), ("QP", st["qp"])):
+        stations = d.get("governing_sets") or []
+        for st in stations:
+            ws.append([])
+            title = name
+            if len(stations) > 1:
+                title += f" · {st['top']:g} to {st['bottom']:g} m · {st['cage']}"
+            ws.append([title])
+            ws.cell(ws.max_row, 1).font = bold
+            ws.append(CONCRETE_HEADER)
+            for c in ws[ws.max_row]:
+                c.font = bold
+            for state, rows in (("QP", st["qp"]), ("ULS", st["uls"])):
                 for r in rows:
-                    ws.append([st["top"], st["bottom"], st["cage"], state, *(r[f] for f in FIELDS)])
-        for col, width in zip("ABCDEFGHIJKL", (10, 10, 26, 8, 16, 14, 9, 8, 12, 10, 10, 10), strict=True):
-            ws.column_dimensions[col].width = width
-    if not designs:
-        wb.create_sheet("No results")
+                    ws.append(
+                        [
+                            f"{state} {r['case']}",
+                            r["N_kN"],
+                            r["M2_kNm"],
+                            r["M3_kNm"],
+                            r["combination"],
+                            r["z"],
+                            r["node"],
+                            r["utilisation"],
+                        ]
+                    )
+    _widths(ws, (26, 10, 10, 10, 16, 8, 9, 11))
+
+    ss = wb.create_sheet("Steel")
+    ss.append([f"{project} · {section} · steel elements"])
+    ss.append(["Plaxis signs (N not multiplied by −1). Not designed in Triton: max and min of each action."])
+    steel = [
+        (f"{w['element']} tube", "kN, kNm", (w.get("tube") or {}).get("governing_sets"))
+        for w in results.get("combi_walls", [])
+    ]
+    steel += [
+        (s["element"], "kN/m, kNm/m", s.get("governing_sets")) for s in results.get("sheet_pile_walls", [])
+    ]
+    for name, unit, sets in steel:
+        if not sets or not sets.get("rows"):
+            continue
+        cols = sets["columns"]
+        ss.append([])
+        ss.append([f"{name} ({unit})"])
+        ss.cell(ss.max_row, 1).font = bold
+        ss.append(steel_header(cols))
+        for c in ss[ss.max_row]:
+            c.font = bold
+        for r in sets["rows"]:
+            ss.append([f"ULS {r['case']}", *(r[k] for k in STEEL_KEYS), r["combination"], r["z"], r["node"]])
+    _widths(ss, (22, 11, 11, 11, 11, 11, 16, 8, 9))
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-def _sheet_name(name: str, taken: list[str]) -> str:
-    base = "".join(c for c in name if c not in "[]:*?/\\")[:31] or "Element"
-    out, i = base, 2
-    while out in taken:
-        out = f"{base[:28]} {i}"
-        i += 1
-    return out
+def _widths(ws, widths: tuple[int, ...]) -> None:
+    for i, w in enumerate(widths):
+        ws.column_dimensions[chr(ord("A") + i)].width = w

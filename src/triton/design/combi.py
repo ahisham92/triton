@@ -20,7 +20,7 @@ from ..forces import CombiSection, scale_forces
 from ..importer import SheetData
 from ..materials import concrete
 from ..project import CombiWallInput, DesignSettings, PileInput, with_project_grades
-from .governing import placeholder_sets
+from .governing import placeholder_sets, steel_sets
 from .piles import design_pile
 from .tube import Tube, check_tube, tube_loads
 
@@ -75,7 +75,9 @@ def design_combi_wall(
         wall.tube_diameter, wall.tube_thickness, wall.corrosion_loss, wall.steel, wall.fabrication_class
     )
     above = settings.results_into_connection / 1e3
-    steel = check_tube(tube, tube_loads(sheets, share, bottom, wall.top_level_to_ignore, above))
+    loads = tube_loads(sheets, share, bottom, wall.top_level_to_ignore, above)
+    steel = check_tube(tube, loads)
+    steel["governing_sets"] = steel_sets(loads, "beam")
 
     notes = [
         f"Actions where the tube is filled: {share:.0%} to the steel tube and {1 - share:.0%} to the "

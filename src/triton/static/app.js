@@ -649,7 +649,7 @@ async function renderDesignTab(host) {
   host.innerHTML = `<div class="panel row">
       <button id="run-design" ${els.length ? "" : "disabled"}>Design piles and combi wall</button>
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
-      <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets (Excel)</a>
+      <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       ${Object.values(sec().elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
       <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile or combi wall elements first."}</span>
     </div><div id="design-out"></div>`;
@@ -672,16 +672,17 @@ async function renderDesignTab(host) {
   }
 }
 
-const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : Number(v).toLocaleString("en-GB", { maximumFractionDigits: d, minimumFractionDigits: d }));
+const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : (Math.abs(v) < 0.5 * 10 ** -d ? 0 : Number(v)).toLocaleString("en-GB", { maximumFractionDigits: d, minimumFractionDigits: d }));
 
 function renderResults(res) {
   const out = document.getElementById("design-out");
   if (!out) return;
   const walls = res.combi_walls || [];
+  const spws = res.sheet_pile_walls || [];
   const link = document.getElementById("cages");
   if (link) link.hidden = !res.piles.length && !walls.length;
   const sets = document.getElementById("sets");
-  if (sets) sets.hidden = !res.piles.length && !walls.length;
+  if (sets) sets.hidden = !res.piles.length && !walls.length && !spws.length;
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
@@ -697,7 +698,8 @@ function renderResults(res) {
   out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}. Crack width comes next.</p>
     ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
     ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
-    <div id="pile-cards"></div><div id="combi-cards"></div>`;
+    <div id="pile-cards"></div><div id="combi-cards"></div>
+    ${spws.length ? `<h2>Sheet pile wall</h2>${spws.map((w) => `<div class="panel"><h3>${esc(w.element)}</h3><p class="status">Designed in the sheet pile program; these are its straining actions.</p>${steelSetsBlock(w.governing_sets, "kN/m, kNm/m", true)}</div>`).join("")}` : ""}`;
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
   const combi = document.getElementById("combi-cards");
@@ -735,6 +737,7 @@ function combiCard(w) {
     </table></div></div>
     ${g.combination ? `<p>Governing: ${esc(g.combination)}, z ${fmt(g.z, 2)} m (${esc(g.zone)}), N = ${fmt(g.N_kN)} kN (Plaxis sign), M = ${fmt(g.M_kNm)} kNm, V = ${fmt(g.V_kN)} kN. Check: ${esc(g.check)}.</p>` : ""}
     ${(t.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${steelSetsBlock(t.governing_sets, "kN, kNm")}
     <h3 style="margin-top:18px">Concrete infill</h3>`;
   if (t.profile?.length) profileChart(card.querySelector('[data-kind="tube"]'), t, "Tube utilisation along the wall", w.infill_bottom_level);
   card.querySelector('[data-kind="tube"]').parentElement.classList.add("wide");
@@ -844,12 +847,25 @@ function peaksBlock(el, peaks) {
   }));
 }
 
+function steelSetsBlock(sets, unit, open = false) {
+  // The ten ULS sets of a steel element: max and min of N, M2, M3, Q1 and Q2 over all combinations.
+  if (!sets?.rows?.length) return "";
+  const keys = ["N", "M2", "M3", "Q1", "Q2"];
+  const head = keys.map((k) => (sets.columns[k].replace("_", "") === k ? k : `${k} (${esc(sets.columns[k])})`));
+  const rows = sets.rows
+    .map((r) => `<tr><td>${esc(r.case)}</td><td>${esc(r.combination)}</td><td>${r.node ?? "–"}</td><td>${fmt(r.z, 2)}</td>${keys.map((k) => `<td>${fmt(r[k])}</td>`).join("")}</tr>`)
+    .join("");
+  return `<details style="margin-top:12px"${open ? " open" : ""}><summary>Governing sets (10 ULS rows, ${unit}, Plaxis sign)</summary>
+    <p class="status">Maximum and minimum of each action over all ULS combinations, with the other actions at the same point.</p>
+    <div class="scroll"><table class="sets"><tr><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th>${head.map((h) => `<th>${h}</th>`).join("")}</tr>${rows}</table></div></details>`;
+}
+
 function setsBlock(stations) {
   // The seven governing ULS and QP sets per station, as entered in AdSec.
   if (!stations?.length) return "";
   const rows = stations
     .map((st) =>
-      [["ULS", st.uls], ["QP", st.qp]]
+      [["QP", st.qp], ["ULS", st.uls]]
         .map(([ls, list], k) =>
           list
             .map((r, i) => `<tr${i === 0 && k === 0 ? ' class="group"' : ""}>
@@ -861,7 +877,7 @@ function setsBlock(stations) {
         .join("")
     )
     .join("");
-  return `<details style="margin-top:12px"><summary>Governing sets per station for AdSec (${stations.length} station${stations.length === 1 ? "" : "s"}, 7 ULS + 7 QP each)</summary>
+  return `<details style="margin-top:12px"><summary>Governing sets per station for AdSec (${stations.length} station${stations.length === 1 ? "" : "s"}, 7 QP + 7 ULS each)</summary>
     <p class="status">N in the concrete sign convention (Plaxis N × −1, compression +). M2 and M3 as in Plaxis. For QP the 7th set is the largest resultant moment until crack width is checked.</p>
     <div class="scroll"><table class="sets"><tr><th>Station (m)</th><th>Limit state</th><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th><th>N kN</th><th>M2 kNm</th><th>M3 kNm</th><th>N–M util.</th></tr>${rows}</table></div></details>`;
 }

@@ -4,8 +4,9 @@ Triton does not design the sheet pile wall. It hands over the Plaxis plate
 results, with the section's load multipliers applied, in the Plaxis sign
 convention (steel element: N is not multiplied by -1):
 
-* ``Governing``: for each combination, the maximum and minimum of every action
-  with the other actions at the same node;
+* ``Governing``: the ten ULS rows of the wall, the maximum and minimum of N, M2,
+  M3, Q1 and Q2 over all combinations, each with the other actions at the same
+  node (see ``governing.steel_sets``);
 * one ``Envelope`` sheet per combination: maximum and minimum of every action
   across the wall at each level.
 """
@@ -19,23 +20,11 @@ import pandas as pd
 
 from ..elements import PLATE_ACTIONS, combination_type
 from ..importer import SheetData
+from .governing import STEEL_KEYS, steel_header, steel_sets, uls_frame
 
 
 def _actions(frame: pd.DataFrame) -> list[str]:
     return [a for a in PLATE_ACTIONS if a in frame.columns]
-
-
-def governing_rows(combo: str, frame: pd.DataFrame) -> list[list]:
-    acts = _actions(frame)
-    rows = []
-    for a in acts:
-        for label, i in (("max", frame[a].idxmax()), ("min", frame[a].idxmin())):
-            p = frame.loc[i]
-            rows.append(
-                [combo, f"{label} {a}", int(p["Node"]), round(float(p["Y"]), 2), round(float(p["Z"]), 2)]
-                + [round(float(p[b]), 2) for b in acts]
-            )
-    return rows
 
 
 def envelope(frame: pd.DataFrame) -> pd.DataFrame:
@@ -56,15 +45,15 @@ def workbook(project: str, section: str, element: str, sheets: dict[str, SheetDa
     ws.append([f"{project} · {section} · {element}"])
     ws.append(["Plaxis signs (N not multiplied by -1), kN/m and kNm/m, load multipliers applied."])
     ws.append([])
-    first = next(iter(sheets.values())).frame if sheets else pd.DataFrame(columns=PLATE_ACTIONS)
-    ws.append(["Combination", "Case", "Node", "Y (m)", "Z (m)", *_actions(first)])
+    sets = steel_sets(uls_frame(sheets), "plate")
+    cols = sets["columns"]
+    ws.append(steel_header(cols))
     for c in ws[4]:
         c.font = Font(bold=True)
-    for combo, sheet in sheets.items():
-        for row in governing_rows(combo, sheet.frame):
-            ws.append(row)
-    ws.column_dimensions["A"].width = 14
-    ws.column_dimensions["B"].width = 12
+    for r in sets["rows"]:
+        ws.append([f"ULS {r['case']}", *(r[k] for k in STEEL_KEYS), r["combination"], r["z"], r["node"]])
+    ws.column_dimensions["A"].width = 16
+    ws.column_dimensions["G"].width = 14
     for combo, sheet in sheets.items():
         env = envelope(sheet.frame)
         es = wb.create_sheet(_title(f"Envelope {combo}", wb.sheetnames))

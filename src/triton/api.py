@@ -264,7 +264,7 @@ def pile_cage_export(project_id: str, section_id: str) -> JSONResponse:
 
 @app.get(SECTION + "/design/governing.xlsx")
 def governing_sets_export(project_id: str, section_id: str) -> Response:
-    """The seven governing ULS and QP sets per station of every pile and combi wall infill."""
+    """Governing sets for AdSec: 7 QP + 7 ULS per concrete station, 10 ULS rows per steel element."""
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)

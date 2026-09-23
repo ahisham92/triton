@@ -163,6 +163,7 @@ def tube_loads(
         f = f.assign(
             combination=combo,
             filled=filled,
+            **{c: f[c] * share for c in ("Q_12", "Q_13", "M_2", "M_3") if c in f.columns},
             N=f["N"] * share,
             V=np.hypot(f.get("Q_12", 0.0), f.get("Q_13", 0.0)) * share,
             M=np.hypot(f.get("M_2", 0.0), f.get("M_3", 0.0)) * share,

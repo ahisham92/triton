@@ -7,7 +7,7 @@ from openpyxl import load_workbook
 from test_curtailment import LOADS
 from test_design import pile_sheets
 
-from triton.design.governing import pick_sets, workbook
+from triton.design.governing import STEEL_COLUMNS, STEEL_KEYS, pick_sets, steel_sets, workbook
 from triton.design.piles import design_pile
 from triton.project import DesignSettings, PileInput
 
@@ -34,6 +34,7 @@ def test_seven_sets_with_corresponding_actions():
     assert by["min N"]["node"] == 3
     assert by["max M2"]["node"] == 4 and by["min M2"]["node"] == 2
     assert by["max M3"]["node"] == 1 and by["min M3"]["node"] == 3
+    # The most utilised point is also max N: the row is kept twice.
     assert by["most utilised"]["node"] == 2 and by["most utilised"]["utilisation"] == 0.9
     # Without utilisations (QP) the 7th set is the largest resultant moment.
     assert pick_sets(frame(), None, "largest resultant M")[-1]["node"] == 3
@@ -58,12 +59,53 @@ def test_sets_per_station_of_a_curtailed_pile():
 
 def test_governing_sets_workbook():
     d = design_pile("Pile(1)", PileInput(head_level=0.0), DesignSettings(), pile_sheets(LOADS)).to_dict()
-    data = workbook("Berth", "Section 01a", {"piles": [d], "combi_walls": []})
-    ws = load_workbook(io.BytesIO(data))["Pile(1)"]
-    assert ws["A4"].value == "Station top (m)"
-    rows = list(ws.iter_rows(min_row=5, values_only=True))
-    assert len(rows) == 14 * len(d["governing_sets"])
-    assert rows[0][3:5] == ("ULS", "max N") and rows[7][3:5] == ("QP", "max N")
+    tube = {"element": "Combi Wall", "infill": {"governing_sets": []}, "tube": {"governing_sets": steel()}}
+    spw = {"element": "SPW", "governing_sets": steel("plate")}
+    data = workbook("Berth", "Section 01a", {"piles": [d], "combi_walls": [tube], "sheet_pile_walls": [spw]})
+    wb = load_workbook(io.BytesIO(data))
+    assert wb.sheetnames == ["Concrete", "Steel"]
+    rows = list(wb["Concrete"].iter_rows(min_row=3, values_only=True))
+    stations = d["governing_sets"]
+    # Per station: a blank row, the name, the header, 7 QP rows then 7 ULS rows.
+    assert len(rows) == 17 * len(stations)
+    assert rows[1][0].startswith("Pile(1) · 0 to ")
+    assert rows[2][:5] == ("Criterion", "N (kN)", "M2 (kNm)", "M3 (kNm)", "Combination")
+    assert rows[3][0] == "QP max N" and rows[10][0] == "ULS max N" and rows[16][0] == "ULS most utilised"
+    assert rows[10][1:5] == tuple(
+        stations[0]["uls"][0][k] for k in ("N_kN", "M2_kNm", "M3_kNm", "combination")
+    )
+    steel_rows = list(wb["Steel"].iter_rows(min_row=3, values_only=True))
+    assert [r[0] for r in steel_rows if r and r[0] and not r[0].startswith(("ULS", "Criterion"))] == [
+        "Combi Wall tube (kN, kNm)",
+        "SPW (kN/m, kNm/m)",
+    ]
+    assert steel_rows[2][:6] == ("Criterion", "N", "M2", "M3", "Q1 (Q_12)", "Q2 (Q_13)")
+    assert sum(1 for r in steel_rows if r and r[0] and r[0].startswith("ULS")) == 20
+
+
+def steel(kind="beam"):
+    cols = STEEL_COLUMNS[kind]
+    f = pd.DataFrame(
+        {
+            "combination": ["A", "A", "B", "QP"],
+            "Node": [1, 2, 3, 4],
+            "Z": [0.0, -1.0, -2.0, -3.0],
+            **{c: [float(i + 1), -float(i + 1), 2.0 * (i + 1), 0.5] for i, c in enumerate(cols)},
+        }
+    )
+    return steel_sets(f[f["combination"] != "QP"], kind)
+
+
+def test_ten_steel_sets_over_all_combinations():
+    sets = steel()
+    assert [r["case"] for r in sets["rows"]] == [f"{m} {k}" for k in STEEL_KEYS for m in ("max", "min")]
+    by = {r["case"]: r for r in sets["rows"]}
+    # Every max comes from combination B (node 3), every min from A (node 2), not one per combination.
+    assert {r["node"] for c, r in by.items() if c.startswith("max")} == {3}
+    assert by["min Q2"]["node"] == 2 and by["min Q2"]["Q2"] == -5.0 and by["min Q2"]["N"] == -1.0
+    assert steel("plate")["columns"] == dict(
+        zip(STEEL_KEYS, ("N_1", "M_11", "M_22", "Q_13", "Q_23"), strict=True)
+    )
 
 
 def test_single_station_when_not_curtailed():
@@ -88,6 +130,9 @@ def test_no_crack_check_gives_qp_rows_of_ones():
     pile = PileInput(head_level=0.0, casing=Casing(top_level=0.0, bottom_level=-4.0))
     d = design_pile("Pile(1)", pile, DesignSettings(), pile_sheets(LOADS)).to_dict()
     assert d["governing_sets"][-1]["qp"][0]["N_kN"] == pytest.approx(3000.0)
+    # Points inside the casing are left out of every station's QP sets.
+    qp = [r for st in d["governing_sets"] for r in st["qp"] if r["z"] is not None]
+    assert qp and all(r["z"] < -4.0 for r in qp)
 
 
 def test_spw_export(tmp_path, monkeypatch):
@@ -116,9 +161,11 @@ def test_spw_export(tmp_path, monkeypatch):
     wb = load_workbook(io.BytesIO(r.content))
     assert wb.sheetnames == ["Governing", "Envelope PT-B-Apron", "Envelope QP"]
     rows = list(wb["Governing"].iter_rows(min_row=4, values_only=True))
-    header, first = rows[0], rows[1]
-    assert header[:6] == ("Combination", "Case", "Node", "Y (m)", "Z (m)", "N_1")
-    qp = [r for r in rows[1:] if r[0] == "QP" and r[1] == "max N_1"][0]
-    b = [r for r in rows[1:] if r[0] == "PT-B-Apron" and r[1] == "max N_1"][0]
-    assert b[5] == pytest.approx(qp[5] * 2.0 * 1.35, rel=1e-3)
-    assert first[0] == "PT-B-Apron"
+    header, rows = rows[0], rows[1:]
+    assert header[:2] == ("Criterion", "N (N_1)") and header[6] == "Combination"
+    # Ten ULS rows over the whole wall; the QP sheet is not a ULS combination.
+    assert len(rows) == 10 and {r[6] for r in rows} == {"PT-B-Apron"}
+    env = list(wb["Envelope QP"].iter_rows(min_row=4, values_only=True))
+    env_b = list(wb["Envelope PT-B-Apron"].iter_rows(min_row=4, values_only=True))
+    assert env_b[0][1] == pytest.approx(env[0][1] * 2.0 * 1.35, rel=1e-3)
+    assert rows[0][1] == pytest.approx(max(r[1] for r in env_b), rel=1e-3)

@@ -143,22 +143,33 @@ Not yet included: crack width, and a structural casing acting with the concrete
 
 ### Governing sets for AdSec
 
-For every station (a length with one cage: each run of the reinforcement down the pile, or the
-whole pile) the Design tab and **Download governing sets (Excel)**
-(`GET /api/projects/{id}/sections/{section}/design/governing.xlsx`) give seven ULS and seven QP sets:
-max and min N with the M2 and M3 at the same point, max and min M2 with N and M3, max and min M3
-with N and M2, and the most utilised point (ULS: highest N–M utilisation with the station's cage;
-QP: largest resultant moment until crack width is checked). N is in the concrete (AdSec) sign
-convention, Plaxis N × −1. The combi wall infill gets the same sets with its share of the actions.
+**Download governing sets for AdSec (Excel)** on the Design tab
+(`GET /api/projects/{id}/sections/{section}/design/governing.xlsx`) is laid out for copy and paste.
+Maxima and minima are taken over all combinations of the element, not per combination, and every
+row names the combination it comes from.
+
+*Concrete* sheet: for each pile and combi wall infill (and each station, a length with one cage,
+when the reinforcement changes down the element), the element name, then 7 QP rows and 7 ULS rows
+underneath, each with the criterion, N, M2, M3 and the combination. The seven are max and min N,
+M2 and M3 with the other actions at the same point, and the most utilised point (ULS: highest N–M
+utilisation with the station's cage, kept even when it repeats one of the six; QP: largest
+resultant moment until crack width is checked). N is in the concrete (AdSec) sign convention,
+Plaxis N × −1. Points inside a steel casing are left out of the QP rows; where nothing is left
+(the combi wall infill, a station inside the casing) the QP rows are 1s.
+
+*Steel* sheet: for the combi wall tube (its share of the actions) and the sheet pile wall, 10 ULS
+rows each: max and min N, M2, M3, Q1 and Q2 with the other actions at the same point, in the
+Plaxis sign. There is no most utilised row, as steel is not designed with these sets. For the
+sheet pile wall (a plate) N, M2, M3, Q1 and Q2 are N_1, M_11, M_22, Q_13 and Q_23.
 
 ## Sheet pile wall
 
-Triton does not design the sheet pile wall; the office uses the ArcelorMittal program.
-**Download SPW straining actions (Excel)** on the Design tab
+Triton does not design the sheet pile wall; the office uses the ArcelorMittal program. The Design
+tab lists its 10 governing rows. **Download SPW straining actions (Excel)**
 (`GET /api/projects/{id}/sections/{section}/spw.xlsx`) gives the plate results with the section's
-load multipliers applied and N in the Plaxis sign (steel element): a *Governing* sheet with the
-maximum and minimum of every action per combination and the other actions at the same node, and one
-*Envelope* sheet per combination with the maximum and minimum across the wall at each level.
+load multipliers applied and N in the Plaxis sign (steel element): a *Governing* sheet with the same
+10 rows, and one *Envelope* sheet per combination with the maximum and minimum across the wall at
+each level.
 
 ## Combi wall
 

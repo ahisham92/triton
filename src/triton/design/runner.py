@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from ..elements import ElementType
 from ..forces import scale_forces
 from ..importer import SheetData
 from ..project import CombiWallInput, DesignSettings, PileInput, Section, _now
 from ..validation import ImportResult
 from .combi import design_combi_wall
+from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
 from .piles import design_pile
 
@@ -67,7 +69,7 @@ def _peak_note(section: Section, peaks: list[dict]) -> str | None:
 
 
 def run_section(settings: DesignSettings, section: Section, workbook: ImportResult) -> dict[str, Any]:
-    """Design the piles and combi walls of one section."""
+    """Design the piles and combi walls of one section, and pick the sheet pile wall's governing sets."""
     raw = workbook.elements()
     sheets = factored_elements(section, workbook)
     known = {s.name for s in workbook.sheets}
@@ -120,6 +122,22 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
         if steel.get("total_kg") is not None:
             out["steel"]["element_total_t"] = round(steel["total_kg"] * count / 1000, 2)
         piles.append(out)
+    spws = []
+    for name, combos in sheets.items():
+        if not any(s.parsed and s.parsed.spec.type is ElementType.SHEET_PILE_WALL for s in combos.values()):
+            continue
+        sets = steel_sets(uls_frame(combos), "plate")
+        if not sets["rows"]:
+            where = " inside the working zone" if section.has_zone else ""
+            skipped.append(f"{name}: no usable results in the workbook{where}.")
+            continue
+        spws.append({"element": name, "kind": "sheet_pile_wall", "governing_sets": sets})
     if missing:
         skipped.append(f"Load multiplier sheets not in the workbook: {', '.join(missing)}.")
-    return {"run_at": _now(), "piles": piles, "combi_walls": walls, "skipped": skipped}
+    return {
+        "run_at": _now(),
+        "piles": piles,
+        "combi_walls": walls,
+        "sheet_pile_walls": spws,
+        "skipped": skipped,
+    }
