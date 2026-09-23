@@ -316,9 +316,19 @@ are closer than that.
   deck's M11 peaks negative at every pile head.
 - **Bollard (front beam, optional):** the tie bars that take the bollard pull back into the deck,
   as the office drawing SC-502 (150 t, 2Ø32 straight and 3Ø32 at ±45°, 8.11° down, lapped 1600 mm
-  with the slab bottom bars). The factored pull (γ = 1.5) square to the quay face against
-  Σ As·fyd·cos β·cos α, and the lap to EN 1992-1-1 8.7.3. The pull along the quay goes into the
-  beam's longitudinal bars; the fender loads are carried by the beam's own reinforcement.
+  with the slab bottom bars). The factored pull square to the quay face against
+  Σ As·fyd·cos β·cos α, and the lap to EN 1992-1-1 8.7.3. The factor defaults to 0.75, the office
+  report's mooring factor (Table 3-6: 1.5 × ψ0 0.5); the ties are then at 0.51 (1.02 at 1.5). The pull
+  along the quay goes into the beam's longitudinal bars; the fender loads are carried by the beam's
+  own reinforcement.
+- **Truss between king piles (front beam, on by default for new front beams):** the office report's
+  strut-and-tie model (5.3). Per king pile spacing s (from the king piles inside the beam, or an
+  input), P = s·(crane load + surcharge·b + 25·b·h) + s·slab width·(surcharge + 25·slab thickness);
+  struts at θ = atan(z / (s/2)) with z between the top and bottom bar centroids; the bottom bars tie
+  them, T = P / (2 tan θ), at a service stress of 100 MPa (1 t/cm², 0.1 mm crack). A second case uses
+  the slab thickened to 1.4 m at bollards. The bottom bars grow until the tie passes (on the sample
+  2.0 × 1.6 m beam: 48Ø25 in two layers, 0.997 at bollards). The report's own numbers (410 + 50.4 t,
+  T = 214 t, 0.81 at bollards with 56Ø25) are a test.
 - **Torsion longitudinal steel (6.3.2(3)):** shared round the perimeter (top and bottom by the width,
   each side by the depth; all to the top and bottom when there are no side bars) and taken out of
   those bars before the bending check, so the cage grows to carry both.

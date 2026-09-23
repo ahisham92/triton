@@ -974,6 +974,8 @@ function alerts(res) {
       ["bending", b.bending?.utilisation, b.bending?.governing],
       ["shear and torsion", b.shear?.utilisation, b.shear?.governing],
       ["transverse bending", b.transverse?.utilisation, b.transverse?.governing],
+      ["bollard ties", b.bollard?.utilisation, null],
+      ["truss ties between king piles", b.truss?.utilisation, null],
     ];
     for (const [f, c] of Object.entries(b.cracks || {})) checks.push([`${f} crack width ${fmt(c.wk, 2)} mm of ${fmt(c.limit, 2)}`, c.wk / c.limit, c]);
     for (const [f, c] of Object.entries(b.restraint?.faces || {})) {
@@ -1289,6 +1291,12 @@ function beamCard(b) {
     ${b.bollard ? `<h3 style="margin-top:18px">Bollard tie bars ${ok(b.bollard.passed)}</h3>
     <p>${fmt(b.bollard.capacity_t)} t bollard: F<sub>Ed</sub> = ${fmt(b.bollard.F_Ed_kN)} kN against ${fmt(b.bollard.R_kN)} kN from ${esc(b.bollard.ties.map((t) => `${t.bars} at ${fmt(t.angle_deg)}°`).join(", "))} (utilisation ${fmt(b.bollard.tie_utilisation, 2)}). Laps with the slab bottom bars: ${fmt(Math.max(...b.bollard.laps.map((x) => x.l0_mm)))} mm needed, ${fmt(b.bollard.lap_length_mm)} mm given.</p>
     <p class="status">${esc(b.bollard.method)}</p>` : ""}
+    ${b.truss?.cases ? `<h3 style="margin-top:18px">Truss between king piles ${ok(b.truss.passed)}</h3>
+    <p>King piles ${fmt(b.truss.spacing_m, 2)} m apart${b.truss.spacing_from === "input" ? "" : " (from the workbook)"}, lever arm ${fmt(b.truss.lever_arm_mm)} mm, θ = ${fmt(b.truss.theta_deg, 1)}°: T = ${fmt(b.truss.tie_factor, 3)} P on ${fmt(b.truss.As_provided_mm2)} mm² of bottom bars at ${fmt(b.truss.working_stress_MPa)} MPa.</p>
+    <div class="scroll"><table><tr><th>Case</th><th>Slab mm</th><th>P kN</th><th>T kN</th><th>A<sub>s,req</sub> mm²</th><th>Ratio</th></tr>
+      ${b.truss.cases.map((c) => `<tr><td>${esc(c.case)}</td><td>${fmt(c.slab_thickness_mm)}</td><td>${fmt(c.P_kN)}</td><td>${fmt(c.T_kN)}</td><td>${fmt(c.As_req_mm2)}</td>
+        <td class="cell ${c.utilisation <= 1 ? "ok" : "error"}">${fmt(c.utilisation, 2)}</td></tr>`).join("")}</table></div>
+    <p class="status">${esc(b.truss.method)}</p>` : b.truss?.note ? `<p class="status">${esc(b.truss.note)}</p>` : ""}
     ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}`;
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
   if (b.profile?.length) {

@@ -790,11 +790,12 @@ class Bollard(_Model):
 
     capacity: float = Field(150.0, title="Bollard capacity", gt=0, json_schema_extra={"unit": "t"})
     load_factor: float = Field(
-        1.5,
+        0.75,
         title="Load factor",
-        ge=1,
-        description="On the rated capacity, taken as the characteristic mooring load (EN 1990 variable "
-        "action).",
+        gt=0,
+        description="On the rated capacity, taken as the characteristic mooring load. 0.75 is the office "
+        "report's mooring factor (Table 3-6, ULS 01: 1.5 × ψ0 0.5); 1.5 treats mooring as the leading "
+        "action.",
     )
     ties: list[TieBars] = Field(default_factory=_office_ties, title="Tie bars")
     tie_slope: float = Field(
@@ -807,6 +808,50 @@ class Bollard(_Model):
     )
     lap_length: float = _mm(
         "Lap with the slab bottom bars", 1600.0, gt=0, description="SC-502: at least 1600 mm."
+    )
+
+
+class FrontBeamTruss(_Model):
+    """The office's strut-and-tie check of the front beam between king piles (service loads)."""
+
+    pile_spacing: float | None = _m(
+        "King pile spacing",
+        None,
+        gt=0,
+        description="Empty: from the king piles inside the beam in the workbook (3.2 m on Section 01a).",
+    )
+    crane_load: float = Field(
+        900.0,
+        title="Crane load on the beam",
+        ge=0,
+        description="Per metre along the beam (the office's 90 t/m).",
+        json_schema_extra={"unit": "kN/m"},
+    )
+    surcharge: float = Field(
+        35.0, title="Surcharge", ge=0, description="The office's 3.5 t/m².", json_schema_extra={"unit": "kPa"}
+    )
+    unit_weight: float = Field(
+        25.0, title="Reinforced concrete weight", gt=0, json_schema_extra={"unit": "kN/m³"}
+    )
+    slab_width: float = _m(
+        "Slab width carried by the beam",
+        3.0,
+        ge=0,
+        description="Tributary width of deck slab behind the beam.",
+    )
+    slab_thickness: float = _mm("Slab thickness", 700.0, ge=0)
+    bollard_slab_thickness: float | None = _mm(
+        "Slab thickness at bollards",
+        1400.0,
+        gt=0,
+        description="The slab is thickened at the bollards; checked as a second case. Empty: no such case.",
+    )
+    working_stress: float = Field(
+        100.0,
+        title="Allowable tie stress",
+        gt=0,
+        description="Service stress in the bottom bars; the office's 1 t/cm² for a 0.1 mm crack width.",
+        json_schema_extra={"unit": "MPa"},
     )
 
 
@@ -844,6 +889,12 @@ class BeamInput(_ConcreteSection):
     )
     bollard: Bollard | None = Field(
         None, title="Bollard", description="Front beam: a bollard and its tie bars. Empty: no bollard check."
+    )
+    truss: FrontBeamTruss | None = Field(
+        None,
+        title="Truss model between king piles",
+        description="Front beam: struts from the loads down to the king pile heads, tied by the bottom bars. "
+        "Empty: no truss check.",
     )
 
 
@@ -916,7 +967,9 @@ def default_element(name: str) -> ElementInput | None:
     if cls is BeamInput:
         # The office's usual sizes: front beam 1.6 m deep, rear beam 2.0 m.
         kind = parsed.spec.type.value
-        return BeamInput(kind=kind, depth=1600.0 if kind == "front_beam" else 2000.0)
+        if kind == "front_beam":
+            return BeamInput(kind=kind, depth=1600.0, truss=FrontBeamTruss())
+        return BeamInput(kind=kind, depth=2000.0)
     return cls()
 
 

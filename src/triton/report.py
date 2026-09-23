@@ -913,6 +913,43 @@ def _beam(r: Report, b: dict) -> None:
                 ("Result", _ok(bo.get("passed"))),
             ]
         )
+    tr = b.get("truss")
+    if tr and tr.get("cases"):
+        r.h(3, "Truss model between king piles")
+        r.p(tr["method"])
+        r.kv(
+            [
+                (
+                    "King pile spacing",
+                    f"{tr['spacing_m']:g} m ({'input' if tr['spacing_from'] == 'input' else 'from the workbook'})",
+                ),
+                ("Lever arm z", f"{_fmt(tr['lever_arm_mm'])} mm"),
+                (
+                    "θ = atan(z / (s/2))",
+                    f"{tr['theta_deg']:g}°: F = {tr['strut_factor']:g} P, T = {tr['tie_factor']:g} P",
+                ),
+                ("Bottom bars", f"{_fmt(tr['As_provided_mm2'])} mm² at {tr['working_stress_MPa']:g} MPa"),
+            ]
+        )
+        r.table(
+            ["Case", "Slab (mm)", "P beam (kN)", "P slab (kN)", "P (kN)", "T (kN)", "As req (mm²)", "Ratio"],
+            [
+                [
+                    c["case"],
+                    c["slab_thickness_mm"],
+                    c["P_beam_kN"],
+                    c["P_slab_kN"],
+                    c["P_kN"],
+                    c["T_kN"],
+                    c["As_req_mm2"],
+                    c["utilisation"],
+                ]
+                for c in tr["cases"]
+            ],
+        )
+        r.kv([("Result", _ok(tr.get("passed")))])
+    elif tr:
+        r.note(tr.get("note", ""))
     for n in b.get("notes", []):
         r.note(n)
     _sets(r, b.get("governing_sets"), "Governing sets")

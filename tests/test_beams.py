@@ -156,7 +156,8 @@ def test_design_beam_with_supports_and_export():
         "Pile(1)-QP": pile_line([0.0, 6.0, 12.0]),
     }
     wb = import_sheets(raw)
-    els = {"Front Beam": BeamInput(depth=1500), "Pile(1)": PileInput(head_level=2.7)}
+    truss = {"crane_load": 0, "bollard_slab_thickness": None}
+    els = {"Front Beam": BeamInput(depth=1500, truss=truss), "Pile(1)": PileInput(head_level=2.7)}
     d = design_beam(
         "Front Beam",
         els["Front Beam"],
@@ -167,13 +168,19 @@ def test_design_beam_with_supports_and_export():
         {"1": "X", "2": "Y"},
     )
     assert [q["s"] for q in d["supports"]] == [0.0, 6.0, 12.0]
+    # 6 m between piles on a 1.5 m deep beam: the truss tie, not bending, sets the bottom bars.
     assert d["passed"] and d["utilisation"] <= 1
+    assert (
+        d["truss"]["utilisation"] > 0.9
+        and d["truss"]["As_provided_mm2"] > d["truss"]["cases"][0]["As_req_mm2"]
+    )
     # The 5000 kNm/m peak lies inside the pile at y = 6 and is left out.
     assert d["bending"]["extremes"]["Mv"]["max"] < 1000
     assert set(d["cracks"]) == {"bottom"} and d["cracks"]["bottom"]["limit"] == 0.2
     assert d["restraint"]["R"] == pytest.approx(restraint_factor(58, 1.5), abs=1e-3)
     assert d["shear"]["link"]["legs"] >= 2 and d["transverse"]["bottom"]["label"].startswith("Ø")
     assert d["steel"]["kg_per_m3"] > 0
+    assert d["truss"]["spacing_m"] == 6.0 and d["truss"]["spacing_from"] == "workbook"
     assert len(d["governing_sets"][0]["uls"]) == 7 and len(d["governing_sets"][0]["qp"]) == 7
 
     res = run_section(DesignSettings(), Section(elements=els), wb)
@@ -192,8 +199,12 @@ def test_bollard_ties_as_the_office_drawing():
     from triton.project import Bollard, TieBars
 
     d = check_bollard(Bollard(), "C40/50", DesignSettings())
-    # 150 t × 1.5 × g square to the quay; 2Ø32 straight and 3Ø32 at ±45°, 8.11° down.
-    assert d["F_Ed_kN"] == round(1.5 * 150 * 9.81)
+    # 150 t × 0.75 (the report's mooring factor) × g square to the quay; 2Ø32 straight and 3Ø32 at
+    # ±45°, 8.11° down.
+    assert d["F_Ed_kN"] == round(0.75 * 150 * 9.81)
+    assert d["passed"] and d["tie_utilisation"] == pytest.approx(0.511, abs=0.005)
+    leading = check_bollard(Bollard(load_factor=1.5), "C40/50", DesignSettings())
+    assert leading["tie_utilisation"] == pytest.approx(1.022, abs=0.005)
     fyd = 500 / 1.15
     bar = math.pi * 32**2 / 4 * fyd * math.cos(math.radians(8.11)) / 1e3
     assert d["R_kN"] == pytest.approx(2 * bar + 6 * bar * math.cos(math.pi / 4), abs=2)
@@ -204,6 +215,25 @@ def test_bollard_ties_as_the_office_drawing():
         DesignSettings(),
     )
     assert more["passed"] and more["laps"][0]["l0_mm"] <= 1600
+
+
+def test_truss_model_as_the_office_report():
+    from triton.design.truss import check_truss, spacing_from_supports
+    from triton.project import FrontBeamTruss
+
+    # Report 5.3: 4.5 x 2.0 m beam, z = 1.726 m, king piles 3.211 m apart (loads rounded to 3.2 m),
+    # 56Ø25 bottom bars (275 cm²).
+    d = check_truss(FrontBeamTruss(), 4500, 2000, 1726, 56 * math.pi * 25**2 / 4, 3.211)
+    typical, bollard = d["cases"]
+    assert d["theta_deg"] == pytest.approx(47.07, abs=0.01)
+    assert typical["P_beam_kN"] == pytest.approx(4104, rel=0.004)  # 410 t
+    assert typical["P_slab_kN"] == pytest.approx(504, rel=0.004)  # 50.4 t
+    assert bollard["P_slab_kN"] == pytest.approx(672, rel=0.004)  # 67.2 t, slab thickened to 1.4 m
+    assert d["tie_factor"] == pytest.approx(0.465, abs=0.002)
+    assert typical["As_req_mm2"] == pytest.approx(21410, rel=0.005)  # 214.1 cm²
+    assert d["utilisation"] == pytest.approx(222 / 275, abs=0.005)  # the report's 0.81
+    assert spacing_from_supports([0.0, 3.2, 6.4, 9.6, 12.8]) == pytest.approx(3.2)
+    assert check_truss(FrontBeamTruss(), 4500, 2000, 1726, 1.0, None)["utilisation"] is None
 
 
 def test_torsion_steel_comes_out_of_the_cage():

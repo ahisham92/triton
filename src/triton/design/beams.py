@@ -55,6 +55,7 @@ from .circular import ConcreteLaw, SteelLaw
 from .crack import autogenous_shrinkage, crack_width, restraint_crack, restraint_factor
 from .governing import pick_sets
 from .rect import Bars, RectSection
+from .truss import check_truss, spacing_from_supports
 
 BEAM_TYPES = (ElementType.FRONT_BEAM, ElementType.REAR_BEAM, ElementType.TRANSVERSE_BEAM)
 WINDOW = 0.8  # m, half-length of the fit along the beam (shorter fits pick up the nodal noise of the shears)
@@ -867,6 +868,16 @@ def design_beam(
         return {**base, "utilisation": None, "passed": False}
     as_min = as_min_beam(conc.fctm, fyk, g.b, g.h - g.inner(25))
 
+    king_spacing = spacing_from_supports([q.s for q in supports])
+
+    def truss_for(cage: Cage) -> dict | None:
+        """The office's truss between king piles, tied by this cage's bottom bars."""
+        if beam.truss is None:
+            return None
+        z = g.h - g.inner(cage.top.phi) - (cage.top.layers - 1) * g.layer_gap(cage.top.phi, dg) / 2
+        z -= g.inner(cage.bottom.phi) + (cage.bottom.layers - 1) * g.layer_gap(cage.bottom.phi, dg) / 2
+        return check_truss(beam.truss, g.b, g.h, z, cage.bottom.area, king_spacing)
+
     def grow_cage(asl: float):
         """Step the faces up until bending (with ``asl`` of torsion steel taken out of the faces),
         cracking and restraint pass."""
@@ -910,6 +921,8 @@ def design_beam(
                     if restr["faces"][face]["wk"] > limits[face] + 1e-9:
                         grow = face
                         break
+            if grow is None and ((truss_for(cage) or {}).get("utilisation") or 0.0) > 1:
+                grow = "bottom"
             if grow is None:
                 break
             if grow == "side":
@@ -1019,6 +1032,9 @@ def design_beam(
     bollard = check_bollard(beam.bollard, beam.concrete, settings) if beam.bollard is not None else None
     if bollard is not None:
         checks.append(bollard["utilisation"])
+    truss = truss_for(cage)
+    if truss is not None:
+        checks.append(truss["utilisation"])
     finite = [c for c in checks if c is not None]
     passed = (
         bending["passed"]
@@ -1028,6 +1044,7 @@ def design_beam(
         and all(c["passed"] for c in restr["faces"].values())
         and status == "ok"
         and (bollard is None or bollard["passed"])
+        and (truss is None or truss["passed"])
     )
     # Links and restraint are one arrangement for the whole beam, so they colour every band.
     uniform = max([c for c in checks[1:] if c is not None and math.isfinite(c)], default=0.0)
@@ -1051,6 +1068,7 @@ def design_beam(
         "shear": links,
         "transverse": trans,
         "bollard": bollard,
+        "truss": truss,
         "steel": steel,
         "bands": bands,
         "profile": _profile(mom, u),
