@@ -1,14 +1,14 @@
 """Steel tube of the combi wall: EN 1993-1-1 section checks, shell buckling and column buckling.
 
-Two methods (per combi wall):
+Actions: the steel share of the Plaxis results, the E·I share where the tube is concrete filled
+and everything below the infill; or, as an option, every action along the tube.
 
-* Composite (default): forces are the steel share of the Plaxis results, the E·I share where the
-  tube is concrete filled and everything below the infill; checks as below.
-* Tube takes all (as the office steel sheets): the tube carries every action along its length and
-  is checked elastically with class 4 effective properties wherever d/t > 90ε², filled or not:
-  A_eff = A·√(90ε²/(d/t)), W_eff = W_el·(140ε²/(d/t))^0.25, σ = N/A_eff + M/W_eff ≤ fy/γM0.
+Two checks (per combi wall):
 
-Composite checks:
+* Office sheets (default): elastic with class 4 effective properties wherever d/t > 90ε², filled
+  or not: A_eff = A·√(90ε²/(d/t)), W_eff = W_el·(140ε²/(d/t))^0.25,
+  σ = N/A_eff + M/W_eff ≤ fy/γM0, and shear V ≤ V_pl,Rd.
+* EN 1993:
 
 * Filled part: EN 1993-5 5.5.4(9) allows the full cross-sectional resistance, so
   the tube is checked plastically whatever its D/t (EN 1993-1-1 6.2).
@@ -24,7 +24,7 @@ strength is reduced by (1 − ρ), ρ = (2V/V_pl,Rd − 1)² (6.2.8).
 Corrosion reduces the wall from the outside, and from the inside where a zone says so (below
 the infill); zones down the tube each have their own loss.
 
-Column buckling (both methods), composite column as the office sheets: over the length L from the
+Column buckling (both checks), composite column as the office sheets: over the length L from the
 top level to the toe, EI_eff = Ea·Ia + Ke·Ecm·Ic (Ke = 0.6, the infill only where filled) and
 N_pl,Rk = A_eff·fy + 0.85·Ac·fck are averaged along the length; N_cr = π²·EI_eff/(k·L)²,
 λ = √(N_pl,Rk/N_cr), χ from the chosen curve (c: α = 0.49), N_b,Rd = χ·N_pl,Rk/γM1. Each point:
@@ -293,7 +293,7 @@ def check_tube(
     zones: Zones | Tube,
     loads: pd.DataFrame,
     *,
-    method: str = "composite",
+    method: str = "office",
     gamma_m0: float = GAMMA_M0,
     gamma_m1: float = GAMMA_M1,
     column: dict[str, Any] | None = None,
@@ -319,7 +319,7 @@ def check_tube(
         cls = tube.section_class
         nk, mk, vk, fk = n[mask], m[mask], v[mask], filled[mask]
         u_shear = vk / r["V_pl_kN"]
-        if method == "tube_takes_all":
+        if method == "office":
             sigma = np.abs(nk) * 1e3 / tube.a_eff + mk * 1e6 / tube.w_eff
             u[mask] = np.maximum(sigma / (tube.fy / gamma_m0), u_shear)
             checks[mask] = "elastic, class 4 effective properties" if cls == 4 else f"elastic, class {cls}"
@@ -367,7 +367,7 @@ def check_tube(
         "N_kN": round(float(g["N"])),
         "M_kNm": round(float(g["M"])),
         "V_kN": round(float(g["V"])),
-        "M_Rd_kNm": round(r["M_eff_kNm"] if method == "tube_takes_all" else r["M_pl_kNm"]),
+        "M_Rd_kNm": round(r["M_eff_kNm"] if method == "office" else r["M_pl_kNm"]),
         "check": str(checks[i]),
     }
     prof = (
@@ -418,7 +418,7 @@ def check_tube(
             for t, bt, z in zones
         ],
         "resistances": {k: round(v) for k, v in r.items()},
-        "buckling": first.buckling() if first.section_class == 4 and method != "tube_takes_all" else None,
+        "buckling": first.buckling() if first.section_class == 4 and method != "office" else None,
         "column": col,
         "governing": governing,
         "profile": profile,

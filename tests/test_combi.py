@@ -57,11 +57,11 @@ def loads_frame(rows):
     return pd.DataFrame(rows, columns=["combination", "Node", "Z", "N", "V", "M", "filled"])
 
 
-def test_filled_part_uses_full_section():
+def test_en_1993_check_uses_full_section_where_filled():
     # Same forces: plastic where filled (EN 1993-5 5.5.4(9)), buckling where empty.
     m = 9000.0
-    out = check_tube(TUBE, loads_frame([("A", 1, -10.0, -1000.0, 0.0, m, True)]))
-    empty = check_tube(TUBE, loads_frame([("A", 1, -30.0, -1000.0, 0.0, m, False)]))
+    out = check_tube(TUBE, loads_frame([("A", 1, -10.0, -1000.0, 0.0, m, True)]), method="ec3")
+    empty = check_tube(TUBE, loads_frame([("A", 1, -30.0, -1000.0, 0.0, m, False)]), method="ec3")
     assert out["governing"]["zone"] == "concrete filled"
     assert empty["utilisation"] > out["utilisation"]
     sigma = 1000e3 / TUBE.area + m * 1e6 / TUBE.w_el
@@ -123,13 +123,19 @@ def test_class_4_effective_properties_as_the_office_sheets():
     assert (thick.a_eff, thick.w_eff) == (thick.area, thick.w_el)
 
 
-def test_tube_takes_all_and_column_buckling():
+def test_tube_share_and_check_options_and_column_buckling():
     els = combi_sheets().elements()["Combi Wall"]
     split = design_combi_wall("Combi Wall", CombiWallInput(top_level_to_ignore=0.0), DesignSettings(), els)
-    wall = CombiWallInput(top_level_to_ignore=0.0, tube_method="tube_takes_all")
+    assert split["tube"]["method"] == "office"
+    wall = CombiWallInput(top_level_to_ignore=0.0, tube_share="all")
     alone = design_combi_wall("Combi Wall", wall, DesignSettings(), els)
-    assert alone["tube"]["method"] == "tube_takes_all"
     assert alone["tube"]["utilisation"] > split["tube"]["utilisation"]
+    ec3 = CombiWallInput(top_level_to_ignore=0.0, tube_check="ec3")
+    plastic = design_combi_wall("Combi Wall", ec3, DesignSettings(), els)["tube"]
+    assert (
+        plastic["method"] == "ec3"
+        and plastic["governing"]["M_Rd_kNm"] > split["tube"]["governing"]["M_Rd_kNm"]
+    )
     col = alone["tube"]["column"]
     assert col["buckling_length_m"] == pytest.approx(0.7 * col["length_m"], abs=0.02)
     assert 0 < col["chi"] < 1 and col["curve"] == "c" and col["N_b_Rd_kN"] > 0

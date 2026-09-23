@@ -529,8 +529,10 @@ def punching(
             rho = min(rho_at(x, y, face), 0.02)
             vrdc = max(0.18 / pf.gamma_c * k * (100 * rho * fck) ** (1 / 3), v_min)
             ved = beta * v * 1e3 / (u1 * d)
-            beta0 = 1 + 0.6 * math.pi * e / D  # at the pile face, as the office punching sheets
-            ved0 = max(beta, beta0) * v * 1e3 / (u0 * d)
+            beta0 = beta  # EC2 6.4.5(3): the β of u1 at the face too
+            if slab.punching_face_beta == "office":
+                beta0 = max(beta, 1 + 0.6 * math.pi * e / D)  # from the pile diameter, as the office sheets
+            ved0 = beta0 * v * 1e3 / (u0 * d)
             vrdmax = 0.4 * nu * fcd
             u = max(ved / vrdc, ved0 / vrdmax)
             if worst is None or u > worst["utilisation"]:

@@ -91,7 +91,7 @@ def design_combi_wall(
 
     zones = tube_zones(wall)
     above = settings.results_into_connection / 1e3
-    tube_share = 1.0 if wall.tube_method == "tube_takes_all" else share
+    tube_share = 1.0 if wall.tube_share == "all" else share
     loads = tube_loads(sheets, tube_share, bottom, wall.top_level_to_ignore, above)
     pf = settings.partial_factors
     conc = concrete(wall.concrete)
@@ -110,7 +110,7 @@ def design_combi_wall(
             "curve": wall.buckling_curve,
         }
     steel = check_tube(
-        zones, loads, method=wall.tube_method, gamma_m0=pf.gamma_m0, gamma_m1=pf.gamma_m1, column=column
+        zones, loads, method=wall.tube_check, gamma_m0=pf.gamma_m0, gamma_m1=pf.gamma_m1, column=column
     )
     steel["governing_sets"] = steel_sets(loads, "beam")
 
@@ -119,7 +119,7 @@ def design_combi_wall(
         f"infill (E·I, corroded tube, Ecm {conc.ecm / 1e3:.1f} GPa). Below {bottom:g} m the tube carries "
         "everything."
     )
-    if wall.tube_method == "tube_takes_all":
+    if wall.tube_share == "all":
         split = (
             f"The tube carries every action along its length (checked elastically, class 4 effective "
             f"properties); the infill is still designed for its E·I share, {1 - share:.0%}."

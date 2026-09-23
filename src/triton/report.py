@@ -686,10 +686,10 @@ def _combi(r: Report, w: dict) -> None:
             ("Infill bottom level", f"{w.get('infill_bottom_level')} m"),
             ("Share carried by the steel (E·I)", f"{w.get('steel_share', 0) * 100:.0f}%"),
             (
-                "Tube method",
-                "tube takes all actions"
-                if (w.get("tube") or {}).get("method") == "tube_takes_all"
-                else "E·I split where filled",
+                "Tube check",
+                "office sheets: elastic, class 4 effective properties"
+                if (w.get("tube") or {}).get("method") == "office"
+                else "EN 1993: plastic where filled, shell buckling where empty",
             ),
             ("Utilisation", w.get("utilisation")),
             ("Result", _ok(w.get("passed"))),

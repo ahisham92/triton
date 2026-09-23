@@ -105,9 +105,8 @@ def test_slab_design_with_zones_punching_and_restraint():
     assert p["beta"] == pytest.approx(
         1 + 0.6 * math.pi * 100 / 1500 * 1000 / (1200 + 4 * p["d_mm"]), abs=1e-3
     )
-    # At the pile face β0 = 1 + 0.6πe/D, as the office sheets; the kmax = 1.5 limit on links.
-    beta0 = 1 + 0.6 * math.pi * 100 / 1500 * 1000 / 1200
-    assert p["vEd_face_MPa"] == pytest.approx(beta0 * 1500e3 / (math.pi * 1200 * p["d_mm"]), rel=2e-3)
+    # At the pile face the β of u1 (EC2 6.4.5(3)); the kmax = 1.5 limit on links.
+    assert p["vEd_face_MPa"] == pytest.approx(p["beta"] * 1500e3 / (math.pi * 1200 * p["d_mm"]), rel=2e-3)
     assert p["kmax_ratio"] == pytest.approx(p["vEd_MPa"] / (1.5 * p["vRd_c_MPa"]), abs=2e-3)
     assert set(d["restraint"]["layers"]) == {"bottom_x", "bottom_y", "top_x", "top_y"}
     assert d["steel"]["kg_per_m3"] > 0 and d["bands"] and len(d["bands"][0]) == 5
@@ -188,3 +187,11 @@ def test_mesh_with_additional_bars_or_mesh_only():
     only = design_deck(layout_top_x="mesh_only")["layers"]["top_x"]
     assert only["mode"] == "mesh_only" and not only["zones"] and only["utilisation"] <= 1
     assert only["basic"]["as_mm2_per_m"] >= max(z["as_mm2_per_m"] for z in top["zones"]) * 0.8
+
+
+def test_office_beta_at_the_pile_face():
+    ec2 = design_deck()["punching"][0]
+    (p,) = design_deck(punching_face_beta="office")["punching"]
+    beta0 = 1 + 0.6 * math.pi * 100 / 1500 * 1000 / 1200
+    assert p["vEd_face_MPa"] == pytest.approx(beta0 * 1500e3 / (math.pi * 1200 * p["d_mm"]), rel=2e-3)
+    assert p["vEd_face_MPa"] > ec2["vEd_face_MPa"]

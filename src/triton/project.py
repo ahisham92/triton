@@ -468,12 +468,18 @@ class CombiWallInput(_Model):
         ge=1,
         description="King piles in the section. Empty: counted from the workbook.",
     )
-    tube_method: Literal["composite", "tube_takes_all"] = Field(
-        "composite",
-        title="Tube design",
-        description="Composite: where filled, the tube takes its E·I share and is checked plastically "
-        "(EN 1993-5 5.5.4(9)). Tube takes all: the tube carries every action along its length, class 4 "
-        "with effective properties, elastically (as the office steel sheets).",
+    tube_share: Literal["ei_split", "all"] = Field(
+        "ei_split",
+        title="Actions on the tube",
+        description="E·I split: where filled, the tube takes its E·I share of the actions and the infill "
+        "the rest; below the infill the tube takes everything. All: the tube carries every action along "
+        "its length (the infill is still designed for its share).",
+    )
+    tube_check: Literal["office", "ec3"] = Field(
+        "office",
+        title="Tube check",
+        description="Office sheets: elastic, class 4 effective properties wherever d/t > 90ε², filled or not. "
+        "EN 1993: plastic where filled (EN 1993-5 5.5.4(9)), shell buckling to EN 1993-1-6 where empty.",
     )
     corrosion_zones: list[CorrosionZone] = Field(
         default_factory=list,
@@ -567,6 +573,12 @@ class SlabInput(_ConcreteSection):
     cover_bottom: float | None = _mm("Bottom cover", None, gt=0, description=_PROJECT_VALUE)
     strips: Literal["uniform", "column_and_field"] = Field(
         "uniform", title="Reinforcement layout", description="One uniform slab, or column and field strips"
+    )
+    punching_face_beta: Literal["ec2", "office"] = Field(
+        "ec2",
+        title="Punching β at the pile face",
+        description="EC2 6.4.5(3): the same β as at the basic control perimeter u1 (1 + 0.6πe/(D + 4d)). "
+        "Office sheets: β0 = 1 + 0.6πe/D, from the pile diameter itself, which is larger.",
     )
     shear_links: Literal["office", "ec2"] = Field(
         "office",
