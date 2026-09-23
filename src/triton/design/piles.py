@@ -152,6 +152,7 @@ class PileDesign:
     steel: dict | None = None
     alternatives: list[dict] = field(default_factory=list)
     governing_sets: list[dict] = field(default_factory=list)
+    moments: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     curve: list[list[float]] = field(default_factory=list)
     profile: list[dict] = field(default_factory=list)
@@ -174,6 +175,7 @@ class PileDesign:
             "shear": self.shear,
             "steel": self.steel,
             "governing_sets": self.governing_sets,
+            "moments": self.moments,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
             "reinforcement_ratio_pct": round(100 * self.reinforcement_ratio, 3),
             "alternatives": self.alternatives,
@@ -488,6 +490,13 @@ def design_pile(
         steel=steel,
         alternatives=alternatives,
         governing_sets=governing_sets,
+        moments=[
+            {"z": float(z), "M_kNm": round(float(m), 1)}
+            for z, m in loads.groupby(loads["Z"].mul(2).round() / 2)["M"]
+            .max()
+            .sort_index(ascending=False)
+            .items()
+        ],
         notes=notes,
         curve=np.round(sec.interaction(), 1).tolist(),
         profile=[{"z": float(r.Z), "util": float(r.util)} for r in profile.itertuples()],

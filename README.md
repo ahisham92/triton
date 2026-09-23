@@ -52,6 +52,19 @@ in `data/projects/`, with each section's checked workbook and results in
 `data/projects/{project}/{section}/` (set `TRITON_DATA_DIR` to move it). Projects saved before
 sections existed open with everything in one section; upload their workbook again.
 
+### Working zone and isolated peaks
+
+FE results near the model edges are unreliable. A section can set a **working zone** (Sections tab,
+X and/or Y from and to, e.g. Y −14 to 14 in a model that runs from −16 to 16): results outside it
+are not used for design. The number of piles is still counted from the whole workbook.
+
+An **isolated peak** is a node whose resultant moment is more than the section's *peak ratio*
+(default 1.5×) times both neighbours along the same pile, and at least 20% of that pile's largest
+moment. Peaks above the top level + 100 mm are not reported. They are marked on the moment diagram
+and listed under each element. The section setting uses them **as they are** or **averages** them
+with the nodes either side; ticking *Leave out* on a peak drops that node for that combination at
+the next design run.
+
 ## Load multipliers
 
 On the Workbook tab, add a multiplier (e.g. 1.35) and tick the combinations or single sheets it

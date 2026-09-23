@@ -348,7 +348,7 @@ function optionLabel(key, o) {
 
 function prettyOption(o) {
   const map = { crack_only: "Crack width only", structural: "Structural (shares load)", min_steel: "Least steel",
-    lap: "Lapped", unified: "Unified", zoned: "Zoned", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
+    lap: "Lapped", raw: "Raw values", average: "Average with neighbours", unified: "Unified", zoned: "Zoned", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
     min_cost: "Lowest cost", uniform: "Uniform slab", column_and_field: "Column and field strips" };
   return map[o] || o;
 }
@@ -360,7 +360,8 @@ const KIND_LABEL = { pile: "Pile", combi_wall: "Combi wall", sheet_pile_wall: "S
 function renderSections(host) {
   const p = state.project;
   const def = SCHEMA.$defs.Section;
-  const schema = { properties: { name: def.properties.name } };
+  const keys = ["name", "x_min", "x_max", "y_min", "y_max", "peaks", "peak_ratio"];
+  const schema = { properties: Object.fromEntries(keys.map((k) => [k, def.properties[k]])) };
   host.innerHTML = `<p class="sub">A project can have several sections, e.g. Section 01a and Section 02. Each section has its own
     Plaxis workbook, elements, load multipliers and results. Materials and design settings are shared.</p>
     <div class="panel row" style="margin-bottom:16px">
@@ -773,6 +774,7 @@ function pileCard(p) {
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
     ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
+    ${p.moments?.length ? `<div class="charts"><div class="chart" data-kind="moments"></div><div data-kind="peaks"></div></div>` : ""}
     ${setsBlock(p.governing_sets)}
     <details style="margin-top:12px"><summary>Other cages that pass</summary><div class="scroll"><table>
       <tr><th>Bars</th><th>Rows</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
@@ -784,7 +786,62 @@ function pileCard(p) {
     nmChart(card.querySelector('[data-kind="nm"]'), p);
     profileChart(card.querySelector('[data-kind="profile"]'), p);
   }
+  if (p.moments?.length) {
+    momentChart(card.querySelector('[data-kind="moments"]'), p);
+    peaksBlock(card.querySelector('[data-kind="peaks"]'), p.peaks || []);
+  }
   return card;
+}
+
+function momentChart(el, p) {
+  // Largest resultant moment at each level (ULS), with isolated peaks marked.
+  const prof = p.moments;
+  const peaks = (p.peaks || []).filter((q) => q.combination && !/QP/.test(q.combination));
+  const zs = prof.map((q) => q.z).concat(peaks.map((q) => q.z));
+  const maxM = Math.max(1, ...prof.map((q) => q.M_kNm), ...peaks.map((q) => q.M_kNm)) * 1.05;
+  const c = frame(el, {
+    xDomain: [0, maxM], yDomain: [Math.min(...zs), Math.max(...zs)],
+    xLabel: "M (kNm)", yLabel: "Level z (m)", title: "Moment along the pile (ULS envelope)",
+  });
+  const path = prof.map((q, i) => `${i ? "L" : "M"}${c.x(q.M_kNm).toFixed(1)},${c.y(q.z).toFixed(1)}`).join("");
+  c.g.innerHTML = `<path class="series" d="${path}"/>` + peaks
+    .map((q, i) => `<circle class="peak ${q.treatment === "left out" ? "out" : ""}" data-i="${i}" cx="${c.x(q.M_kNm)}" cy="${c.y(q.z)}" r="5"/>`)
+    .join("");
+  c.svg.onmousemove = (evt) => {
+    const r = c.svg.getBoundingClientRect();
+    const sx = ((evt.clientX - r.left) / r.width) * c.w, sy = ((evt.clientY - r.top) / r.height) * c.h;
+    const hit = peaks.findIndex((q) => Math.hypot(c.x(q.M_kNm) - sx, c.y(q.z) - sy) < 10);
+    if (hit >= 0) {
+      const q = peaks[hit];
+      showTip(c, evt, `Isolated peak, ${esc(q.combination)}, node ${q.node}<br>z ${fmt(q.z, 2)} m, M ${fmt(q.M_kNm)} kNm<br>neighbours up to ${fmt(q.neighbours_M_kNm)} kNm, ${esc(q.treatment)}`);
+      return;
+    }
+    let best = 0;
+    prof.forEach((q, i) => { if (Math.abs(c.y(q.z) - sy) < Math.abs(c.y(prof[best].z) - sy)) best = i; });
+    showTip(c, evt, `z ${fmt(prof[best].z, 2)} m<br>M ${fmt(prof[best].M_kNm)} kNm`);
+  };
+  c.svg.onmouseleave = () => { c.tip.hidden = true; };
+}
+
+function peaksBlock(el, peaks) {
+  // Isolated peaks found in this element, each can be left out of the design.
+  if (!peaks.length) {
+    el.innerHTML = `<p class="status" style="margin-top:28px">No isolated peaks above ${fmt(sec().peak_ratio, 1)}× their neighbours.</p>`;
+    return;
+  }
+  const out = new Set(sec().excluded_peaks || []);
+  el.innerHTML = `<h3 style="margin-top:0">Isolated peaks</h3>
+    <p class="status">Tick a peak to leave it out, then save and design again. Section setting: ${sec().peaks === "average" ? "peaks averaged" : "raw values"}.</p>
+    <div class="scroll"><table><tr><th>Leave out</th><th>Combination</th><th>Node</th><th>z (m)</th><th>M kNm</th><th>Neighbours</th></tr>
+    ${peaks.map((q) => `<tr><td><input type="checkbox" data-key="${esc(q.key)}" ${out.has(q.key) ? "checked" : ""}></td><td>${esc(q.combination)}</td><td>${q.node}</td><td>${fmt(q.z, 2)}</td><td>${fmt(q.M_kNm)}</td><td>${fmt(q.neighbours_M_kNm)}</td></tr>`).join("")}
+    </table></div>`;
+  el.querySelectorAll("input[data-key]").forEach((box) => (box.onchange = () => {
+    const s = sec();
+    const keys = new Set(s.excluded_peaks || []);
+    if (box.checked) keys.add(box.dataset.key); else keys.delete(box.dataset.key);
+    s.excluded_peaks = [...keys];
+    markDirty();
+  }));
 }
 
 function setsBlock(stations) {

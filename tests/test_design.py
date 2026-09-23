@@ -285,7 +285,7 @@ def test_runner_designs_piles_and_skips_missing_ones(workbook):
     section.add_elements(["Pile(1)", "Pile(2)", "Pile(9)", "Deck"])
     out = run_section(DesignSettings(), section, import_sheets(workbook))
     assert [p["element"] for p in out["piles"]] == ["Pile(1)", "Pile(2)"]
-    assert out["skipped"] == ["Pile(9): no usable sheets in the workbook."]
+    assert out["skipped"] == ["Pile(9): no usable results in the workbook."]
 
 
 # --- API ---------------------------------------------------------------------------------

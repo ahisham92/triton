@@ -116,3 +116,5 @@ a.quiet-link { color: var(--accent); text-decoration: none; border: 1px solid va
 .section-pick select { min-width: 200px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--input); color: var(--text); font: inherit; }
 table.sets tr.group td { border-top: 2px solid var(--line); }
 table.sets td { white-space: nowrap; }
+.chart .peak { fill: var(--err); stroke: var(--panel); stroke-width: 2; }
+.chart .peak.out { fill: var(--panel); stroke: var(--err); }

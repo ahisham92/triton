@@ -449,8 +449,51 @@ class Section(_Model):
 
     id: str = Field(default_factory=_short_id)
     name: str = Field("Section 1", title="Section name", min_length=1, description="e.g. Section 01a")
+    x_min: float | None = _m(
+        "Working zone: X from", None, description="Results outside the working zone are not used (FE edges)."
+    )
+    x_max: float | None = _m("Working zone: X to", None)
+    y_min: float | None = _m("Working zone: Y from", None)
+    y_max: float | None = _m("Working zone: Y to", None)
+    peaks: Literal["raw", "average"] = Field(
+        "raw",
+        title="Isolated peaks",
+        description="Raw: use the values as they are. Average: replace a peak by the mean of the nodes "
+        "above and below it.",
+    )
+    peak_ratio: float = Field(
+        1.5,
+        title="A peak is a moment above both neighbours by",
+        gt=1,
+        le=10,
+        json_schema_extra={"unit": "×"},
+    )
+    excluded_peaks: list[str] = Field(
+        default_factory=list, title="Peaks left out", description="element|combination|node"
+    )
     elements: dict[str, ElementInput] = Field(default_factory=dict, title="Elements")
     load_factors: list[LoadFactor] = Field(default_factory=list, title="Load multipliers")
+
+    @model_validator(mode="after")
+    def _zone(self) -> Section:
+        for lo, hi, axis in ((self.x_min, self.x_max, "X"), (self.y_min, self.y_max, "Y")):
+            if lo is not None and hi is not None and lo >= hi:
+                raise ValueError(f"Working zone: {axis} from must be less than {axis} to.")
+        return self
+
+    def in_zone(self, x: Any, y: Any) -> Any:
+        """Boolean mask (or bool) of points inside the working zone."""
+        ok = True
+        for v, lo, hi in ((x, self.x_min, self.x_max), (y, self.y_min, self.y_max)):
+            if lo is not None:
+                ok = ok & (v >= lo - 1e-9)
+            if hi is not None:
+                ok = ok & (v <= hi + 1e-9)
+        return ok
+
+    @property
+    def has_zone(self) -> bool:
+        return any(v is not None for v in (self.x_min, self.x_max, self.y_min, self.y_max))
 
     @model_validator(mode="before")
     @classmethod

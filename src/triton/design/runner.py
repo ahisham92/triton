@@ -10,18 +10,32 @@ from ..importer import SheetData
 from ..project import CombiWallInput, DesignSettings, PileInput, Section, _now
 from ..validation import ImportResult
 from .combi import design_combi_wall
+from .peaks import treat_peaks
 from .piles import design_pile
 
 
 def factored_elements(section: Section, workbook: ImportResult) -> dict[str, dict[str, SheetData]]:
-    """element -> combination -> sheet, with the section's load multipliers applied to the forces."""
+    """element -> combination -> sheet, with the section's load multipliers applied to the forces
+    and only the results inside the section's working zone."""
     out = {}
     for element, combos in workbook.elements().items():
         out[element] = {}
         for combo, sheet in combos.items():
             f = section.factor_for(sheet.name)
-            out[element][combo] = sheet if f == 1.0 else replace(sheet, frame=scale_forces(sheet.frame, f))
+            frame = sheet.frame if f == 1.0 else scale_forces(sheet.frame, f)
+            if section.has_zone and {"X", "Y"} <= set(frame.columns):
+                frame = frame[section.in_zone(frame["X"], frame["Y"])]
+            out[element][combo] = sheet if frame is sheet.frame else replace(sheet, frame=frame)
     return out
+
+
+def _positions(sheets: dict[str, SheetData]) -> list[list[float]]:
+    """X, Y of every pile of an element in the workbook, working zone or not."""
+    seen: set[tuple[float, float]] = set()
+    for sheet in sheets.values():
+        if {"X", "Y"} <= set(sheet.frame.columns):
+            seen |= set(map(tuple, sheet.frame[["X", "Y"]].round(2).to_numpy().tolist()))
+    return [list(p) for p in sorted(seen, key=lambda p: (p[1], p[0]))]
 
 
 def _multiplier_note(section: Section, sheets: dict[str, SheetData]) -> str | None:
@@ -31,34 +45,80 @@ def _multiplier_note(section: Section, sheets: dict[str, SheetData]) -> str | No
     return "Load multipliers applied: " + ", ".join(factored) + "." if factored else None
 
 
+def _zone_note(section: Section) -> str | None:
+    if not section.has_zone:
+        return None
+    parts = []
+    for axis, lo, hi in (("X", section.x_min, section.x_max), ("Y", section.y_min, section.y_max)):
+        if lo is not None or hi is not None:
+            lo_s = "−∞" if lo is None else f"{lo:g}"
+            hi_s = "∞" if hi is None else f"{hi:g}"
+            parts.append(f"{axis} {lo_s} to {hi_s} m")
+    return f"Working zone {', '.join(parts)}: results outside it are not used."
+
+
+def _peak_note(section: Section, peaks: list[dict]) -> str | None:
+    if not peaks:
+        return None
+    left = sum(p["treatment"] == "left out" for p in peaks)
+    how = "averaged with the nodes either side" if section.peaks == "average" else "used as they are"
+    text = f"{len(peaks)} isolated peak(s) above {section.peak_ratio:g}× their neighbours, {how}"
+    return text + (f"; {left} left out." if left else ".")
+
+
 def run_section(settings: DesignSettings, section: Section, workbook: ImportResult) -> dict[str, Any]:
     """Design the piles and combi walls of one section."""
+    raw = workbook.elements()
     sheets = factored_elements(section, workbook)
     known = {s.name for s in workbook.sheets}
     missing = sorted({n for r in section.load_factors for n in r.sheets} - known)
+    excluded = set(section.excluded_peaks)
     piles, walls, skipped = [], [], []
     for name, element in section.elements.items():
         if not isinstance(element, PileInput | CombiWallInput):
             continue
-        if name not in sheets:
-            skipped.append(f"{name}: no usable sheets in the workbook.")
+        if name not in sheets or all(s.frame.empty for s in sheets[name].values()):
+            where = " inside the working zone" if name in sheets else ""
+            skipped.append(f"{name}: no usable results in the workbook{where}.")
             continue
+        top = element.top_level_to_ignore if isinstance(element, CombiWallInput) else element.head_level
+        if top is not None:
+            top += settings.results_into_connection / 1e3
+        own, peaks = treat_peaks(name, sheets[name], section.peaks, section.peak_ratio, excluded, top)
+        notes = [_multiplier_note(section, own), _zone_note(section), _peak_note(section, peaks)]
+        notes = [n for n in notes if n]
+        positions = _positions(raw.get(name, {}))
+        count = element.count or len(positions) or 1
         if isinstance(element, CombiWallInput):
-            wall = design_combi_wall(name, element, settings, sheets[name])
-            if note := _multiplier_note(section, sheets[name]):
-                wall["notes"].insert(0, note)
+            wall = design_combi_wall(name, element, settings, own)
+            wall["notes"][:0] = notes
+            wall["peaks"] = peaks
+            share = 1 - wall["steel_share"]  # the infill's moments are its share of the Plaxis ones
+            wall["infill"]["peaks"] = [
+                {
+                    **q,
+                    "M_kNm": round(q["M_kNm"] * share, 1),
+                    "neighbours_M_kNm": round(q["neighbours_M_kNm"] * share, 1),
+                }
+                for q in peaks
+            ]
+            wall["positions"] = wall["infill"]["positions"] = positions
+            wall["count"] = wall["infill"]["count"] = count
+            if (wall["infill"].get("steel") or {}).get("total_kg") is not None:
+                wall["infill"]["steel"]["element_total_t"] = round(
+                    wall["infill"]["steel"]["total_kg"] * count / 1000, 2
+                )
             walls.append(wall)
             continue
-        notes = []
-        d = design_pile(name, element, settings, sheets[name])
-        if note := _multiplier_note(section, sheets[name]):
-            notes.append(note)
+        d = design_pile(name, element, settings, own)
         d.notes[:0] = notes
         out = d.to_dict()
-        out["count"] = element.count or len(out.get("positions") or []) or 1
+        out["peaks"] = peaks
+        out["positions"] = positions
+        out["count"] = count
         steel = out.get("steel") or {}
         if steel.get("total_kg") is not None:
-            out["steel"]["element_total_t"] = round(steel["total_kg"] * out["count"] / 1000, 2)
+            out["steel"]["element_total_t"] = round(steel["total_kg"] * count / 1000, 2)
         piles.append(out)
     if missing:
         skipped.append(f"Load multiplier sheets not in the workbook: {', '.join(missing)}.")
