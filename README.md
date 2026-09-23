@@ -4,7 +4,7 @@ Structural design of marine structure elements from Plaxis 3D straining actions.
 Upload the geotechnical team's workbook and Triton checks it, designs each element
 to Eurocode (EC2 / EC3) with BS 6349, and reports reinforcement and utilization ratios.
 
-So far it covers **importing and checking the workbook** and **project setup** (sections, materials and design settings for each element).
+So far it covers **importing and checking the workbook**, **project setup** (sections, materials and design settings for each element) and the **longitudinal design of piles** for axial force and bending.
 
 ## Run it
 
@@ -33,6 +33,27 @@ Each element gets its own inputs:
 Project-wide settings: partial factors, bar sizes to try, spacing limits, and whether the
 reinforcement is chosen for the least steel or the lowest cost. Projects are saved as JSON
 in `data/projects/` (set `TRITON_DATA_DIR` to move it).
+
+## Pile design (N–M)
+
+Upload the workbook on the project's **Workbook** tab, then press **Design piles** on the **Design** tab.
+For each pile element Triton takes every ULS result (all piles of the row, every node below the pile
+head level; QP is not used) and picks the arrangement of equal bars on one circle that carries all of
+them with the least steel, or the lowest cost if that is the chosen objective.
+
+- Section: EN 1992-1-1 parabola-rectangle concrete, bilinear steel with a horizontal top branch, strain
+  limits of 6.1, displaced concrete deducted (the AdSec EC2 defaults). M is the resultant of M_2 and M_3.
+- Utilisation is measured along the ray from the origin to each (N, M) point, taking the worse of two
+  bar orientations (a bar on the bending axis, and midway between two bars).
+- Seismic and accidental combinations use γc 1.2 and γs 1.0.
+- Detailing: bars at least 16 mm, at least 6 bars, clear spacing between the project minimum and 200 mm
+  (9.8.5), steel between Table 9.6N and 4% (9.5.2). Bars sit at cover + link + φ/2 from the face.
+- Results: bars, utilisation, ρ and kg/m³, the governing point, the N–M chart with every load point,
+  utilisation along the pile, and other bar sizes that also pass.
+
+Set each pile's **head level** to the slab soffit: results above it are FE peaks inside the slab.
+Not yet included: links and shear, crack width, and a structural casing acting with the concrete
+(the pile is then designed as reinforced concrete alone, which is conservative).
 
 ## Workbook format
 

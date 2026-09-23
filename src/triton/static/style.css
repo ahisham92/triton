@@ -81,3 +81,24 @@ legend { font-weight: 600; padding: 0 6px; }
 .element-head .type { color: var(--muted); font-size: 13px; font-weight: normal; margin-left: 8px; }
 .toggle { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .empty { color: var(--muted); }
+
+/* Charts */
+:root { --series-1: #2a78d6; --grid: #e8e7e2; }
+@media (prefers-color-scheme: dark) { :root { --series-1: #3987e5; --grid: #2e2e2b; } }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
+.chart { position: relative; }
+.chart-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart .grid { stroke: var(--grid); stroke-width: 1; }
+.chart .zero { stroke: var(--muted); stroke-width: 1; }
+.chart .tick { fill: var(--muted); font-size: 11px; }
+.chart .axis { fill: var(--muted); font-size: 12px; }
+.chart .label { fill: var(--text); font-size: 12px; }
+.chart .pt { fill: var(--series-1); fill-opacity: .35; }
+.chart .cap { fill: none; stroke: var(--text); stroke-width: 2; stroke-linejoin: round; }
+.chart .gov { fill: var(--series-1); stroke: var(--panel); stroke-width: 2; }
+.chart .series { fill: none; stroke: var(--series-1); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .limit { stroke: var(--err); stroke-width: 1; }
+.chart .hover { fill: var(--series-1); stroke: var(--panel); stroke-width: 2; }
+.chart .tip { position: absolute; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px; font-size: 12px; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.12); min-width: 140px; }

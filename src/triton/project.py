@@ -57,6 +57,8 @@ class ProjectInfo(_Model):
 class PartialFactors(_Model):
     gamma_c: float = Field(1.5, title="γc concrete", gt=1)
     gamma_s: float = Field(1.15, title="γs reinforcement", gt=1)
+    gamma_c_accidental: float = Field(1.2, title="γc accidental / seismic", ge=1)
+    gamma_s_accidental: float = Field(1.0, title="γs accidental / seismic", ge=1)
     gamma_m0: float = Field(1.0, title="γM0 steel cross-section", ge=1)
     gamma_m1: float = Field(1.0, title="γM1 steel buckling", ge=1)
     alpha_cc: float = Field(0.85, title="αcc long-term factor", gt=0, le=1)
@@ -137,6 +139,7 @@ class PileInput(_ConcreteSection):
     kind: Literal["pile"] = "pile"
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
     cover: float = _mm("Cover to links", 75.0, gt=0)
+    link_diameter: float = _mm("Link diameter", 12.0, gt=0)
     head_level: float | None = _m(
         "Pile head level (slab soffit)",
         None,

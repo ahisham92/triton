@@ -84,9 +84,10 @@ async function projectPage(id, tab) {
   const p = state.project;
   const tabs = [
     ["info", "Project"],
-    ["design", "Design settings"],
+    ["settings", "Design settings"],
     ["elements", `Elements (${Object.keys(p.elements).length})`],
     ["workbook", "Workbook"],
+    ["design", "Design"],
   ];
   $app.innerHTML = `<h1>${esc(p.info.name)}</h1>
     <p class="sub">${esc([p.info.number, p.info.section].filter(Boolean).join(" · ") || "Project setup")}</p>
@@ -105,7 +106,8 @@ async function projectPage(id, tab) {
   };
   const host = document.getElementById("tab");
   if (tab === "info") host.append(renderObject(SCHEMA.properties.info, p.info, "info", "Project"));
-  else if (tab === "design") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
+  else if (tab === "settings") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
+  else if (tab === "design") renderDesignTab(host);
   else if (tab === "elements") renderElements(host);
   else if (tab === "workbook") renderWorkbookTab(host);
   showSaveState();
@@ -354,7 +356,7 @@ function checkerHtml() {
     </div>`;
 }
 
-function wireChecker(onReport) {
+function wireChecker(onReport, url = "/api/workbooks/check") {
   const file = document.getElementById("file");
   const run = document.getElementById("run");
   file.onchange = () => (run.disabled = !file.files.length);
@@ -366,7 +368,7 @@ function wireChecker(onReport) {
     const body = new FormData();
     body.append("file", f);
     try {
-      const data = await api("/api/workbooks/check", { method: "POST", body });
+      const data = await api(url, { method: "POST", body });
       renderReport(data);
       onReport?.(data);
       document.getElementById("status").textContent = `Checked ${data.file}`;
@@ -384,9 +386,13 @@ function checkPage() {
   wireChecker();
 }
 
-function renderWorkbookTab(host) {
-  host.innerHTML = `<p class="sub">Check the workbook for this project. Elements found in it can be added to the project.</p>` + checkerHtml();
-  wireChecker((data) => {
+async function renderWorkbookTab(host) {
+  const id = state.project.id;
+  host.innerHTML = `<p class="sub" id="wb-note">Upload the Plaxis workbook for this project. It is checked, then kept with
+    the project so the elements can be designed without uploading it again.</p>` + checkerHtml();
+  const onReport = (data) => {
+    document.getElementById("wb-note").textContent =
+      `Workbook in use: ${data.file}, uploaded ${String(data.uploaded_at || "").replace("T", " ").slice(0, 16)}. Upload again to replace it.`;
     const missing = data.elements.filter((e) => !(e in state.project.elements));
     const box = document.getElementById("add-found");
     if (!missing.length) {
@@ -397,9 +403,17 @@ function renderWorkbookTab(host) {
       <button id="add-all">Add to project</button></div>`;
     document.getElementById("add-all").onclick = async () => {
       await addElements(missing);
-      location.hash = `#/project/${state.project.id}/elements`;
+      location.hash = `#/project/${id}/elements`;
     };
-  });
+  };
+  wireChecker(onReport, `/api/projects/${id}/workbook`);
+  try {
+    const stored = await api(`/api/projects/${id}/workbook`);
+    renderReport(stored);
+    onReport(stored);
+  } catch {
+    /* no workbook yet */
+  }
 }
 
 const LABEL = { ok: "OK", warning: "Check", error: "Error", missing: "—" };
@@ -424,4 +438,186 @@ function renderReport(d) {
   document.getElementById("problems").innerHTML = problems.length ? head + problems.map(row).join("") : "<tr><td>No problems found.</td></tr>";
   document.getElementById("cleanups").innerHTML = head + d.issues.filter((i) => i.severity === "info").map(row).join("");
   document.getElementById("report").hidden = false;
+}
+
+// ---------------------------------------------------------------- design tab
+async function renderDesignTab(host) {
+  const id = state.project.id;
+  const piles = Object.entries(state.project.elements).filter(([, e]) => e.kind === "pile");
+  host.innerHTML = `<div class="panel row">
+      <button id="run-piles" ${piles.length ? "" : "disabled"}>Design piles</button>
+      <span class="status" id="design-status">${piles.length ? `${piles.length} pile element(s): ${esc(piles.map(([n]) => n).join(", "))}` : "Add pile elements first."}</span>
+    </div><div id="design-out"></div>`;
+  document.getElementById("run-piles").onclick = async () => {
+    if (state.dirty) await save();
+    if (state.errors?.length) return;
+    const status = document.getElementById("design-status");
+    status.textContent = "Designing…";
+    try {
+      renderPileResults(await api(`/api/projects/${id}/design/piles`, { method: "POST" }));
+      status.textContent = "Done.";
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  };
+  try {
+    renderPileResults(await api(`/api/projects/${id}/design/piles`));
+  } catch {
+    /* not designed yet */
+  }
+}
+
+const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : Number(v).toLocaleString("en-GB", { maximumFractionDigits: d, minimumFractionDigits: d }));
+
+function renderPileResults(res) {
+  const out = document.getElementById("design-out");
+  if (!out) return;
+  const rows = res.piles
+    .map((p) => {
+      const a = p.arrangement;
+      const g = p.governing;
+      return `<tr><td>${esc(p.element)}</td><td>${a ? esc(a.label) : "–"}</td>
+        <td class="cell ${p.passed ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
+        <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(p.steel_ratio_kg_m3)}</td>
+        <td>${g.combination ? `${esc(g.combination)}, z ${fmt(g.z, 2)} m` : "–"}</td></tr>`;
+    })
+    .join("");
+  out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}. Longitudinal steel only; links and crack width come next.</p>
+    ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
+    <div class="panel scroll"><table><tr><th>Element</th><th>Bars</th><th>Utilisation</th><th>ρ</th><th>kg/m³</th><th>Governing</th></tr>${rows}</table></div>
+    <div id="pile-cards"></div>`;
+  const cards = document.getElementById("pile-cards");
+  for (const p of res.piles) cards.append(pileCard(p));
+}
+
+function pileCard(p) {
+  const card = document.createElement("div");
+  card.className = "panel";
+  card.style.marginTop = "16px";
+  const a = p.arrangement;
+  const g = p.governing;
+  card.innerHTML = `<div class="element-head"><h3>${esc(p.element)}<span class="type">${a ? `${esc(a.label)}, ${fmt(a.area_mm2)} mm²` : "no arrangement"}</span></h3>
+      <span class="sev ${p.passed ? "ok" : "error"}">${p.passed ? "passes" : "fails"}</span></div>
+    <div class="counts" style="margin-top:0">
+      <div class="count"><b>${fmt(p.utilisation, 2)}</b>max utilisation</div>
+      <div class="count"><b>${fmt(p.steel_ratio_kg_m3)}</b>kg/m³ longitudinal</div>
+      <div class="count"><b>${a ? fmt(a.clear_spacing_mm) : "–"}</b>mm clear spacing</div>
+    </div>
+    ${g.combination ? `<p>Governing: ${esc(g.combination)}, node ${g.node}, y ${fmt(g.y, 2)} m, z ${fmt(g.z, 2)} m.
+      N<sub>Ed</sub> = ${fmt(g.N_kN)} kN (compression +), M<sub>Ed</sub> = ${fmt(g.M_kNm)} kNm, M<sub>Rd</sub> at this N = ${fmt(g.M_Rd_kNm)} kNm.</p>` : ""}
+    ${p.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
+    <details style="margin-top:12px"><summary>Other bar sizes that pass</summary><div class="scroll"><table>
+      <tr><th>Bars</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
+      ${p.alternatives.map((x) => `<tr><td>${esc(x.label)}</td><td>${fmt(x.area_mm2)}</td><td>${fmt(x.utilisation, 3)}</td><td>${fmt(x.steel_ratio_kg_m3)}</td><td>${fmt(x.clear_spacing_mm)}</td></tr>`).join("")}
+    </table></div></details>`;
+  if (p.curve.length) {
+    nmChart(card.querySelector('[data-kind="nm"]'), p);
+    profileChart(card.querySelector('[data-kind="profile"]'), p);
+  }
+  return card;
+}
+
+// Small SVG chart helpers ------------------------------------------------------
+function ticks(lo, hi, n = 5) {
+  const span = hi - lo || 1;
+  const step0 = span / n;
+  const mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= step0);
+  const out = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+
+// Enough decimals to tell neighbouring ticks apart (0.25 steps need two).
+const decimals = (t) => (t.length > 1 ? (String(+(t[1] - t[0]).toFixed(10)).split(".")[1] || "").length : 0);
+
+function frame(el, { w = 520, h = 340, xDomain, yDomain, xLabel, yLabel, title, yReverse = false }) {
+  const m = { l: 64, r: 16, t: 28, b: 44 };
+  const x = (v) => m.l + ((v - xDomain[0]) / (xDomain[1] - xDomain[0])) * (w - m.l - m.r);
+  const y = (v) => {
+    const f = (v - yDomain[0]) / (yDomain[1] - yDomain[0]);
+    return yReverse ? m.t + f * (h - m.t - m.b) : h - m.b - f * (h - m.t - m.b);
+  };
+  const xt = ticks(...xDomain);
+  const yt = ticks(...yDomain);
+  const grid =
+    xt.map((v) => `<line class="grid" x1="${x(v)}" x2="${x(v)}" y1="${m.t}" y2="${h - m.b}"/><text class="tick" x="${x(v)}" y="${h - m.b + 16}" text-anchor="middle">${fmt(v, decimals(xt))}</text>`).join("") +
+    yt.map((v) => `<line class="grid" x1="${m.l}" x2="${w - m.r}" y1="${y(v)}" y2="${y(v)}"/><text class="tick" x="${m.l - 8}" y="${y(v) + 4}" text-anchor="end">${fmt(v, decimals(yt))}</text>`).join("");
+  el.innerHTML = `<div class="chart-title">${esc(title)}</div>
+    <svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(title)}">${grid}
+    <text class="axis" x="${(m.l + w - m.r) / 2}" y="${h - 8}" text-anchor="middle">${esc(xLabel)}</text>
+    <text class="axis" transform="translate(14 ${(m.t + h - m.b) / 2}) rotate(-90)" text-anchor="middle">${esc(yLabel)}</text>
+    <g class="marks"></g></svg><div class="tip" hidden></div>`;
+  return { svg: el.querySelector("svg"), g: el.querySelector("g.marks"), tip: el.querySelector(".tip"), x, y, w, h, m };
+}
+
+function showTip(c, evt, html) {
+  const r = c.svg.getBoundingClientRect();
+  c.tip.hidden = false;
+  c.tip.innerHTML = html;
+  c.tip.style.left = `${Math.min(evt.clientX - r.left + 12, r.width - 180)}px`;
+  c.tip.style.top = `${evt.clientY - r.top + 12}px`;
+}
+
+function nmChart(el, p) {
+  // x: M (kNm), y: N (kN, compression up). Capacity curve for persistent factors.
+  const curve = p.curve;
+  const pts = p.points;
+  const maxM = Math.max(...curve.map((c) => c[1]), ...pts.map((q) => q[2])) * 1.05;
+  const nVals = curve.map((c) => c[0]).concat(pts.map((q) => q[1]));
+  const c = frame(el, {
+    xDomain: [0, maxM], yDomain: [Math.min(...nVals) * 1.05, Math.max(...nVals) * 1.05],
+    xLabel: "M (kNm)", yLabel: "N (kN, compression +)", title: "N–M interaction, all ULS results",
+  });
+  const path = curve.map((q, i) => `${i ? "L" : "M"}${c.x(q[1]).toFixed(1)},${c.y(q[0]).toFixed(1)}`).join("");
+  const g = p.governing;
+  c.g.innerHTML = `<line class="zero" x1="${c.x(0)}" x2="${c.x(maxM)}" y1="${c.y(0)}" y2="${c.y(0)}"/>
+    ${pts.map((q) => `<circle class="pt" cx="${c.x(q[2]).toFixed(1)}" cy="${c.y(q[1]).toFixed(1)}" r="3"/>`).join("")}
+    <path class="cap" d="${path}"/>
+    ${g.combination ? `<circle class="gov" cx="${c.x(g.M_kNm)}" cy="${c.y(g.N_kN)}" r="5"/>
+      <text class="label" x="${c.x(g.M_kNm) - 8}" y="${c.y(g.N_kN) - 8}" text-anchor="end">governing, ${fmt(p.utilisation, 2)}</text>` : ""}
+    <text class="label" x="${c.x(curve[Math.floor(curve.length / 3)][1]) + 6}" y="${c.y(curve[Math.floor(curve.length / 3)][0])}">capacity</text>`;
+  const xs = pts.map((q) => c.x(q[2]));
+  const ys = pts.map((q) => c.y(q[1]));
+  c.svg.onmousemove = (evt) => {
+    const r = c.svg.getBoundingClientRect();
+    const sx = ((evt.clientX - r.left) / r.width) * c.w;
+    const sy = ((evt.clientY - r.top) / r.height) * c.h;
+    let best = -1, bd = 144; // within 12 px
+    for (let i = 0; i < xs.length; i++) {
+      const d = (xs[i] - sx) ** 2 + (ys[i] - sy) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    if (best < 0) { c.tip.hidden = true; return; }
+    const q = pts[best];
+    showTip(c, evt, `<b>${esc(q[0])}</b><br>N ${fmt(q[1])} kN<br>M ${fmt(q[2])} kNm<br>utilisation ${fmt(q[3], 3)}`);
+  };
+  c.svg.onmouseleave = () => (c.tip.hidden = true);
+}
+
+function profileChart(el, p) {
+  // Max utilisation at each level (0.1 m bands): z up the page, utilisation across.
+  const prof = p.profile;
+  const zs = prof.map((q) => q.z);
+  const maxU = Math.max(1.1, ...prof.map((q) => q.util)) * 1.05;
+  const c = frame(el, {
+    xDomain: [0, maxU], yDomain: [Math.min(...zs), Math.max(...zs)],
+    xLabel: "Utilisation", yLabel: "Level z (m)", title: "Utilisation along the pile",
+  });
+  const path = prof.map((q, i) => `${i ? "L" : "M"}${c.x(q.util).toFixed(1)},${c.y(q.z).toFixed(1)}`).join("");
+  c.g.innerHTML = `<line class="limit" x1="${c.x(1)}" x2="${c.x(1)}" y1="${c.m.t}" y2="${c.h - c.m.b}"/>
+    <text class="label" x="${c.x(1) + 4}" y="${c.m.t + 12}">1.0</text>
+    <path class="series" d="${path}"/>`;
+  c.svg.onmousemove = (evt) => {
+    const r = c.svg.getBoundingClientRect();
+    const sy = ((evt.clientY - r.top) / r.height) * c.h;
+    let best = 0;
+    prof.forEach((q, i) => { if (Math.abs(c.y(q.z) - sy) < Math.abs(c.y(prof[best].z) - sy)) best = i; });
+    const q = prof[best];
+    c.g.querySelector(".hover")?.remove();
+    c.g.insertAdjacentHTML("beforeend", `<circle class="hover" cx="${c.x(q.util)}" cy="${c.y(q.z)}" r="4"/>`);
+    showTip(c, evt, `z ${fmt(q.z, 2)} m<br>utilisation ${fmt(q.util, 3)}`);
+  };
+  c.svg.onmouseleave = () => { c.tip.hidden = true; c.g.querySelector(".hover")?.remove(); };
 }

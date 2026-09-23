@@ -11,11 +11,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .design.runner import run_piles
 from .materials import catalogue
 from .project import DesignSettings, Project, ProjectInfo
 from .reader import UnsupportedWorkbook
 from .store import ProjectNotFound, ProjectStore
-from .validation import import_workbook
+from .validation import ImportResult, import_workbook
 
 STATIC = Path(__file__).parent / "static"
 ALLOWED = {".xlsb", ".xlsx", ".xlsm"}
@@ -131,8 +132,7 @@ def add_elements(project_id: str, body: ElementNames) -> dict:
 # --- Workbooks ------------------------------------------------------------------------
 
 
-@app.post("/api/workbooks/check")
-def check_workbook(file: UploadFile) -> dict:
+def _import_upload(file: UploadFile) -> ImportResult:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED:
         raise HTTPException(400, f"Upload a .xlsb, .xlsx or .xlsm file (got '{suffix or 'no extension'}').")
@@ -141,9 +141,52 @@ def check_workbook(file: UploadFile) -> dict:
         with path.open("wb") as out:
             shutil.copyfileobj(file.file, out, length=1024 * 1024)
         try:
-            result = import_workbook(path)
+            return import_workbook(path)
         except UnsupportedWorkbook as e:
             raise HTTPException(400, str(e)) from e
         except Exception as e:  # corrupt or password-protected files
             raise HTTPException(400, f"Could not read the workbook: {e}") from e
-    return {"file": file.filename, **result.summary()}
+
+
+@app.post("/api/workbooks/check")
+def check_workbook(file: UploadFile) -> dict:
+    return {"file": file.filename, **_import_upload(file).summary()}
+
+
+@app.post("/api/projects/{project_id}/workbook")
+def upload_project_workbook(project_id: str, file: UploadFile) -> dict:
+    _get(project_id)
+    result = _import_upload(file)
+    return store().save_workbook(project_id, file.filename or "workbook", result)
+
+
+@app.get("/api/projects/{project_id}/workbook")
+def project_workbook(project_id: str) -> dict:
+    _get(project_id)
+    summary = store().workbook_summary(project_id)
+    if summary is None:
+        raise HTTPException(404, "No workbook uploaded for this project yet.")
+    return summary
+
+
+# --- Design ------------------------------------------------------------------------------
+
+
+@app.post("/api/projects/{project_id}/design/piles")
+def design_piles(project_id: str) -> dict:
+    project = _get(project_id)
+    workbook = store().load_workbook(project_id)
+    if workbook is None:
+        raise HTTPException(409, "Upload the workbook on the Workbook tab first.")
+    results = run_piles(project, workbook)
+    store().save_results(project_id, results)
+    return results
+
+
+@app.get("/api/projects/{project_id}/design/piles")
+def pile_results(project_id: str) -> dict:
+    _get(project_id)
+    results = store().load_results(project_id)
+    if results is None:
+        raise HTTPException(404, "The piles have not been designed yet.")
+    return results
