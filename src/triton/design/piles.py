@@ -22,6 +22,7 @@ from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, pile_cover, with_project_grades
 from .circular import CircularSection, ConcreteLaw, Ring, SteelLaw, hull_indices
 from .governing import qp_loads, station_sets
+from .pile_cracks import pile_crack_widths
 
 MIN_BAR = 16  # mm, EN 1992-1-1 9.8.5(3)
 MIN_BARS = 6  # 9.8.5(3)
@@ -153,6 +154,7 @@ class PileDesign:
     alternatives: list[dict] = field(default_factory=list)
     governing_sets: list[dict] = field(default_factory=list)
     connection: dict | None = None
+    cracks: dict | None = None
     bands: list[list[float]] = field(default_factory=list)
     moments: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -178,6 +180,7 @@ class PileDesign:
             "steel": self.steel,
             "governing_sets": self.governing_sets,
             "connection": self.connection,
+            "cracks": self.cracks,
             "bands": self.bands,
             "moments": self.moments,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
@@ -332,11 +335,47 @@ def _utilisation(
     return util
 
 
-class _Checker:
-    """Maximum utilisation of a cage over all loads, using only the hull points of each load group."""
+def crack_loads(pile: PileInput, qp: pd.DataFrame) -> pd.DataFrame:
+    """The QP rows whose crack width is checked: none inside a steel casing."""
+    c = pile.casing
+    if c is None or qp.empty:
+        return qp
+    inside = (qp["Z"] >= c.bottom_level - 1e-9) & (qp["Z"] <= c.top_level + 1e-9)
+    return qp[~inside]
 
-    def __init__(self, pile: PileInput, settings: DesignSettings, loads: pd.DataFrame) -> None:
+
+def crack_widths(pile: PileInput, a: Arrangement, settings: DesignSettings, qp: pd.DataFrame) -> pd.DataFrame:
+    """7.3.4 crack width of each QP row (see ``pile_cracks``)."""
+    conc = concrete(pile.concrete)
+    return pile_crack_widths(
+        pile.diameter,
+        [(r.count, r.diameter, r.radius) for r in a.rings],
+        qp,
+        fctm=conc.fctm,
+        ecm=conc.ecm,
+        creep=settings.cracking.creep_coefficient,
+    )
+
+
+def crack_utilisation(
+    pile: PileInput, a: Arrangement, settings: DesignSettings, qp: pd.DataFrame
+) -> np.ndarray:
+    if qp.empty:
+        return np.zeros(0)
+    return crack_widths(pile, a, settings, qp)["wk"].to_numpy() / pile.crack_width_limit
+
+
+class _Checker:
+    """Maximum utilisation of a cage over all loads, using only the hull points of each load group.
+
+    With QP loads the crack width over its limit counts too.
+    """
+
+    def __init__(
+        self, pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, qp: pd.DataFrame | None = None
+    ) -> None:
         self.pile, self.settings = pile, settings
+        self.qp = qp if qp is not None else pd.DataFrame()
         self.groups = []
         accidental = _accidental(loads)
         for flag in (False, True):
@@ -349,8 +388,11 @@ class _Checker:
     def __call__(self, a: Arrangement) -> float:
         if a not in self.memo:
             self.memo[a] = max(
-                float(_section(self.pile, a, self.settings, flag).utilisation(n, m).max())
-                for flag, n, m in self.groups
+                [
+                    float(_section(self.pile, a, self.settings, flag).utilisation(n, m).max())
+                    for flag, n, m in self.groups
+                ]
+                + [float(crack_utilisation(self.pile, a, self.settings, self.qp).max(initial=0.0))]
             )
         return self.memo[a]
 
@@ -402,7 +444,8 @@ def design_pile(
             name, None, math.inf, False, {}, area_min, area_max, 0.0, 0.0, limits, geom, notes=notes
         )
 
-    check = _Checker(pile, settings, loads)
+    qp = crack_loads(pile, qp_loads(sheets, pile.head_level, above))
+    check = _Checker(pile, settings, loads, qp)
     passing: list[Arrangement] = []
     strongest, strongest_u = None, math.inf
     for fam in families:
@@ -430,15 +473,15 @@ def design_pile(
     else:
         chosen = strongest
         notes.append(
-            f"No cage within the {pr.max_steel_ratio:g}% limit and the allowed rows carries the loads; "
-            "the strongest one is shown."
+            f"No cage within the {pr.max_steel_ratio:g}% limit and the allowed rows carries the loads "
+            "and keeps the QP crack widths within the limit; the strongest one is shown."
         )
 
     curtailment = None
     if pr.curtail and passed:
         from .curtailment import curtail  # imports this module
 
-        curtailment = curtail(name, pile, settings, loads, chosen, area_min)
+        curtailment = curtail(name, pile, settings, loads, chosen, area_min, qp)
     shear, steel = _shear_and_steel(pile, settings, loads, chosen, curtailment, geom)
     positions = (
         loads[["X", "Y"]].round(2).drop_duplicates().sort_values(["Y", "X"]).to_numpy().tolist()
@@ -468,6 +511,12 @@ def design_pile(
         (geom["head_level_m"], geom["toe_level_m"], chosen.to_dict())
     ]
     governing_sets = station_sets(pile, settings, loads, qp_loads(sheets, pile.head_level, above), stations)
+    cracks = crack_summary(pile, settings, qp, stations)
+    if not cracks["passed"]:
+        passed = False
+        notes.append(
+            f"QP crack width {cracks['wk_mm']:g} mm is over the {pile.crack_width_limit:g} mm limit."
+        )
     alternatives = [
         {
             **a.to_dict(),
@@ -496,6 +545,7 @@ def design_pile(
         alternatives=alternatives,
         governing_sets=governing_sets,
         connection=connection_check(pile, settings, loads, chosen),
+        cracks=cracks,
         bands=util_bands(loads),
         moments=[
             {"z": float(z), "M_kNm": round(float(m), 1)}
@@ -512,6 +562,50 @@ def design_pile(
             for c, n, m, u in loads[["combination", "N", "M", "util"]].itertuples(index=False)
         ],
     )
+
+
+def crack_summary(pile: PileInput, settings: DesignSettings, qp: pd.DataFrame, stations: list[tuple]) -> dict:
+    """The worst QP crack width down the pile with the cage of each station, and a profile per 0.5 m."""
+    out: dict = {"limit_mm": pile.crack_width_limit, "wk_mm": None, "passed": True, "profile": []}
+    c = pile.casing
+    if c is not None:
+        out["casing"] = f"No crack check inside the steel casing, {c.bottom_level:g} to {c.top_level:g} m."
+    if qp.empty:
+        out["note"] = "No QP results outside a casing: no crack check."
+        return out
+    parts = []
+    for i, (top, bottom, cage) in enumerate(stations):
+        last = i == len(stations) - 1
+        rows = qp[(qp["Z"] <= top + 1e-9) & ((qp["Z"] > bottom + 1e-9) | last)]
+        if rows.empty:
+            continue
+        rings = [RingSpec(g["count"], g["diameter"], g["radius"], 0.0) for g in cage["rings"]]
+        a = Arrangement(tuple(rings), 1, 0.0, 0.0)
+        parts.append(rows.join(crack_widths(pile, a, settings, rows)).assign(cage=cage["label"]))
+    if not parts:
+        return out
+    f = pd.concat(parts)
+    w = f.loc[f["wk"].idxmax()]
+    out |= {
+        "wk_mm": round(float(w["wk"]), 3),
+        "passed": bool(f["wk"].max() <= pile.crack_width_limit + 1e-9),
+        "governing": {
+            "combination": w["combination"],
+            "z": round(float(w["Z"]), 2),
+            "N_kN": round(float(w["N"]), 1),
+            "M_kNm": round(float(w["M"]), 1),
+            "sigma_s_MPa": round(float(w["sigma_s"]), 1),
+            "sr_max_mm": None if pd.isna(w["sr_max"]) else round(float(w["sr_max"])),
+            "rho_eff": round(float(w["rho_eff"]), 4),
+            "x_mm": round(float(w["x"])),
+            "cage": w["cage"],
+        },
+        "profile": [
+            {"z": float(z), "wk": round(float(v), 3)}
+            for z, v in f.groupby(f["Z"].mul(2).round() / 2)["wk"].max().sort_index(ascending=False).items()
+        ],
+    }
+    return out
 
 
 def util_bands(loads: pd.DataFrame) -> list[list[float]]:

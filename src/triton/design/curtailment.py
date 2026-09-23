@@ -28,7 +28,7 @@ import pandas as pd
 
 from ..materials import STEEL_DENSITY
 from ..project import DesignSettings, PileInput
-from .piles import MAX_RATIO_AT_LAPS, Arrangement, _families, _utilisation
+from .piles import MAX_RATIO_AT_LAPS, Arrangement, _families, _utilisation, crack_utilisation
 
 STEP = 0.05  # m, level grid
 LENGTH_STEP = 0.25  # m, run lengths tried for least steel
@@ -99,12 +99,15 @@ def curtail(
     loads: pd.DataFrame,
     top_cage: Arrangement,
     area_min: float,
+    qp: pd.DataFrame | None = None,
 ) -> dict:
     pr = settings.piles
     head = float(pile.head_level if pile.head_level is not None else loads["Z"].max())
     toe = float(loads["Z"].min())
     n_bands = max(1, math.ceil((head - toe) / STEP - 1e-9))
     band = np.clip(((head - loads["Z"].to_numpy()) / STEP).astype(int), 0, n_bands - 1)
+    if qp is not None and len(qp):
+        qp_band = np.clip(((head - qp["Z"].to_numpy()) / STEP).astype(int), 0, n_bands - 1)
     ac = math.pi * pile.diameter**2 / 4
     volume = ac / 1e6 * (head - toe)
 
@@ -114,6 +117,8 @@ def curtail(
         u = _utilisation(pile, c, settings, loads)
         worst = np.zeros(n_bands)
         np.maximum.at(worst, band, u)
+        if qp is not None and len(qp):
+            np.maximum.at(worst, qp_band, crack_utilisation(pile, c, settings, qp))
         band_util[c] = worst
         ok[c] = np.concatenate([[0], np.cumsum(worst > 1.0 + 1e-9)])  # failing bands before each index
     cages = _prune(cages, ok)

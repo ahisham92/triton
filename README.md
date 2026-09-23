@@ -166,8 +166,17 @@ can place the bars from this file alone; it only has to map Plaxis coordinates t
 
 Set each pile's **top level** to the slab soffit (see Project setup). The results give the steel
 for all piles of each type.
-Not yet included: crack width, and a structural casing acting with the concrete
-(the pile is then designed as reinforced concrete alone, which is conservative), and starter bars into the slab.
+### Crack width
+
+QP crack widths to EN 1992-1-1 7.3.4 at the extreme bar, from the elastic cracked circle (no
+concrete tension, Ec,eff = Ecm/(1 + φ)) with a bar on the bending axis. Ac,eff is the circular
+segment of depth hc,ef at the tension face, or a ring round the pile when it is all in tension
+(k2 then from the extreme strains). sr,max uses the outer row's spacing round its circle. There is
+no check inside a steel casing. The cage search and the curtailment both keep wk within the
+pile's limit, so a cage can be heavier than strength alone needs.
+
+Not yet included: a structural casing acting with the concrete (the pile is then designed as
+reinforced concrete alone, which is conservative), and starter bars into the slab.
 
 ### Governing sets for AdSec
 

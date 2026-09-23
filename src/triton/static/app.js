@@ -739,12 +739,13 @@ function renderResults(res) {
         <td class="cell ${p.passed ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
         <td>${sh ? esc(sh.zones[0].link) : "–"}</td>
         <td class="cell ${sh ? (sh.passed ? "ok" : "error") : ""}">${sh ? fmt(sh.utilisation, 2) : "–"}</td>
+        <td class="cell ${p.cracks?.wk_mm == null ? "" : p.cracks.passed ? "ok" : "error"}">${p.cracks?.wk_mm == null ? "–" : `${fmt(p.cracks.wk_mm, 2)} / ${fmt(p.cracks.limit_mm, 2)}`}</td>
         <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(kg)}</td></tr>`;
     })
     .join("");
   out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}.</p>
     ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
-    ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
+    ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>Crack mm</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
     <div id="pile-cards"></div><div id="combi-cards"></div>
     ${beams.length ? `<h2>Beams</h2><div class="panel scroll"><table><tr><th>Element</th><th>b × h</th><th>Longitudinal bars</th><th>Links</th><th>Transverse bars (top / bottom)</th><th>Max util.</th><th>kg/m³</th></tr>
       ${beams.map((b) => `<tr><td>${esc(b.element)}</td><td>${fmt(b.width_mm)} × ${fmt(b.depth_mm)}</td><td>${b.cage ? esc(b.cage.label) : "–"}</td>
@@ -1185,6 +1186,7 @@ function pileCard(p) {
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
     ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
     ${connectionBlock(p.connection)}
+    ${pileCrackBlock(p.cracks)}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
     ${p.moments?.length ? `<div class="charts"><div class="chart" data-kind="moments"></div><div data-kind="peaks"></div></div>` : ""}
     ${setsBlock(p.governing_sets)}
@@ -1203,6 +1205,21 @@ function pileCard(p) {
     peaksBlock(card.querySelector('[data-kind="peaks"]'), p.peaks || []);
   }
   return card;
+}
+
+function pileCrackBlock(c) {
+  // QP crack width at the extreme bar, EN 1992-1-1 7.3.4, with the cage at each level.
+  if (!c) return "";
+  const g = c.governing;
+  const head = `<h3>Crack width (QP) <span class="sev ${c.passed ? "ok" : "error"}">${c.wk_mm == null ? "not checked" : c.passed ? "passes" : "fails"}</span></h3>`;
+  const casing = c.casing ? `<p class="status">${esc(c.casing)}</p>` : "";
+  if (c.wk_mm == null) return head + casing + `<p class="status">${esc(c.note || "")}</p>`;
+  return `${head}
+    <p>w<sub>k</sub> = ${fmt(c.wk_mm, 3)} mm against ${fmt(c.limit_mm, 2)} mm, at z ${fmt(g.z, 2)} m (${esc(g.combination)}),
+      N = ${fmt(g.N_kN)} kN, M = ${fmt(g.M_kNm)} kNm with ${esc(g.cage)}:
+      σ<sub>s</sub> = ${fmt(g.sigma_s_MPa)} MPa, x = ${fmt(g.x_mm)} mm, s<sub>r,max</sub> = ${fmt(g.sr_max_mm)} mm, ρ<sub>p,eff</sub> = ${fmt(g.rho_eff, 4)}.</p>
+    ${casing}
+    <p class="status">EN 1992-1-1 7.3.4 at the extreme bar of the cracked section, E<sub>c,eff</sub> = E<sub>cm</sub>/(1 + φ). A<sub>c,eff</sub> is the circular segment of depth h<sub>c,ef</sub> at the tension face (a ring round the pile when it is all in tension). The cage choice and curtailment keep w<sub>k</sub> within the limit.</p>`;
 }
 
 function momentChart(el, p) {

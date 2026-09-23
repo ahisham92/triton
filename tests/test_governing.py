@@ -129,7 +129,7 @@ def test_no_crack_check_gives_qp_rows_of_ones():
     # A casing over the top 4 m only: stations below it keep their QP sets.
     pile = PileInput(head_level=0.0, casing=Casing(top_level=0.0, bottom_level=-4.0))
     d = design_pile("Pile(1)", pile, DesignSettings(), pile_sheets(LOADS)).to_dict()
-    assert d["governing_sets"][-1]["qp"][0]["N_kN"] == pytest.approx(3000.0)
+    assert d["governing_sets"][-1]["qp"][0]["N_kN"] == pytest.approx(0.6 * 3000.0)
     # Points inside the casing are left out of every station's QP sets.
     qp = [r for st in d["governing_sets"] for r in st["qp"] if r["z"] is not None]
     assert qp and all(r["z"] < -4.0 for r in qp)

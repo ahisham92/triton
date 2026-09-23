@@ -210,7 +210,9 @@ def pile_rows(loads, extras=(1.0, 2.0, 3.0, "N/A")):
 
 
 def pile_sheets(loads, qp_loads=None):
-    raw = {"Pile(1)-PT-B-Apron": pile_rows(loads), "Pile(1)-QP": pile_rows(qp_loads or loads)}
+    # QP loads default to 60% of the ULS ones, about the usual ratio.
+    qp_loads = qp_loads or [(r[0], r[1], *(0.6 * v for v in r[2:])) for r in loads]
+    raw = {"Pile(1)-PT-B-Apron": pile_rows(loads), "Pile(1)-QP": pile_rows(qp_loads)}
     return import_sheets(raw).elements()["Pile(1)"]
 
 
@@ -226,7 +228,7 @@ def test_light_loads_get_minimum_steel():
 
 def test_design_uses_resultant_moment_and_concrete_sign():
     # Plaxis tension (+1000 kN) becomes -1000 kN in the design sign; M = hypot(3000, 4000).
-    sheets = pile_sheets([(1, 0.0, 1000.0, 3000.0, 4000.0)])
+    sheets = pile_sheets([(1, 0.0, 1000.0, 3000.0, 4000.0)], [(1, 0.0, 300.0, 900.0, 1200.0)])
     d = design_pile("Pile(1)", PileInput(head_level=1.0), DesignSettings(), sheets)
     assert d.passed
     assert d.governing["N_kN"] == -1000.0 and d.governing["M_kNm"] == 5000.0
@@ -238,7 +240,9 @@ def test_qp_is_not_used_for_ultimate_design():
     uls = [(1, 0.0, -3000.0, 100.0, 0.0)]
     heavy_qp = [(1, 0.0, -3000.0, 50_000.0, 0.0)]
     d = design_pile("Pile(1)", PileInput(head_level=1.0), DesignSettings(), pile_sheets(uls, heavy_qp))
-    assert d.passed and {p[0] for p in d.points} == {"PT-B-Apron"}
+    assert d.utilisation < 1 and {p[0] for p in d.points} == {"PT-B-Apron"}
+    # QP is only for crack widths, which it fails here.
+    assert not d.passed and not d.cracks["passed"] and d.cracks["governing"]["combination"] == "QP"
 
 
 def test_results_above_the_pile_head_are_ignored():
@@ -259,7 +263,7 @@ def test_overloaded_pile_reports_the_strongest_arrangement():
 
 
 def test_extra_rows_only_when_needed():
-    sheets = pile_sheets([(1, 0.0, -2000.0, 3000.0, 0.0)])
+    sheets = pile_sheets([(1, 0.0, -2000.0, 3000.0, 0.0)], [(1, 0.0, -1000.0, 1000.0, 0.0)])
     pile = PileInput(head_level=1.0)
     default = design_pile("Pile(1)", pile, DesignSettings(), sheets)
     assert default.passed and default.arrangement.rows == 1
