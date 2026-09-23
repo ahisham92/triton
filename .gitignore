@@ -8,3 +8,5 @@ __pycache__/
 *.xlsx
 *.xlsm
 *.rar
+# saved projects when running locally
+data/
