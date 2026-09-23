@@ -11,15 +11,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from .figures import slab_stations
 from .project import DesignSettings, Project, Section
 
 
 @dataclass
 class Block:
-    kind: str  # "h1", "h2", "h3", "p", "note", "caption", "bullets", "kv", "table"
+    kind: str  # "h1", "h2", "h3", "p", "note", "caption", "bullets", "kv", "table", "image"
     text: str = ""
     rows: list[list[Any]] = field(default_factory=list)
     headers: list[str] = field(default_factory=list)
+    image: bytes = b""  # PNG, for kind "image"
 
 
 @dataclass
@@ -38,6 +40,10 @@ class Report:
     def note(self, text: str) -> None:
         if text:
             self.blocks.append(Block("note", text))
+
+    def image(self, png: bytes, caption: str) -> None:
+        self.blocks.append(Block("image", image=png))
+        self.caption(caption)
 
     def caption(self, text: str) -> None:
         self.blocks.append(Block("caption", text))
@@ -464,6 +470,8 @@ def _strip_label(s: dict, row: dict) -> str:
 
 def _slab_summary(r: Report, s: dict) -> None:
     sd = s.get("strip_design")
+    if sd and s.get("box"):
+        r.image(slab_stations(sd, s["box"]), f"Figure 3-1: {s['element']} strips and stations")
     if sd:
         r.caption(
             f"Table 3-2: Summary of design results for {s['element']} ({s.get('thickness_mm', 0):g} mm)"
@@ -1198,6 +1206,13 @@ def to_xlsx(rep: Report) -> bytes:
         elif b.kind == "caption":
             ws.cell(row, 1, b.text).font = Font(bold=True, italic=True)
             row += 1
+        elif b.kind == "image":
+            from openpyxl.drawing.image import Image as XlImage
+
+            pic = XlImage(io.BytesIO(b.image))
+            pic.width, pic.height = pic.width * 0.5, pic.height * 0.5
+            ws.add_image(pic, f"A{row}")
+            row += int(pic.height / 20) + 2
         elif b.kind == "bullets":
             for x in b.rows:
                 ws.cell(row, 1, "• " + x[0])
@@ -1267,6 +1282,8 @@ def to_docx(rep: Report) -> bytes:
             doc.add_heading(b.text, int(b.kind[1]))
         elif b.kind == "p":
             doc.add_paragraph(b.text)
+        elif b.kind == "image":
+            doc.add_picture(io.BytesIO(b.image), width=Cm(16))
         elif b.kind == "caption":
             doc.add_paragraph(b.text, style="Caption")
         elif b.kind == "bullets":
@@ -1333,6 +1350,12 @@ def to_pdf(rep: Report) -> bytes:
             flow.append(Paragraph(esc(b.text), body))
         elif b.kind == "note":
             flow.append(Paragraph(esc(b.text), note))
+        elif b.kind == "image":
+            from reportlab.lib.utils import ImageReader
+            from reportlab.platypus import Image as PdfImage
+
+            iw, ih = ImageReader(io.BytesIO(b.image)).getSize()
+            flow.append(PdfImage(io.BytesIO(b.image), width=width, height=width * ih / iw))
         elif b.kind == "caption":
             flow.append(Paragraph(esc(b.text), caption))
         elif b.kind == "bullets":

@@ -279,9 +279,12 @@ section and loads; the rest (code, national parameters, bar rules, materials) ar
 (`GET …/design/report.{docx|pdf|xlsx}?detail=summary|detailed`). The layout follows the office
 design reports: 1 Introduction (purpose, scope, methodology, units), 2 Design criteria (standards,
 materials, crack limits, covers, corrosion, factors, combinations), 3 Design of sections (Table 3-1
-per element part: crack width, M/MRd, acting moment, capacity, governing combination; the slab
-table; shear tables for piles and beams; punching per pile; reinforcement quantities). The
-detailed report adds Appendix A with each element's calculation.
+per element part: crack width, M/MRd, acting moment, capacity, governing combination, with the combi
+tube in bending alone and with the N–M interaction; Figure 3-1, a plan of the slab's column and field
+strips, pile rows and stations; the slab table; shear tables for piles and beams; punching per pile;
+reinforcement quantities). Chapter 2 lists the tube and sheet pile corrosion by zone. The detailed
+report adds Appendix A with each element's calculation, including the bollard ties and the truss
+between king piles.
 
 ## Sheet pile wall
 

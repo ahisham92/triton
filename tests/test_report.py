@@ -43,6 +43,7 @@ def test_report_follows_the_office_layout(designed):
     captions = [b.text for b in rep.blocks if b.kind == "caption"]
     assert captions[0] == "Table 3-1: Summary of design results for Section 01"
     assert any("Punching" in c for c in captions)
+    assert "Figure 3-1: Deck strips and stations" in captions
     short = build_report(project, section, results, "summary")
     assert not any(b.text.startswith("Appendix") for b in short.blocks if b.kind == "h1")
 
@@ -73,9 +74,11 @@ def test_renderers_write_files(designed, fmt):
     render, _ = RENDERERS[fmt]
     data = render(build_report(project, section, results, "detailed"))
     if fmt == "pdf":
-        assert data.startswith(b"%PDF")
+        assert data.startswith(b"%PDF") and b"/Subtype /Image" in data
     else:
-        assert zipfile.ZipFile(io.BytesIO(data)).namelist()
+        names = zipfile.ZipFile(io.BytesIO(data)).namelist()
+        # The slab strips and stations figure (the office's Figure 5-1) is embedded.
+        assert any(n.startswith(("word/media/", "xl/media/")) for n in names)
 
 
 def test_report_route_needs_a_design():
