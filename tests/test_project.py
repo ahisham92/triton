@@ -94,12 +94,10 @@ def test_project_crud(client):
 def test_sections(client):
     p = client.post("/api/projects", json={"section_name": "Section 01a"}).json()
     first = p["sections"][0]["id"]
-    body = {"name": "Section 02", "slab_soffit_level": 1.7}
-    r = client.post(f"/api/projects/{p['id']}/sections", json=body)
+    r = client.post(f"/api/projects/{p['id']}/sections", json={"name": "Section 02"})
     assert r.status_code == 201
     names = [s["name"] for s in r.json()["sections"]]
     assert names == ["Section 01a", "Section 02"]
-    assert r.json()["sections"][1]["slab_soffit_level"] == 1.7
     assert client.post(f"/api/projects/{p['id']}/sections", json={"name": "section 02"}).status_code == 400
 
     r = client.delete(f"/api/projects/{p['id']}/sections/{first}")

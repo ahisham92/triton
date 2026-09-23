@@ -60,13 +60,18 @@ def design_combi_wall(
         if not f.empty:
             infill_sheets[combo] = replace(sheet, frame=scale_forces(f, 1 - share))
     infill = design_pile(name, infill_as_pile(wall), settings, infill_sheets).to_dict()
-    infill["notes"] = [n for n in infill["notes"] if not n.startswith("No pile head level")]
+    infill["notes"] = [
+        n.replace("into the slab", "into the front beam")
+        for n in infill["notes"]
+        if not n.startswith("No pile top level")
+    ]
     infill["head_name"] = "the front beam"
 
     tube = Tube(
         wall.tube_diameter, wall.tube_thickness, wall.corrosion_loss, wall.steel, wall.fabrication_class
     )
-    steel = check_tube(tube, tube_loads(sheets, share, bottom, wall.top_level_to_ignore))
+    above = settings.results_into_connection / 1e3
+    steel = check_tube(tube, tube_loads(sheets, share, bottom, wall.top_level_to_ignore, above))
 
     notes = [
         f"Actions where the tube is filled: {share:.0%} to the steel tube and {1 - share:.0%} to the "
@@ -75,7 +80,7 @@ def design_combi_wall(
         "The tube is a permanent casing, so the infill has no crack width check.",
     ]
     if wall.top_level_to_ignore is None:
-        notes.append("No front beam soffit level is set, so results inside the front beam are included.")
+        notes.append("No king pile top level is set, so results inside the front beam are included.")
 
     u = [x for x in (infill.get("utilisation"), steel.get("utilisation")) if x is not None]
     positions = infill.get("positions") or []

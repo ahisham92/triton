@@ -136,8 +136,17 @@ def plastic_utilisation(n_kn: np.ndarray, m_knm: np.ndarray, v_kn: np.ndarray, t
     return np.where(v_kn >= r["V_pl_kN"], np.inf, u)
 
 
-def tube_loads(sheets: dict[str, SheetData], steel_share: float, filled_from: float, top: float | None):
-    """ULS points with the tube's share of the actions (Plaxis sign, kN and kNm)."""
+def tube_loads(
+    sheets: dict[str, SheetData],
+    steel_share: float,
+    filled_from: float,
+    top: float | None,
+    above: float = 0.0,
+):
+    """ULS points with the tube's share of the actions (Plaxis sign, kN and kNm).
+
+    Results up to ``above`` (m) over the top level are kept and taken at the top level.
+    """
     parts = []
     for combo, sheet in sheets.items():
         ctype = combination_type(combo)
@@ -147,7 +156,8 @@ def tube_loads(sheets: dict[str, SheetData], steel_share: float, filled_from: fl
         cols = [c for c in ("Node", "X", "Y", "Z", "N", "Q_12", "Q_13", "M_2", "M_3") if c in f.columns]
         f = f[cols].copy()
         if top is not None:
-            f = f[f["Z"] <= top + 1e-9]
+            f = f[f["Z"] <= top + above + 1e-9]
+            f = f.assign(Z=f["Z"].clip(upper=top))
         filled = f["Z"] >= filled_from - 1e-9
         share = np.where(filled, steel_share, 1.0)
         f = f.assign(

@@ -50,9 +50,6 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
             walls.append(wall)
             continue
         notes = []
-        if element.head_level is None and section.slab_soffit_level is not None:
-            element = element.model_copy(update={"head_level": section.slab_soffit_level})
-            notes.append(f"Head level taken at the section's slab soffit, {section.slab_soffit_level:g} m.")
         d = design_pile(name, element, settings, sheets[name])
         if note := _multiplier_note(section, sheets[name]):
             notes.append(note)

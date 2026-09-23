@@ -350,7 +350,7 @@ const KIND_LABEL = { pile: "Pile", combi_wall: "Combi wall", sheet_pile_wall: "S
 function renderSections(host) {
   const p = state.project;
   const def = SCHEMA.$defs.Section;
-  const schema = { properties: { name: def.properties.name, slab_soffit_level: def.properties.slab_soffit_level } };
+  const schema = { properties: { name: def.properties.name } };
   host.innerHTML = `<p class="sub">A project can have several sections, e.g. Section 01a and Section 02. Each section has its own
     Plaxis workbook, elements, load multipliers and results. Materials and design settings are shared.</p>
     <div class="panel row" style="margin-bottom:16px">

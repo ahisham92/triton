@@ -71,7 +71,6 @@ class NewProject(BaseModel):
 
 class NewSection(BaseModel):
     name: str
-    slab_soffit_level: float | None = None
 
 
 class ElementNames(BaseModel):
@@ -151,7 +150,7 @@ def add_section(project_id: str, body: NewSection) -> Project:
     if any(s.name.strip().lower() == body.name.strip().lower() for s in project.sections):
         raise HTTPException(400, f"There is already a section called '{body.name}'.")
     try:
-        section = Section(name=body.name, slab_soffit_level=body.slab_soffit_level)
+        section = Section(name=body.name)
     except ValidationError as e:
         raise HTTPException(422, e.errors(include_url=False, include_context=False)) from None
     project.sections.append(section)

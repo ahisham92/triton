@@ -109,7 +109,10 @@ class PileLoads:
     frame: pd.DataFrame  # columns: combination, category, Node, Y, Z, N, M, M_2, M_3
 
     @classmethod
-    def from_sheets(cls, sheets: dict[str, SheetData], head_level: float | None) -> PileLoads:
+    def from_sheets(
+        cls, sheets: dict[str, SheetData], head_level: float | None, above: float = 0.0
+    ) -> PileLoads:
+        """Results up to ``above`` (m) over the head level are kept and taken at the head level."""
         parts = []
         for combo, sheet in sheets.items():
             ctype = combination_type(combo)
@@ -117,7 +120,8 @@ class PileLoads:
                 continue
             f = design_forces(sheet.frame, sheet.parsed.spec, ["N", "Q_12", "Q_13", "M_2", "M_3"])
             if head_level is not None:
-                f = f[f["Z"] <= head_level + 1e-9]
+                f = f[f["Z"] <= head_level + above + 1e-9]
+                f = f.assign(Z=f["Z"].clip(upper=head_level))
             f = f.assign(combination=combo, category=ctype.value, M=np.hypot(f["M_2"], f["M_3"]))
             parts.append(f)
         if not parts:
@@ -342,7 +346,8 @@ class _Checker:
 def design_pile(
     name: str, pile: PileInput, settings: DesignSettings, sheets: dict[str, SheetData]
 ) -> PileDesign:
-    loads = PileLoads.from_sheets(sheets, pile.head_level).frame
+    above = settings.results_into_connection / 1e3
+    loads = PileLoads.from_sheets(sheets, pile.head_level, above).frame
     ac = math.pi * pile.diameter**2 / 4
     area_min, area_max = min_area_pile(ac), max_ratio(settings) * ac
     pr = settings.piles
@@ -364,7 +369,12 @@ def design_pile(
             "reinforced concrete only, which is conservative."
         )
     if pile.head_level is None:
-        notes.append("No pile head level is set, so results inside the slab are included.")
+        notes.append("No pile top level is set, so results inside the slab are included.")
+    elif above > 0:
+        notes.append(
+            f"Results up to {pile.head_level + above:g} m ({above * 100:g} cm into the slab) are included, "
+            f"taken at the top level {pile.head_level:g} m."
+        )
     if loads.empty:
         notes.append("No ULS results.")
         return PileDesign(name, None, 0.0, False, {}, area_min, area_max, 0.0, 0.0, limits, geom, notes=notes)

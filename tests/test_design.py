@@ -245,7 +245,7 @@ def test_results_above_the_pile_head_are_ignored():
     loads = [(1, 2.7, -3000.0, 50_000.0, 0.0), (2, 0.0, -3000.0, 100.0, 0.0)]
     inside = design_pile("Pile(1)", PileInput(), DesignSettings(), pile_sheets(loads))
     below = design_pile("Pile(1)", PileInput(head_level=1.7), DesignSettings(), pile_sheets(loads))
-    assert not inside.passed and any("head level" in n for n in inside.notes)
+    assert not inside.passed and any("top level" in n for n in inside.notes)
     assert below.passed and below.governing["z"] == 0.0
 
 

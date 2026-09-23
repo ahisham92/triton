@@ -19,8 +19,12 @@ pytest                  # tests
 
 A project is split into **sections** (e.g. Section 01a, Section 02), each with its own Plaxis
 workbook, elements, load multipliers and results. Materials and design settings are shared by
-the whole project. Add sections on the **Sections** tab, where each section can also have a
-**slab soffit level**: piles of that section without their own head level use it.
+the whole project. Add sections on the **Sections** tab.
+
+Each vertical element has its own **top level**: the slab soffit for a pile, the front beam soffit
+for a combi wall. Results up to 100 mm above it (Design settings, *Results taken into the slab or
+beam above*) are used and taken at the top level; higher results are FE peaks inside the
+connection and are ignored.
 
 Open the web app, create a project, pick a section, then either upload its workbook on the
 **Workbook** tab and add every element it contains, or add elements by name (`Pile(5)`, `Deck`, …).
@@ -28,12 +32,12 @@ Each element gets its own inputs:
 
 | Element | Inputs |
 |---|---|
-| Pile | diameter, cover, concrete, crack width limit, number of piles (default: counted from the workbook), head level (results above it are inside the slab and ignored), optional steel casing |
+| Pile | diameter, cover, concrete, crack width limit, number of piles (default: counted from the workbook), top level (slab soffit), optional steel casing |
 | Steel casing | top and bottom level, thickness, corrosion loss, steel grade, and its role: *crack width only* or *structural* (shares forces with the concrete by E·I) |
-| Combi wall | tube diameter and thickness, corrosion loss, steel and infill grades, infill bottom level (default −25 m), front beam soffit level, infill cover and links, number of king piles, tube fabrication quality class |
+| Combi wall | tube diameter and thickness, corrosion loss, steel and infill grades, infill bottom level (default −25 m), top level (front beam soffit), infill cover and links, number of king piles, tube fabrication quality class |
 | Sheet pile wall | section, steel grade, A / Wel / Wpl per m, class, corrosion loss per face |
-| Slab | thickness, top and bottom cover, uniform or column and field strips |
-| Front / rear beam | width, depth, cover |
+| Slab | thickness, top and bottom cover, uniform or column and field strips, crack width limits for the top and bottom faces |
+| Front / rear beam | width, depth, cover, crack width limits for the top and bottom faces (e.g. a soffit in the splash zone) |
 
 Project-wide settings: partial factors, bar sizes to try, spacing limits, and whether the
 reinforcement is chosen for the least steel or the lowest cost. Projects are saved as JSON
@@ -112,8 +116,8 @@ the Plaxis model, and each run row by row (bar count, diameter, radius of the ba
 the first bar from the model X axis, bar top and bottom levels and length). A Revit / Dynamo script
 can place the bars from this file alone; it only has to map Plaxis coordinates to the project base point.
 
-Set each pile's **head level**, or the section's slab soffit level, to the slab soffit: results
-above it are FE peaks inside the slab. The results give the steel for all piles of each type.
+Set each pile's **top level** to the slab soffit (see Project setup). The results give the steel
+for all piles of each type.
 Not yet included: crack width, and a structural casing acting with the concrete
 (the pile is then designed as reinforced concrete alone, which is conservative), and starter bars into the slab.
 

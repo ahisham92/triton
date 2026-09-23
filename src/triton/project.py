@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -196,6 +196,14 @@ class DesignSettings(_Model):
     shear_check_distance: Literal["d", "2d"] = Field(
         "d", title="Shear checked at", description="Distance from the support face"
     )
+    results_into_connection: float = _mm(
+        "Results taken into the slab or beam above",
+        100.0,
+        ge=0,
+        le=1000,
+        description="Piles and king piles use Plaxis results up to this far above their top level, "
+        "taken at the top level. Results higher up are FE peaks inside the connection and are ignored.",
+    )
 
 
 # --- Element inputs ----------------------------------------------------------
@@ -249,10 +257,10 @@ class PileInput(_ConcreteSection):
         description="Leave empty to let Triton choose, or fix it (e.g. 26 for a 1200 mm pile).",
     )
     head_level: float | None = _m(
-        "Pile head level (slab soffit)",
+        "Top level of the pile (slab soffit)",
         None,
-        description="Results above this level are inside the slab and are ignored. "
-        "Empty: the section's slab soffit level.",
+        description="Results more than the distance set in Design settings (default 10 cm) above it are "
+        "inside the slab and ignored. Empty: every result is used.",
     )
     casing: Casing | None = Field(
         None, title="Steel casing", description="Leave empty for a plain concrete pile."
@@ -268,9 +276,10 @@ class CombiWallInput(_Model):
     concrete: ConcreteGrade = Field("C32/40", title="Infill concrete grade")
     concrete_bottom_level: float = _m("Concrete infill bottom level", -25.0)
     top_level_to_ignore: float | None = _m(
-        "Front beam soffit level",
+        "Top level of the king pile (front beam soffit)",
         None,
-        description="Results above this level are inside the front beam and are ignored.",
+        description="Results more than the distance set in Design settings (default 10 cm) above it are "
+        "inside the front beam and ignored. Empty: every result is used.",
     )
     cover: float = _mm("Cover to infill links", 75.0, gt=0)
     link_diameter: float = _mm("Infill link diameter", 12.0, gt=0)
@@ -325,6 +334,14 @@ class SlabInput(_ConcreteSection):
     strips: Literal["uniform", "column_and_field"] = Field(
         "uniform", title="Reinforcement layout", description="One uniform slab, or column and field strips"
     )
+    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.3, gt=0, le=0.5)
+    crack_width_limit_bottom: float = _mm(
+        "Crack width limit wk (QP), bottom face",
+        0.3,
+        gt=0,
+        le=0.5,
+        description="e.g. tighter where the soffit is in the splash zone",
+    )
 
 
 class BeamInput(_ConcreteSection):
@@ -332,6 +349,14 @@ class BeamInput(_ConcreteSection):
     width: float = _mm("Beam width", 2000.0, gt=0)
     depth: float = _mm("Beam depth", 2000.0, gt=0)
     cover: float = _mm("Cover", 75.0, gt=0)
+    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.3, gt=0, le=0.5)
+    crack_width_limit_bottom: float = _mm(
+        "Crack width limit wk (QP), bottom face",
+        0.3,
+        gt=0,
+        le=0.5,
+        description="e.g. tighter where the soffit is in the splash zone",
+    )
 
 
 ElementInput = Annotated[
@@ -388,13 +413,25 @@ class Section(_Model):
 
     id: str = Field(default_factory=_short_id)
     name: str = Field("Section 1", title="Section name", min_length=1, description="e.g. Section 01a")
-    slab_soffit_level: float | None = _m(
-        "Slab soffit level",
-        None,
-        description="Pile head level for every pile of this section that has none of its own.",
-    )
     elements: dict[str, ElementInput] = Field(default_factory=dict, title="Elements")
     load_factors: list[LoadFactor] = Field(default_factory=list, title="Load multipliers")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_slab_soffit(cls, data: Any) -> Any:
+        """Sections saved with a shared slab soffit level: it becomes the top level of their piles."""
+        if not isinstance(data, dict) or "slab_soffit_level" not in data:
+            return data
+        data = dict(data)
+        soffit = data.pop("slab_soffit_level")
+        if soffit is not None:
+            elements = {}
+            for name, el in (data.get("elements") or {}).items():
+                if isinstance(el, dict) and el.get("kind") == "pile" and el.get("head_level") is None:
+                    el = {**el, "head_level": soffit}
+                elements[name] = el
+            data["elements"] = elements
+        return data
 
     @field_validator("id")
     @classmethod
