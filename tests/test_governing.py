@@ -207,5 +207,11 @@ def test_durability_tables_per_corrosion_zone():
         (-8.0, 30.0, 40.0),
     ]
     assert [(r["M"], r["V"]) for r in t["max_V"]][1] == (10.0, 90.0)
+    # A peak inside a king pile (the connection) is left out.
+    g = pd.concat([f, pd.DataFrame({"Z": [-2.0], "M_11": [0.0], "Q_13": [900.0], "Q_23": [0.0]})])
+    g = g.assign(X=0.0, Y=[1.0] * 5 + [3.2])
+    peak = {"SPW-PT-B-Apron": SimpleNamespace(frame=g)}
+    assert durability(peak, wall)["max_V"][1]["V"] == 900.0
+    assert durability(peak, wall, [(0.0, 3.2, 0.813)])["max_V"][1]["V"] == 90.0
     with pytest.raises(ValueError):
         SheetPileInput(corrosion_zones=[SheetPileZone(bottom_level=-5.0), SheetPileZone(bottom_level=-1.0)])

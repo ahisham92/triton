@@ -366,6 +366,16 @@ def geometry(project_id: str, section_id: str) -> dict:
     return {"elements": section_geometry(wb), "axes": summary.get("axes", [])}
 
 
+def _king_piles(section: Section, wb) -> list[tuple[float, float, float]]:
+    """Plan position and radius (m) of every combi wall king pile in the section's workbook."""
+    out = []
+    for g in section_geometry(wb):
+        el = section.elements.get(g["element"])
+        if isinstance(el, CombiWallInput):
+            out += [(x, y, el.tube_diameter / 2000) for x, y, *_ in g.get("lines") or []]
+    return out
+
+
 @app.get(SECTION + "/spw.xlsx")
 def spw_export(project_id: str, section_id: str) -> Response:
     """Sheet pile wall straining actions (Plaxis sign, multipliers applied) for the sheet pile program."""
@@ -390,6 +400,7 @@ def spw_export(project_id: str, section_id: str) -> Response:
             spw[0],
             elements[spw[0]],
             wall if isinstance(wall := section.elements.get(spw[0]), SheetPileInput) else None,
+            _king_piles(section, wb),
         ),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}-straining-actions.xlsx"'},

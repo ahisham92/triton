@@ -239,7 +239,9 @@ the corrosion table (zone bottom level, loss front and back; the wall's corrosio
 the office's run with no back-face loss above −14.5 where the fill is cement stabilised sand) and
 the actions table `N° | Z | M Ed | V Ed | N Ed | e`, one row per zone bottom level, magnitudes per
 metre with N = 0 and e = 0. M and V are concurrent: one table takes each zone's largest |M_11| with
-the V at the same node and combination, the other its largest |V| (Q_13 by default) with its M.
+the V at the same node and combination, the other its largest |V| (Q_13 by default) with its M. Points
+inside a king pile (within the tube radius of its axis) are connection peaks where there is no sheet
+pile, and are left out of these tables.
 
 ## Combi wall
 

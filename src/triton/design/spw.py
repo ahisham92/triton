@@ -22,6 +22,7 @@ import io
 import re
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from ..elements import PLATE_ACTIONS, combination_type
@@ -42,15 +43,26 @@ def envelope(frame: pd.DataFrame) -> pd.DataFrame:
     return out[[f"{a} {k}" for a in acts for k in ("max", "min")]].round(2)
 
 
-def durability(sheets: dict[str, SheetData], wall: SheetPileInput) -> dict[str, Any]:
+def durability(
+    sheets: dict[str, SheetData], wall: SheetPileInput, king_piles: list[tuple[float, float, float]] = ()
+) -> dict[str, Any]:
     """Durability's action tables: per corrosion zone, the governing |M| (or |V|) with the other
-    action at the same node and combination."""
+    action at the same node and combination. Points inside a king pile (x, y, radius in m) are FE
+    peaks of the connection, where there is no sheet pile, and are left out."""
     f = uls_frame(sheets)
     if f.empty or "M_11" not in f.columns or wall.shear not in f.columns:
         return {"top": None, "max_M": [], "max_V": []}
+    for x, y, r in king_piles:
+        f = f[np.hypot(f["X"] - x, f["Y"] - y) >= r - 1e-6]
     top = round(float(f["Z"].max()), 2)
     zones = wall.corrosion_zones
-    out: dict[str, Any] = {"top": top, "shear": wall.shear, "max_M": [], "max_V": []}
+    out: dict[str, Any] = {
+        "top": top,
+        "shear": wall.shear,
+        "max_M": [],
+        "max_V": [],
+        "left_out": len(king_piles),
+    }
     upper = top
     for z in zones:
         part = f[(f["Z"] <= upper + 1e-6) & (f["Z"] >= z.bottom_level - 1e-6)]
@@ -82,6 +94,11 @@ def _durability_sheet(ws, element: str, wall: SheetPileInput, tables: dict[str, 
         [
             f"Z top = {tables['top']} m. kN/m and kNm/m, magnitudes, load multipliers applied; "
             f"V = {wall.shear}."
+            + (
+                f" Points inside the {tables['left_out']} king piles are left out (connection peaks)."
+                if tables.get("left_out")
+                else ""
+            )
         ]
     )
     ws.append([])
@@ -112,14 +129,19 @@ def _durability_sheet(ws, element: str, wall: SheetPileInput, tables: dict[str, 
 
 
 def workbook(
-    project: str, section: str, element: str, sheets: dict[str, SheetData], wall: SheetPileInput | None = None
+    project: str,
+    section: str,
+    element: str,
+    sheets: dict[str, SheetData],
+    wall: SheetPileInput | None = None,
+    king_piles: list[tuple[float, float, float]] = (),
 ) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Font
 
     wall = wall or SheetPileInput()
     wb = Workbook()
-    _durability_sheet(wb.active, element, wall, durability(sheets, wall))
+    _durability_sheet(wb.active, element, wall, durability(sheets, wall, king_piles))
     wb.active.title = "Durability"
     ws = wb.create_sheet("Governing")
     ws.append([f"{project} · {section} · {element}"])
