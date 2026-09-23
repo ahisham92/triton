@@ -34,6 +34,13 @@ Project-wide settings: partial factors, bar sizes to try, spacing limits, and wh
 reinforcement is chosen for the least steel or the lowest cost. Projects are saved as JSON
 in `data/projects/` (set `TRITON_DATA_DIR` to move it).
 
+## Load multipliers
+
+On the Workbook tab, add a multiplier (e.g. 1.35) and tick the combinations or single sheets it
+applies to (e.g. the Set B sheets). Design multiplies every straining action of those sheets, phase
+and min/max, and never X, Y or Z. A sheet can be in one multiplier only, and results list the
+multipliers used.
+
 ## Pile design (N–M)
 
 Upload the workbook on the project's **Workbook** tab, then press **Design piles** on the **Design** tab.

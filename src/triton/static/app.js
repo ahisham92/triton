@@ -389,6 +389,7 @@ function checkerHtml() {
         <div class="count"><b id="n-info">0</b>automatic clean-ups</div>
       </div>
       <div id="add-found"></div>
+      <div id="factors"></div>
       <h2>Sheets found</h2>
       <div class="panel scroll"><table id="coverage"></table></div>
       <h2>Problems to review</h2>
@@ -435,6 +436,7 @@ async function renderWorkbookTab(host) {
   const onReport = (data) => {
     document.getElementById("wb-note").textContent =
       `Workbook in use: ${data.file}, uploaded ${String(data.uploaded_at || "").replace("T", " ").slice(0, 16)}. Upload again to replace it.`;
+    renderFactors(data);
     const missing = data.elements.filter((e) => !(e in state.project.elements));
     const box = document.getElementById("add-found");
     if (!missing.length) {
@@ -456,6 +458,81 @@ async function renderWorkbookTab(host) {
   } catch {
     /* no workbook yet */
   }
+}
+
+// Load multipliers: a factor on the straining actions of chosen sheets (X, Y, Z untouched).
+function renderFactors(data) {
+  const box = document.getElementById("factors");
+  if (!box) return;
+  const p = state.project;
+  p.load_factors ??= [];
+  const sheets = data.sheets.filter((x) => x.combination && x.raw_rows);
+  const combos = data.combinations.map((c) => c.name);
+  const byCombo = (c) => sheets.filter((x) => x.combination === c).map((x) => x.name);
+  const open = new Set();
+  const draw = () => {
+    const taken = (i) => new Set(p.load_factors.flatMap((r, j) => (j === i ? [] : r.sheets)));
+    box.innerHTML = `<h2>Load multipliers</h2>
+      <p class="status" style="margin-top:0">Multiply the straining actions of chosen sheets, e.g. 1.35 on the Set B sheets. X, Y and Z are not changed. Save to keep.</p>
+      ${p.load_factors
+        .map((r, i) => {
+          const other = taken(i);
+          const comboBoxes = combos
+            .map((c) => {
+              const names = byCombo(c).filter((n) => !other.has(n));
+              const on = names.filter((n) => r.sheets.includes(n)).length;
+              return `<label><input type="checkbox" data-rule="${i}" data-combo="${esc(c)}" ${names.length && on === names.length ? "checked" : ""} ${names.length ? "" : "disabled"}> ${esc(c)}${on && on < names.length ? ` (${on}/${names.length})` : ""}</label>`;
+            })
+            .join("");
+          const sheetBoxes = sheets
+            .map((x) => `<label><input type="checkbox" data-rule="${i}" data-sheet="${esc(x.name)}" ${r.sheets.includes(x.name) ? "checked" : ""} ${other.has(x.name) ? "disabled" : ""}> ${esc(x.name)}</label>`)
+            .join("");
+          return `<div class="panel" style="margin-bottom:12px">
+            <div class="row"><div class="field" style="width:160px"><label>Multiplier</label><div class="inputwrap"><input type="number" step="any" data-rule="${i}" data-key="factor" value="${r.factor}"></div></div>
+              <div class="field" style="flex:1;min-width:200px"><label>Note</label><div class="inputwrap"><input type="text" data-rule="${i}" data-key="note" value="${esc(r.note)}" placeholder="e.g. Set B to design values"></div></div>
+              <button class="danger" data-remove="${i}">Remove</button></div>
+            <div class="field full" style="margin-top:10px"><label>Combinations (all elements)</label><div class="checks">${comboBoxes}</div></div>
+            <details style="margin-top:8px" data-rule="${i}" ${open.has(i) ? "open" : ""}><summary>${r.sheets.length} sheet(s) selected; choose sheets one by one</summary><div class="checks" style="margin-top:8px">${sheetBoxes}</div></details>
+          </div>`;
+        })
+        .join("")}
+      <button class="quiet" id="add-factor">Add multiplier</button>`;
+    box.querySelectorAll("details[data-rule]").forEach((d) => (d.ontoggle = () => {
+      const i = Number(d.dataset.rule);
+      if (d.open) open.add(i);
+      else open.delete(i);
+    }));
+    box.querySelector("#add-factor").onclick = () => {
+      p.load_factors.push({ factor: 1.35, sheets: [], note: "" });
+      markDirty();
+      draw();
+    };
+    box.querySelectorAll("[data-remove]").forEach((b) => (b.onclick = () => {
+      p.load_factors.splice(Number(b.dataset.remove), 1);
+      markDirty();
+      draw();
+    }));
+    box.querySelectorAll("input[data-key]").forEach((inp) => (inp.oninput = () => {
+      const r = p.load_factors[Number(inp.dataset.rule)];
+      r[inp.dataset.key] = inp.dataset.key === "factor" ? (inp.value === "" ? inp.value : Number(inp.value)) : inp.value;
+      markDirty();
+    }));
+    box.querySelectorAll("input[data-combo]").forEach((inp) => (inp.onchange = () => {
+      const i = Number(inp.dataset.rule);
+      const r = p.load_factors[i];
+      const names = byCombo(inp.dataset.combo).filter((n) => !taken(i).has(n));
+      r.sheets = inp.checked ? [...new Set([...r.sheets, ...names])] : r.sheets.filter((n) => !names.includes(n));
+      markDirty();
+      draw();
+    }));
+    box.querySelectorAll("input[data-sheet]").forEach((inp) => (inp.onchange = () => {
+      const r = p.load_factors[Number(inp.dataset.rule)];
+      r.sheets = inp.checked ? [...r.sheets, inp.dataset.sheet] : r.sheets.filter((n) => n !== inp.dataset.sheet);
+      markDirty();
+      draw();
+    }));
+  };
+  draw();
 }
 
 const LABEL = { ok: "OK", warning: "Check", error: "Error", missing: "—" };

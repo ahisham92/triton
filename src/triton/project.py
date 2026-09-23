@@ -344,6 +344,16 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+class LoadFactor(_Model):
+    factor: float = Field(1.35, title="Multiplier", gt=0)
+    sheets: list[str] = Field(
+        default_factory=list,
+        title="Sheets",
+        description="Workbook sheets whose straining actions are multiplied. X, Y and Z are not changed.",
+    )
+    note: str = Field("", title="Note", description="e.g. Set B actions to design values")
+
+
 class Project(_Model):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: str = Field(default_factory=_now)
@@ -351,6 +361,21 @@ class Project(_Model):
     info: ProjectInfo = Field(default_factory=ProjectInfo, title="Project")
     design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
     elements: dict[str, ElementInput] = Field(default_factory=dict, title="Elements")
+    load_factors: list[LoadFactor] = Field(default_factory=list, title="Load multipliers")
+
+    @field_validator("load_factors")
+    @classmethod
+    def _each_sheet_once(cls, v: list[LoadFactor]) -> list[LoadFactor]:
+        seen: set[str] = set()
+        for rule in v:
+            twice = seen & set(rule.sheets)
+            if twice:
+                raise ValueError(f"Sheet(s) in more than one multiplier: {', '.join(sorted(twice))}.")
+            seen |= set(rule.sheets)
+        return v
+
+    def factor_for(self, sheet: str) -> float:
+        return next((r.factor for r in self.load_factors if sheet in r.sheets), 1.0)
 
     @field_validator("id")
     @classmethod
