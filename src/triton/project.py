@@ -59,8 +59,12 @@ class PartialFactors(_Model):
     gamma_s: float = Field(1.15, title="γs reinforcement", gt=1)
     gamma_c_accidental: float = Field(1.2, title="γc accidental / seismic", ge=1)
     gamma_s_accidental: float = Field(1.0, title="γs accidental / seismic", ge=1)
-    gamma_m0: float = Field(1.0, title="γM0 steel cross-section", ge=1)
-    gamma_m1: float = Field(1.0, title="γM1 steel buckling", ge=1)
+    gamma_m0: float = Field(
+        1.1, title="γM0 steel cross-section", ge=1, description="The office sheets use 1.10 for king piles."
+    )
+    gamma_m1: float = Field(
+        1.1, title="γM1 steel buckling", ge=1, description="EN 1993-5 and the office sheets: 1.1."
+    )
     alpha_cc: float = Field(
         1.0,
         title="αcc long-term factor",
@@ -426,6 +430,14 @@ class PileInput(_ConcreteSection):
     )
 
 
+class CorrosionZone(_Model):
+    """Loss of tube wall over one length, from the zone above (or the top) down to ``bottom_level``."""
+
+    bottom_level: float = _m("Zone bottom level", 0.0)
+    outside: float = _mm("Loss on the outside face", 0.0, ge=0)
+    inside: float = _mm("Loss on the inside face", 0.0, ge=0, description="e.g. below the infill")
+
+
 class CombiWallInput(_Model):
     kind: Literal["combi_wall"] = "combi_wall"
     tube_diameter: float = _mm("King pile tube diameter", 1626.0, gt=0)
@@ -456,6 +468,31 @@ class CombiWallInput(_Model):
         ge=1,
         description="King piles in the section. Empty: counted from the workbook.",
     )
+    tube_method: Literal["composite", "tube_takes_all"] = Field(
+        "composite",
+        title="Tube design",
+        description="Composite: where filled, the tube takes its E·I share and is checked plastically "
+        "(EN 1993-5 5.5.4(9)). Tube takes all: the tube carries every action along its length, class 4 "
+        "with effective properties, elastically (as the office steel sheets).",
+    )
+    corrosion_zones: list[CorrosionZone] = Field(
+        default_factory=list,
+        title="Corrosion by zone",
+        description="From the top down, e.g. splash 4.5 to −0.5, immersion 2.5 to −14.5, soil 1.75 to "
+        "−25, then 1.75 outside and inside below the infill. Empty: the single loss above, outside only.",
+    )
+    buckling_length_factor: float = Field(
+        0.7,
+        title="Column buckling length factor",
+        gt=0,
+        le=2,
+        description="Lcr = factor × the length from the top level to the toe (the lowest result).",
+    )
+    buckling_curve: Literal["a", "b", "c"] = Field(
+        "c",
+        title="Column buckling curve",
+        description="c as the office sheets; EN 1994 gives a for filled tubes.",
+    )
     fabrication_class: Literal["A", "B", "C"] = Field(
         "B",
         title="Tube fabrication quality class",
@@ -469,6 +506,12 @@ class CombiWallInput(_Model):
             raise ValueError("Tube thickness must be less than half the diameter.")
         if self.corrosion_loss is not None and self.corrosion_loss >= self.tube_thickness:
             raise ValueError("Corrosion loss must be less than the tube thickness.")
+        for z in self.corrosion_zones:
+            if z.outside + z.inside >= self.tube_thickness:
+                raise ValueError(f"Corrosion to {z.bottom_level:g} m must be less than the tube thickness.")
+        levels = [z.bottom_level for z in self.corrosion_zones]
+        if levels != sorted(levels, reverse=True):
+            raise ValueError("Corrosion zones go from the top down: each bottom level below the one before.")
         return self
 
 
@@ -595,9 +638,12 @@ class SlabInput(_ConcreteSection):
     )
     joint_spacing: float = _m(
         "Length between movement joints",
-        30.0,
+        58.0,
         gt=0,
-        description="For the temperature and shrinkage restraint check (restraint from length / thickness).",
+        description=(
+            "For the temperature and shrinkage restraint check (restraint from length / thickness); "
+            "58 m is the office's joint spacing."
+        ),
     )
     restraint_factor: float | None = Field(
         None,
@@ -626,9 +672,12 @@ class BeamInput(_ConcreteSection):
     link_diameter: float = _mm("Link diameter", 16.0, gt=0)
     joint_spacing: float = _m(
         "Length between movement joints",
-        30.0,
+        58.0,
         gt=0,
-        description="For the temperature and shrinkage restraint check (restraint from length / depth).",
+        description=(
+            "For the temperature and shrinkage restraint check (restraint from length / depth); "
+            "58 m is the office's joint spacing."
+        ),
     )
     restraint_factor: float | None = Field(
         None,

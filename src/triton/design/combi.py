@@ -13,6 +13,7 @@ infill the tube carries everything.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import Any
 
@@ -34,6 +35,23 @@ def combi_section(wall: CombiWallInput) -> CombiSection:
         e_concrete=concrete(wall.concrete).ecm * 1e3,
         concrete_bottom_level=wall.concrete_bottom_level,
     )
+
+
+def tube_zones(wall: CombiWallInput) -> list[tuple[float, float, Tube]]:
+    """(top, bottom, tube) down the king pile from the corrosion zones, or one tube for the whole length."""
+
+    def tube(outside: float, inside: float = 0.0) -> Tube:
+        return Tube(
+            wall.tube_diameter, wall.tube_thickness, outside, wall.steel, wall.fabrication_class, inside
+        )
+
+    if not wall.corrosion_zones:
+        return [(math.inf, -math.inf, tube(wall.corrosion_loss))]
+    out, top = [], math.inf
+    for z in wall.corrosion_zones:
+        out.append((top, z.bottom_level, tube(z.outside, z.inside)))
+        top = z.bottom_level
+    return out
 
 
 def infill_as_pile(wall: CombiWallInput) -> PileInput:
@@ -71,18 +89,43 @@ def design_combi_wall(
     for station in infill.get("governing_sets") or []:
         station["qp"] = placeholder_sets()  # the tube is a casing: no crack width check
 
-    tube = Tube(
-        wall.tube_diameter, wall.tube_thickness, wall.corrosion_loss, wall.steel, wall.fabrication_class
-    )
+    zones = tube_zones(wall)
     above = settings.results_into_connection / 1e3
-    loads = tube_loads(sheets, share, bottom, wall.top_level_to_ignore, above)
-    steel = check_tube(tube, loads)
+    tube_share = 1.0 if wall.tube_method == "tube_takes_all" else share
+    loads = tube_loads(sheets, tube_share, bottom, wall.top_level_to_ignore, above)
+    pf = settings.partial_factors
+    conc = concrete(wall.concrete)
+    column = None
+    if not loads.empty:
+        column = {
+            "top": wall.top_level_to_ignore
+            if wall.top_level_to_ignore is not None
+            else float(loads["Z"].max()),
+            "toe": float(loads["Z"].min()),
+            "filled_from": bottom,
+            "infill_diameter": wall.tube_diameter - 2 * wall.tube_thickness,
+            "fck": conc.fck,
+            "ecm": conc.ecm,
+            "factor": wall.buckling_length_factor,
+            "curve": wall.buckling_curve,
+        }
+    steel = check_tube(
+        zones, loads, method=wall.tube_method, gamma_m0=pf.gamma_m0, gamma_m1=pf.gamma_m1, column=column
+    )
     steel["governing_sets"] = steel_sets(loads, "beam")
 
-    notes = [
+    split = (
         f"Actions where the tube is filled: {share:.0%} to the steel tube and {1 - share:.0%} to the "
-        f"infill (E·I, corroded tube, Ecm {concrete(wall.concrete).ecm / 1e3:.1f} GPa). Below "
-        f"{bottom:g} m the tube carries everything.",
+        f"infill (E·I, corroded tube, Ecm {conc.ecm / 1e3:.1f} GPa). Below {bottom:g} m the tube carries "
+        "everything."
+    )
+    if wall.tube_method == "tube_takes_all":
+        split = (
+            f"The tube carries every action along its length (checked elastically, class 4 effective "
+            f"properties); the infill is still designed for its E·I share, {1 - share:.0%}."
+        )
+    notes = [
+        split,
         "The tube is a permanent casing, so the infill has no crack width check.",
     ]
     if wall.top_level_to_ignore is None:

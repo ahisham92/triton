@@ -311,7 +311,7 @@ def _sections(r: Report, section: Section, res: dict) -> None:
                     "N.A",
                     t.get("utilisation"),
                     g.get("M_kNm"),
-                    None,
+                    g.get("M_Rd_kNm"),
                     g.get("combination"),
                 ]
             )
@@ -685,6 +685,12 @@ def _combi(r: Report, w: dict) -> None:
             ("King piles", w.get("count")),
             ("Infill bottom level", f"{w.get('infill_bottom_level')} m"),
             ("Share carried by the steel (E·I)", f"{w.get('steel_share', 0) * 100:.0f}%"),
+            (
+                "Tube method",
+                "tube takes all actions"
+                if (w.get("tube") or {}).get("method") == "tube_takes_all"
+                else "E·I split where filled",
+            ),
             ("Utilisation", w.get("utilisation")),
             ("Result", _ok(w.get("passed"))),
         ]
@@ -704,6 +710,48 @@ def _combi(r: Report, w: dict) -> None:
             ]
         )
         r.kv([(k.replace("_", " "), v) for k, v in (t.get("resistances") or {}).items()])
+        zones = t.get("zones") or []
+        if len(zones) > 1 or (zones and zones[0].get("inside_mm")):
+            r.caption(f"Corrosion zones of the {w['element']} tube")
+            r.table(
+                [
+                    "From (m)",
+                    "To (m)",
+                    "Outside (mm)",
+                    "Inside (mm)",
+                    "t (mm)",
+                    "Class",
+                    "Aeff (mm²)",
+                    "Meff (kN.m)",
+                ],
+                [
+                    [
+                        "top" if z.get("top") is None else z["top"],
+                        "toe" if z.get("bottom") is None else z["bottom"],
+                        z.get("outside_mm"),
+                        z.get("inside_mm"),
+                        z.get("t_mm"),
+                        z.get("class"),
+                        z.get("A_eff_mm2"),
+                        z.get("M_eff_kNm"),
+                    ]
+                    for z in zones
+                ],
+            )
+        col = t.get("column")
+        if col:
+            r.h(3, "Column buckling (composite, EN 1994-1-1 6.7.3)")
+            r.kv(
+                [
+                    ("Length / buckling length", f"{col['length_m']} m / {col['buckling_length_m']} m"),
+                    ("EI,eff = EaIa + 0.6·Ecm·Ic (average)", f"{_fmt(col['EI_eff_kNm2'])} kN.m²"),
+                    ("Npl,Rk (average)", f"{_fmt(col['N_pl_Rk_kN'])} kN"),
+                    ("Ncr", f"{_fmt(col['N_cr_kN'])} kN"),
+                    ("λ̄ / curve / χ", f"{col['slenderness']} / {col['curve']} / {col['chi']}"),
+                    ("Nb,Rd", f"{_fmt(col['N_b_Rd_kN'])} kN"),
+                    ("NEd/Nb,Rd + kyy·MEd/Meff,Rd (Cmy 0.9)", col.get("utilisation")),
+                ]
+            )
         if t.get("buckling"):
             r.kv([(f"Shell buckling {k.replace('_', ' ')}", v) for k, v in t["buckling"].items()])
         g = t.get("governing") or {}

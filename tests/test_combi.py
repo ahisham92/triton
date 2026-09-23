@@ -112,3 +112,40 @@ def test_section_run_and_export_include_the_combi_wall():
     cages = pile_cages("Berth", out)
     (c,) = cages["piles"]
     assert c["part"] == "infill" and c["diameter_mm"] == 1590
+
+
+def test_class_4_effective_properties_as_the_office_sheets():
+    tube = Tube(1626, 18, 4.5, "S355")  # 50-year splash, d/t = 120
+    eps2, ratio = 235 / 345, 1617 / 13.5  # fy 345 for the 18 mm plate
+    assert tube.a_eff / tube.area == pytest.approx(math.sqrt(90 * eps2 / ratio))  # about 0.72
+    assert tube.w_eff / tube.w_el == pytest.approx((140 * eps2 / ratio) ** 0.25)  # about 0.94
+    thick = Tube(610, 25, 0, "S355")
+    assert (thick.a_eff, thick.w_eff) == (thick.area, thick.w_el)
+
+
+def test_tube_takes_all_and_column_buckling():
+    els = combi_sheets().elements()["Combi Wall"]
+    split = design_combi_wall("Combi Wall", CombiWallInput(top_level_to_ignore=0.0), DesignSettings(), els)
+    wall = CombiWallInput(top_level_to_ignore=0.0, tube_method="tube_takes_all")
+    alone = design_combi_wall("Combi Wall", wall, DesignSettings(), els)
+    assert alone["tube"]["method"] == "tube_takes_all"
+    assert alone["tube"]["utilisation"] > split["tube"]["utilisation"]
+    col = alone["tube"]["column"]
+    assert col["buckling_length_m"] == pytest.approx(0.7 * col["length_m"], abs=0.02)
+    assert 0 < col["chi"] < 1 and col["curve"] == "c" and col["N_b_Rd_kN"] > 0
+    assert col["length_m"] == pytest.approx(34.0)  # from the ignored top at 0 to the toe
+
+
+def test_corrosion_zones_set_the_tube_per_level():
+    zones = [
+        {"bottom_level": -5.0, "outside": 4.5, "inside": 0.0},
+        {"bottom_level": -40.0, "outside": 1.75, "inside": 1.75},
+    ]
+    wall = CombiWallInput(top_level_to_ignore=0.0, corrosion_zones=zones)
+    w = design_combi_wall("Combi Wall", wall, DesignSettings(), combi_sheets().elements()["Combi Wall"])
+    top, low = w["tube"]["zones"]
+    assert (top["outside_mm"], low["outside_mm"], low["inside_mm"]) == (4.5, 1.75, 1.75)
+    assert top["t_mm"] == pytest.approx(18 - 4.5) and low["t_mm"] == pytest.approx(18 - 3.5)
+    assert low["top"] == -5.0 and low["bottom"] == -40.0
+    with pytest.raises(ValueError):
+        CombiWallInput(corrosion_zones=[{"bottom_level": -5.0, "outside": 10.0, "inside": 9.0}])
