@@ -159,7 +159,10 @@ def test_spw_export(tmp_path, monkeypatch):
         and "Berth_Section_1_SPW-straining-actions.xlsx" in r.headers["content-disposition"]
     )
     wb = load_workbook(io.BytesIO(r.content))
-    assert wb.sheetnames == ["Governing", "Envelope PT-B-Apron", "Envelope QP"]
+    assert wb.sheetnames == ["Durability", "Governing", "Envelope PT-B-Apron", "Envelope QP"]
+    cells = [r for r in wb["Durability"].iter_rows(values_only=True) if r and r[0] is not None]
+    assert ("Zone", "Z bottom (m)", "Loss front (mm)", "Loss back (mm)") == cells[3][:4]
+    assert cells[4][:4] == (1, -0.5, 4.5, 0)
     rows = list(wb["Governing"].iter_rows(min_row=4, values_only=True))
     header, rows = rows[0], rows[1:]
     assert header[:2] == ("Criterion", "N (N_1)") and header[6] == "Combination"
@@ -169,3 +172,40 @@ def test_spw_export(tmp_path, monkeypatch):
     env_b = list(wb["Envelope PT-B-Apron"].iter_rows(min_row=4, values_only=True))
     assert env_b[0][1] == pytest.approx(env[0][1] * 2.0 * 1.35, rel=1e-3)
     assert rows[0][1] == pytest.approx(max(r[1] for r in env_b), rel=1e-3)
+
+
+def test_durability_tables_per_corrosion_zone():
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from triton.design.spw import durability
+    from triton.project import SheetPileInput, SheetPileZone
+
+    # Largest |M| at z = -1 (zone 2) with its own V; the largest |V| sits elsewhere in that zone.
+    f = pd.DataFrame(
+        {
+            "Z": [2.0, 0.0, -1.0, -3.0, -6.0],
+            "M_11": [5.0, -20.0, -80.0, 10.0, 30.0],
+            "Q_13": [1.0, 60.0, 15.0, -90.0, 40.0],
+            "Q_23": [0.0] * 5,
+        }
+    )
+    sheets = {"SPW-PT-B-Apron": SimpleNamespace(frame=f), "SPW-QP": SimpleNamespace(frame=f * 10)}
+    wall = SheetPileInput(
+        corrosion_zones=[
+            SheetPileZone(bottom_level=-0.5, front=4.5),
+            SheetPileZone(bottom_level=-5.0, front=2.5, back=1.75),
+            SheetPileZone(bottom_level=-8.0, front=1.75, back=1.75),
+        ]
+    )
+    t = durability(sheets, wall)
+    assert t["top"] == 2.0
+    assert [(r["z"], r["M"], r["V"]) for r in t["max_M"]] == [
+        (-0.5, 20.0, 60.0),
+        (-5.0, 80.0, 15.0),
+        (-8.0, 30.0, 40.0),
+    ]
+    assert [(r["M"], r["V"]) for r in t["max_V"]][1] == (10.0, 90.0)
+    with pytest.raises(ValueError):
+        SheetPileInput(corrosion_zones=[SheetPileZone(bottom_level=-5.0), SheetPileZone(bottom_level=-1.0)])

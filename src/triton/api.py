@@ -27,6 +27,7 @@ from .project import (
     Project,
     ProjectInfo,
     Section,
+    SheetPileInput,
     with_project_grades,
 )
 from .reader import UnsupportedWorkbook
@@ -383,7 +384,13 @@ def spw_export(project_id: str, section_id: str) -> Response:
         raise HTTPException(404, "The workbook has no sheet pile wall sheets.")
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name} {spw[0]}").strip("_")
     return Response(
-        spw_workbook(project.info.name, section.name, spw[0], elements[spw[0]]),
+        spw_workbook(
+            project.info.name,
+            section.name,
+            spw[0],
+            elements[spw[0]],
+            wall if isinstance(wall := section.elements.get(spw[0]), SheetPileInput) else None,
+        ),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}-straining-actions.xlsx"'},
     )

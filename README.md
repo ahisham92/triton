@@ -35,7 +35,7 @@ Each element gets its own inputs:
 | Pile | diameter, cover, concrete, crack width limit, number of piles (default: counted from the workbook), top level (slab soffit), optional steel casing |
 | Steel casing | top and bottom level, thickness, corrosion loss, steel grade, and its role: *crack width only* or *structural* (shares forces with the concrete by E·I) |
 | Combi wall | tube diameter and thickness, corrosion loss, steel and infill grades, infill bottom level (default −25 m), top level (front beam soffit), infill cover and links, number of king piles, tube fabrication quality class |
-| Sheet pile wall | section, steel grade, A / Wel / Wpl per m, class, corrosion loss per face |
+| Sheet pile wall | section, steel grade, A / Wel / Wpl per m, class, corrosion loss per face, corrosion zones (bottom level, front and back loss) and shear for Durability |
 | Slab | thickness, top and bottom cover, uniform or column and field strips, crack width limits for the top and bottom faces |
 | Front / rear beam | width, depth, cover, crack width limits for the top and bottom faces (e.g. a soffit in the splash zone) |
 
@@ -234,6 +234,13 @@ load multipliers applied and N in the Plaxis sign (steel element): a *Governing*
 10 rows, and one *Envelope* sheet per combination with the maximum and minimum across the wall at
 each level.
 
+The first sheet, *Durability*, is the input of ArcelorMittal Durability v4.2.1 as the office runs it:
+the corrosion table (zone bottom level, loss front and back; the wall's corrosion zones, by default
+the office's run with no back-face loss above −14.5 where the fill is cement stabilised sand) and
+the actions table `N° | Z | M Ed | V Ed | N Ed | e`, one row per zone bottom level, magnitudes per
+metre with N = 0 and e = 0. M and V are concurrent: one table takes each zone's largest |M_11| with
+the V at the same node and combination, the other its largest |V| (Q_13 by default) with its M.
+
 ## Combi wall
 
 Between the front beam soffit and the infill bottom level (default −25 m) every straining action,
@@ -292,8 +299,12 @@ are closer than that.
   with their own QP crack widths.
 - Plate moment sign: positive M11/M22 is sagging by default (Design settings). In the sample the
   deck's M11 peaks negative at every pile head.
-- **Not yet included:** fender and bollard reinforcement, and the torsion longitudinal steel added
-  to the bending steel (it is reported).
+- **Bollard (front beam, optional):** the tie bars that take the bollard pull back into the deck,
+  as the office drawing SC-502 (150 t, 2Ø32 straight and 3Ø32 at ±45°, 8.11° down, lapped 1600 mm
+  with the slab bottom bars). The factored pull (γ = 1.5) square to the quay face against
+  Σ As·fyd·cos β·cos α, and the lap to EN 1992-1-1 8.7.3. The pull along the quay goes into the
+  beam's longitudinal bars; the fender loads are carried by the beam's own reinforcement.
+- **Not yet included:** the torsion longitudinal steel added to the bending steel (it is reported).
 
 ## Slab (deck)
 

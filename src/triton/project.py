@@ -528,6 +528,25 @@ class CombiWallInput(_Model):
         return self
 
 
+class SheetPileZone(_Model):
+    """A corrosion zone of the sheet pile wall, from the zone above down to its bottom level."""
+
+    bottom_level: float = _m("Zone bottom level", 0.0)
+    front: float = _mm("Loss, front face", 0.0, ge=0)
+    back: float = _mm("Loss, back face", 0.0, ge=0)
+
+
+def _office_spw_zones() -> list[SheetPileZone]:
+    # The office's Durability run: splash, immersion, immersion with soil behind, soil; no loss at the
+    # back above −14.5 where the fill is cement stabilised sand.
+    return [
+        SheetPileZone(bottom_level=-0.5, front=4.5, back=0.0),
+        SheetPileZone(bottom_level=-14.5, front=2.5, back=0.0),
+        SheetPileZone(bottom_level=-16.12, front=2.5, back=1.75),
+        SheetPileZone(bottom_level=-19.0, front=1.75, back=1.75),
+    ]
+
+
 class SheetPileInput(_Model):
     kind: Literal["sheet_pile_wall"] = "sheet_pile_wall"
     section_name: str = Field("", title="Sheet pile section", description="e.g. AZ 26-700")
@@ -543,6 +562,22 @@ class SheetPileInput(_Model):
     corrosion_loss_per_face: float | None = _mm(
         "Corrosion loss per face", None, ge=0, description=_PROJECT_VALUE
     )
+    corrosion_zones: list[SheetPileZone] = Field(
+        default_factory=_office_spw_zones,
+        title="Corrosion zones (Durability)",
+        description="Top down. The export gives the actions of each zone at its bottom level, with these "
+        "losses, as ArcelorMittal Durability takes them. The values are the office's sample run.",
+    )
+    shear: Literal["Q_13", "Q_23"] = Field(
+        "Q_13", title="Shear for Durability", description="Q_13: the shear of the vertical bending (M_11)."
+    )
+
+    @model_validator(mode="after")
+    def _zones_descend(self) -> SheetPileInput:
+        levels = [z.bottom_level for z in self.corrosion_zones]
+        if any(b >= a for a, b in zip(levels, levels[1:], strict=False)):
+            raise ValueError("Sheet pile corrosion zones must go down, top zone first.")
+        return self
 
 
 class SlabMesh(_Model):
