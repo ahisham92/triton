@@ -4,7 +4,7 @@ Structural design of marine structure elements from Plaxis 3D straining actions.
 Upload the geotechnical team's workbook and Triton checks it, designs each element
 to Eurocode (EC2 / EC3) with BS 6349, and reports reinforcement and utilization ratios.
 
-So far it covers **importing and checking the workbook**, **project setup** (sections, materials and design settings for each element) and the **longitudinal design of piles** for axial force and bending.
+So far it covers **importing and checking the workbook**, **project setup** (sections, materials and design settings for each element) the **design of piles** (N–M cages, reductions down the pile, shear links) and the **combi wall** (reinforced infill and steel tube).
 
 ## Run it
 
@@ -30,7 +30,7 @@ Each element gets its own inputs:
 |---|---|
 | Pile | diameter, cover, concrete, crack width limit, number of piles (default: counted from the workbook), head level (results above it are inside the slab and ignored), optional steel casing |
 | Steel casing | top and bottom level, thickness, corrosion loss, steel grade, and its role: *crack width only* or *structural* (shares forces with the concrete by E·I) |
-| Combi wall | tube diameter and thickness, corrosion loss, steel and infill grades, infill bottom level (default −25 m), front beam soffit level |
+| Combi wall | tube diameter and thickness, corrosion loss, steel and infill grades, infill bottom level (default −25 m), front beam soffit level, infill cover and links, number of king piles, tube fabrication quality class |
 | Sheet pile wall | section, steel grade, A / Wel / Wpl per m, class, corrosion loss per face |
 | Slab | thickness, top and bottom cover, uniform or column and field strips |
 | Front / rear beam | width, depth, cover |
@@ -50,7 +50,7 @@ multipliers used.
 
 ## Pile design (N–M)
 
-Upload the workbook on the project's **Workbook** tab, then press **Design piles** on the **Design** tab.
+Upload the workbook on the project's **Workbook** tab, then press **Design piles and combi wall** on the **Design** tab.
 For each pile element Triton takes every ULS result (all piles of the row, every node below the pile
 head level; QP is not used) and picks the lightest cage that carries all of them, or the cheapest
 if that is the chosen objective.
@@ -106,8 +106,8 @@ The steel per pile and kg/m³ include the links.
 
 ### Export for Revit
 
-**Download cages for Revit (JSON)** on the Design tab (`GET /api/projects/{id}/sections/{section}/design/piles/cages.json`)
-gives, for every pile element: diameter, cover, link, head and toe levels, the X, Y of each pile in
+**Download cages for Revit (JSON)** on the Design tab (`GET /api/projects/{id}/sections/{section}/design/cages.json`)
+gives, for every pile element and combi wall infill (`part`: `pile` or `infill`): diameter, cover, link, head and toe levels, the X, Y of each pile in
 the Plaxis model, and each run row by row (bar count, diameter, radius of the bar circle, angle of
 the first bar from the model X axis, bar top and bottom levels and length). A Revit / Dynamo script
 can place the bars from this file alone; it only has to map Plaxis coordinates to the project base point.
@@ -116,6 +116,24 @@ Set each pile's **head level**, or the section's slab soffit level, to the slab 
 above it are FE peaks inside the slab. The results give the steel for all piles of each type.
 Not yet included: crack width, and a structural casing acting with the concrete
 (the pile is then designed as reinforced concrete alone, which is conservative), and starter bars into the slab.
+
+## Combi wall
+
+Between the front beam soffit and the infill bottom level (default −25 m) every straining action,
+axial force included, is shared between the steel tube and the concrete infill by E·I, using the
+corroded tube and the infill grade's Ecm. For a 1626 × 18 mm tube with 3 mm corrosion and C32/40
+that is 67% to the infill. Below the infill the tube carries everything.
+
+- **Infill:** a circular reinforced concrete section of the tube's inner diameter, designed exactly
+  like a pile (N–M cage, reductions down the length, links), from the front beam soffit to the infill
+  bottom. There is no crack width check, because the tube is a permanent casing.
+- **Tube, filled part:** full plastic resistance, whatever its D/t (EN 1993-5 5.5.4(9)), with
+  M_N,Rd = M_pl,Rd cos(πn/2) and the 6.2.8 shear reduction.
+- **Tube, below the infill:** class from EN 1993-1-1 Table 5.2 on the corroded section. Classes 1 and 2
+  are checked plastically and class 3 elastically. Class 4 is checked elastically plus for meridional
+  shell buckling to EN 1993-1-6 Annex D.1.2 (C_x = 1, fabrication quality class A/B/C, γM1 = 1.1),
+  as EN 1993-5 5.5.4(7) refers tubes to EN 1993-1-6.
+- **Not yet included:** shell buckling under shear, and forces from the secondary sheet piles.
 
 ## Workbook format
 

@@ -94,13 +94,13 @@ def test_cage_export_endpoint(tmp_path, monkeypatch):
     client = TestClient(app)
     p = client.post("/api/projects", json={"info": {"name": "Berth 1"}, "element_names": ["Pile(1)"]}).json()
     url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
-    assert client.get(f"{url}/design/piles/cages.json").status_code == 404
+    assert client.get(f"{url}/design/cages.json").status_code == 404
     data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet()})
     client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
-    client.post(f"{url}/design/piles")
-    r = client.get(f"{url}/design/piles/cages.json")
+    client.post(f"{url}/design")
+    r = client.get(f"{url}/design/cages.json")
     assert r.status_code == 200
-    assert "Berth_1_Section_1-pile-cages.json" in r.headers["content-disposition"]
+    assert "Berth_1_Section_1-cages.json" in r.headers["content-disposition"]
     out = r.json()
     assert out["section"] == "Section 1"
     assert out["piles"][0]["element"] == "Pile(1)" and out["piles"][0]["count"] == 1

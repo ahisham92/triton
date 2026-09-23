@@ -272,7 +272,26 @@ class CombiWallInput(_Model):
         None,
         description="Results above this level are inside the front beam and are ignored.",
     )
-    cover: float = _mm("Cover to infill reinforcement", 75.0, gt=0)
+    cover: float = _mm("Cover to infill links", 75.0, gt=0)
+    link_diameter: float = _mm("Infill link diameter", 12.0, gt=0)
+    bar_count: int | None = Field(
+        None,
+        title="Infill bars in the outer row",
+        ge=6,
+        description="Leave empty to let Triton choose, or fix it.",
+    )
+    count: int | None = Field(
+        None,
+        title="Number of king piles",
+        ge=1,
+        description="King piles in the section. Empty: counted from the workbook.",
+    )
+    fabrication_class: Literal["A", "B", "C"] = Field(
+        "B",
+        title="Tube fabrication quality class",
+        description="EN 1993-1-6 Table D.1, for local buckling below the infill (A excellent, B high, "
+        "C normal).",
+    )
 
     @model_validator(mode="after")
     def _tube(self) -> CombiWallInput:

@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 from test_design import pile_rows
 
-from triton.design.runner import factored_elements, run_piles
+from triton.design.runner import factored_elements, run_section
 from triton.forces import scale_forces
 from triton.project import DesignSettings, LoadFactor, Section
 from triton.validation import import_sheets
@@ -37,7 +37,7 @@ def test_design_reports_the_multiplier():
     section = Section(load_factors=[LoadFactor(factor=1.35, sheets=["Pile(1)-PT-B-Apron", "Nope-QP"])])
     section.add_elements(["Pile(1)"])
     section.elements["Pile(1)"].head_level = 1.0
-    out = run_piles(DesignSettings(), section, workbook())
+    out = run_section(DesignSettings(), section, workbook())
     (pile,) = out["piles"]
     assert pile["governing"]["M_kNm"] == pytest.approx(1500 * 1.35)
     assert "PT-B-Apron ×1.35" in pile["notes"][0]
@@ -52,7 +52,7 @@ def test_a_sheet_is_multiplied_once():
 def test_slab_soffit_is_the_default_head_level():
     section = Section(slab_soffit_level=-1.0)
     section.add_elements(["Pile(1)"])
-    (pile,) = run_piles(DesignSettings(), section, workbook())["piles"]
+    (pile,) = run_section(DesignSettings(), section, workbook())["piles"]
     assert pile["section"]["head_level_m"] == -1.0
     assert any("slab soffit" in n for n in pile["notes"])
     assert pile["count"] == 1

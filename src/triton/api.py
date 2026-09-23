@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from .design.export import pile_cages
-from .design.runner import run_piles
+from .design.runner import run_section
 from .materials import catalogue
 from .project import DesignSettings, Project, ProjectInfo, Section
 from .reader import UnsupportedWorkbook
@@ -223,37 +223,38 @@ def section_workbook(project_id: str, section_id: str) -> dict:
 # --- Design ------------------------------------------------------------------------------
 
 
-@app.post(SECTION + "/design/piles")
-def design_piles(project_id: str, section_id: str) -> dict:
+@app.post(SECTION + "/design")
+def design_section(project_id: str, section_id: str) -> dict:
+    """Design the piles and combi walls of a section."""
     project = _get(project_id)
     section = _section(project, section_id)
     workbook = store().load_workbook(project_id, section_id)
     if workbook is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
-    results = run_piles(project.design, section, workbook)
+    results = run_section(project.design, section, workbook)
     store().save_results(project_id, section_id, results)
     return results
 
 
-@app.get(SECTION + "/design/piles")
-def pile_results(project_id: str, section_id: str) -> dict:
+@app.get(SECTION + "/design")
+def section_results(project_id: str, section_id: str) -> dict:
     _section(_get(project_id), section_id)
     results = store().load_results(project_id, section_id)
     if results is None:
-        raise HTTPException(404, "The piles of this section have not been designed yet.")
+        raise HTTPException(404, "This section has not been designed yet.")
     return results
 
 
-@app.get(SECTION + "/design/piles/cages.json")
+@app.get(SECTION + "/design/cages.json")
 def pile_cage_export(project_id: str, section_id: str) -> JSONResponse:
-    """Bar runs of every designed pile of a section, for a Revit / Dynamo script."""
+    """Bar runs of every designed pile and combi wall infill of a section, for a Revit / Dynamo script."""
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
     if results is None:
-        raise HTTPException(404, "The piles of this section have not been designed yet.")
+        raise HTTPException(404, "This section has not been designed yet.")
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name}").strip("_") or "project"
     return JSONResponse(
         pile_cages(project.info.name, results, section=section.name),
-        headers={"Content-Disposition": f'attachment; filename="{name}-pile-cages.json"'},
+        headers={"Content-Disposition": f'attachment; filename="{name}-cages.json"'},
     )

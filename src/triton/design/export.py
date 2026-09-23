@@ -3,7 +3,8 @@
 Everything a script needs to place the bars is spelled out, so it does not
 have to repeat any design logic:
 
-* each pile of each pile element, at its Plaxis X, Y (m), from the head level
+* each pile of each pile element, and the concrete infill of each combi wall
+  king pile (``part`` "infill"), at its Plaxis X, Y (m), from the head level
   down to the toe level (m, same datum as the model);
 * each bar run: its cage, row by row, with the radius of the bar circle (mm),
   the angle of the first bar (degrees, anticlockwise from the model X axis;
@@ -23,7 +24,9 @@ FORMAT = "triton.pile-cages/1"
 
 def pile_cages(project_name: str, results: dict[str, Any], section: str = "") -> dict[str, Any]:
     piles = []
-    for p in results.get("piles", []):
+    cages = [(p, "pile") for p in results.get("piles", [])]
+    cages += [(w["infill"], "infill") for w in results.get("combi_walls", [])]
+    for p, part in cages:
         c = p.get("curtailment") or {}
         a = p.get("arrangement")
         if a is None:
@@ -32,6 +35,7 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
         piles.append(
             {
                 "element": p["element"],
+                "part": part,
                 "count": p.get("count", len(p.get("positions", [])) or 1),
                 "diameter_mm": p["section"]["diameter_mm"],
                 "cover_mm": p["section"]["cover_mm"],

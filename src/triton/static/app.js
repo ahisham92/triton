@@ -634,26 +634,26 @@ function renderReport(d) {
 // ---------------------------------------------------------------- design tab
 async function renderDesignTab(host) {
   const url = secUrl();
-  const piles = Object.entries(sec().elements).filter(([, e]) => e.kind === "pile");
+  const els = Object.entries(sec().elements).filter(([, e]) => e.kind === "pile" || e.kind === "combi_wall");
   host.innerHTML = `<div class="panel row">
-      <button id="run-piles" ${piles.length ? "" : "disabled"}>Design piles</button>
-      <a class="quiet-link" id="cages" href="${url}/design/piles/cages.json" hidden>Download cages for Revit (JSON)</a>
-      <span class="status" id="design-status">${piles.length ? `${piles.length} pile element(s): ${esc(piles.map(([n]) => n).join(", "))}` : "Add pile elements first."}</span>
+      <button id="run-design" ${els.length ? "" : "disabled"}>Design piles and combi wall</button>
+      <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
+      <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile or combi wall elements first."}</span>
     </div><div id="design-out"></div>`;
-  document.getElementById("run-piles").onclick = async () => {
+  document.getElementById("run-design").onclick = async () => {
     if (state.dirty) await save();
     if (state.errors?.length) return;
     const status = document.getElementById("design-status");
     status.textContent = "Designing…";
     try {
-      renderPileResults(await api(`${url}/design/piles`, { method: "POST" }));
+      renderResults(await api(`${url}/design`, { method: "POST" }));
       status.textContent = "Done.";
     } catch (e) {
       status.textContent = e.message;
     }
   };
   try {
-    renderPileResults(await api(`${url}/design/piles`));
+    renderResults(await api(`${url}/design`));
   } catch {
     /* not designed yet */
   }
@@ -661,11 +661,12 @@ async function renderDesignTab(host) {
 
 const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : Number(v).toLocaleString("en-GB", { maximumFractionDigits: d, minimumFractionDigits: d }));
 
-function renderPileResults(res) {
+function renderResults(res) {
   const out = document.getElementById("design-out");
   if (!out) return;
+  const walls = res.combi_walls || [];
   const link = document.getElementById("cages");
-  if (link) link.hidden = !res.piles.length;
+  if (link) link.hidden = !res.piles.length && !walls.length;
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
@@ -680,10 +681,54 @@ function renderPileResults(res) {
     .join("");
   out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}. Crack width comes next.</p>
     ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
-    <div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>
-    <div id="pile-cards"></div>`;
+    ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
+    <div id="pile-cards"></div><div id="combi-cards"></div>`;
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
+  const combi = document.getElementById("combi-cards");
+  if (walls.length) combi.insertAdjacentHTML("beforeend", "<h2>Combi wall</h2>");
+  for (const w of walls) combi.append(combiCard(w));
+}
+
+function combiCard(w) {
+  const card = document.createElement("div");
+  card.className = "panel";
+  card.style.marginTop = "16px";
+  const t = w.tube;
+  const s = t.section || {};
+  const r = t.resistances || {};
+  const b = t.buckling;
+  const g = t.governing || {};
+  card.innerHTML = `<div class="element-head"><h3>${esc(w.element)}<span class="type">${w.count} king pile${w.count === 1 ? "" : "s"}, Ø${fmt(s.diameter_mm)} × ${fmt(s.thickness_mm)} mm ${esc(s.grade || "")}</span></h3>
+      <span class="sev ${w.passed ? "ok" : "error"}">${w.passed ? "passes" : "fails"}</span></div>
+    <div class="counts" style="margin-top:0">
+      <div class="count"><b>${fmt(w.utilisation, 2)}</b>max utilisation</div>
+      <div class="count"><b>${fmt((1 - w.steel_share) * 100)}% / ${fmt(w.steel_share * 100)}%</b>infill / tube share where filled (E·I)</div>
+      <div class="count"><b>${fmt(w.infill.utilisation, 2)}</b>infill N–M</div>
+      <div class="count"><b>${fmt(t.utilisation, 2)}</b>steel tube</div>
+    </div>
+    ${w.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    <h3 style="margin-top:18px">Steel tube</h3>
+    <div class="cage"><div class="chart" data-kind="tube"></div><div class="scroll"><table>
+      <tr><th colspan="2">Corroded section (${fmt(s.corrosion_mm, 1)} mm lost outside)</th></tr>
+      <tr><td>Diameter × wall</td><td>${fmt(s.corroded_diameter_mm)} × ${fmt(s.corroded_thickness_mm, 1)} mm</td></tr>
+      <tr><td>f<sub>y</sub></td><td>${fmt(s.fy_MPa)} MPa</td></tr>
+      <tr><td>d/t, class below the infill</td><td>${fmt(s.d_over_t)}, class ${s.class_unfilled}</td></tr>
+      <tr><td>N<sub>pl,Rd</sub> / M<sub>pl,Rd</sub></td><td>${fmt(r.N_pl_kN)} kN / ${fmt(r.M_pl_kNm)} kNm</td></tr>
+      <tr><td>M<sub>el,Rd</sub> / V<sub>pl,Rd</sub></td><td>${fmt(r.M_el_kNm)} kNm / ${fmt(r.V_pl_kN)} kN</td></tr>
+      ${b ? `<tr><td>Shell buckling σ<sub>x,Rd</sub></td><td>${fmt(b.sigma_Rd_MPa)} MPa (χ ${fmt(b.chi, 3)}, λ̄ ${fmt(b.slenderness, 3)})</td></tr>` : ""}
+    </table></div></div>
+    ${g.combination ? `<p>Governing: ${esc(g.combination)}, z ${fmt(g.z, 2)} m (${esc(g.zone)}), N = ${fmt(g.N_kN)} kN (Plaxis sign), M = ${fmt(g.M_kNm)} kNm, V = ${fmt(g.V_kN)} kN. Check: ${esc(g.check)}.</p>` : ""}
+    ${(t.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    <h3 style="margin-top:18px">Concrete infill</h3>`;
+  if (t.profile?.length) profileChart(card.querySelector('[data-kind="tube"]'), t, "Tube utilisation along the wall", w.infill_bottom_level);
+  card.querySelector('[data-kind="tube"]').parentElement.classList.add("wide");
+  const infill = pileCard({ ...w.infill, element: `${w.element} infill` });
+  infill.style.marginTop = "0";
+  infill.style.border = "0";
+  infill.style.padding = "0";
+  card.append(infill);
+  return card;
 }
 
 function pileCard(p) {
@@ -712,7 +757,7 @@ function pileCard(p) {
       </table>
       <p class="status">Clear gap between rows: ${lim.row_gap_mm == null ? "EN 1992-1-1 8.2 minimum" : `${fmt(lim.row_gap_mm)} mm`}.</p></div></div>` : ""}
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
-    ${p.shear ? shearBlock(p.shear) : ""}
+    ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
     <details style="margin-top:12px"><summary>Other cages that pass</summary><div class="scroll"><table>
       <tr><th>Bars</th><th>Rows</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
@@ -727,9 +772,9 @@ function pileCard(p) {
   return card;
 }
 
-function shearBlock(sh) {
+function shearBlock(sh, above = "the slab") {
   const g = sh.governing;
-  const why = { shear: "shear", minimum: "9.5.3 maximum spacing", "near slab": "0.6 × spacing below the slab", "at lap": "0.6 × spacing at laps" };
+  const why = { shear: "shear", minimum: "9.5.3 maximum spacing", "near slab": `0.6 × spacing below ${above}`, "at lap": "0.6 × spacing at laps" };
   return `<h3 style="margin:20px 0 4px;font-size:15px">Shear and links <span class="sev ${sh.passed ? "ok" : "error"}">${sh.passed ? "passes" : "fails"}</span></h3>
     <p style="margin:4px 0 8px">Governing: ${esc(g.combination)}, z ${fmt(g.z, 2)} m. V<sub>Ed</sub> = ${fmt(g.V_kN)} kN with N<sub>Ed</sub> = ${fmt(g.N_kN)} kN;
       V<sub>Rd,c</sub> = ${fmt(g.VRd_c_kN)} kN${g.N_kN < 0 ? " (pile in tension: no concrete contribution)" : ""}, V<sub>Rd,max</sub> = ${fmt(g.VRd_max_kN)} kN at cot θ = ${fmt(g.cot_theta, 2)}. Utilisation ${fmt(sh.utilisation, 2)}.</p>
@@ -883,18 +928,22 @@ function nmChart(el, p) {
   c.svg.onmouseleave = () => (c.tip.hidden = true);
 }
 
-function profileChart(el, p) {
+function profileChart(el, p, title = "Utilisation along the pile", markLevel = null) {
   // Max utilisation at each level (0.1 m bands): z up the page, utilisation across.
-  const prof = p.profile;
+  const prof = p.profile.filter((q) => q.util != null);
   const zs = prof.map((q) => q.z);
   const maxU = Math.max(1.1, ...prof.map((q) => q.util)) * 1.05;
   const c = frame(el, {
     xDomain: [0, maxU], yDomain: [Math.min(...zs), Math.max(...zs)],
-    xLabel: "Utilisation", yLabel: "Level z (m)", title: "Utilisation along the pile",
+    xLabel: "Utilisation", yLabel: "Level z (m)", title,
   });
   const path = prof.map((q, i) => `${i ? "L" : "M"}${c.x(q.util).toFixed(1)},${c.y(q.z).toFixed(1)}`).join("");
+  const mark = markLevel != null && markLevel > Math.min(...zs) && markLevel < Math.max(...zs)
+    ? `<line class="grid" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(markLevel)}" y2="${c.y(markLevel)}" stroke-dasharray="4 3"/>
+       <text class="label" x="${c.w - c.m.r - 4}" y="${c.y(markLevel) - 4}" text-anchor="end">infill bottom ${fmt(markLevel, 1)} m</text>`
+    : "";
   c.g.innerHTML = `<line class="limit" x1="${c.x(1)}" x2="${c.x(1)}" y1="${c.m.t}" y2="${c.h - c.m.b}"/>
-    <text class="label" x="${c.x(1) + 4}" y="${c.m.t + 12}">1.0</text>
+    <text class="label" x="${c.x(1) + 4}" y="${c.m.t + 12}">1.0</text>${mark}
     <path class="series" d="${path}"/>`;
   c.svg.onmousemove = (evt) => {
     const r = c.svg.getBoundingClientRect();
