@@ -55,6 +55,36 @@ roughly three times as long. A workbook is read once on upload and stored with i
 design runs do not read it again. If Triton runs behind a reverse proxy (IIS, nginx), raise the
 proxy's request size limit (e.g. `client_max_body_size 200m`).
 
+**Online on PythonAnywhere, as a tab of an existing site**
+
+PythonAnywhere's web tab runs WSGI apps; Triton (FastAPI) runs there through `triton.wsgi`, mounted
+under `/triton` of the existing site and behind that site's own sign-in:
+
+1. In a PythonAnywhere Bash console, with the site's virtualenv active (Python 3.11 or later):
+   `git clone https://github.com/ahisham92/triton.git ~/triton && pip install -e ~/triton`
+   (the repository is private: clone with a GitHub token, or upload the ZIP and unzip it there).
+2. In the site's WSGI file (Web tab → WSGI configuration file), after the line that builds the site's
+   app, wrap it:
+   ```python
+   import os
+   os.environ["TRITON_DATA_DIR"] = "/home/<username>/triton-data"
+   from triton.wsgi import guarded, mount
+
+   # Flask with Flask-Login (for Django, see triton/wsgi.py):
+   from flask_login import current_user
+
+   def signed_in(environ):
+       with flask_app.request_context(environ):
+           return current_user.is_authenticated
+
+   application = mount(flask_app, "/triton", guarded(signed_in, sign_in_url="/login"))
+   ```
+3. Add a **Triton** tab to the site's navigation, linking to `/triton/`.
+4. Reload the web app on the Web tab.
+
+Each stored section workbook takes about 8 MB on disk (about 25 MB for a full 107 MB workbook), so a
+free account's 512 MB fills after a few sections.
+
 **Command line and tests**
 
 ```bash

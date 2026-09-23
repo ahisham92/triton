@@ -2,6 +2,8 @@
 import { View3D, directionArrows, heat, legendHtml } from "./view3d.js";
 
 const $app = document.getElementById("app");
+// Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
+const ROOT = new URL(".", location.href.split("#")[0]).pathname.replace(/\/$/, "");
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const pretty = (s) => String(s).replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
@@ -24,7 +26,7 @@ async function api(path, opts = {}) {
 let SCHEMA = null;
 let MATERIALS = null;
 async function reference() {
-  if (!SCHEMA) [SCHEMA, MATERIALS] = await Promise.all([api("/api/schema/project"), api("/api/materials")]);
+  if (!SCHEMA) [SCHEMA, MATERIALS] = await Promise.all([api(ROOT + "/api/schema/project"), api(ROOT + "/api/materials")]);
 }
 const resolve = (node) => (node && node.$ref ? SCHEMA.$defs[node.$ref.split("/").pop()] : node);
 
@@ -49,10 +51,10 @@ async function projectsPage() {
     <h2>Saved projects</h2><div class="panel scroll" id="list">Loading…</div>`;
   document.getElementById("new").onclick = async () => {
     const name = document.getElementById("new-name").value.trim() || "New project";
-    const p = await api("/api/projects", { method: "POST", body: JSON.stringify({ info: { name } }) });
+    const p = await api(ROOT + "/api/projects", { method: "POST", body: JSON.stringify({ info: { name } }) });
     location.hash = `#/project/${p.id}/info`;
   };
-  const list = await api("/api/projects");
+  const list = await api(ROOT + "/api/projects");
   const el = document.getElementById("list");
   if (!list.length) {
     el.innerHTML = `<p class="empty">No projects yet.</p>`;
@@ -77,14 +79,14 @@ let state = null; // { project, sectionId, dirty, errors }
 const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
-const secUrl = () => `/api/projects/${state.project.id}/sections/${sec().id}`;
+const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
 const tabHash = (tab) => `#/project/${state.project.id}/${tab}` + (SECTION_TABS.has(tab) ? `/${sec().id}` : "");
 
 async function projectPage(id, tab, sectionId) {
   await reference();
   if (!state || state.project.id !== id) {
     try {
-      state = { project: await api(`/api/projects/${id}`), dirty: false, errors: [] };
+      state = { project: await api(`${ROOT}/api/projects/${id}`), dirty: false, errors: [] };
     } catch (e) {
       $app.innerHTML = `<p>${esc(e.message)} <a href="#/">Back to projects</a></p>`;
       return;
@@ -126,7 +128,7 @@ async function projectPage(id, tab, sectionId) {
   document.getElementById("save").onclick = save;
   document.getElementById("delete").onclick = async () => {
     if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
-    await api(`/api/projects/${id}`, { method: "DELETE" });
+    await api(`${ROOT}/api/projects/${id}`, { method: "DELETE" });
     state = null;
     location.hash = "#/";
   };
@@ -154,7 +156,7 @@ function showSaveState(text) {
 async function save() {
   showSaveState("Saving…");
   try {
-    state.project = await api(`/api/projects/${state.project.id}`, { method: "PUT", body: JSON.stringify(state.project) });
+    state.project = await api(`${ROOT}/api/projects/${state.project.id}`, { method: "PUT", body: JSON.stringify(state.project) });
     state.dirty = false;
     state.errors = [];
     showSaveState();
@@ -378,7 +380,7 @@ async function applyDurabilityDefaults() {
   const life = Number(d.design_life_years);
   if (!(life >= 1)) return;
   const q = new URLSearchParams({ cover_code: d.durability.cover_code, corrosion_code: d.durability.corrosion_code, life });
-  const res = await api(`/api/durability-defaults?${q}`);
+  const res = await api(`${ROOT}/api/durability-defaults?${q}`);
   if (res.covers) d.durability.covers = res.covers;
   if (res.corrosion) d.durability.corrosion = res.corrosion;
   markDirty();
@@ -443,7 +445,7 @@ function renderSections(host) {
     if (state.dirty) await save();
     if (state.errors?.length) return;
     try {
-      state.project = await api(`/api/projects/${p.id}/sections`, { method: "POST", body: JSON.stringify({ name }) });
+      state.project = await api(`${ROOT}/api/projects/${p.id}/sections`, { method: "POST", body: JSON.stringify({ name }) });
       state.sectionId = state.project.sections.at(-1).id;
       route();
     } catch (e) {
@@ -556,7 +558,7 @@ function checkerHtml() {
     </div>`;
 }
 
-function wireChecker(onReport, url = "/api/workbooks/check") {
+function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
   const file = document.getElementById("file");
   const run = document.getElementById("run");
   file.onchange = () => (run.disabled = !file.files.length);
