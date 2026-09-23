@@ -926,6 +926,30 @@ def _short_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
+class SheetMapping(_Model):
+    """A workbook sheet assigned by hand, when its name does not follow '<Element>-<Combination>'."""
+
+    element: str = Field(
+        "", title="Element", description="As Triton names it: Pile(3), Deck, Front Beam, SPW, ..."
+    )
+    combination: str = Field("", title="Combination", description="e.g. PT-B-Apron or QP")
+    ignore: bool = Field(False, title="Leave this sheet out")
+
+    @model_validator(mode="after")
+    def _known(self) -> SheetMapping:
+        from .elements import element_spec
+
+        if not self.ignore:
+            if element_spec(self.element) is None:
+                raise ValueError(
+                    f"'{self.element}' is not an element Triton knows: use Pile(n), Combi Wall, SPW, Deck, "
+                    "Front Beam, Rear Beam or Transverse Beam."
+                )
+            if not self.combination.strip():
+                raise ValueError("Give the sheet's combination, e.g. PT-B-Apron or QP.")
+        return self
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
@@ -955,6 +979,9 @@ class Section(_Model):
     )
     elements: dict[str, ElementInput] = Field(default_factory=dict, title="Elements")
     load_factors: list[LoadFactor] = Field(default_factory=list, title="Load multipliers")
+    sheet_map: dict[str, SheetMapping] = Field(
+        default_factory=dict, title="Sheet mapping", description="Sheets assigned by hand, by sheet name."
+    )
 
     @model_validator(mode="after")
     def _zone(self) -> Section:

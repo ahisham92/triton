@@ -93,6 +93,14 @@ actions, from the workbook's direction check. Each element on the Design tab has
 Drag to orbit, shift-drag or right-drag to pan, scroll to zoom; presets for 3D, plan, from the sea
 and along the quay.
 
+## Sheet mapping
+
+A sheet whose name does not follow `<Element>-<Combination>` is flagged on the Workbook tab. Under
+**Sheet mapping** you say which element (as Triton names it: Pile(n), Combi Wall, SPW, Deck, Front
+Beam, Rear Beam, Transverse Beam) and combination it holds, or leave it out; any other sheet can be
+reassigned the same way. The mapping is saved with the section and applied to the stored workbook,
+so the checks, design and exports run on it without uploading again.
+
 ## Load multipliers
 
 On the Workbook tab, add a multiplier (e.g. 1.35) and tick the combinations or single sheets it

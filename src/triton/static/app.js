@@ -542,6 +542,7 @@ function checkerHtml() {
         <div class="count"><b id="n-info">0</b>automatic clean-ups</div>
       </div>
       <div id="add-found"></div>
+      <div id="mapping"></div>
       <div id="factors"></div>
       <h2>Sheets found</h2>
       <div class="panel scroll"><table id="coverage"></table></div>
@@ -593,6 +594,11 @@ async function renderWorkbookTab(host) {
     document.getElementById("wb-note").textContent =
       `Workbook in use: ${data.file}, uploaded ${String(data.uploaded_at || "").replace("T", " ").slice(0, 16)}. Upload again to replace it.`;
     renderFactors(data);
+    renderMapping(data, async () => {
+      const fresh = await api(`${url}/workbook`);
+      renderReport(fresh);
+      onReport(fresh);
+    });
     if (state.geometry?.uploaded !== data.uploaded_at) state.geometry = { uploaded: data.uploaded_at };
     const missing = data.elements.filter((e) => !(e in sec().elements));
     const box = document.getElementById("add-found");
@@ -615,6 +621,70 @@ async function renderWorkbookTab(host) {
   } catch {
     /* no workbook yet */
   }
+}
+
+// Sheet mapping: sheets whose names do not follow '<Element>-<Combination>', assigned by hand.
+function renderMapping(data, refresh) {
+  const box = document.getElementById("mapping");
+  if (!box) return;
+  const p = sec();
+  p.sheet_map ??= {};
+  const unknown = data.sheets.filter((x) => !x.element && !x.empty && !(x.name in p.sheet_map)).map((x) => x.name);
+  const names = [...Object.keys(p.sheet_map), ...unknown];
+  const others = data.sheets.filter((x) => !names.includes(x.name) && !x.empty).map((x) => x.name);
+  if (!names.length && !others.length) {
+    box.innerHTML = "";
+    return;
+  }
+  const known = [...new Set([...data.elements, ...Object.keys(p.elements)])];
+  const draw = () => {
+    const rows = names.map((n) => {
+      const m = p.sheet_map[n] || { element: "", combination: "", ignore: false };
+      return `<tr><td>${esc(n)}${n in p.sheet_map ? "" : ' <span class="sev warning">not recognised</span>'}</td>
+        <td><input type="text" list="map-elements" data-map="${esc(n)}" data-key="element" value="${esc(m.element)}" placeholder="Pile(5)" ${m.ignore ? "disabled" : ""}></td>
+        <td><input type="text" list="map-combos" data-map="${esc(n)}" data-key="combination" value="${esc(m.combination)}" placeholder="PT-B-Apron" ${m.ignore ? "disabled" : ""}></td>
+        <td><label><input type="checkbox" data-map="${esc(n)}" data-key="ignore" ${m.ignore ? "checked" : ""}> leave out</label></td>
+        <td>${n in p.sheet_map ? `<button class="quiet" data-unmap="${esc(n)}">Remove</button>` : ""}</td></tr>`;
+    }).join("");
+    box.innerHTML = `<h2>Sheet mapping</h2>
+      <p class="status" style="margin-top:0">For sheets whose names do not follow &lt;Element&gt;-&lt;Combination&gt;: say which element and combination each one holds, or leave it out. Apply saves the project and checks the workbook again.</p>
+      <div class="panel scroll"><table><tr><th>Sheet</th><th>Element</th><th>Combination</th><th></th><th></th></tr>${rows || '<tr><td colspan="5">No sheets mapped by hand.</td></tr>'}</table>
+      <div class="row" style="margin-top:10px">${others.length ? `<select id="map-pick"><option value="">Reassign another sheet…</option>${others.map((n) => `<option>${esc(n)}</option>`).join("")}</select>` : ""}
+        <button id="map-apply">Apply mapping</button><span class="status" id="map-status"></span></div></div>
+      <datalist id="map-elements">${known.map((e) => `<option value="${esc(e)}">`).join("")}</datalist>
+      <datalist id="map-combos">${data.combinations.map((c) => `<option value="${esc(c.name)}">`).join("")}</datalist>`;
+    const entry = (n) => (p.sheet_map[n] ??= { element: "", combination: "", ignore: false });
+    box.querySelectorAll("input[data-map]").forEach((inp) => {
+      const n = inp.dataset.map;
+      if (inp.type === "checkbox") inp.onchange = () => { entry(n).ignore = inp.checked; markDirty(); draw(); };
+      else inp.oninput = () => { entry(n)[inp.dataset.key] = inp.value; markDirty(); };
+    });
+    box.querySelectorAll("[data-unmap]").forEach((b) => (b.onclick = () => {
+      delete p.sheet_map[b.dataset.unmap];
+      markDirty();
+      renderMapping(data, refresh);
+    }));
+    const pick = box.querySelector("#map-pick");
+    if (pick) pick.onchange = () => {
+      if (!pick.value) return;
+      const x = data.sheets.find((q) => q.name === pick.value);
+      p.sheet_map[pick.value] = { element: x?.element || "", combination: x?.combination || "", ignore: false };
+      markDirty();
+      renderMapping(data, refresh);
+    };
+    box.querySelector("#map-apply").onclick = async () => {
+      const st = box.querySelector("#map-status");
+      st.textContent = "Saving…";
+      await save();
+      if (state.errors?.length) {
+        st.textContent = state.errors.map((e) => e.msg).join(" ");
+        return;
+      }
+      st.textContent = "Checking the workbook again…";
+      await refresh();
+    };
+  };
+  draw();
 }
 
 // Load multipliers: a factor on the straining actions of chosen sheets (X, Y, Z untouched).

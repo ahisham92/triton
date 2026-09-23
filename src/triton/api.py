@@ -33,7 +33,7 @@ from .project import (
 from .reader import UnsupportedWorkbook
 from .report import RENDERERS, build_report
 from .store import ProjectNotFound, ProjectStore
-from .validation import ImportResult, import_workbook
+from .validation import ImportResult, apply_mapping, import_workbook
 
 STATIC = Path(__file__).parent / "static"
 ALLOWED = {".xlsb", ".xlsx", ".xlsm"}
@@ -233,12 +233,24 @@ def upload_section_workbook(project_id: str, section_id: str, file: UploadFile) 
     return store().save_workbook(project_id, section_id, file.filename or "workbook", result)
 
 
+def _workbook(project_id: str, section: Section) -> ImportResult | None:
+    """The section's stored workbook with its sheet mapping applied."""
+    wb = store().load_workbook(project_id, section.id)
+    if wb is None or not section.sheet_map:
+        return wb
+    return apply_mapping(wb, {k: v.model_dump() for k, v in section.sheet_map.items()})
+
+
 @app.get(SECTION + "/workbook")
 def section_workbook(project_id: str, section_id: str) -> dict:
-    _section(_get(project_id), section_id)
+    section = _section(_get(project_id), section_id)
     summary = store().workbook_summary(project_id, section_id)
     if summary is None:
         raise HTTPException(404, "No workbook uploaded for this section yet.")
+    if section.sheet_map:
+        wb = _workbook(project_id, section)
+        if wb is not None:
+            summary = {**summary, **wb.summary(), "sheet_map": list(section.sheet_map)}
     return summary
 
 
@@ -250,7 +262,7 @@ def design_section(project_id: str, section_id: str) -> dict:
     """Design the piles and combi walls of a section."""
     project = _get(project_id)
     section = _section(project, section_id)
-    workbook = store().load_workbook(project_id, section_id)
+    workbook = _workbook(project_id, section)
     if workbook is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
     results = run_section(project.design, section, workbook)
@@ -358,12 +370,11 @@ def design_report(project_id: str, section_id: str, fmt: str, detail: str = "sum
 @app.get(SECTION + "/geometry")
 def geometry(project_id: str, section_id: str) -> dict:
     """Element geometry for the 3D view, with the directions found in the workbook check."""
-    _section(_get(project_id), section_id)
-    wb = store().load_workbook(project_id, section_id)
+    section = _section(_get(project_id), section_id)
+    wb = _workbook(project_id, section)
     if wb is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
-    summary = store().workbook_summary(project_id, section_id) or {}
-    return {"elements": section_geometry(wb), "axes": summary.get("axes", [])}
+    return {"elements": section_geometry(wb), "axes": wb.summary()["axes"]}
 
 
 def _king_piles(section: Section, wb) -> list[tuple[float, float, float]]:
@@ -381,7 +392,7 @@ def spw_export(project_id: str, section_id: str) -> Response:
     """Sheet pile wall straining actions (Plaxis sign, multipliers applied) for the sheet pile program."""
     project = _get(project_id)
     section = _section(project, section_id)
-    wb = store().load_workbook(project_id, section_id)
+    wb = _workbook(project_id, section)
     if wb is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
     elements = factored_elements(section, wb)

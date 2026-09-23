@@ -114,6 +114,22 @@ def parse_sheet_name(name: str) -> SheetName | None:
     return None
 
 
+def element_spec(element: str) -> ElementSpec | None:
+    """The spec of an element name as Triton knows it (Pile(3), Deck, Front Beam, ...), or None."""
+    for pattern, spec in _PATTERNS:
+        if pattern.match(element.strip()):
+            return spec
+    return None
+
+
+def mapped_sheet_name(raw: str, element: str, combination: str) -> SheetName | None:
+    """A sheet assigned by hand to an element and combination."""
+    spec = element_spec(element)
+    if spec is None or not combination.strip():
+        return None
+    return SheetName(raw, _normalise_element(element.strip()), combination.strip(), spec)
+
+
 def _normalise_element(element: str) -> str:
     return re.sub(r"\s*\(\s*(\d+)\s*\)", r"(\1)", re.sub(r"\s+", " ", element))
 
