@@ -110,3 +110,6 @@ legend { font-weight: 600; padding: 0 6px; }
 .chart .bar.inner { fill: var(--series-1); }
 .chart .rebar { stroke: var(--text); stroke-linecap: butt; }
 a.quiet-link { color: var(--accent); text-decoration: none; border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; }
+.section-pick { margin: -4px 0 16px; }
+.section-pick label { font-weight: 600; }
+.section-pick select { min-width: 200px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--input); color: var(--text); font: inherit; }

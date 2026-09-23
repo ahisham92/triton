@@ -26,7 +26,7 @@ from triton.design.piles import (
     min_area_pile,
 )
 from triton.design.runner import run_piles
-from triton.project import Casing, DesignSettings, PileInput, Project
+from triton.project import Casing, DesignSettings, PileInput, Section
 from triton.validation import import_sheets
 
 C40 = ConcreteLaw(40)
@@ -281,9 +281,9 @@ def test_structural_casing_is_noted():
 
 
 def test_runner_designs_piles_and_skips_missing_ones(workbook):
-    project = Project()
-    project.add_elements(["Pile(1)", "Pile(2)", "Pile(9)", "Deck"])
-    out = run_piles(project, import_sheets(workbook))
+    section = Section()
+    section.add_elements(["Pile(1)", "Pile(2)", "Pile(9)", "Deck"])
+    out = run_piles(DesignSettings(), section, import_sheets(workbook))
     assert [p["element"] for p in out["piles"]] == ["Pile(1)", "Pile(2)"]
     assert out["skipped"] == ["Pile(9): no usable sheets in the workbook."]
 
@@ -310,22 +310,23 @@ def xlsx_bytes(sheets):
 
 
 def test_design_endpoints(client):
-    pid = client.post("/api/projects", json={"element_names": ["Pile(1)"]}).json()["id"]
-    assert client.post(f"/api/projects/{pid}/design/piles").status_code == 409
-    assert client.get(f"/api/projects/{pid}/workbook").status_code == 404
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)"]}).json()
+    url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
+    assert client.post(f"{url}/design/piles").status_code == 409
+    assert client.get(f"{url}/workbook").status_code == 404
 
     data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet()})
-    r = client.post(f"/api/projects/{pid}/workbook", files={"file": ("s.xlsx", data)})
+    r = client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
     assert r.status_code == 200, r.text
-    assert client.get(f"/api/projects/{pid}/workbook").json()["file"] == "s.xlsx"
-    assert client.get(f"/api/projects/{pid}/design/piles").status_code == 404
+    assert client.get(f"{url}/workbook").json()["file"] == "s.xlsx"
+    assert client.get(f"{url}/design/piles").status_code == 404
 
-    r = client.post(f"/api/projects/{pid}/design/piles")
+    r = client.post(f"{url}/design/piles")
     assert r.status_code == 200, r.text
     (pile,) = r.json()["piles"]
     assert pile["element"] == "Pile(1)" and pile["passed"]
-    assert client.get(f"/api/projects/{pid}/design/piles").json() == r.json()
+    assert client.get(f"{url}/design/piles").json() == r.json()
 
     # A new workbook makes the old results stale.
-    client.post(f"/api/projects/{pid}/workbook", files={"file": ("s2.xlsx", data)})
-    assert client.get(f"/api/projects/{pid}/design/piles").status_code == 404
+    client.post(f"{url}/workbook", files={"file": ("s2.xlsx", data)})
+    assert client.get(f"{url}/design/piles").status_code == 404

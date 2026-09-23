@@ -1,4 +1,4 @@
-"""Projects are saved as one JSON file each in the data folder."""
+"""Projects are saved as one JSON file each; each section keeps its workbook and results in a folder."""
 
 from __future__ import annotations
 
@@ -52,16 +52,23 @@ class ProjectStore:
         path.unlink()
         shutil.rmtree(self.root / project_id, ignore_errors=True)
 
-    # --- Files kept alongside a project: the checked workbook and design results.
+    # --- Files kept for each section: the checked workbook and design results.
 
-    def _dir(self, project_id: str) -> Path:
+    def _dir(self, project_id: str, section_id: str) -> Path:
         self._path(project_id)  # validates the id
-        d = self.root / project_id
-        d.mkdir(exist_ok=True)
+        if not section_id.isalnum():
+            raise ProjectNotFound(section_id)
+        d = self.root / project_id / section_id
+        d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def save_workbook(self, project_id: str, filename: str, result: ImportResult) -> dict[str, Any]:
-        d = self._dir(project_id)
+    def delete_section_files(self, project_id: str, section_id: str) -> None:
+        shutil.rmtree(self._dir(project_id, section_id), ignore_errors=True)
+
+    def save_workbook(
+        self, project_id: str, section_id: str, filename: str, result: ImportResult
+    ) -> dict[str, Any]:
+        d = self._dir(project_id, section_id)
         # Only this app writes these pickles, from workbooks the user uploaded.
         with (d / "workbook.pkl.tmp").open("wb") as f:
             pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -71,22 +78,22 @@ class ProjectStore:
         (d / "results.json").unlink(missing_ok=True)  # results belong to the old workbook
         return summary
 
-    def workbook_summary(self, project_id: str) -> dict[str, Any] | None:
-        path = self._dir(project_id) / "workbook.json"
+    def workbook_summary(self, project_id: str, section_id: str) -> dict[str, Any] | None:
+        path = self._dir(project_id, section_id) / "workbook.json"
         return json.loads(path.read_text("utf-8")) if path.exists() else None
 
-    def load_workbook(self, project_id: str) -> ImportResult | None:
-        path = self._dir(project_id) / "workbook.pkl"
+    def load_workbook(self, project_id: str, section_id: str) -> ImportResult | None:
+        path = self._dir(project_id, section_id) / "workbook.pkl"
         if not path.exists():
             return None
         with path.open("rb") as f:
             return pickle.load(f)
 
-    def save_results(self, project_id: str, results: dict[str, Any]) -> None:
-        self._write_json(self._dir(project_id) / "results.json", results)
+    def save_results(self, project_id: str, section_id: str, results: dict[str, Any]) -> None:
+        self._write_json(self._dir(project_id, section_id) / "results.json", results)
 
-    def load_results(self, project_id: str) -> dict[str, Any] | None:
-        path = self._dir(project_id) / "results.json"
+    def load_results(self, project_id: str, section_id: str) -> dict[str, Any] | None:
+        path = self._dir(project_id, section_id) / "results.json"
         return json.loads(path.read_text("utf-8")) if path.exists() else None
 
     @staticmethod

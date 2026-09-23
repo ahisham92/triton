@@ -32,8 +32,8 @@ route();
 
 function route() {
   const hash = location.hash.slice(1) || "/";
-  const m = hash.match(/^\/project\/([a-f0-9]+)(?:\/(\w+))?$/);
-  if (m) return projectPage(m[1], m[2] || "info");
+  const m = hash.match(/^\/project\/([a-f0-9]+)(?:\/(\w+))?(?:\/([a-f0-9]+))?$/);
+  if (m) return projectPage(m[1], m[2] || "info", m[3]);
   if (hash === "/check") return checkPage();
   return projectsPage();
 }
@@ -57,11 +57,11 @@ async function projectsPage() {
     return;
   }
   el.innerHTML =
-    `<table><tr><th>Name</th><th>Number</th><th>Section</th><th>Elements</th><th>Last saved</th></tr>` +
+    `<table><tr><th>Name</th><th>Number</th><th>Sections</th><th>Elements</th><th>Last saved</th></tr>` +
     list
       .map(
         (p) => `<tr class="link" data-id="${esc(p.id)}"><td>${esc(p.name)}</td><td>${esc(p.number)}</td>
-        <td>${esc(p.section)}</td><td>${p.elements}</td><td>${esc(p.updated_at.replace("T", " ").slice(0, 16))}</td></tr>`
+        <td>${p.sections}</td><td>${p.elements}</td><td>${esc(p.updated_at.replace("T", " ").slice(0, 16))}</td></tr>`
       )
       .join("") +
     `</table>`;
@@ -69,9 +69,16 @@ async function projectsPage() {
 }
 
 // ---------------------------------------------------------------- project page
-let state = null; // { project, dirty }
+let state = null; // { project, sectionId, dirty, errors }
 
-async function projectPage(id, tab) {
+// Elements, workbook, load multipliers and design results belong to one section of the project.
+const SECTION_TABS = new Set(["elements", "workbook", "design"]);
+const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
+const secIndex = () => state.project.sections.indexOf(sec());
+const secUrl = () => `/api/projects/${state.project.id}/sections/${sec().id}`;
+const tabHash = (tab) => `#/project/${state.project.id}/${tab}` + (SECTION_TABS.has(tab) ? `/${sec().id}` : "");
+
+async function projectPage(id, tab, sectionId) {
   await reference();
   if (!state || state.project.id !== id) {
     try {
@@ -82,21 +89,37 @@ async function projectPage(id, tab) {
     }
   }
   const p = state.project;
+  if (sectionId && p.sections.some((s) => s.id === sectionId)) state.sectionId = sectionId;
+  if (!p.sections.some((s) => s.id === state.sectionId)) state.sectionId = p.sections[0].id;
   const tabs = [
     ["info", "Project"],
     ["settings", "Design settings"],
-    ["elements", `Elements (${Object.keys(p.elements).length})`],
+    ["sections", `Sections (${p.sections.length})`],
+    ["elements", `Elements (${Object.keys(sec().elements).length})`],
     ["workbook", "Workbook"],
     ["design", "Design"],
   ];
+  const picker = SECTION_TABS.has(tab)
+    ? `<div class="row section-pick"><label for="section-pick">Section</label>
+        <select id="section-pick">${p.sections
+          .map((s) => `<option value="${esc(s.id)}" ${s.id === sec().id ? "selected" : ""}>${esc(s.name)}</option>`)
+          .join("")}</select>
+        <span class="status">Elements, workbook, load multipliers and results below are for this section.</span></div>`
+    : "";
   $app.innerHTML = `<h1>${esc(p.info.name)}</h1>
-    <p class="sub">${esc([p.info.number, p.info.section].filter(Boolean).join(" · ") || "Project setup")}</p>
+    <p class="sub">${esc([p.info.number, p.sections.length > 1 ? `${p.sections.length} sections` : sec().name].filter(Boolean).join(" · "))}</p>
     <div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${t}</button>`).join("")}</div>
-    <div id="tab"></div>
+    ${picker}<div id="tab"></div>
     <div class="savebar"><button id="save">Save</button><span class="status" id="save-status"></span>
       <span style="flex:1"></span><button class="danger" id="delete">Delete project</button></div>
     <ul class="errors" id="errors"></ul>`;
-  $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = `#/project/${id}/${b.dataset.tab}`)));
+  $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab))));
+  const pick = document.getElementById("section-pick");
+  if (pick)
+    pick.onchange = () => {
+      state.sectionId = pick.value;
+      location.hash = tabHash(tab);
+    };
   document.getElementById("save").onclick = save;
   document.getElementById("delete").onclick = async () => {
     if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
@@ -108,6 +131,7 @@ async function projectPage(id, tab) {
   if (tab === "info") host.append(renderObject(SCHEMA.properties.info, p.info, "info", "Project"));
   else if (tab === "settings") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
   else if (tab === "design") renderDesignTab(host);
+  else if (tab === "sections") renderSections(host);
   else if (tab === "elements") renderElements(host);
   else if (tab === "workbook") renderWorkbookTab(host);
   showSaveState();
@@ -159,10 +183,10 @@ function showErrors() {
   }
 }
 function cleanPath(loc) {
-  // ["elements", "Pile(1)", "pile", "casing", "thickness"] -> "elements.Pile(1).casing.thickness"
+  // ["sections", 0, "elements", "Pile(1)", "pile", "casing", "thickness"] -> "sections.0.elements.Pile(1).casing.thickness"
   const out = [];
   loc.forEach((x, i) => {
-    if (i === 2 && loc[0] === "elements" && typeof x === "string" && /^[a-z_]+$/.test(x)) return;
+    if (i >= 2 && loc[i - 2] === "elements" && typeof x === "string" && /^[a-z_]+$/.test(x)) return;
     out.push(x);
   });
   return out.join(".");
@@ -319,12 +343,60 @@ function prettyOption(o) {
   return map[o] || o;
 }
 
-// ---------------------------------------------------------------- elements tab
 const KIND_LABEL = { pile: "Pile", combi_wall: "Combi wall", sheet_pile_wall: "Sheet pile wall", slab: "Slab",
   front_beam: "Front beam", rear_beam: "Rear beam" };
 
-function renderElements(host) {
+// ---------------------------------------------------------------- sections tab
+function renderSections(host) {
   const p = state.project;
+  const def = SCHEMA.$defs.Section;
+  const schema = { properties: { name: def.properties.name, slab_soffit_level: def.properties.slab_soffit_level } };
+  host.innerHTML = `<p class="sub">A project can have several sections, e.g. Section 01a and Section 02. Each section has its own
+    Plaxis workbook, elements, load multipliers and results. Materials and design settings are shared.</p>
+    <div class="panel row" style="margin-bottom:16px">
+      <input id="sec-name" placeholder="Section name, e.g. Section 02" style="flex:1;max-width:280px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--input);color:var(--text);font:inherit">
+      <button id="sec-add" class="quiet">Add section</button><span class="status" id="sec-status"></span></div>`;
+  document.getElementById("sec-add").onclick = async () => {
+    const name = document.getElementById("sec-name").value.trim();
+    if (!name) return;
+    if (state.dirty) await save();
+    if (state.errors?.length) return;
+    try {
+      state.project = await api(`/api/projects/${p.id}/sections`, { method: "POST", body: JSON.stringify({ name }) });
+      state.sectionId = state.project.sections.at(-1).id;
+      route();
+    } catch (e) {
+      document.getElementById("sec-status").textContent = e.message;
+    }
+  };
+  p.sections.forEach((s, i) => {
+    const card = document.createElement("div");
+    card.className = "panel";
+    card.style.marginBottom = "16px";
+    const n = Object.keys(s.elements).length;
+    card.innerHTML = `<div class="element-head"><h3>${esc(s.name)}<span class="type">${n} element${n === 1 ? "" : "s"}</span></h3>
+      <span><button class="quiet" data-open>Open</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
+    card.querySelector("[data-open]").onclick = () => {
+      state.sectionId = s.id;
+      location.hash = tabHash("elements");
+    };
+    card.querySelector("[data-remove]").onclick = () => {
+      if (!confirm(`Remove "${s.name}" with its elements, workbook and results when you save?`)) return;
+      p.sections.splice(i, 1);
+      markDirty();
+      route();
+    };
+    const fs = renderObject(schema, s, `sections.${i}`, "");
+    fs.style.border = "0";
+    fs.style.padding = "0";
+    card.append(fs);
+    host.append(card);
+  });
+}
+
+// ---------------------------------------------------------------- elements tab
+function renderElements(host) {
+  const p = sec();
   const names = Object.keys(p.elements);
   host.innerHTML = `<div class="panel row" style="margin-bottom:16px">
       <input id="el-name" placeholder="Element name, e.g. Pile(5)" style="flex:1;max-width:280px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--input);color:var(--text);font:inherit">
@@ -341,7 +413,7 @@ function renderElements(host) {
   }
   for (const name of names) {
     const el = p.elements[name];
-    const schema = { $ref: SCHEMA.properties.elements.additionalProperties.discriminator.mapping[el.kind] };
+    const schema = { $ref: SCHEMA.$defs.Section.properties.elements.additionalProperties.discriminator.mapping[el.kind] };
     const card = document.createElement("div");
     card.className = "panel";
     card.style.marginBottom = "16px";
@@ -354,7 +426,7 @@ function renderElements(host) {
       markDirty();
       route();
     };
-    const fs = renderObject(schema, el, `elements.${name}`, "");
+    const fs = renderObject(schema, el, `sections.${secIndex()}.elements.${name}`, "");
     fs.style.border = "0";
     fs.style.padding = "0";
     card.append(fs);
@@ -365,10 +437,10 @@ function renderElements(host) {
 async function addElements(names) {
   if (state.dirty) await save();
   if (state.errors?.length) return;
-  const res = await api(`/api/projects/${state.project.id}/elements`, { method: "POST", body: JSON.stringify({ names }) });
+  const res = await api(`${secUrl()}/elements`, { method: "POST", body: JSON.stringify({ names }) });
   state.project = res.project;
   const s = document.getElementById("el-status");
-  const skipped = names.filter((n) => !res.added.includes(n) && !(n in res.project.elements));
+  const skipped = names.filter((n) => !res.added.includes(n) && !(n in sec().elements));
   const msg = [res.added.length ? `Added ${res.added.join(", ")}.` : "Nothing new to add.",
     skipped.length ? `Not recognised: ${skipped.join(", ")}.` : ""].join(" ");
   route();
@@ -430,29 +502,29 @@ function checkPage() {
 }
 
 async function renderWorkbookTab(host) {
-  const id = state.project.id;
-  host.innerHTML = `<p class="sub" id="wb-note">Upload the Plaxis workbook for this project. It is checked, then kept with
-    the project so the elements can be designed without uploading it again.</p>` + checkerHtml();
+  const url = secUrl();
+  host.innerHTML = `<p class="sub" id="wb-note">Upload the Plaxis workbook for ${esc(sec().name)}. It is checked, then kept with
+    the section so its elements can be designed without uploading it again.</p>` + checkerHtml();
   const onReport = (data) => {
     document.getElementById("wb-note").textContent =
       `Workbook in use: ${data.file}, uploaded ${String(data.uploaded_at || "").replace("T", " ").slice(0, 16)}. Upload again to replace it.`;
     renderFactors(data);
-    const missing = data.elements.filter((e) => !(e in state.project.elements));
+    const missing = data.elements.filter((e) => !(e in sec().elements));
     const box = document.getElementById("add-found");
     if (!missing.length) {
-      box.innerHTML = `<p class="status">Every element in the workbook is already in the project.</p>`;
+      box.innerHTML = `<p class="status">Every element in the workbook is already in this section.</p>`;
       return;
     }
-    box.innerHTML = `<div class="panel row" style="margin-top:16px"><span>${missing.length} element(s) in the workbook are not in the project yet: ${esc(missing.join(", "))}.</span>
-      <button id="add-all">Add to project</button></div>`;
+    box.innerHTML = `<div class="panel row" style="margin-top:16px"><span>${missing.length} element(s) in the workbook are not in this section yet: ${esc(missing.join(", "))}.</span>
+      <button id="add-all">Add to section</button></div>`;
     document.getElementById("add-all").onclick = async () => {
       await addElements(missing);
-      location.hash = `#/project/${id}/elements`;
+      location.hash = tabHash("elements");
     };
   };
-  wireChecker(onReport, `/api/projects/${id}/workbook`);
+  wireChecker(onReport, `${url}/workbook`);
   try {
-    const stored = await api(`/api/projects/${id}/workbook`);
+    const stored = await api(`${url}/workbook`);
     renderReport(stored);
     onReport(stored);
   } catch {
@@ -464,7 +536,7 @@ async function renderWorkbookTab(host) {
 function renderFactors(data) {
   const box = document.getElementById("factors");
   if (!box) return;
-  const p = state.project;
+  const p = sec();
   p.load_factors ??= [];
   const sheets = data.sheets.filter((x) => x.combination && x.raw_rows);
   const combos = data.combinations.map((c) => c.name);
@@ -561,11 +633,11 @@ function renderReport(d) {
 
 // ---------------------------------------------------------------- design tab
 async function renderDesignTab(host) {
-  const id = state.project.id;
-  const piles = Object.entries(state.project.elements).filter(([, e]) => e.kind === "pile");
+  const url = secUrl();
+  const piles = Object.entries(sec().elements).filter(([, e]) => e.kind === "pile");
   host.innerHTML = `<div class="panel row">
       <button id="run-piles" ${piles.length ? "" : "disabled"}>Design piles</button>
-      <a class="quiet-link" id="cages" href="/api/projects/${id}/design/piles/cages.json" hidden>Download cages for Revit (JSON)</a>
+      <a class="quiet-link" id="cages" href="${url}/design/piles/cages.json" hidden>Download cages for Revit (JSON)</a>
       <span class="status" id="design-status">${piles.length ? `${piles.length} pile element(s): ${esc(piles.map(([n]) => n).join(", "))}` : "Add pile elements first."}</span>
     </div><div id="design-out"></div>`;
   document.getElementById("run-piles").onclick = async () => {
@@ -574,14 +646,14 @@ async function renderDesignTab(host) {
     const status = document.getElementById("design-status");
     status.textContent = "Designing…";
     try {
-      renderPileResults(await api(`/api/projects/${id}/design/piles`, { method: "POST" }));
+      renderPileResults(await api(`${url}/design/piles`, { method: "POST" }));
       status.textContent = "Done.";
     } catch (e) {
       status.textContent = e.message;
     }
   };
   try {
-    renderPileResults(await api(`/api/projects/${id}/design/piles`));
+    renderPileResults(await api(`${url}/design/piles`));
   } catch {
     /* not designed yet */
   }
@@ -628,6 +700,7 @@ function pileCard(p) {
       <div class="count"><b>${fmt(p.utilisation, 2)}</b>max utilisation</div>
       <div class="count"><b>${fmt(p.steel?.kg_per_m3 ?? p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3)}</b>${p.steel ? `kg/m³ over the pile (${fmt(p.steel.longitudinal_kg)} kg bars with laps + ${fmt(p.steel.links_kg)} kg links)` : "kg/m³ longitudinal"}</div>
       <div class="count"><b>${a ? fmt(a.clear_spacing_mm) : "–"} mm</b>clear spacing, outer row (allowed ${fmt(lim.min_clear_mm)} to ${fmt(lim.max_clear_mm)} mm)</div>
+      ${p.steel?.element_total_t != null ? `<div class="count"><b>${fmt(p.steel.element_total_t, 1)} t</b>steel for ${p.count} pile${p.count === 1 ? "" : "s"} of this type</div>` : ""}
     </div>
     ${g.combination ? `<p>Governing: ${esc(g.combination)}, node ${g.node}, y ${fmt(g.y, 2)} m, z ${fmt(g.z, 2)} m.
       N<sub>Ed</sub> = ${fmt(g.N_kN)} kN (compression +), M<sub>Ed</sub> = ${fmt(g.M_kNm)} kNm, M<sub>Rd</sub> at this N = ${fmt(g.M_Rd_kNm)} kNm.</p>` : ""}

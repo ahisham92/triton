@@ -4,7 +4,7 @@ from pydantic import ValidationError
 
 from triton.api import app
 from triton.materials import concrete, structural_steel_fy
-from triton.project import Casing, CombiWallInput, PileInput, Project, default_element
+from triton.project import Casing, CombiWallInput, PileInput, Project, Section, default_element
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ def test_default_elements_by_name():
 
 
 def test_add_elements_skips_known_and_unknown():
-    p = Project()
+    p = Section()
     assert p.add_elements(["Pile(1)", "Deck", "Portal Frame"]) == ["Pile(1)", "Deck"]
     assert p.add_elements(["Pile(1)", "Combi Wall"]) == ["Combi Wall"]
 
@@ -60,40 +60,66 @@ def test_combi_wall_checks_tube():
 
 def test_element_name_must_match_kind():
     with pytest.raises(ValidationError):
-        Project(elements={"Deck": PileInput()})
+        Section(elements={"Deck": PileInput()})
     with pytest.raises(ValidationError):
-        Project(elements={"Wharf": PileInput()})
+        Section(elements={"Wharf": PileInput()})
 
 
 def test_project_crud(client):
     r = client.post("/api/projects", json={"info": {"name": "Berth 3"}, "element_names": ["Pile(1)", "Deck"]})
     assert r.status_code == 201
     p = r.json()
-    assert set(p["elements"]) == {"Pile(1)", "Deck"}
+    [section] = p["sections"]
+    assert set(section["elements"]) == {"Pile(1)", "Deck"}
 
-    p["elements"]["Pile(1)"]["diameter"] = 1500
-    p["elements"]["Pile(1)"]["casing"] = {"role": "crack_only", "top_level": 2.7, "bottom_level": -1.3}
+    section["elements"]["Pile(1)"]["diameter"] = 1500
+    section["elements"]["Pile(1)"]["casing"] = {"role": "crack_only", "top_level": 2.7, "bottom_level": -1.3}
     r = client.put(f"/api/projects/{p['id']}", json=p)
     assert r.status_code == 200, r.text
     got = client.get(f"/api/projects/{p['id']}").json()
-    assert got["elements"]["Pile(1)"]["diameter"] == 1500
-    assert got["elements"]["Pile(1)"]["casing"]["thickness"] == 16
+    pile = got["sections"][0]["elements"]["Pile(1)"]
+    assert pile["diameter"] == 1500 and pile["casing"]["thickness"] == 16
 
     [summary] = client.get("/api/projects").json()
-    assert (summary["name"], summary["elements"]) == ("Berth 3", 2)
+    assert (summary["name"], summary["sections"], summary["elements"]) == ("Berth 3", 1, 2)
 
-    r = client.post(
-        f"/api/projects/{p['id']}/elements", json={"names": ["Combi Wall", "Deck", "Portal Frame"]}
-    )
+    url = f"/api/projects/{p['id']}/sections/{section['id']}"
+    r = client.post(f"{url}/elements", json={"names": ["Combi Wall", "Deck", "Portal Frame"]})
     assert r.json()["added"] == ["Combi Wall"]
 
     assert client.delete(f"/api/projects/{p['id']}").status_code == 204
     assert client.get(f"/api/projects/{p['id']}").status_code == 404
 
 
+def test_sections(client):
+    p = client.post("/api/projects", json={"section_name": "Section 01a"}).json()
+    first = p["sections"][0]["id"]
+    body = {"name": "Section 02", "slab_soffit_level": 1.7}
+    r = client.post(f"/api/projects/{p['id']}/sections", json=body)
+    assert r.status_code == 201
+    names = [s["name"] for s in r.json()["sections"]]
+    assert names == ["Section 01a", "Section 02"]
+    assert r.json()["sections"][1]["slab_soffit_level"] == 1.7
+    assert client.post(f"/api/projects/{p['id']}/sections", json={"name": "section 02"}).status_code == 400
+
+    r = client.delete(f"/api/projects/{p['id']}/sections/{first}")
+    assert [s["name"] for s in r.json()["sections"]] == ["Section 02"]
+    last = r.json()["sections"][0]["id"]
+    assert client.delete(f"/api/projects/{p['id']}/sections/{last}").status_code == 400
+    assert client.delete(f"/api/projects/{p['id']}/sections/abcdef12").status_code == 404
+
+
+def test_old_projects_move_into_one_section():
+    old = {"info": {"name": "Berth", "section": "Section 01a"}, "elements": {"Pile(1)": {"kind": "pile"}}}
+    p = Project.model_validate(old)
+    [s] = p.sections
+    assert s.name == "Section 01a" and list(s.elements) == ["Pile(1)"]
+    assert "section" not in p.info.model_dump()
+
+
 def test_invalid_update_is_rejected_with_field_path(client):
     p = client.post("/api/projects", json={"element_names": ["Pile(1)"]}).json()
-    p["elements"]["Pile(1)"]["diameter"] = -1
+    p["sections"][0]["elements"]["Pile(1)"]["diameter"] = -1
     r = client.put(f"/api/projects/{p['id']}", json=p)
     assert r.status_code == 422
     assert r.json()["detail"][0]["loc"][-1] == "diameter"

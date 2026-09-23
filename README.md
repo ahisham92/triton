@@ -17,13 +17,18 @@ pytest                  # tests
 
 ## Project setup
 
-Open the web app, create a project, then either upload the workbook on the **Workbook** tab
-and add every element it contains, or add elements by name (`Pile(5)`, `Deck`, …).
+A project is split into **sections** (e.g. Section 01a, Section 02), each with its own Plaxis
+workbook, elements, load multipliers and results. Materials and design settings are shared by
+the whole project. Add sections on the **Sections** tab, where each section can also have a
+**slab soffit level**: piles of that section without their own head level use it.
+
+Open the web app, create a project, pick a section, then either upload its workbook on the
+**Workbook** tab and add every element it contains, or add elements by name (`Pile(5)`, `Deck`, …).
 Each element gets its own inputs:
 
 | Element | Inputs |
 |---|---|
-| Pile | diameter, cover, concrete, crack width limit, head level (results above it are inside the slab and ignored), optional steel casing |
+| Pile | diameter, cover, concrete, crack width limit, number of piles (default: counted from the workbook), head level (results above it are inside the slab and ignored), optional steel casing |
 | Steel casing | top and bottom level, thickness, corrosion loss, steel grade, and its role: *crack width only* or *structural* (shares forces with the concrete by E·I) |
 | Combi wall | tube diameter and thickness, corrosion loss, steel and infill grades, infill bottom level (default −25 m), front beam soffit level |
 | Sheet pile wall | section, steel grade, A / Wel / Wpl per m, class, corrosion loss per face |
@@ -32,7 +37,9 @@ Each element gets its own inputs:
 
 Project-wide settings: partial factors, bar sizes to try, spacing limits, and whether the
 reinforcement is chosen for the least steel or the lowest cost. Projects are saved as JSON
-in `data/projects/` (set `TRITON_DATA_DIR` to move it).
+in `data/projects/`, with each section's checked workbook and results in
+`data/projects/{project}/{section}/` (set `TRITON_DATA_DIR` to move it). Projects saved before
+sections existed open with everything in one section; upload their workbook again.
 
 ## Load multipliers
 
@@ -99,13 +106,14 @@ The steel per pile and kg/m³ include the links.
 
 ### Export for Revit
 
-**Download cages for Revit (JSON)** on the Design tab (`GET /api/projects/{id}/design/piles/cages.json`)
+**Download cages for Revit (JSON)** on the Design tab (`GET /api/projects/{id}/sections/{section}/design/piles/cages.json`)
 gives, for every pile element: diameter, cover, link, head and toe levels, the X, Y of each pile in
 the Plaxis model, and each run row by row (bar count, diameter, radius of the bar circle, angle of
 the first bar from the model X axis, bar top and bottom levels and length). A Revit / Dynamo script
 can place the bars from this file alone; it only has to map Plaxis coordinates to the project base point.
 
-Set each pile's **head level** to the slab soffit: results above it are FE peaks inside the slab.
+Set each pile's **head level**, or the section's slab soffit level, to the slab soffit: results
+above it are FE peaks inside the slab. The results give the steel for all piles of each type.
 Not yet included: crack width, and a structural casing acting with the concrete
 (the pile is then designed as reinforced concrete alone, which is conservative), and starter bars into the slab.
 

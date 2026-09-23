@@ -21,7 +21,7 @@ from typing import Any
 FORMAT = "triton.pile-cages/1"
 
 
-def pile_cages(project_name: str, results: dict[str, Any]) -> dict[str, Any]:
+def pile_cages(project_name: str, results: dict[str, Any], section: str = "") -> dict[str, Any]:
     piles = []
     for p in results.get("piles", []):
         c = p.get("curtailment") or {}
@@ -32,6 +32,7 @@ def pile_cages(project_name: str, results: dict[str, Any]) -> dict[str, Any]:
         piles.append(
             {
                 "element": p["element"],
+                "count": p.get("count", len(p.get("positions", [])) or 1),
                 "diameter_mm": p["section"]["diameter_mm"],
                 "cover_mm": p["section"]["cover_mm"],
                 "link_diameter_mm": p["section"]["link_diameter_mm"],
@@ -63,7 +64,13 @@ def pile_cages(project_name: str, results: dict[str, Any]) -> dict[str, Any]:
                 ],
             }
         )
-    return {"format": FORMAT, "project": project_name, "run_at": results.get("run_at"), "piles": piles}
+    return {
+        "format": FORMAT,
+        "project": project_name,
+        "section": section,
+        "run_at": results.get("run_at"),
+        "piles": piles,
+    }
 
 
 def _single_run(p: dict[str, Any]) -> dict[str, Any]:

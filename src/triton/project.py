@@ -49,7 +49,6 @@ class ProjectInfo(_Model):
     number: str = Field("", title="Project number")
     client: str = Field("", title="Client")
     location: str = Field("", title="Location")
-    section: str = Field("", title="Section / area", description="e.g. Section 01a")
     designer: str = Field("", title="Designed by")
     checker: str = Field("", title="Checked by")
 
@@ -237,6 +236,12 @@ class PileInput(_ConcreteSection):
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
     cover: float = _mm("Cover to links", 75.0, gt=0)
     link_diameter: float = _mm("Link diameter", 12.0, gt=0)
+    count: int | None = Field(
+        None,
+        title="Number of piles",
+        ge=1,
+        description="Piles of this type in the section. Empty: counted from the workbook.",
+    )
     bar_count: int | None = Field(
         None,
         title="Bars in the outer row",
@@ -246,7 +251,8 @@ class PileInput(_ConcreteSection):
     head_level: float | None = _m(
         "Pile head level (slab soffit)",
         None,
-        description="Results above this level are inside the slab and are ignored.",
+        description="Results above this level are inside the slab and are ignored. "
+        "Empty: the section's slab soffit level.",
     )
     casing: Casing | None = Field(
         None, title="Steel casing", description="Leave empty for a plain concrete pile."
@@ -354,14 +360,40 @@ class LoadFactor(_Model):
     note: str = Field("", title="Note", description="e.g. Set B actions to design values")
 
 
-class Project(_Model):
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
-    created_at: str = Field(default_factory=_now)
-    updated_at: str = Field(default_factory=_now)
-    info: ProjectInfo = Field(default_factory=ProjectInfo, title="Project")
-    design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
+def _short_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+class Section(_Model):
+    """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
+
+    id: str = Field(default_factory=_short_id)
+    name: str = Field("Section 1", title="Section name", min_length=1, description="e.g. Section 01a")
+    slab_soffit_level: float | None = _m(
+        "Slab soffit level",
+        None,
+        description="Pile head level for every pile of this section that has none of its own.",
+    )
     elements: dict[str, ElementInput] = Field(default_factory=dict, title="Elements")
     load_factors: list[LoadFactor] = Field(default_factory=list, title="Load multipliers")
+
+    @field_validator("id")
+    @classmethod
+    def _safe_id(cls, v: str) -> str:
+        if not re.fullmatch(r"[a-f0-9]{6,32}", v):
+            raise ValueError("Invalid section id.")
+        return v
+
+    @field_validator("elements")
+    @classmethod
+    def _names_match_kinds(cls, v: dict[str, ElementInput]) -> dict[str, ElementInput]:
+        for name, element in v.items():
+            parsed = parse_sheet_name(f"{name}-X")
+            if parsed is None:
+                raise ValueError(f"'{name}' is not a known element name (e.g. Pile(1), Deck, Combi Wall).")
+            if parsed.spec.type.value != element.kind:
+                raise ValueError(f"'{name}' is a {parsed.spec.type.value}, not a {element.kind}.")
+        return v
 
     @field_validator("load_factors")
     @classmethod
@@ -377,26 +409,8 @@ class Project(_Model):
     def factor_for(self, sheet: str) -> float:
         return next((r.factor for r in self.load_factors if sheet in r.sheets), 1.0)
 
-    @field_validator("id")
-    @classmethod
-    def _safe_id(cls, v: str) -> str:
-        if not re.fullmatch(r"[a-f0-9]{6,32}", v):
-            raise ValueError("Invalid project id.")
-        return v
-
-    @field_validator("elements")
-    @classmethod
-    def _names_match_kinds(cls, v: dict[str, ElementInput]) -> dict[str, ElementInput]:
-        for name, element in v.items():
-            parsed = parse_sheet_name(f"{name}-X")
-            if parsed is None:
-                raise ValueError(f"'{name}' is not a known element name (e.g. Pile(1), Deck, Combi Wall).")
-            if parsed.spec.type.value != element.kind:
-                raise ValueError(f"'{name}' is a {parsed.spec.type.value}, not a {element.kind}.")
-        return v
-
     def add_elements(self, names: list[str]) -> list[str]:
-        """Add default inputs for workbook elements not yet in the project."""
+        """Add default inputs for workbook elements not yet in the section."""
         added = []
         elements = dict(self.elements)
         for name in names:
@@ -408,3 +422,61 @@ class Project(_Model):
                 added.append(name)
         self.elements = elements
         return added
+
+
+class Project(_Model):
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    created_at: str = Field(default_factory=_now)
+    updated_at: str = Field(default_factory=_now)
+    info: ProjectInfo = Field(default_factory=ProjectInfo, title="Project")
+    design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
+    sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_section_projects(cls, data):
+        """Projects saved before sections existed keep their elements as their first section."""
+        if (
+            isinstance(data, dict)
+            and "sections" not in data
+            and ("elements" in data or "load_factors" in data)
+        ):
+            data = dict(data)
+            info = dict(data.get("info") or {})
+            name = info.pop("section", "") or "Section 1"
+            data["info"] = info
+            data["sections"] = [
+                {
+                    "name": name,
+                    "elements": data.pop("elements", {}),
+                    "load_factors": data.pop("load_factors", []),
+                }
+            ]
+        elif isinstance(data, dict) and isinstance(data.get("info"), dict) and "section" in data["info"]:
+            data = dict(data)
+            data["info"] = {k: v for k, v in data["info"].items() if k != "section"}
+        return data
+
+    @field_validator("id")
+    @classmethod
+    def _safe_id(cls, v: str) -> str:
+        if not re.fullmatch(r"[a-f0-9]{6,32}", v):
+            raise ValueError("Invalid project id.")
+        return v
+
+    @field_validator("sections")
+    @classmethod
+    def _unique_sections(cls, v: list[Section]) -> list[Section]:
+        ids = [s.id for s in v]
+        names = [s.name.strip().lower() for s in v]
+        if len(set(ids)) != len(ids):
+            raise ValueError("Two sections have the same id.")
+        if len(set(names)) != len(names):
+            raise ValueError("Two sections have the same name.")
+        return v
+
+    def section(self, section_id: str) -> Section:
+        for s in self.sections:
+            if s.id == section_id:
+                return s
+        raise KeyError(section_id)

@@ -10,12 +10,12 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from .design.export import pile_cages
 from .design.runner import run_piles
 from .materials import catalogue
-from .project import DesignSettings, Project, ProjectInfo
+from .project import DesignSettings, Project, ProjectInfo, Section
 from .reader import UnsupportedWorkbook
 from .store import ProjectNotFound, ProjectStore
 from .validation import ImportResult, import_workbook
@@ -57,7 +57,7 @@ class ProjectSummary(BaseModel):
     id: str
     name: str
     number: str
-    section: str
+    sections: int
     elements: int
     updated_at: str
 
@@ -65,7 +65,13 @@ class ProjectSummary(BaseModel):
 class NewProject(BaseModel):
     info: ProjectInfo = ProjectInfo()
     design: DesignSettings | None = None
+    section_name: str = "Section 1"
     element_names: list[str] = []
+
+
+class NewSection(BaseModel):
+    name: str
+    slab_soffit_level: float | None = None
 
 
 class ElementNames(BaseModel):
@@ -79,6 +85,13 @@ def _get(project_id: str) -> Project:
         raise HTTPException(404, "Project not found.") from None
 
 
+def _section(project: Project, section_id: str) -> Section:
+    try:
+        return project.section(section_id)
+    except KeyError:
+        raise HTTPException(404, "Section not found.") from None
+
+
 @app.get("/api/projects")
 def list_projects() -> list[ProjectSummary]:
     return [
@@ -86,8 +99,8 @@ def list_projects() -> list[ProjectSummary]:
             id=p.id,
             name=p.info.name,
             number=p.info.number,
-            section=p.info.section,
-            elements=len(p.elements),
+            sections=len(p.sections),
+            elements=sum(len(s.elements) for s in p.sections),
             updated_at=p.updated_at,
         )
         for p in store().list()
@@ -96,8 +109,9 @@ def list_projects() -> list[ProjectSummary]:
 
 @app.post("/api/projects", status_code=201)
 def create_project(body: NewProject) -> Project:
-    project = Project(info=body.info, design=body.design or DesignSettings())
-    project.add_elements(body.element_names)
+    section = Section(name=body.section_name)
+    section.add_elements(body.element_names)
+    project = Project(info=body.info, design=body.design or DesignSettings(), sections=[section])
     return store().save(project)
 
 
@@ -112,7 +126,12 @@ def update_project(project_id: str, body: Project) -> Project:
     if body.id != project_id:
         raise HTTPException(400, "Project id in the body does not match the URL.")
     body.created_at = existing.created_at
-    return store().save(body)
+    saved = store().save(body)
+    kept = {s.id for s in saved.sections}
+    for s in existing.sections:
+        if s.id not in kept:
+            store().delete_section_files(project_id, s.id)
+    return saved
 
 
 @app.delete("/api/projects/{project_id}", status_code=204)
@@ -123,10 +142,37 @@ def delete_project(project_id: str) -> None:
         raise HTTPException(404, "Project not found.") from None
 
 
-@app.post("/api/projects/{project_id}/elements")
-def add_elements(project_id: str, body: ElementNames) -> dict:
+# --- Sections ----------------------------------------------------------------------
+
+
+@app.post("/api/projects/{project_id}/sections", status_code=201)
+def add_section(project_id: str, body: NewSection) -> Project:
     project = _get(project_id)
-    added = project.add_elements(body.names)
+    if any(s.name.strip().lower() == body.name.strip().lower() for s in project.sections):
+        raise HTTPException(400, f"There is already a section called '{body.name}'.")
+    try:
+        section = Section(name=body.name, slab_soffit_level=body.slab_soffit_level)
+    except ValidationError as e:
+        raise HTTPException(422, e.errors(include_url=False, include_context=False)) from None
+    project.sections.append(section)
+    return store().save(project)
+
+
+@app.delete("/api/projects/{project_id}/sections/{section_id}")
+def delete_section(project_id: str, section_id: str) -> Project:
+    project = _get(project_id)
+    _section(project, section_id)
+    if len(project.sections) == 1:
+        raise HTTPException(400, "A project needs at least one section.")
+    project.sections = [s for s in project.sections if s.id != section_id]
+    store().delete_section_files(project_id, section_id)
+    return store().save(project)
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/elements")
+def add_elements(project_id: str, section_id: str, body: ElementNames) -> dict:
+    project = _get(project_id)
+    added = _section(project, section_id).add_elements(body.names)
     store().save(project)
     return {"added": added, "project": project}
 
@@ -155,54 +201,59 @@ def check_workbook(file: UploadFile) -> dict:
     return {"file": file.filename, **_import_upload(file).summary()}
 
 
-@app.post("/api/projects/{project_id}/workbook")
-def upload_project_workbook(project_id: str, file: UploadFile) -> dict:
-    _get(project_id)
+SECTION = "/api/projects/{project_id}/sections/{section_id}"
+
+
+@app.post(SECTION + "/workbook")
+def upload_section_workbook(project_id: str, section_id: str, file: UploadFile) -> dict:
+    _section(_get(project_id), section_id)
     result = _import_upload(file)
-    return store().save_workbook(project_id, file.filename or "workbook", result)
+    return store().save_workbook(project_id, section_id, file.filename or "workbook", result)
 
 
-@app.get("/api/projects/{project_id}/workbook")
-def project_workbook(project_id: str) -> dict:
-    _get(project_id)
-    summary = store().workbook_summary(project_id)
+@app.get(SECTION + "/workbook")
+def section_workbook(project_id: str, section_id: str) -> dict:
+    _section(_get(project_id), section_id)
+    summary = store().workbook_summary(project_id, section_id)
     if summary is None:
-        raise HTTPException(404, "No workbook uploaded for this project yet.")
+        raise HTTPException(404, "No workbook uploaded for this section yet.")
     return summary
 
 
 # --- Design ------------------------------------------------------------------------------
 
 
-@app.post("/api/projects/{project_id}/design/piles")
-def design_piles(project_id: str) -> dict:
+@app.post(SECTION + "/design/piles")
+def design_piles(project_id: str, section_id: str) -> dict:
     project = _get(project_id)
-    workbook = store().load_workbook(project_id)
+    section = _section(project, section_id)
+    workbook = store().load_workbook(project_id, section_id)
     if workbook is None:
-        raise HTTPException(409, "Upload the workbook on the Workbook tab first.")
-    results = run_piles(project, workbook)
-    store().save_results(project_id, results)
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    results = run_piles(project.design, section, workbook)
+    store().save_results(project_id, section_id, results)
     return results
 
 
-@app.get("/api/projects/{project_id}/design/piles")
-def pile_results(project_id: str) -> dict:
-    _get(project_id)
-    results = store().load_results(project_id)
+@app.get(SECTION + "/design/piles")
+def pile_results(project_id: str, section_id: str) -> dict:
+    _section(_get(project_id), section_id)
+    results = store().load_results(project_id, section_id)
     if results is None:
-        raise HTTPException(404, "The piles have not been designed yet.")
+        raise HTTPException(404, "The piles of this section have not been designed yet.")
     return results
 
 
-@app.get("/api/projects/{project_id}/design/piles/cages.json")
-def pile_cage_export(project_id: str) -> JSONResponse:
-    """Bar runs of every designed pile, for a Revit / Dynamo script."""
+@app.get(SECTION + "/design/piles/cages.json")
+def pile_cage_export(project_id: str, section_id: str) -> JSONResponse:
+    """Bar runs of every designed pile of a section, for a Revit / Dynamo script."""
     project = _get(project_id)
-    results = store().load_results(project_id)
+    section = _section(project, section_id)
+    results = store().load_results(project_id, section_id)
     if results is None:
-        raise HTTPException(404, "The piles have not been designed yet.")
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", project.info.name).strip("_") or "project"
+        raise HTTPException(404, "The piles of this section have not been designed yet.")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name}").strip("_") or "project"
     return JSONResponse(
-        pile_cages(project.info.name, results),
+        pile_cages(project.info.name, results, section=section.name),
         headers={"Content-Disposition": f'attachment; filename="{name}-pile-cages.json"'},
     )
