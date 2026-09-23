@@ -266,24 +266,32 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   and along Y), with the in-plane N of each direction. Where K exceeds K' = 0.167 the opposite
   face's bars are designed as compression steel. Each bar option is taken at its own depth, so a
   second layer or a bigger bar counts for less.
-- **Basic mesh and zones:** the slab is split into cells (1 m by default). For each layer, each cell
-  gets the cheapest bars that pass strength, the QP crack width at that face and restraint cracking.
-  The basic mesh is the one with the least steel overall once zoned cells pay a 10% premium. Cells
-  that need more are zoned: runs along the bars are split where the bars change, pieces shorter
-  than 2 m take their heavier neighbour's bars, and matching runs merge into rectangles. Bars are
+- **Four basic meshes and zones:** bottom and top, along X and along Y. The slab is split into a
+  grid of cells (1 m by default) only to find where each mesh is not enough: each cell gets the
+  cheapest bars that pass strength, the QP crack width at that face and restraint cracking. Each
+  basic mesh is the one with the least steel overall once zoned cells pay a 10% premium, or the
+  mesh you enter (value engineering). Cells that need more get heavier bars in zones: runs along
+  the bars are split where the bars change, pieces shorter than the shortest zone (2.5 m by
+  default) take their heavier neighbour's bars, and matching runs merge into rectangles. Bars are
   Ø10 to Ø32; a second layer only for Ø25 and up.
+- **Moments at the pile faces:** designed as they are, or averaged over a ring one pile diameter
+  wide round each pile, per combination (slab setting).
+- **Mobile crane:** areas with the extra factored actions from the SAP model (factored crane minus
+  factored live load, M, V, N per metre) are added to every ULS combination over each area, so
+  the governing combination carries them. Pile reactions for punching stay as Plaxis gives them.
 - **Column and field strips (option):** the need is averaged across each strip, the column strip
   being a quarter of the pile spacing each side of a pile line.
 - **Shear per metre:** v = √(Vx² + Vy²) from d (or 2d) off the pile faces, and at least 2d where
   punching governs. No concrete contribution where the slab is in tension; links are given per
   cell as Ø @ s × s.
-- **Punching (6.4):** at every pile head not under a beam, with β = 1 + 0.6π·e/(D + 4d) from the pile
-  head moment, u1 = π(D + 4d), vRd,max = 0.4·ν·fcd at the face, and the links per perimeter by 6.52
-  out to u_out. A sloped slab can use its own depth at the piles.
+- **Punching (6.4):** at every pile head not under a beam, from the pile face (vRd,max = 0.4·ν·fcd)
+  out to u1 = π(D + 4d) at 2d, nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile force
+  and moment at the slab soffit, as in the pile design. Links per perimeter by 6.52 out to u_out.
+  The thickness is the slab's, a slab-wide punching thickness, or one entered per pile (slopes).
+  Each pile has a plan and a section drawing of its perimeters and links.
 - **Restraint:** the basic mesh at each face against temperature and shrinkage cracking, as for the
   beams, with R from the joint spacing over the thickness.
 - The utilisation heat map in 3D shows, per cell, the bending steel needed over the bars given.
-- **Not yet included:** the mobile crane additions from the SAP model.
 
 ## Workbook format
 

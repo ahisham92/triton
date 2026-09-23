@@ -276,6 +276,40 @@ function renderField(obj, key, prop, inner, nullable, path) {
     return f;
   }
 
+  if (inner.type === "array" && resolve(inner.items)?.properties) {
+    // A list of small records, e.g. crane areas: one table row each.
+    f.classList.add("full");
+    const item = resolve(inner.items);
+    const cols = Object.entries(item.properties);
+    const draw = () => {
+      const rows = obj[key] || [];
+      f.innerHTML = `<label>${esc(title)}</label>${hint}<div class="scroll"><table class="edit-list"><tr>${cols
+        .map(([k, c]) => `<th>${esc(c.title || pretty(k))}${c.unit ? ` (${esc(c.unit)})` : ""}</th>`)
+        .join("")}<th></th></tr>${rows
+        .map((r, i) => `<tr>${cols
+          .map(([k]) => `<td><input type="number" step="any" data-i="${i}" data-k="${esc(k)}" value="${r[k] ?? ""}"></td>`)
+          .join("")}<td><button type="button" class="quiet" data-del="${i}">Remove</button></td></tr>`)
+        .join("")}</table></div><button type="button" class="quiet" data-add style="margin-top:6px">Add a row</button>`;
+      f.querySelectorAll("input[data-i]").forEach((inp) => (inp.oninput = () => {
+        const v = inp.value === "" ? null : Number(inp.value);
+        obj[key][Number(inp.dataset.i)][inp.dataset.k] = v;
+        markDirty();
+      }));
+      f.querySelectorAll("[data-del]").forEach((btn) => (btn.onclick = () => {
+        obj[key].splice(Number(btn.dataset.del), 1);
+        markDirty();
+        draw();
+      }));
+      f.querySelector("[data-add]").onclick = () => {
+        obj[key] = [...(obj[key] || []), defaultsFor(item)];
+        markDirty();
+        draw();
+      };
+    };
+    draw();
+    return f;
+  }
+
   if (inner.type === "array" && inner.items?.enum) {
     // e.g. the rows allowed in a pile cage
     f.classList.add("full");
@@ -942,18 +976,21 @@ function slabCard(d) {
     ${v3dSlot(d.element)}
     <h3 style="margin-top:18px">Bars per metre</h3>
     <div class="scroll"><table><tr><th>Layer</th><th>Basic mesh</th><th>Zones</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
-      ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)</td>
+      ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)${l.basic.set_by === "user" ? "<br><span class=\"status\">your mesh</span>" : ""}</td>
         <td>${l.zones.length ? `${l.zones.length}: ${esc([...new Set(l.zones.map((z) => z.label))].join(", "))}` : "none"}</td>
         <td class="cell ${l.utilisation <= 1 ? "ok" : "error"}">${fmt(l.utilisation, 2)}</td><td>${fmt(l.cells_set_by_cracks)} cells</td><td>${fmt(l.d_mm)} mm</td></tr>`).join("")}
     </table></div>
     <div class="row" style="margin:10px 0 4px">${Object.keys(layers).map((k, i) => `<button class="quiet${i ? "" : " on"}" data-layer="${k}">${esc(LAYER_NAME[k] || k)}</button>`).join("")}</div>
     <div class="chart wide" data-kind="plan"></div>
     <h3 style="margin-top:18px">Punching at the piles</h3>
-    ${punch.length ? `<div class="scroll"><table><tr><th>Pile</th><th>X, Y</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Links</th><th></th></tr>
-      ${punch.map((q) => `<tr><td>${esc(q.pile)}</td><td>${fmt(q.x, 1)}, ${fmt(q.y, 1)}</td><td>${fmt(q.V_kN)} kN, ${esc(q.direction)}<br><span class="status">${esc(q.combination)}</span></td><td>${fmt(q.beta, 2)}</td>
+    ${punch.length ? `<p class="status">Click a pile to see its control perimeters. Change a pile's thickness for a slope, then save and design again.</p>
+      <div class="scroll"><table class="punch"><tr><th>Pile</th><th>X, Y</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Links</th><th></th></tr>
+      ${punch.map((q, i) => `<tr class="link" data-punch="${i}"><td>${esc(q.pile)}</td><td>${fmt(q.x, 1)}, ${fmt(q.y, 1)}</td>
+        <td><input type="number" step="any" data-depth="${i}" value="${q.thickness_mm}" style="width:80px" title="${esc(q.thickness_from)}"> mm</td><td>${fmt(q.V_kN)} kN, ${esc(q.direction)}<br><span class="status">${esc(q.combination)}</span></td><td>${fmt(q.beta, 2)}</td>
         <td>${fmt(q.vEd_MPa, 3)} / ${fmt(q.vRd_c_MPa, 3)}</td><td>${fmt(q.vEd_face_MPa, 2)} / ${fmt(q.vRd_max_MPa, 2)}</td>
         <td>${q.needs_reinforcement ? (q.perimeters ? `${q.perimeters} perimeters @ ${fmt(q.radial_spacing_mm)} mm, ${fmt(q.asw_mm2_per_perimeter)} mm² each, to ${fmt(q.reinforced_to_mm)} mm from the face` : "–") : "none"}</td><td>${ok(q.passed)}</td></tr>`).join("")}
-    </table></div><p class="status">EN 1992-1-1 6.4: u1 = π(D + 4d), β = 1 + 0.6π·e/(D + 4d) from the pile head moments, ρl of the face in tension over the pile. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
+    </table></div><div class="charts" data-kind="punch"></div>
+    <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d); nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
     <h3 style="margin-top:18px">Shear per metre ${ok(sh.passed !== false)}</h3>
     <p>${sh.governing ? `Largest v − V<sub>Rd,c</sub>: ${esc(sh.governing.combination)} at X ${fmt(sh.governing.x, 1)}, Y ${fmt(sh.governing.y, 1)}: v = ${fmt(sh.governing.V_kN_per_m)} kN/m, V<sub>Rd,c</sub> = ${fmt(sh.governing.VRd_c_kN_per_m)} kN/m, V<sub>Rd,max</sub> = ${fmt(sh.governing.VRd_max_kN_per_m)} kN/m.` : ""}
       ${sh.heaviest ? ` Links in ${sh.cells_needing_links} cells, heaviest ${esc(sh.heaviest.label)} (${fmt(sh.heaviest.asw_mm2_per_m2)} mm²/m²).` : " No shear links needed."}</p>
@@ -970,7 +1007,75 @@ function slabCard(d) {
     draw(b.dataset.layer);
   }));
   draw(Object.keys(layers)[0]);
+  const punchEl = card.querySelector('[data-kind="punch"]');
+  const showPunch = (i) => {
+    card.querySelectorAll("[data-punch]").forEach((r) => r.classList.toggle("on", Number(r.dataset.punch) === i));
+    punchDiagram(punchEl, punch[i]);
+  };
+  card.querySelectorAll("[data-punch]").forEach((r) => (r.onclick = (e) => {
+    if (e.target.tagName !== "INPUT") showPunch(Number(r.dataset.punch));
+  }));
+  card.querySelectorAll("[data-depth]").forEach((inp) => (inp.onchange = () => {
+    const q = punch[Number(inp.dataset.depth)];
+    const el = sec().elements[d.element];
+    if (!el) return;
+    const list = (el.punching_depths || []).filter((p) => Math.hypot(p.x - q.x, p.y - q.y) > 0.5);
+    if (inp.value !== "") list.push({ x: q.x, y: q.y, thickness: Number(inp.value) });
+    el.punching_depths = list;
+    markDirty();
+  }));
+  if (punch.length) {
+    const worst = punch.reduce((b, q, i) => ((q.utilisation ?? 0) > (punch[b].utilisation ?? 0) ? i : b), 0);
+    showPunch(worst);
+  }
   return card;
+}
+
+function punchDiagram(el, q) {
+  // One pile under the slab: plan with the face (u0), u1 at 2d, the link perimeters and u_out;
+  // and a section through the slab with the 2d spread.
+  if (!el || !q) return;
+  const R = q.D_mm / 2, d = q.d_mm, h = q.thickness_mm;
+  const rOut = q.r_out_mm || 0;
+  const rMax = Math.max(q.r_u1_mm, rOut, R + 2 * d) * 1.12;
+  const S = 300, c = S / 2, k = (S / 2 - 12) / rMax;
+  const circle = (r, cls, title) => `<circle cx="${c}" cy="${c}" r="${(r * k).toFixed(1)}" class="${cls}"><title>${esc(title)}</title></circle>`;
+  const links = (q.link_radii_mm || []).map((r, i) => {
+    const n = Math.max(8, Math.round((2 * Math.PI * r) / Math.max(q.radial_spacing_mm, 1) / 1.5));
+    return Array.from({ length: n }, (_, j) => {
+      const a = (2 * Math.PI * j) / n;
+      return `<circle cx="${(c + r * k * Math.cos(a)).toFixed(1)}" cy="${(c + r * k * Math.sin(a)).toFixed(1)}" r="2.2" class="pp-link"><title>Link perimeter ${i + 1}, ${fmt(r - R)} mm from the face</title></circle>`;
+    }).join("");
+  }).join("");
+  const plan = `<div><div class="chart-title">${esc(q.pile)} at X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)}: plan</div>
+    <svg viewBox="0 0 ${S} ${S}" role="img" aria-label="Punching perimeters in plan">
+      ${rOut ? circle(rOut, "pp-out", `u_out = ${fmt(q.u_out_mm)} mm: no links needed beyond`) : ""}
+      ${circle(q.r_u1_mm, "pp-u1", `u1 at 2d = ${fmt(2 * d)} mm from the face, ${fmt(q.u1_mm)} mm long`)}
+      ${links}
+      ${circle(R, "pp-pile", `Pile face u0, D = ${fmt(q.D_mm)} mm`)}
+      <text class="tick" x="${c}" y="${c + R * k + 14}" text-anchor="middle">D ${fmt(q.D_mm)}</text>
+      <text class="tick" x="${c + q.r_u1_mm * k * 0.72}" y="${c - q.r_u1_mm * k * 0.72}">u1</text>
+      ${rOut ? `<text class="tick" x="${c + rOut * k * 0.72}" y="${c + rOut * k * 0.72 + 12}">u_out</text>` : ""}
+    </svg></div>`;
+  // Section: slab of thickness h over the pile, 2d lines from the face, links as vertical ticks.
+  const W = 420, H = 200, m = 20;
+  const span = rMax;
+  const sx = (W - 2 * m) / (2 * span), sy = Math.min((H - 70) / h, sx * 1.5);
+  const X = (u) => W / 2 + u * sx, top = 30, Y = (v) => top + v * sy;
+  const tickLinks = (q.link_radii_mm || []).flatMap((r) => [r, -r]).map((r) => `<line x1="${X(r)}" x2="${X(r)}" y1="${Y(40)}" y2="${Y(h - 40)}" class="pp-linkline"/>`).join("");
+  const section = `<div><div class="chart-title">Section through the pile: ${fmt(h)} mm (${esc(q.thickness_from)}), d = ${fmt(d)} mm</div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Punching section">
+      <rect x="${X(-span)}" y="${Y(0)}" width="${2 * span * sx}" height="${h * sy}" class="pp-slab"/>
+      <rect x="${X(-R)}" y="${Y(h)}" width="${2 * R * sx}" height="${H - 26 - Y(h)}" class="pp-pilesec"/>
+      <line x1="${X(R)}" y1="${Y(h)}" x2="${X(R + 2 * d)}" y2="${Y(h - d)}" class="pp-cone"/><line x1="${X(-R)}" y1="${Y(h)}" x2="${X(-R - 2 * d)}" y2="${Y(h - d)}" class="pp-cone"/>
+      <line x1="${X(R + 2 * d)}" x2="${X(R + 2 * d)}" y1="${Y(0) - 6}" y2="${Y(h) + 6}" class="pp-u1line"/><line x1="${X(-R - 2 * d)}" x2="${X(-R - 2 * d)}" y1="${Y(0) - 6}" y2="${Y(h) + 6}" class="pp-u1line"/>
+      ${tickLinks}
+      <text class="tick" x="${X(R + 2 * d)}" y="${Y(0) - 10}" text-anchor="middle">u1 (2d)</text>
+      <text class="tick" x="${W / 2}" y="${H - 6}" text-anchor="middle">${esc(q.direction)}, V ${fmt(q.V_kN)} kN, β ${fmt(q.beta, 2)}</text>
+    </svg></div>`;
+  el.innerHTML = plan + section + `<p class="status" style="grid-column:1/-1">${q.needs_reinforcement
+    ? `Links: ${q.perimeters} perimeters at ${fmt(q.radial_spacing_mm)} mm, the first at 0.5d from the face, ${fmt(q.asw_mm2_per_perimeter)} mm² each, out to ${fmt(q.reinforced_to_mm)} mm from the face; u_out ${fmt(q.u_out_mm)} mm (red dashed circle), beyond which the concrete alone is enough.`
+    : `No links: v<sub>Ed</sub> ${fmt(q.vEd_MPa, 3)} MPa at u1 is within v<sub>Rd,c</sub> ${fmt(q.vRd_c_MPa, 3)} MPa.`}</p>`;
 }
 
 function slabPlan(el, d, key) {
@@ -984,7 +1089,8 @@ function slabPlan(el, d, key) {
   const labels = [...new Set(l.zones.map((z) => z.label))].sort((a, b) => l.zones.find((z) => z.label === a).as_mm2_per_m - l.zones.find((z) => z.label === b).as_mm2_per_m);
   const shade = (lab) => `rgba(214,48,39,${0.25 + 0.6 * (labels.indexOf(lab) + 1) / Math.max(labels.length, 1)})`;
   const zones = l.zones.map((z) => `<rect x="${X(z.x[0])}" y="${Y(z.y[1])}" width="${(z.x[1] - z.x[0]) * sc}" height="${(z.y[1] - z.y[0]) * sc}" fill="${shade(z.label)}"><title>${esc(z.label)} (${fmt(z.as_mm2_per_m)} mm²/m), X ${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}, Y ${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</title></rect>`).join("");
-  const piles = (d.punching || []).map((q) => `<circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.D_mm / 2000) * sc}" fill="none" stroke="var(--text)" stroke-width="1.5"><title>${esc(q.pile)}</title></circle>`).join("");
+  const piles = (d.punching || []).map((q) => `<circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.r_u1_mm / 1000) * sc}" class="${q.needs_reinforcement ? "pp-out" : "pp-u1"}"><title>${esc(q.pile)}: u1 at 2d${q.needs_reinforcement ? ", needs punching links" : ""}</title></circle>
+    <circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.D_mm / 2000) * sc}" fill="none" stroke="var(--text)" stroke-width="1.5"><title>${esc(q.pile)}</title></circle>`).join("");
   el.innerHTML = `<div class="chart-title">${esc(LAYER_NAME[key] || key)}: basic ${esc(l.basic.label)}${labels.length ? `, zones ${esc(labels.join(", "))}` : ""}</div>
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Slab plan of ${esc(key)}">
       <rect x="${X(x0)}" y="${Y(y1)}" width="${(x1 - x0) * sc}" height="${(y1 - y0) * sc}" fill="var(--miss-bg)" stroke="var(--muted)"/>

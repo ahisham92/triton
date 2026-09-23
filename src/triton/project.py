@@ -457,6 +457,34 @@ class SheetPileInput(_Model):
     )
 
 
+class SlabMesh(_Model):
+    diameter: int = Field(16, title="Bar diameter", json_schema_extra={"unit": "mm"})
+    spacing: float = _mm("Spacing", 150.0, gt=0)
+    layers: int = Field(1, title="Layers", ge=1, le=2)
+
+
+class PunchingDepth(_Model):
+    x: float = _m("Pile X", 0.0)
+    y: float = _m("Pile Y", 0.0)
+    thickness: float = _mm("Slab thickness at the pile", 700.0, gt=0)
+
+
+class CraneArea(_Model):
+    """Factored mobile crane minus factored live load from the SAP model, per metre, over a plan area."""
+
+    x_from: float = _m("X from", 0.0)
+    x_to: float = _m("X to", 0.0)
+    y_from: float = _m("Y from", 0.0)
+    y_to: float = _m("Y to", 0.0)
+    mx: float = Field(0.0, title="Mx", json_schema_extra={"unit": "kNm/m"})
+    my: float = Field(0.0, title="My", json_schema_extra={"unit": "kNm/m"})
+    mxy: float = Field(0.0, title="Mxy", json_schema_extra={"unit": "kNm/m"})
+    vx: float = Field(0.0, title="Vx", json_schema_extra={"unit": "kN/m"})
+    vy: float = Field(0.0, title="Vy", json_schema_extra={"unit": "kN/m"})
+    nx: float = Field(0.0, title="Nx (compression +)", json_schema_extra={"unit": "kN/m"})
+    ny: float = Field(0.0, title="Ny (compression +)", json_schema_extra={"unit": "kN/m"})
+
+
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
     thickness: float = _mm("Slab thickness", 1000.0, gt=0)
@@ -472,12 +500,44 @@ class SlabInput(_ConcreteSection):
         le=5,
         description="Cells of this size carry either the basic mesh or heavier bars in a zone.",
     )
+    peaks: Literal["design", "average"] = Field(
+        "design",
+        title="Moments at the pile faces",
+        description="Design the peaks at the pile faces as they are, or average them over a ring one "
+        "pile diameter wide round each pile.",
+    )
+    min_zone_length: float = _m(
+        "Shortest zone", 2.5, gt=0, description="Shortest length of a zone of heavier bars along its bars."
+    )
+    mesh_bottom_x: SlabMesh | None = Field(
+        None, title="Basic mesh, bottom along X", description="Empty: the mesh with the least steel."
+    )
+    mesh_bottom_y: SlabMesh | None = Field(
+        None, title="Basic mesh, bottom along Y", description="Empty: the mesh with the least steel."
+    )
+    mesh_top_x: SlabMesh | None = Field(
+        None, title="Basic mesh, top along X", description="Empty: the mesh with the least steel."
+    )
+    mesh_top_y: SlabMesh | None = Field(
+        None, title="Basic mesh, top along Y", description="Empty: the mesh with the least steel."
+    )
     punching_thickness: float | None = _mm(
         "Thickness for punching",
         None,
         gt=0,
         description="Sloped slab: the depth at the piles when it differs (e.g. 720 mm with 700 mm for "
-        "bending). Empty: the slab thickness.",
+        "bending). Empty: the slab thickness. Single piles can be set in the punching results.",
+    )
+    punching_depths: list[PunchingDepth] = Field(
+        default_factory=list,
+        title="Slab thickness at single piles",
+        description="For punching only, e.g. on a slope.",
+    )
+    crane: list[CraneArea] = Field(
+        default_factory=list,
+        title="Mobile crane additions",
+        description="From the SAP model: factored crane minus factored live load, per metre, added to every "
+        "ULS combination over each area.",
     )
     joint_spacing: float = _m(
         "Length between movement joints",

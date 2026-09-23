@@ -52,7 +52,6 @@ from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restra
 
 E_S = 200_000.0
 PREMIUM = 0.10  # extra weight per zoned cell when picking the basic mesh
-MIN_ZONE = 2.0  # m, shortest length of a zone along its bars
 LAYERS = ("bottom_x", "bottom_y", "top_x", "top_y")
 LAYER_TEXT = {
     "bottom_x": "bottom bars along X",
@@ -236,13 +235,62 @@ def _strips(coord: np.ndarray, lines: list[float]) -> np.ndarray:
     return ids
 
 
+def add_crane(uls: pd.DataFrame, slab: SlabInput) -> tuple[pd.DataFrame, int]:
+    """Add the mobile crane areas' extra actions (factored crane minus factored live load) to the ULS rows."""
+    if not slab.crane or uls.empty:
+        return uls, 0
+    uls = uls.copy()
+    hit = np.zeros(len(uls), bool)
+    for a in slab.crane:
+        m = (
+            uls["X"].between(min(a.x_from, a.x_to), max(a.x_from, a.x_to))
+            & uls["Y"].between(min(a.y_from, a.y_to), max(a.y_from, a.y_to))
+        ).to_numpy()
+        for col, v in (
+            ("Mx", a.mx),
+            ("My", a.my),
+            ("Mxy", a.mxy),
+            ("Vx", a.vx),
+            ("Vy", a.vy),
+            ("Nx", a.nx),
+            ("Ny", a.ny),
+        ):
+            uls.loc[m, col] += v
+        hit |= m
+    return uls, int(hit.sum())
+
+
+def average_peaks(f: pd.DataFrame, piles: list[tuple]) -> pd.DataFrame:
+    """Moments within one pile diameter of each pile face replaced by their average there, per combination."""
+    f = f.copy()
+    x, y = f["X"].to_numpy(), f["Y"].to_numpy()
+    for px, py, r in piles:
+        dist = np.hypot(x - px, y - py)
+        ring = (dist >= r - 1e-6) & (dist <= 3 * r + 1e-6)
+        if not ring.any():
+            continue
+        sub = f.loc[ring]
+        f.loc[ring, ["Mx", "My", "Mxy"]] = (
+            sub.groupby("combination")[["Mx", "My", "Mxy"]].transform("mean").to_numpy()
+        )
+    return f
+
+
 def _touch(pieces: list[list], k: int, n: int) -> bool:
     lo, hi = sorted((k, n))
     return pieces[lo][1] + 1 == pieces[hi][0]
 
 
 def zones_for(
-    need: pd.DataFrame, ok: np.ndarray, options: list, size: float, x0: float, y0: float, along: str
+    need: pd.DataFrame,
+    ok: np.ndarray,
+    options: list,
+    size: float,
+    x0: float,
+    y0: float,
+    along: str,
+    min_zone: float = 2.5,
+    basic: int | None = None,
 ) -> dict:
     """Basic mesh and zones for one layer.
 
@@ -259,13 +307,15 @@ def zones_for(
         cost = np.where(ok[:, b], areas[b], areas[idx] * (1 + PREMIUM)).sum()
         if cost < best_cost - 1e-6:
             best, best_cost = b, cost
+    if basic is not None:
+        best = basic
     need = need.assign(zoned=~ok[:, best])
     zoned = need[need["zoned"]]
     zones = []
     # Runs of cells along the bars, split where the bars change, then merged across when they match.
     # Pieces shorter than MIN_ZONE take the heavier neighbour's bars, so bars are not cut too short.
     key_a, key_b = ("i", "j") if along == "X" else ("j", "i")
-    min_cells = max(1, math.ceil(MIN_ZONE / size - 1e-9))
+    min_cells = max(1, math.ceil(min_zone / size - 1e-9))
     runs = []
     for b_val, grp in zoned.groupby(key_b):
         grp = grp.sort_values(key_a)
@@ -363,7 +413,13 @@ def pile_heads(
             if el.head_level is not None:
                 f = f[f["Z"] <= el.head_level + above + 1e-9]
             f = f.assign(px=f["X"].round(2), py=f["Y"].round(2))
-            top = f.loc[f.groupby(["px", "py"])["Z"].idxmax()]
+            # At the slab soffit, as in the pile design: the points from the pile's top level to
+            # ``above`` inside the slab, or the topmost point when there are none.
+            zmax = f.groupby(["px", "py"])["Z"].transform("max")
+            if el.head_level is not None:
+                top = f[f["Z"] >= np.minimum(zmax, el.head_level) - 1e-6]
+            else:
+                top = f[f["Z"] >= zmax - 1e-6]
             for _, r in top.iterrows():
                 if not (box["X"][0] - 1e-6 <= r["X"] <= box["X"][1] + 1e-6):
                     continue
@@ -383,6 +439,16 @@ def pile_heads(
     return out
 
 
+def punching_depth(slab: SlabInput, x: float, y: float) -> tuple[float, str]:
+    """Slab thickness for punching at a pile: its own entry, the slab's punching value, or the thickness."""
+    for p in slab.punching_depths:
+        if math.hypot(p.x - x, p.y - y) <= 0.5:
+            return p.thickness, "set for this pile"
+    if slab.punching_thickness:
+        return slab.punching_thickness, "slab thickness for punching"
+    return slab.thickness, "slab thickness"
+
+
 def punching(
     heads: list[dict],
     slab: SlabInput,
@@ -392,14 +458,11 @@ def punching(
     cover: float,
     beams: list[dict],
 ) -> list[dict]:
+    """6.4 punching at each pile head, each with the slab thickness at that pile (see ``punching_depth``)."""
     pf = settings.partial_factors
     fck = conc.fck
     fcd = pf.alpha_cc * fck / pf.gamma_c
     fywd_ef = lambda d: min(250 + 0.25 * d, REINFORCEMENT_GRADES[settings.reinforcement.grade] / pf.gamma_s)  # noqa: E731
-    h = slab.punching_thickness or slab.thickness
-    d = h - cover - 20  # to the mean of the two layers of Ø20
-    k = min(1 + math.sqrt(200 / d), 2.0)
-    v_min = 0.035 * k**1.5 * math.sqrt(fck)
     nu = 0.6 * (1 - fck / 250)
     by_pile: dict[tuple, list[dict]] = {}
     for hd in heads:
@@ -412,6 +475,10 @@ def punching(
         by_pile.setdefault((hd["pile"], hd["x"], hd["y"]), []).append(hd)
     out = []
     for (pile, x, y), rows in sorted(by_pile.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][1])):
+        h, h_from = punching_depth(slab, x, y)
+        d = h - cover - 20  # to the mean of the two layers of Ø20
+        k = min(1 + math.sqrt(200 / d), 2.0)
+        v_min = 0.035 * k**1.5 * math.sqrt(fck)
         D = rows[0]["D"]
         u0 = math.pi * D
         u1 = math.pi * (D + 4 * d)
@@ -435,6 +502,8 @@ def punching(
                     "x": x,
                     "y": y,
                     "D_mm": D,
+                    "thickness_mm": h,
+                    "thickness_from": h_from,
                     "d_mm": round(d),
                     "combination": r["combination"],
                     "V_kN": round(v, 1),
@@ -453,6 +522,7 @@ def punching(
                 }
         if worst is None:
             continue
+        worst["r_u1_mm"] = round(D / 2 + 2 * d)
         needs = worst["vEd_MPa"] > worst["vRd_c_MPa"]
         worst["needs_reinforcement"] = bool(needs)
         worst["passed"] = worst["vEd_face_MPa"] <= worst["vRd_max_MPa"]
@@ -470,6 +540,8 @@ def punching(
                 "u_out_mm": round(u_out),
                 "perimeters": perimeters,
                 "reinforced_to_mm": round(0.5 * d + (perimeters - 1) * sr),
+                "r_out_mm": round(u_out / (2 * math.pi)),
+                "link_radii_mm": [round(D / 2 + 0.5 * d + i * sr) for i in range(perimeters)],
             }
         for k_ in ("_v", "_beta", "_vrdc"):
             worst.pop(k_)
@@ -532,7 +604,17 @@ def design_slab(
     size = slab.zone_size
     uls = slab_loads(sheets, axes, sag, qp=False)
     qp = slab_loads(sheets, axes, sag, qp=True)
+    uls, crane_rows = add_crane(uls, slab)
     options = bar_options(settings)
+    meshes = {}
+    for layer in LAYERS:
+        m = getattr(slab, f"mesh_{layer}")
+        if m is not None:
+            o = (m.layers * 1000 * math.pi * m.diameter**2 / 4 / m.spacing, m.diameter, m.spacing, m.layers)
+            if o not in options:
+                options.append(o)
+            meshes[layer] = o
+    options.sort(key=lambda o: (o[0] * (1 + 0.1 * (o[3] - 1)), -o[1]))
     notes = [
         "Bars along X take Mx = "
         + _map(axes)["Mx"].replace("_", "")
@@ -540,6 +622,11 @@ def design_slab(
         "Positive plate moments taken as " + settings.plate_positive_moment + " (Design settings).",
         "Wood–Armer moments from Mx, My and the twisting moment Mxy.",
     ]
+    if crane_rows:
+        notes.append(
+            f"Mobile crane additions from the SAP model added to every ULS combination at {crane_rows} "
+            f"results over {len(slab.crane)} area(s)."
+        )
     base = {"element": name, "kind": "slab", "thickness_mm": h, "concrete": slab.concrete, "notes": notes}
     if uls.empty:
         notes.append("No ULS results.")
@@ -579,6 +666,13 @@ def design_slab(
     if uls_m.empty:
         notes.append("No ULS results outside the pile heads.")
         return {**base, "utilisation": None, "passed": False}
+    if slab.peaks == "average" and piles:
+        uls_m = average_peaks(uls_m, piles)
+        qp_m = average_peaks(qp_m, piles) if len(qp_m) else qp_m
+        notes.append(
+            "Moments at the pile faces averaged over a ring one pile diameter wide round each pile "
+            "(slab setting)."
+        )
 
     covers = {"bottom": slab.cover_bottom, "top": slab.cover_top}
     limits = {"bottom": slab.crack_width_limit_bottom, "top": slab.crack_width_limit}
@@ -685,7 +779,11 @@ def design_slab(
                 pd.Series(req_eff).groupby([cell[along_key].to_numpy(), strip]).transform("mean").to_numpy()
             )
             cell["idx"] = first(ok)
-        z = zones_for(cell, ok, options, size, x0, y0, "X" if direction == "x" else "Y")
+        forced = options.index(meshes[layer]) if layer in meshes else None
+        z = zones_for(
+            cell, ok, options, size, x0, y0, "X" if direction == "x" else "Y", slab.min_zone_length, forced
+        )
+        z["basic"]["set_by"] = "user" if forced is not None else "least steel"
         chosen = z.pop("cell_index")  # the bars each cell gets: the basic mesh or its zone's
         prov = areas[chosen]
         ratio = req_eff / eff[chosen]

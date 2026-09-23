@@ -142,3 +142,15 @@ ul.alerts { list-style: none; padding: 0; margin: 0; display: flex; flex-directi
 .heat-legend .grey i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
 .v3d-details { margin-top: 12px; }
 .v3d-details .view3d { margin-top: 8px; }
+table.edit-list input { width: 90px; }
+table.edit-list td { padding: 4px; }
+.pp-pile { fill: var(--miss-bg); stroke: var(--text); stroke-width: 1.5; }
+.pp-u1 { fill: none; stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.pp-out { fill: rgba(214, 48, 39, .08); stroke: var(--err); stroke-width: 1.2; stroke-dasharray: 5 4; }
+.pp-link { fill: var(--accent); }
+.pp-slab { fill: var(--miss-bg); stroke: var(--muted); }
+.pp-pilesec { fill: none; stroke: var(--text); stroke-width: 1.5; }
+.pp-cone { stroke: var(--err); stroke-width: 1.5; }
+.pp-u1line { stroke: var(--muted); stroke-dasharray: 4 3; }
+.pp-linkline { stroke: var(--accent); stroke-width: 2; }
+table.punch tr.on td { background: var(--accent-bg); }

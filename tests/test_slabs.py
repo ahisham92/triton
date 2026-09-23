@@ -7,7 +7,7 @@ from conftest import PLATE_HEADER, pile_sheet
 
 from triton.design.runner import run_section
 from triton.design.slabs import bar_options, required_as, wood_armer, zones_for
-from triton.project import DesignSettings, PileInput, Section, SlabInput
+from triton.project import CraneArea, DesignSettings, PileInput, PunchingDepth, Section, SlabInput, SlabMesh
 from triton.validation import import_sheets
 
 
@@ -113,10 +113,56 @@ def test_zones_split_where_bars_change_but_not_into_short_pieces():
     ok = np.zeros((len(idx), len(options)), bool)
     for c, k in enumerate(idx):
         ok[c, k:] = True
-    z = zones_for(cells, ok, options, 1.0, 0.0, 0.0, "X")
+    z = zones_for(cells, ok, options, 1.0, 0.0, 0.0, "X", 2.0)
     # The 1 m piece needing option 7 joins its neighbour; the rest keeps option 3.
     assert [(q["x"], q["as_mm2_per_m"]) for q in z["zones"]] == [
         ([0.0, 4.0], round(options[7][0])),
         ([4.0, 6.0], round(options[3][0])),
     ]
     assert list(z["cell_index"][:6]) == [7, 7, 7, 7, 3, 3] and set(z["cell_index"][6:]) == {0}
+
+
+def deck_workbook():
+    def forces(x, y):
+        mx = -600.0 if math.hypot(x + 4, y) < 1.5 else 150.0
+        return [0.0, 0.0, 0.0, 20.0, 30.0, mx, 80.0, 0.0]
+
+    pts = [(-4.0, 0.0)]
+    return import_sheets(
+        {
+            "Deck-PT-B-Apron": deck_rows(forces),
+            "Deck-QP": deck_rows(lambda x, y: [0.0] * 5 + [100.0, 50.0, 0.0]),
+            "Pile(1)-PT-B-Apron": piles_at(pts),
+            "Pile(1)-QP": piles_at(pts, 1000.0),
+        }
+    )
+
+
+def design_deck(**slab):
+    els = {"Deck": SlabInput(thickness=800, **slab), "Pile(1)": PileInput(head_level=2.7)}
+    return run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
+
+
+def test_slab_user_meshes_punching_depth_crane_and_peaks():
+    plain = design_deck()
+    d = design_deck(
+        mesh_top_x=SlabMesh(diameter=20, spacing=150),
+        punching_depths=[PunchingDepth(x=-4.0, y=0.0, thickness=900)],
+        crane=[CraneArea(x_from=-8, x_to=-6, y_from=-4, y_to=4, my=900.0)],
+    )
+    top = d["layers"]["top_x"]
+    assert top["basic"]["label"] == "Ø20 @ 150" and top["basic"]["set_by"] == "user"
+    assert plain["layers"]["top_x"]["basic"]["set_by"] == "least steel"
+    (p,) = d["punching"]
+    assert p["thickness_mm"] == 900 and p["thickness_from"] == "set for this pile"
+    assert p["d_mm"] == plain["punching"][0]["d_mm"] + 100
+    assert p["r_u1_mm"] == 600 + 2 * p["d_mm"]
+    # The crane adds sagging My over X -8 to -6: heavier bottom bars along Y there only.
+    zones = d["layers"]["bottom_y"]["zones"]
+    assert zones and all(z["x"][0] >= -8 and z["x"][1] <= -5 for z in zones)
+    assert not plain["layers"]["bottom_y"]["zones"]
+    assert any("Mobile crane" in n for n in d["notes"])
+    # Averaging the hogging over a ring round the pile needs less top steel there.
+    avg = design_deck(peaks="average")
+    most = lambda r: max([z["as_mm2_per_m"] for z in r["layers"]["top_x"]["zones"]] or [0])  # noqa: E731
+    assert most(avg) < most(plain)
