@@ -18,11 +18,21 @@ def main(argv: list[str] | None = None) -> int:
     serve = sub.add_parser("serve", help="Run the web app.")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument(
+        "--data",
+        help="Folder for projects and uploaded workbooks (default: TRITON_DATA_DIR, else ./data).",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "serve":
+        import os
+
         import uvicorn
 
+        if args.data:
+            os.environ["TRITON_DATA_DIR"] = args.data
+        data = os.environ.get("TRITON_DATA_DIR", "data")
+        print(f"Triton on http://{args.host}:{args.port}, data in {data}")
         uvicorn.run("triton.api:app", host=args.host, port=args.port)
         return 0
 

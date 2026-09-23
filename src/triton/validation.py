@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
 from typing import Any
@@ -11,7 +11,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .elements import CombinationType, combination_type
+from .axes import infer_axes
+from .elements import CombinationType, combination_type, mapped_sheet_name
 from .importer import SheetData, clean_sheet
 from .issues import Issue, Severity
 from .reader import Row, read_workbook
@@ -21,6 +22,7 @@ from .reader import Row, read_workbook
 class ImportResult:
     sheets: list[SheetData]
     issues: list[Issue] = field(default_factory=list)
+    axes: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def usable(self) -> list[SheetData]:
@@ -56,6 +58,7 @@ class ImportResult:
             "coverage": coverage,
             "sheets": [_sheet_summary(s) for s in self.sheets],
             "issues": [i.to_dict() for i in sorted(issues, key=_issue_sort_key)],
+            "axes": sorted(getattr(self, "axes", []), key=lambda a: _element_sort_key(a["element"])),
         }
 
 
@@ -91,7 +94,7 @@ def _sheet_summary(s: SheetData) -> dict[str, Any]:
 
 
 def _element_sort_key(e: str) -> tuple[int, str]:
-    order = ["SPW", "Combi Wall", "Pile", "Deck", "Front Beam", "Rear Beam", "Portal Frame"]
+    order = ["SPW", "Combi Wall", "Pile", "Deck", "Front Beam", "Rear Beam", "Trans", "Portal Frame"]
     for i, prefix in enumerate(order):
         if e.startswith(prefix):
             return i, e
@@ -108,25 +111,56 @@ def import_workbook(path: str | Path) -> ImportResult:
 
 
 def import_sheets(raw: dict[str, list[Row]]) -> ImportResult:
-    sheets = [clean_sheet(name, rows) for name, rows in raw.items()]
-    result = ImportResult(sheets)
-    _check_names(result)
+    return _checked(ImportResult([clean_sheet(name, rows) for name, rows in raw.items()]))
+
+
+def apply_mapping(result: ImportResult, mapping: dict[str, Any]) -> ImportResult:
+    """The workbook with sheets assigned by hand: each entry maps a sheet name to an element and
+    combination (``element``, ``combination``) or leaves it out (``ignore``). Checks run again."""
+    if not mapping:
+        return result
+    sheets = []
+    ignored = set()
+    for s in result.sheets:
+        m = mapping.get(s.name)
+        if m is None:
+            sheets.append(s)
+            continue
+        get = m.get if isinstance(m, dict) else lambda k, d=None, m=m: getattr(m, k, d)
+        if get("ignore", False):
+            ignored.add(s.name)
+            sheets.append(replace(s, parsed=None))
+            continue
+        parsed = mapped_sheet_name(s.name, get("element", ""), get("combination", ""))
+        sheets.append(replace(s, parsed=parsed) if parsed else s)
+    return _checked(ImportResult(sheets), ignored)
+
+
+def _checked(result: ImportResult, ignored: set[str] | frozenset = frozenset()) -> ImportResult:
+    _check_names(result, ignored)
     _check_duplicate_sheets(result)
     _check_coverage(result)
     _check_identical_combinations(result)
     _check_mesh_consistency(result)
+    result.axes, issues = infer_axes(result.elements())
+    result.issues.extend(issues)
     return result
 
 
-def _check_names(result: ImportResult) -> None:
+def _check_names(result: ImportResult, ignored: set[str] | frozenset = frozenset()) -> None:
     for s in result.sheets:
+        if s.name in ignored and not s.empty:
+            result.issues.append(
+                Issue(Severity.INFO, "ignored_sheet", "Left out by the sheet mapping.", sheet=s.name)
+            )
+            continue
         if s.parsed is None and not s.empty:
             result.issues.append(
                 Issue(
                     Severity.WARNING,
                     "unknown_sheet",
                     "Sheet name does not match '<Element>-<Combination>' for a known element; "
-                    "the sheet was ignored.",
+                    "the sheet was ignored. Assign it under Sheet mapping to use it.",
                     sheet=s.name,
                 )
             )

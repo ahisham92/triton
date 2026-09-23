@@ -9,4 +9,4 @@ __pycache__/
 *.xlsm
 *.rar
 # saved projects when running locally
-data/
+/data/

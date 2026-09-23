@@ -14,6 +14,16 @@ import pandas as pd
 from .elements import ElementSpec
 
 AXIAL = ("N", "N_1", "N_2")
+# Columns that locate a result rather than being one: never multiplied.
+LOCATION_COLUMNS = frozenset({"plaxis_label", "Node", "local_number", "X", "Y", "Z"})
+
+
+def scale_forces(frame: pd.DataFrame, factor: float) -> pd.DataFrame:
+    """Multiply every straining action (phase, min and max) by ``factor``; X, Y, Z are kept."""
+    out = frame.copy()
+    cols = [c for c in out.columns if c not in LOCATION_COLUMNS and pd.api.types.is_numeric_dtype(out[c])]
+    out[cols] = out[cols] * factor
+    return out
 
 
 def phase_values(frame: pd.DataFrame, actions: list[str]) -> pd.DataFrame:

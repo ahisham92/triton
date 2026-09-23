@@ -1,0 +1,91 @@
+"""Reinforcement data for drawing tools (a Revit / Dynamo script reads this file).
+
+Everything a script needs to place the bars is spelled out, so it does not
+have to repeat any design logic:
+
+* each pile of each pile element, and the concrete infill of each combi wall
+  king pile (``part`` "infill"), at its Plaxis X, Y (m), from the head level
+  down to the toe level (m, same datum as the model);
+* each bar run: its cage, row by row, with the radius of the bar circle (mm),
+  the angle of the first bar (degrees, anticlockwise from the model X axis;
+  the other bars follow at equal steps) and the top and bottom level of the
+  bars, including the lap below the run.
+
+Coordinates stay in the Plaxis model system; the script maps them to the
+Revit project base point.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+FORMAT = "triton.pile-cages/1"
+
+
+def pile_cages(project_name: str, results: dict[str, Any], section: str = "") -> dict[str, Any]:
+    piles = []
+    cages = [(p, "pile") for p in results.get("piles", [])]
+    cages += [(w["infill"], "infill") for w in results.get("combi_walls", [])]
+    for p, part in cages:
+        c = p.get("curtailment") or {}
+        a = p.get("arrangement")
+        if a is None:
+            continue
+        runs = c.get("runs") or [_single_run(p)]
+        piles.append(
+            {
+                "element": p["element"],
+                "part": part,
+                "count": p.get("count", len(p.get("positions", [])) or 1),
+                "diameter_mm": p["section"]["diameter_mm"],
+                "cover_mm": p["section"]["cover_mm"],
+                "link_diameter_mm": p["section"]["link_diameter_mm"],
+                "head_level_m": p["section"].get("head_level_m"),
+                "toe_level_m": p["section"].get("toe_level_m"),
+                "positions": [{"x": x, "y": y} for x, y in p.get("positions", [])],
+                "splice": c.get("splice", "lap"),
+                "runs": [
+                    {
+                        "top_m": r["top"],
+                        "bottom_m": r["bottom"],
+                        "label": r["cage"]["label"],
+                        "rows": [
+                            {
+                                "count": ring["count"],
+                                "diameter_mm": ring["diameter"],
+                                "radius_mm": ring["radius"],
+                                "first_bar_angle_deg": 0.0,
+                                "bar_top_m": r["top"],
+                                "bar_bottom_m": round(r["bottom"] - lap, 3),
+                                "bar_length_m": length,
+                            }
+                            for ring, lap, length in zip(
+                                r["cage"]["rings"], r["lap_below_m"], r["bar_lengths_m"], strict=True
+                            )
+                        ],
+                    }
+                    for r in runs
+                ],
+            }
+        )
+    return {
+        "format": FORMAT,
+        "project": project_name,
+        "section": section,
+        "run_at": results.get("run_at"),
+        "piles": piles,
+    }
+
+
+def _single_run(p: dict[str, Any]) -> dict[str, Any]:
+    """One run over the design length when the pile was not curtailed."""
+    top, bottom = p["section"].get("head_level_m"), p["section"].get("toe_level_m")
+    length = round(top - bottom, 2) if top is not None and bottom is not None else None
+    rings = p["arrangement"]["rings"]
+    return {
+        "top": top,
+        "bottom": bottom,
+        "cage": p["arrangement"],
+        "lap_below_m": [0.0] * len(rings),
+        "bar_lengths_m": [length] * len(rings),
+    }
