@@ -465,6 +465,33 @@ class SlabInput(_ConcreteSection):
     strips: Literal["uniform", "column_and_field"] = Field(
         "uniform", title="Reinforcement layout", description="One uniform slab, or column and field strips"
     )
+    zone_size: float = _m(
+        "Zone grid",
+        1.0,
+        gt=0.2,
+        le=5,
+        description="Cells of this size carry either the basic mesh or heavier bars in a zone.",
+    )
+    punching_thickness: float | None = _mm(
+        "Thickness for punching",
+        None,
+        gt=0,
+        description="Sloped slab: the depth at the piles when it differs (e.g. 720 mm with 700 mm for "
+        "bending). Empty: the slab thickness.",
+    )
+    joint_spacing: float = _m(
+        "Length between movement joints",
+        30.0,
+        gt=0,
+        description="For the temperature and shrinkage restraint check (restraint from length / thickness).",
+    )
+    restraint_factor: float | None = Field(
+        None,
+        title="Restraint factor R",
+        ge=0,
+        le=1,
+        description="Empty: from the length between joints and the thickness (ACI 207.2R).",
+    )
     crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.3, gt=0, le=0.5)
     crack_width_limit_bottom: float = _mm(
         "Crack width limit wk (QP), bottom face",

@@ -1,0 +1,917 @@
+"""Slabs (the deck) from the plate results: bars per metre by zone, shear, punching at the piles, restraint.
+
+Directions. Bars run along global X and Y. The local axes of the plate come from the
+directions check on upload (local 1 = global X when it had no answer), so for the bars
+along X the slab takes Mx = M11 (or M22), Nx = N1 (or N2) and Vx = Q13 (or Q23).
+
+Moments. Wood–Armer design moments from Mx, My and the twisting moment Mxy, bottom
+(sagging +) and top (hogging -), at every node. Nodes inside a pile are FE peaks in
+the connection and are left out (bending at the pile face); for shear, nodes within d
+(or 2d) of a pile face are left out too.
+
+Bars per metre, EN 1992-1-1, for each face and direction:
+
+* ULS: tension steel of a 1 m strip under N and M, As = (M + N(d − h/2))/(z·fyd) − N/fyd,
+  z = d/2·(1 + √(1 − 3.53K)) ≤ 0.95d with K = Ms/(b·d²·fck); K > 0.167 is flagged;
+* minimum steel 9.3.1.1 (9.2.1.1): max(0.26·fctm/fyk, 0.0013)·b·d;
+* QP crack width 7.3.4 per face and limit, from the cracked-section stress
+  σs = (Ms/z − N)/As with z = d(1 − k/3);
+* the outer layer is the bars along X, the bars along Y are one bar further in.
+
+Zones. The slab is cut into square cells (1 m by default). Each face and direction gets a
+basic mesh over the whole slab and, where a cell needs more, zones of heavier bars.
+The basic mesh is the one with the least total steel counting a 10% premium for each
+cell in a zone. With column and field strips the need is averaged over each strip's width
+(EN 1992-1-1 Annex I): column strips a quarter of the pile spacing each side of a pile line.
+
+Shear per metre, 6.2.2: v = √(Vx² + Vy²) against VRd,c with σcp from compression; in
+tension no concrete contribution. Cells where links are needed are listed.
+
+Punching at each pile, 6.4: VEd = the pile's axial force at its top, β from the pile's
+head moments (6.4.3(4), β = 1 + 0.6π·e/(D + 4d)), control perimeter u1 = π(D + 4d),
+vRd,c with ρl = √(ρx·ρy) of the face in tension over the pile, and vRd,max = 0.4·ν·fcd on
+u0 = πD. Where vEd > vRd,c, links on perimeters out to u_out,ef = β·VEd/(vRd,c·d) (6.52).
+A sloped slab can use a different depth for punching.
+
+Restraint: as for beams (``crack.restraint_crack``), with the slab thickness as the height.
+"""
+
+from __future__ import annotations
+
+import math
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+from ..elements import CombinationType, combination_type
+from ..importer import SheetData
+from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
+from ..project import DesignSettings, PileInput, SlabInput, with_project_grades
+from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restraint_factor
+
+E_S = 200_000.0
+PREMIUM = 0.10  # extra weight per zoned cell when picking the basic mesh
+MIN_ZONE = 2.0  # m, shortest length of a zone along its bars
+LAYERS = ("bottom_x", "bottom_y", "top_x", "top_y")
+LAYER_TEXT = {
+    "bottom_x": "bottom bars along X",
+    "bottom_y": "bottom bars along Y",
+    "top_x": "top bars along X",
+    "top_y": "top bars along Y",
+}
+
+
+# --- Loads ---------------------------------------------------------------------------------------
+
+
+def _map(axes: dict[str, str] | None) -> dict[str, str]:
+    one = (axes or {}).get("1", "X")
+    if one == "Y":
+        return {"Mx": "M_22", "My": "M_11", "Nx": "N_2", "Ny": "N_1", "Vx": "Q_23", "Vy": "Q_13"}
+    return {"Mx": "M_11", "My": "M_22", "Nx": "N_1", "Ny": "N_2", "Vx": "Q_13", "Vy": "Q_23"}
+
+
+def slab_loads(
+    sheets: dict[str, SheetData], axes: dict[str, str] | None, sag: float, qp: bool
+) -> pd.DataFrame:
+    """Node forces per metre in global directions: N compression +, M sagging +."""
+    cols = _map(axes)
+    parts = []
+    for combo, sheet in sheets.items():
+        ctype = combination_type(combo)
+        if (ctype is CombinationType.SLS_QP) != qp or sheet.frame.empty:
+            continue
+        f = sheet.frame.drop_duplicates(["X", "Y", "Z"])
+        parts.append(
+            pd.DataFrame(
+                {
+                    "combination": combo,
+                    "Node": f["Node"].to_numpy(),
+                    "X": f["X"].to_numpy(float),
+                    "Y": f["Y"].to_numpy(float),
+                    "Z": f["Z"].to_numpy(float),
+                    "Mx": sag * f[cols["Mx"]].to_numpy(float),
+                    "My": sag * f[cols["My"]].to_numpy(float),
+                    "Mxy": f["M_12"].to_numpy(float),
+                    "Nx": -f[cols["Nx"]].to_numpy(float),
+                    "Ny": -f[cols["Ny"]].to_numpy(float),
+                    "Vx": f[cols["Vx"]].to_numpy(float),
+                    "Vy": f[cols["Vy"]].to_numpy(float),
+                }
+            )
+        )
+    if not parts:
+        return pd.DataFrame(
+            columns=["combination", "Node", "X", "Y", "Z", "Mx", "My", "Mxy", "Nx", "Ny", "Vx", "Vy"]
+        )
+    return pd.concat(parts, ignore_index=True)
+
+
+def wood_armer(mx: np.ndarray, my: np.ndarray, mxy: np.ndarray) -> dict[str, np.ndarray]:
+    """Wood–Armer design moments (kNm/m): bottom >= 0 (sagging), top <= 0 (hogging)."""
+    a = np.abs(mxy)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bx, by = mx + a, my + a
+        fix = bx < 0
+        bx = np.where(fix, 0.0, bx)
+        by = np.where(fix, my + np.abs(np.nan_to_num(mxy**2 / mx)), by)
+        fix = by < 0
+        by = np.where(fix, 0.0, by)
+        bx = np.where(fix & ~(mx + a < 0), mx + np.abs(np.nan_to_num(mxy**2 / my)), bx)
+        tx, ty = mx - a, my - a
+        fix = tx > 0
+        tx = np.where(fix, 0.0, tx)
+        ty = np.where(fix, my - np.abs(np.nan_to_num(mxy**2 / mx)), ty)
+        fix = ty > 0
+        ty = np.where(fix, 0.0, ty)
+        tx = np.where(fix & ~(mx - a > 0), mx - np.abs(np.nan_to_num(mxy**2 / my)), tx)
+    return {
+        "bottom_x": np.maximum(bx, 0.0),
+        "bottom_y": np.maximum(by, 0.0),
+        "top_x": np.minimum(tx, 0.0),
+        "top_y": np.minimum(ty, 0.0),
+    }
+
+
+# --- Bars per metre -------------------------------------------------------------------------------
+
+
+def bar_options(settings: DesignSettings) -> list[tuple[float, int, float, int]]:
+    """(mm²/m, Ø, spacing, layers) of every bar size, spacing and layer count allowed, cheapest first."""
+    r = settings.reinforcement
+    out = []
+    for phi in r.bar_diameters:
+        if phi < 10:
+            continue
+        s = r.max_spacing
+        while s >= max(100.0, phi + r.min_clear_spacing) - 1e-9:
+            for layers in range(1, (r.max_layers if phi >= 25 else 1) + 1):
+                out.append((layers * 1000 * math.pi * phi * phi / 4 / s, phi, s, layers))
+            s -= r.spacing_step
+    # Cheapest first; a second layer costs 10% more to place.
+    return sorted(out, key=lambda o: (o[0] * (1 + 0.1 * (o[3] - 1)), -o[1]))
+
+
+def label(o: tuple) -> str:
+    return f"Ø{o[1]} @ {o[2]:g}" + (f" in {o[3]} layers" if o[3] > 1 else "")
+
+
+K_BAL = 0.167  # K' without moment redistribution (fck <= 50 MPa)
+
+
+def required_as(
+    m: np.ndarray, n: np.ndarray, h: float, d: float, fck: float, fyd: float, d2: float | None = None
+) -> tuple:
+    """Steel (mm²/m) for |M| (kNm/m) with N (kN/m, compression +) on a 1 m strip.
+
+    Returns (tension steel, K, compression steel). Where K > K' and the depth d2 of the
+    compression face bars is given, the moment beyond K' is taken by the compression
+    face bars (assumed to yield) with the tension bars.
+    """
+    m = np.abs(m) * 1e6
+    n = n * 1e3
+    ms = m + n * (d - h / 2)
+    k = np.maximum(ms, 0) / (1000 * d * d * fck)
+    z = np.minimum(0.5 * d * (1 + np.sqrt(np.clip(1 - 3.53 * k, 0, None))), 0.95 * d)
+    a_s = ms / (z * fyd) - n / fyd
+    a_s2 = np.zeros_like(a_s)
+    if d2 is not None:
+        over = k > K_BAL
+        m_bal = K_BAL * 1000 * d * d * fck
+        z_bal = 0.5 * d * (1 + math.sqrt(1 - 3.53 * K_BAL))
+        a_s2 = np.where(over, (ms - m_bal) / (fyd * (d - d2)), 0.0)
+        a_s = np.where(over, m_bal / (z_bal * fyd) + a_s2 - n / fyd, a_s)
+    # Small eccentricity in tension: the tension shared by both faces.
+    small = ms < 0
+    a_s = np.where(small, (-n / 2 + m / (2 * d - h)) / fyd, a_s)
+    return np.maximum(a_s, 0.0), k, np.maximum(a_s2, 0.0)
+
+
+def crack_widths(
+    m: np.ndarray,
+    n: np.ndarray,
+    area: float,
+    phi: float,
+    s: float,
+    h: float,
+    d: float,
+    c: float,
+    conc,
+    e_eff: float,
+) -> np.ndarray:
+    """7.3.4 crack widths (mm) of QP loads (kNm/m, kN/m) at one face with Ø at spacing s."""
+    rho = area / (1000 * d)
+    ae = E_S / e_eff
+    k = math.sqrt(2 * ae * rho + (ae * rho) ** 2) - ae * rho
+    z = d * (1 - k / 3)
+    x = k * d
+    ms = np.abs(m) * 1e6 + n * 1e3 * (d - h / 2)
+    sigma = np.maximum((ms / z - n * 1e3) / area, 0.0)
+    hc = min(2.5 * (h - d), (h - x) / 3, h / 2)
+    rp = area / (1000 * hc)
+    strain = np.maximum((sigma - KT * conc.fctm / rp * (1 + E_S / conc.ecm * rp)) / E_S, 0.6 * sigma / E_S)
+    sr = 1.3 * (h - x) if s > 5 * (c + phi / 2) else K3 * c + K1 * 0.5 * K4 * phi / rp
+    return sr * strain
+
+
+# --- Cells and zones ------------------------------------------------------------------------------
+
+
+def _cells(x: np.ndarray, y: np.ndarray, x0: float, y0: float, size: float) -> tuple[np.ndarray, np.ndarray]:
+    return np.floor((x - x0) / size + 1e-9).astype(int), np.floor((y - y0) / size + 1e-9).astype(int)
+
+
+def _strips(coord: np.ndarray, lines: list[float]) -> np.ndarray:
+    """Strip id for each coordinate: column strips a quarter spacing each side of a pile line."""
+    if len(lines) < 2:
+        return np.zeros(len(coord), int)
+    lines = sorted(lines)
+    gap = float(np.median(np.diff(lines)))
+    ids = np.full(len(coord), -1)
+    for i, ln in enumerate(lines):
+        ids[np.abs(coord - ln) <= gap / 4] = 2 * i  # column strip
+    field = ids < 0
+    ids[field] = 2 * np.searchsorted(lines, coord[field]) - 1  # field strip between lines
+    return ids
+
+
+def _touch(pieces: list[list], k: int, n: int) -> bool:
+    lo, hi = sorted((k, n))
+    return pieces[lo][1] + 1 == pieces[hi][0]
+
+
+def zones_for(
+    need: pd.DataFrame, ok: np.ndarray, options: list, size: float, x0: float, y0: float, along: str
+) -> dict:
+    """Basic mesh and zones for one layer.
+
+    ``need["idx"]`` is the cheapest option each cell can take and ``ok[cell, option]`` whether
+    it can take an option at all. The basic mesh is the option with the least total steel, cells
+    that cannot take it getting their own option at a premium.
+    """
+    idx = need["idx"].to_numpy(int)
+    areas = np.array([o[0] * (1 + 0.1 * (o[3] - 1)) for o in options])
+    best, best_cost = int(idx.max()), math.inf
+    for b in range(len(options)):
+        if not ok[:, b].any():
+            continue
+        cost = np.where(ok[:, b], areas[b], areas[idx] * (1 + PREMIUM)).sum()
+        if cost < best_cost - 1e-6:
+            best, best_cost = b, cost
+    need = need.assign(zoned=~ok[:, best])
+    zoned = need[need["zoned"]]
+    zones = []
+    # Runs of cells along the bars, split where the bars change, then merged across when they match.
+    # Pieces shorter than MIN_ZONE take the heavier neighbour's bars, so bars are not cut too short.
+    key_a, key_b = ("i", "j") if along == "X" else ("j", "i")
+    min_cells = max(1, math.ceil(MIN_ZONE / size - 1e-9))
+    runs = []
+    for b_val, grp in zoned.groupby(key_b):
+        grp = grp.sort_values(key_a)
+        pieces: list[list] = []  # [start, end, level]
+        for a_val, lvl in zip(grp[key_a], grp["idx"], strict=True):
+            last = pieces[-1] if pieces else None
+            if last and a_val == last[1] + 1 and lvl == last[2]:
+                last[1] = a_val
+            else:
+                pieces.append([a_val, a_val, lvl])
+        while True:
+            short = [
+                k
+                for k, pc in enumerate(pieces)
+                if pc[1] - pc[0] + 1 < min_cells
+                and any(0 <= n < len(pieces) and _touch(pieces, k, n) for n in (k - 1, k + 1))
+            ]
+            if not short:
+                break
+            k = min(short, key=lambda k: (pieces[k][1] - pieces[k][0], k))
+            nbrs = [n for n in (k - 1, k + 1) if 0 <= n < len(pieces) and _touch(pieces, k, n)]
+            n = max(nbrs, key=lambda n: pieces[n][2])
+            lo, hi = min(k, n), max(k, n)
+            pieces[lo : hi + 1] = [[pieces[lo][0], pieces[hi][1], max(pieces[lo][2], pieces[hi][2])]]
+            # Neighbours that now match join up.
+            joined: list[list] = []
+            for pc in pieces:
+                if joined and joined[-1][2] == pc[2] and joined[-1][1] + 1 == pc[0]:
+                    joined[-1][1] = pc[1]
+                else:
+                    joined.append(pc)
+            pieces = joined
+        runs += [(b_val, a0, a1, lvl) for a0, a1, lvl in pieces]
+    merged: list[list] = []
+    for b_val, a0, a1, lvl in sorted(runs, key=lambda r: (r[1], r[2], r[0])):
+        last = merged[-1] if merged else None
+        if last and last[1] == a0 and last[2] == a1 and last[3] == lvl and last[4] == b_val - 1:
+            last[4] = b_val
+        else:
+            merged.append([b_val, a0, a1, lvl, b_val])
+    for b0, a0, a1, lvl, b1 in merged:
+        if along == "X":
+            xr, yr = (x0 + a0 * size, x0 + (a1 + 1) * size), (y0 + b0 * size, y0 + (b1 + 1) * size)
+        else:
+            xr, yr = (x0 + b0 * size, x0 + (b1 + 1) * size), (y0 + a0 * size, y0 + (a1 + 1) * size)
+        o = options[lvl]
+        zones.append(
+            {
+                "x": [round(xr[0], 2), round(xr[1], 2)],
+                "y": [round(yr[0], 2), round(yr[1], 2)],
+                "label": label(o),
+                "as_mm2_per_m": round(o[0]),
+            }
+        )
+    level_of = {}
+    for b_val, a0, a1, lvl in runs:
+        for a in range(a0, a1 + 1):
+            level_of[(a, b_val) if along == "X" else (b_val, a)] = lvl
+    cell_index = np.array(
+        [level_of.get((i, j), best) for i, j in zip(need["i"], need["j"], strict=True)], dtype=int
+    )
+    o = options[best]
+    return {
+        "cell_index": cell_index,
+        "basic": {
+            "phi": o[1],
+            "spacing_mm": o[2],
+            "layers": o[3],
+            "as_mm2_per_m": round(o[0]),
+            "label": label(o),
+        },
+        "basic_index": best,
+        "zones": zones,
+    }
+
+
+# --- Punching -------------------------------------------------------------------------------------
+
+
+def pile_heads(
+    pile_sheets: dict[str, dict[str, SheetData]], elements: dict[str, Any], box: dict, above: float
+) -> list[dict]:
+    """ULS axial force and head moments of every pile whose head is inside the slab's plan box."""
+    out = []
+    for name, sheets in pile_sheets.items():
+        el = elements.get(name)
+        if not isinstance(el, PileInput):
+            continue
+        for combo, sheet in sheets.items():
+            if combination_type(combo) is CombinationType.SLS_QP or sheet.frame.empty:
+                continue
+            f = sheet.frame
+            if not {"N", "M_2", "M_3"} <= set(f.columns):
+                continue
+            if el.head_level is not None:
+                f = f[f["Z"] <= el.head_level + above + 1e-9]
+            f = f.assign(px=f["X"].round(2), py=f["Y"].round(2))
+            top = f.loc[f.groupby(["px", "py"])["Z"].idxmax()]
+            for _, r in top.iterrows():
+                if not (box["X"][0] - 1e-6 <= r["X"] <= box["X"][1] + 1e-6):
+                    continue
+                if not (box["Y"][0] - 1e-6 <= r["Y"] <= box["Y"][1] + 1e-6):
+                    continue
+                out.append(
+                    {
+                        "pile": name,
+                        "x": float(r["px"]),
+                        "y": float(r["py"]),
+                        "D": el.diameter,
+                        "combination": combo,
+                        "N": -float(r["N"]),  # concrete sign: compression +
+                        "M": float(math.hypot(r["M_2"], r["M_3"])),
+                    }
+                )
+    return out
+
+
+def punching(
+    heads: list[dict],
+    slab: SlabInput,
+    settings: DesignSettings,
+    rho_at,
+    conc,
+    cover: float,
+    beams: list[dict],
+) -> list[dict]:
+    pf = settings.partial_factors
+    fck = conc.fck
+    fcd = pf.alpha_cc * fck / pf.gamma_c
+    fywd_ef = lambda d: min(250 + 0.25 * d, REINFORCEMENT_GRADES[settings.reinforcement.grade] / pf.gamma_s)  # noqa: E731
+    h = slab.punching_thickness or slab.thickness
+    d = h - cover - 20  # to the mean of the two layers of Ø20
+    k = min(1 + math.sqrt(200 / d), 2.0)
+    v_min = 0.035 * k**1.5 * math.sqrt(fck)
+    nu = 0.6 * (1 - fck / 250)
+    by_pile: dict[tuple, list[dict]] = {}
+    for hd in heads:
+        if any(
+            b["box"]["X"][0] <= hd["x"] <= b["box"]["X"][1]
+            and b["box"]["Y"][0] <= hd["y"] <= b["box"]["Y"][1]
+            for b in beams
+        ):
+            continue  # under a beam: the beam carries it
+        by_pile.setdefault((hd["pile"], hd["x"], hd["y"]), []).append(hd)
+    out = []
+    for (pile, x, y), rows in sorted(by_pile.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][1])):
+        D = rows[0]["D"]
+        u0 = math.pi * D
+        u1 = math.pi * (D + 4 * d)
+        worst = None
+        for r in rows:
+            v = abs(r["N"])
+            if v <= 0:
+                continue
+            e = r["M"] / v * 1000  # mm
+            beta = 1 + 0.6 * math.pi * e / (D + 4 * d)
+            face = "top" if r["N"] >= 0 else "bottom"  # a pile pushing up: the top is in tension
+            rho = min(rho_at(x, y, face), 0.02)
+            vrdc = max(0.18 / pf.gamma_c * k * (100 * rho * fck) ** (1 / 3), v_min)
+            ved = beta * v * 1e3 / (u1 * d)
+            ved0 = beta * v * 1e3 / (u0 * d)
+            vrdmax = 0.4 * nu * fcd
+            u = max(ved / vrdc, ved0 / vrdmax)
+            if worst is None or u > worst["utilisation"]:
+                worst = {
+                    "pile": pile,
+                    "x": x,
+                    "y": y,
+                    "D_mm": D,
+                    "d_mm": round(d),
+                    "combination": r["combination"],
+                    "V_kN": round(v, 1),
+                    "direction": "pile pushes up" if r["N"] >= 0 else "pile pulls down",
+                    "beta": round(beta, 3),
+                    "rho_l": round(rho, 4),
+                    "u1_mm": round(u1),
+                    "vEd_MPa": round(ved, 3),
+                    "vRd_c_MPa": round(vrdc, 3),
+                    "vEd_face_MPa": round(ved0, 3),
+                    "vRd_max_MPa": round(vrdmax, 2),
+                    "utilisation": round(u, 3),
+                    "_v": v,
+                    "_beta": beta,
+                    "_vrdc": vrdc,
+                }
+        if worst is None:
+            continue
+        needs = worst["vEd_MPa"] > worst["vRd_c_MPa"]
+        worst["needs_reinforcement"] = bool(needs)
+        worst["passed"] = worst["vEd_face_MPa"] <= worst["vRd_max_MPa"]
+        if needs and worst["passed"]:
+            # 6.52 with sr = 0.75d: Asw per perimeter.
+            sr = 0.75 * d
+            asw = (worst["vEd_MPa"] - 0.75 * worst["_vrdc"]) * u1 * sr / (1.5 * fywd_ef(d))
+            u_out = worst["_beta"] * worst["_v"] * 1e3 / (worst["_vrdc"] * d)
+            r_out = u_out / math.pi / 2 - D / 2  # from the pile face
+            perimeters = max(2, math.ceil((r_out - 1.5 * d) / sr) + 1)
+            worst |= {
+                "utilisation_with_links": round(worst["vEd_face_MPa"] / worst["vRd_max_MPa"], 3),
+                "asw_mm2_per_perimeter": round(asw),
+                "radial_spacing_mm": round(sr),
+                "u_out_mm": round(u_out),
+                "perimeters": perimeters,
+                "reinforced_to_mm": round(0.5 * d + (perimeters - 1) * sr),
+            }
+        for k_ in ("_v", "_beta", "_vrdc"):
+            worst.pop(k_)
+        out.append(worst)
+    return out
+
+
+# --- Restraint --------------------------------------------------------------------------------------
+
+
+def slab_restraint(o, face, direction, covers, h, settings, conc, R) -> dict:
+    cr = settings.cracking
+    c = covers[face] + (o[1] if direction == "y" else 0)
+    return restraint_crack(
+        restraint=R * cr.creep_factor,
+        t1=cr.early_age_drop,
+        t2=cr.seasonal_drop,
+        alpha=cr.thermal_expansion * 1e-6,
+        eps_ca=autogenous_shrinkage(conc.fck),
+        fctm=conc.fctm,
+        ecm=conc.ecm,
+        area=o[0],
+        b=1000,
+        hc=min(2.5 * (c + o[1] / 2), h / 2),
+        phi=o[1],
+        cover=c,
+        spacing=o[2],
+        member=h,
+    )
+
+
+def restraint_floor(options, face, direction, covers, limits, h, slab, settings, conc, R) -> int:
+    """The least option whose restraint crack width meets the face's limit."""
+    for i, o in enumerate(options):
+        if slab_restraint(o, face, direction, covers, h, settings, conc, R)["wk"] <= limits[face] + 1e-9:
+            return i
+    return len(options) - 1
+
+
+# --- Slab design ----------------------------------------------------------------------------------
+
+
+def design_slab(
+    name: str,
+    slab: SlabInput,
+    settings: DesignSettings,
+    sheets: dict[str, SheetData],
+    geometry: list[dict],
+    elements: dict[str, Any],
+    axes: dict[str, str] | None,
+    pile_sheets: dict[str, dict[str, SheetData]],
+) -> dict[str, Any]:
+    slab = with_project_grades(slab, settings.materials, settings.durability)
+    conc = concrete(slab.concrete)
+    fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
+    fyd = fyk / settings.partial_factors.gamma_s
+    e_eff = conc.ecm / (1 + settings.cracking.creep_coefficient)
+    sag = 1.0 if settings.plate_positive_moment == "sagging" else -1.0
+    h = slab.thickness
+    size = slab.zone_size
+    uls = slab_loads(sheets, axes, sag, qp=False)
+    qp = slab_loads(sheets, axes, sag, qp=True)
+    options = bar_options(settings)
+    notes = [
+        "Bars along X take Mx = "
+        + _map(axes)["Mx"].replace("_", "")
+        + (" (from the directions check)." if axes else " (assumed: the directions check had no answer)."),
+        "Positive plate moments taken as " + settings.plate_positive_moment + " (Design settings).",
+        "Wood–Armer moments from Mx, My and the twisting moment Mxy.",
+    ]
+    base = {"element": name, "kind": "slab", "thickness_mm": h, "concrete": slab.concrete, "notes": notes}
+    if uls.empty:
+        notes.append("No ULS results.")
+        return {**base, "utilisation": None, "passed": False}
+
+    # Piles under the slab: results inside them are left out.
+    box = {a: [float(uls[a].min()), float(uls[a].max())] for a in ("X", "Y")}
+    level = float(uls["Z"].median())
+    piles = []
+    for g in geometry:
+        el = elements.get(g["element"])
+        if g.get("kind") != "beam" or not isinstance(el, PileInput):
+            continue
+        for x, y, ztop, _ in g.get("lines") or []:
+            if (
+                box["X"][0] - 1e-6 <= x <= box["X"][1] + 1e-6
+                and box["Y"][0] - 1e-6 <= y <= box["Y"][1] + 1e-6
+            ):
+                if ztop >= level - 1.5:
+                    piles.append((x, y, el.diameter / 2000))
+    beams = [
+        g
+        for g in geometry
+        if g.get("type", "").endswith("beam") and g.get("box") and g["element"] in elements
+    ]
+
+    def outside(f: pd.DataFrame, extra: float) -> np.ndarray:
+        keep = np.ones(len(f), bool)
+        for x, y, r in piles:
+            keep &= np.hypot(f["X"].to_numpy() - x, f["Y"].to_numpy() - y) >= r + extra - 1e-6
+        return keep
+
+    uls_m = uls[outside(uls, 0.0)].reset_index(drop=True)
+    qp_m = qp[outside(qp, 0.0)].reset_index(drop=True) if len(qp) else qp
+    if piles:
+        notes.append(f"{len(piles)} pile heads inside the slab: results inside them are left out.")
+    if uls_m.empty:
+        notes.append("No ULS results outside the pile heads.")
+        return {**base, "utilisation": None, "passed": False}
+
+    covers = {"bottom": slab.cover_bottom, "top": slab.cover_top}
+    limits = {"bottom": slab.crack_width_limit_bottom, "top": slab.crack_width_limit}
+    x0, y0 = box["X"][0], box["Y"][0]
+    ui, uj = _cells(uls_m["X"].to_numpy(), uls_m["Y"].to_numpy(), x0, y0, size)
+    uls_m = uls_m.assign(i=ui, j=uj)
+    if len(qp_m):
+        qi, qj = _cells(qp_m["X"].to_numpy(), qp_m["Y"].to_numpy(), x0, y0, size)
+        qp_m = qp_m.assign(i=qi, j=qj)
+    wa = wood_armer(uls_m["Mx"].to_numpy(), uls_m["My"].to_numpy(), uls_m["Mxy"].to_numpy())
+    wq = (
+        wood_armer(qp_m["Mx"].to_numpy(), qp_m["My"].to_numpy(), qp_m["Mxy"].to_numpy())
+        if len(qp_m)
+        else None
+    )
+    pile_x = sorted({round(p[0], 1) for p in piles})
+    pile_y = sorted({round(p[1], 1) for p in piles})
+
+    R = (
+        slab.restraint_factor
+        if slab.restraint_factor is not None
+        else restraint_factor(slab.joint_spacing, h / 1000)
+    )
+    layers: dict[str, dict] = {}
+    per_cell: dict[str, pd.DataFrame] = {}
+    worst_k, worst_k_at = 0.0, None
+    areas = np.array([o[0] for o in options])
+    phi_est = 20
+
+    def depth(face: str, direction: str) -> float:
+        return h - covers[face] - phi_est / 2 - (phi_est if direction == "y" else 0)
+
+    # Steel per node for each layer; where K > K' the opposite face's bars work in compression.
+    node_req = {layer: np.zeros(len(uls_m)) for layer in LAYERS}
+    compression = {layer: np.zeros(len(uls_m)) for layer in LAYERS}
+    for layer in LAYERS:
+        face, direction = layer.split("_")
+        other = "top" if face == "bottom" else "bottom"
+        n = uls_m["Nx" if direction == "x" else "Ny"].to_numpy()
+        d2 = h - depth(other, direction)
+        a_req, k, a_s2 = required_as(wa[layer], n, h, depth(face, direction), conc.fck, fyd, d2)
+        node_req[layer] = a_req
+        compression[f"{other}_{direction}"] = a_s2
+        if len(k) and float(k.max()) > worst_k:
+            w = int(np.argmax(k))
+            worst_k = float(k[w])
+            worst_k_at = (layer, float(uls_m["X"].iloc[w]), float(uls_m["Y"].iloc[w]))
+    for layer in LAYERS:
+        face, direction = layer.split("_")
+        d = depth(face, direction)
+        a_req = np.maximum(node_req[layer], compression[layer])
+        a_min = max(0.26 * conc.fctm / fyk, 0.0013) * 1000 * d
+        need = pd.DataFrame({"i": uls_m["i"], "j": uls_m["j"], "req": np.maximum(a_req, a_min)})
+        cell = need.groupby(["i", "j"])["req"].max().reset_index()
+        # Each option's area worth at the design depth: bigger bars and a second layer sit deeper in.
+        d_opt = np.array(
+            [
+                h - covers[face] - phi / 2 - (phi if direction == "y" else 0) - (nl - 1) * (phi + 25) / 2
+                for _, phi, _, nl in options
+            ]
+        )
+        eff = areas * np.minimum(d_opt / d, 1.0)
+        # ok[cell, option]: strong enough, QP cracks within the face's limit, restraint cracks too.
+        ok = eff[None, :] >= cell["req"].to_numpy()[:, None] - 1e-6
+        strength_ok = ok.copy()
+        restraint_ok = np.array(
+            [
+                slab_restraint(o, face, direction, covers, h, settings, conc, R)["wk"] <= limits[face] + 1e-9
+                for o in options
+            ]
+        )
+        if wq is not None:
+            nq = qp_m["Nx" if direction == "x" else "Ny"].to_numpy()
+            mq = wq[layer]
+            key = pd.MultiIndex.from_arrays([qp_m["i"], qp_m["j"]])
+            pos = pd.MultiIndex.from_arrays([cell["i"], cell["j"]]).get_indexer(key)
+            crack_ok = np.ones_like(ok)
+            for oi, (a_o, phi, sp, nl) in enumerate(options):
+                dd = h - covers[face] - phi / 2 - (phi if direction == "y" else 0) - (nl - 1) * (phi + 25) / 2
+                w = crack_widths(mq, nq, a_o, phi, sp, h, dd, covers[face], conc, e_eff)
+                bad = pos[(w > limits[face] + 1e-9) & (pos >= 0)]
+                crack_ok[bad, oi] = False
+            ok &= crack_ok
+        ok &= restraint_ok[None, :]
+        first = lambda m: np.where(m.any(axis=1), m.argmax(axis=1), len(options) - 1)  # noqa: E731
+        cell["idx"] = first(ok)
+        cell["uidx"] = first(strength_ok)
+        req_eff = cell["req"].to_numpy()
+        if slab.strips == "column_and_field" and len(pile_x) > 1 and len(pile_y) > 1:
+            # Average the need over each strip's width (Annex I).
+            across = "j" if direction == "x" else "i"
+            lines = pile_y if direction == "x" else pile_x
+            origin = y0 if direction == "x" else x0
+            centre = origin + (cell[across].to_numpy() + 0.5) * size
+            strip = _strips(centre, lines)
+            along_key = "i" if direction == "x" else "j"
+            avg = (
+                pd.Series(eff[cell["idx"].to_numpy()])
+                .groupby([cell[along_key].to_numpy(), strip])
+                .transform("mean")
+            )
+            ok = (eff[None, :] >= avg.to_numpy()[:, None] - 1e-6) & restraint_ok[None, :]
+            req_eff = (
+                pd.Series(req_eff).groupby([cell[along_key].to_numpy(), strip]).transform("mean").to_numpy()
+            )
+            cell["idx"] = first(ok)
+        z = zones_for(cell, ok, options, size, x0, y0, "X" if direction == "x" else "Y")
+        chosen = z.pop("cell_index")  # the bars each cell gets: the basic mesh or its zone's
+        prov = areas[chosen]
+        ratio = req_eff / eff[chosen]
+        util = ratio.max()
+        if util > 1 + 1e-6:
+            w = int(np.argmax(ratio))
+            wx, wy = x0 + (cell["i"].iloc[w] + 0.5) * size, y0 + (cell["j"].iloc[w] + 0.5) * size
+            notes.append(
+                f"{LAYER_TEXT[layer].capitalize()}: the heaviest bars ({label(options[-1])}) are not enough "
+                f"at X {wx:.1f}, Y {wy:.1f} ({util:.2f}): a thicker slab or a haunch is needed there."
+            )
+        crack_gov = int((areas[cell["idx"].to_numpy()] > areas[cell["uidx"].to_numpy()] + 1e-6).sum())
+        z.pop("basic_index")
+        layers[layer] = {
+            **z,
+            "d_mm": round(d),
+            "as_min_mm2_per_m": round(a_min),
+            "utilisation": round(float(util), 3),
+            "cells_set_by_cracks": crack_gov,
+        }
+        per_cell[layer] = pd.DataFrame(
+            {
+                "i": cell["i"],
+                "j": cell["j"],
+                "a": prov,
+                "used": req_eff / eff[chosen],  # bending steel needed over provided; cracking can need more
+            }
+        )
+    if worst_k > K_BAL:
+        notes.append(
+            f"K up to {worst_k:.2f} > {K_BAL} ({LAYER_TEXT[worst_k_at[0]]} at X {worst_k_at[1]:.1f}, "
+            f"Y {worst_k_at[2]:.1f}): the opposite face's bars are designed as compression steel there."
+        )
+
+    # Provided steel at a point, for shear and punching.
+    prov_at = {
+        layer: {(int(i), int(j)): float(a) for i, j, a in zip(pc["i"], pc["j"], pc["a"], strict=True)}
+        for layer, pc in per_cell.items()
+    }
+
+    def rho_at(x: float, y: float, face: str) -> float:
+        i, j = (int(v[0]) for v in _cells(np.array([x]), np.array([y]), x0, y0, size))
+        vals = []
+        for direction in ("x", "y"):
+            lay = layers[f"{face}_{direction}"]
+            a = prov_at[f"{face}_{direction}"].get((i, j), lay["basic"]["as_mm2_per_m"])
+            vals.append(a / (1000 * lay["d_mm"]))
+        return math.sqrt(vals[0] * vals[1])
+
+    # Shear per metre.
+    pf = settings.partial_factors
+    dv = (h - max(covers.values()) - 20) / 1000 * (2 if settings.shear_check_distance == "2d" else 1)
+    # Within 2d of a pile face the punching check (6.4) governs, so one-way shear starts there at the least.
+    sh = uls[outside(uls, max(dv, 2 * (h - max(covers.values()) - 20) / 1000))].reset_index(drop=True)
+    shear = {"cells_needing_links": 0, "utilisation": 0.0, "passed": True, "links": []}
+    if len(sh):
+        d_s = h - max(covers.values()) - 20
+        v = np.hypot(sh["Vx"].to_numpy(), sh["Vy"].to_numpy())
+        ncp = np.minimum(sh["Nx"].to_numpy(), sh["Ny"].to_numpy())
+        fcd = pf.alpha_cc * conc.fck / pf.gamma_c
+        sigma = np.minimum(ncp * 1e3 / (1000 * h), 0.2 * fcd)
+        k = min(1 + math.sqrt(200 / d_s), 2.0)
+        si, sj = _cells(sh["X"].to_numpy(), sh["Y"].to_numpy(), x0, y0, size)
+        rho = np.array(
+            [
+                min(rho_at(float(x), float(y), "bottom"), rho_at(float(x), float(y), "top"))
+                for x, y in zip(sh["X"], sh["Y"], strict=True)
+            ]
+        )
+        vrdc = (
+            np.maximum(
+                0.18 / pf.gamma_c * k * (100 * np.minimum(rho, 0.02) * conc.fck) ** (1 / 3),
+                0.035 * k**1.5 * math.sqrt(conc.fck),
+            )
+            + 0.15 * sigma
+        )
+        # Project rule: no concrete contribution where the slab is in tension.
+        vrdc = np.where(ncp < 0, 0.0, np.maximum(vrdc, 0) * d_s)  # kN/m
+        fyw = REINFORCEMENT_GRADES[settings.reinforcement.grade] / pf.gamma_s
+        z_s = 0.9 * d_s
+        nu1 = 0.6 * (1 - conc.fck / 250)
+        vrd_max = 1000 * z_s * nu1 * fcd / (2.5 + 1 / 2.5) / 1e3  # kN/m at cot θ = 2.5
+        need = v > vrdc
+        asw = np.where(need, v * 1e3 / (z_s * fyw * 2.5), 0.0) * 1000  # mm² per m² of slab
+        cells = pd.DataFrame({"i": si, "j": sj, "need": need, "asw": asw}).groupby(["i", "j"]).max()
+        cells = cells[cells["need"]].reset_index()
+        s_max = min(0.75 * d_s, 600.0)
+        step = settings.reinforcement.spacing_step
+        link_opts = []
+        for phi in (10, 12, 16, 20):
+            sp = math.floor(s_max / step) * step
+            while sp >= 100:
+                link_opts.append((math.pi * phi * phi / 4 / (sp / 1000) ** 2, phi, sp))
+                sp -= step
+        link_opts.sort()
+        rho_min = (
+            0.08 * math.sqrt(conc.fck) / REINFORCEMENT_GRADES[settings.reinforcement.grade] * 1e6
+        )  # mm²/m²
+
+        def pick(req: float) -> tuple | None:
+            return next((o for o in link_opts if o[0] >= max(req, rho_min) - 1e-6), None)
+
+        links = []
+        short = 0
+        for a, b, w in zip(cells["i"], cells["j"], cells["asw"], strict=True):
+            o = pick(float(w))
+            short += o is None
+            links.append(
+                {
+                    "x": [round(x0 + a * size, 2), round(x0 + (a + 1) * size, 2)],
+                    "y": [round(y0 + b * size, 2), round(y0 + (b + 1) * size, 2)],
+                    "asw_mm2_per_m2": round(float(w)),
+                    "label": f"Ø{o[1]} @ {o[2]:g} × {o[2]:g}" if o else "more than Ø20 @ 100 × 100",
+                }
+            )
+        heaviest = max(links, key=lambda q: q["asw_mm2_per_m2"]) if links else None
+        j = int(np.argmax(v - vrdc))
+        u_max = float((v / vrd_max).max())
+        shear = {
+            "method": "EN 1992-1-1 6.2 per metre, v = √(Vx² + Vy²), at "
+            + settings.shear_check_distance
+            + " from the pile faces; no concrete contribution in tension",
+            "cells_needing_links": int(len(cells)),
+            "links": links,
+            "heaviest": heaviest,
+            "governing": {
+                "combination": sh["combination"].iloc[j],
+                "x": round(float(sh["X"].iloc[j]), 2),
+                "y": round(float(sh["Y"].iloc[j]), 2),
+                "V_kN_per_m": round(float(v[j]), 1),
+                "VRd_c_kN_per_m": round(float(vrdc[j]), 1),
+                "VRd_max_kN_per_m": round(vrd_max, 1),
+            },
+            "utilisation": round(max(u_max, 1.01 if short else 0.0), 3),
+            "passed": u_max <= 1 and not short,
+        }
+        if links:
+            notes.append(
+                f"{len(links)} cells need shear links (the slab is in tension there, or v > VRd,c); "
+                f"heaviest {heaviest['label']}."
+            )
+
+    # Punching.
+    heads = pile_heads(pile_sheets, elements, box, settings.results_into_connection / 1e3)
+    punch = punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams)
+    if slab.punching_thickness:
+        notes.append(
+            f"Punching uses a depth of {slab.punching_thickness:g} mm (sloped slab); bending uses {h:g} mm."
+        )
+
+    # Restraint (basic meshes).
+    rest = {}
+    for layer in LAYERS:
+        face, direction = layer.split("_")
+        b = layers[layer]["basic"]
+        res = slab_restraint(
+            (b["as_mm2_per_m"], b["phi"], b["spacing_mm"], b["layers"]),
+            face,
+            direction,
+            covers,
+            h,
+            settings,
+            conc,
+            R,
+        )
+        res["limit"] = limits[face]
+        res["passed"] = res["wk"] <= limits[face] + 1e-9
+        rest[layer] = res
+    restraint = {
+        "length_m": slab.joint_spacing,
+        "R": round(R, 3),
+        "R_from": "input" if slab.restraint_factor is not None else "length / thickness, ACI 207.2R",
+        "layers": rest,
+    }
+    if not all(r["passed"] for r in rest.values()):
+        notes.append(
+            "The basic mesh does not control restraint cracking at every face: heavier basic bars are needed."
+        )
+
+    # Steel quantities over the slab's cells with results, and how much of each cell's steel is used.
+    cell_area = size * size
+    kg = sum(float(per_cell[layer]["a"].sum()) for layer in LAYERS) * cell_area / 1e6 * STEEL_DENSITY
+    used = pd.concat(per_cell.values()).groupby(["i", "j"])["used"].max()
+    area_m2 = len(used) * cell_area
+    steel = {
+        "kg_per_m2": round(kg / area_m2, 1) if area_m2 else None,
+        "kg_per_m3": round(kg / area_m2 / (h / 1000)) if area_m2 else None,
+        "area_m2": round(area_m2, 1),
+        "total_t": round(kg / 1000, 2),
+    }
+    bands = [
+        [
+            round(x0 + (i + 0.5) * size, 2),
+            round(y0 + (j + 0.5) * size, 2),
+            round(level, 2),
+            round(float(u), 3),
+            size,
+        ]
+        for (i, j), u in used.items()
+    ]
+    punch_u = max(
+        [p.get("utilisation_with_links", p["utilisation"]) for p in punch if p.get("passed")], default=0.0
+    )
+    lay_u = max(layers[layer]["utilisation"] for layer in LAYERS)
+    passed = (
+        shear["passed"]
+        and all(p["passed"] for p in punch)
+        and lay_u <= 1 + 1e-6
+        and all(r["passed"] for r in rest.values())
+    )
+    return {
+        **base,
+        "cover_top_mm": slab.cover_top,
+        "cover_bottom_mm": slab.cover_bottom,
+        "zone_size_m": size,
+        "strips": slab.strips,
+        "box": box,
+        "level_m": round(level, 2),
+        "layers": layers,
+        "shear": shear,
+        "punching": punch,
+        "restraint": restraint,
+        "steel": steel,
+        "utilisation": round(
+            max(lay_u, max((r["wk"] / r["limit"] for r in rest.values()), default=0), punch_u), 3
+        ),
+        "passed": bool(passed),
+        "bands": bands,
+    }

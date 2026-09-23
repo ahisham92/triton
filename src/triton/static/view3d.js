@@ -129,7 +129,15 @@ export class View3D {
           // Beams: 0.5 m bands along the beam, across its full width.
           const along = Y[1] - Y[0] >= X[1] - X[0] ? "Y" : "X";
           const across = along === "Y" ? "X" : "Y";
-          for (const [x, y, z, u] of b) {
+          for (const [x, y, z, u, size] of b) {
+            if (size) {
+              // Slabs: square cells of the zone grid.
+              const h = size / 2 + 0.01;
+              items.push({ kind: "quad", pts: [[x - h, y - h, z], [x + h, y - h, z], [x + h, y + h, z], [x - h, y + h, z]],
+                faded, element: e.element, fill: heat(u), stroke: false,
+                tip: `${e.element} at X ${x}, Y ${y}: bending needs ${Math.round(u * 100)}% of the bars` });
+              continue;
+            }
             const s0 = (along === "Y" ? y : x) - 0.27;
             const s1 = s0 + 0.54;
             const pt = (sv, tv) => (along === "Y" ? [tv, sv, z] : [sv, tv, z]);

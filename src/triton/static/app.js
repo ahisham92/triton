@@ -686,7 +686,7 @@ function renderReport(d) {
 }
 
 // ---------------------------------------------------------------- design tab
-const DESIGNED = new Set(["pile", "combi_wall", "front_beam", "rear_beam", "transverse_beam"]);
+const DESIGNED = new Set(["pile", "combi_wall", "front_beam", "rear_beam", "transverse_beam", "slab"]);
 
 async function renderDesignTab(host) {
   const url = secUrl();
@@ -696,7 +696,7 @@ async function renderDesignTab(host) {
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       ${Object.values(sec().elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
-      <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile, combi wall or beam elements first."}</span>
+      <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile, combi wall, beam or slab elements first."}</span>
     </div><div id="design-out"></div>`;
   document.getElementById("run-design").onclick = async () => {
     if (state.dirty) await save();
@@ -725,6 +725,7 @@ function renderResults(res) {
   const walls = res.combi_walls || [];
   const spws = res.sheet_pile_walls || [];
   const beams = res.beams || [];
+  const slabs = res.slabs || [];
   const link = document.getElementById("cages");
   if (link) link.hidden = !res.piles.length && !walls.length;
   const sets = document.getElementById("sets");
@@ -750,6 +751,7 @@ function renderResults(res) {
         <td>${b.shear?.link ? esc(b.shear.link.label) : "–"}</td><td>${b.transverse ? `${esc(b.transverse.top.label)} / ${esc(b.transverse.bottom.label)}` : "–"}</td>
         <td class="cell ${b.passed ? "ok" : "error"}">${fmt(b.utilisation, 2)}</td><td>${fmt(b.steel?.kg_per_m3)}</td></tr>`).join("")}</table></div>` : ""}
     <div id="beam-cards"></div>
+    ${slabs.length ? "<h2>Slab</h2>" : ""}<div id="slab-cards"></div>
     ${spws.length ? `<h2>Sheet pile wall</h2>${spws.map((w) => `<div class="panel"><h3>${esc(w.element)}</h3><p class="status">Designed in the sheet pile program; these are its straining actions.</p>${steelSetsBlock(w.governing_sets, "kN/m, kNm/m", true)}</div>`).join("")}` : ""}`;
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
@@ -758,6 +760,8 @@ function renderResults(res) {
   for (const w of walls) combi.append(combiCard(w));
   const bc = document.getElementById("beam-cards");
   for (const b of beams) bc.append(beamCard(b));
+  const sc = document.getElementById("slab-cards");
+  for (const d of slabs) sc.append(slabCard(d));
   mountElementViews(res);
 }
 
@@ -786,6 +790,7 @@ function resultBands(res) {
   for (const p of res?.piles || []) bands[p.element] = p.bands || [];
   for (const w of res?.combi_walls || []) bands[w.element] = w.bands || [];
   for (const b of res?.beams || []) bands[b.element] = b.bands || [];
+  for (const d of res?.slabs || []) bands[d.element] = d.bands || [];
   return bands;
 }
 
@@ -848,6 +853,19 @@ function alerts(res) {
     }
     if (b.utilisation != null && b.utilisation < 0.5) add("safe", b.element, `max utilisation ${fmt(b.utilisation, 2)}: very safe`);
   }
+  for (const d of res.slabs || []) {
+    for (const [k, l] of Object.entries(d.layers || {})) {
+      if (l.utilisation > 1) add("unsafe", d.element, `${k.replace("_", " bars along ")}: ${fmt(l.utilisation, 2)} of the steel needed`);
+    }
+    for (const q of d.punching || []) {
+      if (!q.passed) add("unsafe", d.element, `punching at ${q.pile} (X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)}): crushes at the pile face`);
+      else if (q.needs_reinforcement) add("limit", d.element, `punching links needed at ${q.pile} (X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)}), ${q.perimeters} perimeters`);
+    }
+    if (d.shear && d.shear.passed === false) add("unsafe", d.element, `shear per metre ${fmt(d.shear.utilisation, 2)}`);
+    for (const [k, r] of Object.entries(d.restraint?.layers || {})) {
+      if (!r.passed) add("unsafe", d.element, `restraint crack ${k.replace("_", " ")} ${fmt(r.wk, 2)} mm of ${fmt(r.limit, 2)}`);
+    }
+  }
   const rank = { unsafe: 0, limit: 1, safe: 2 };
   return out.sort((a, b) => rank[a.level] - rank[b.level]);
 }
@@ -873,6 +891,7 @@ async function renderView3dTab(host) {
   for (const p of res?.piles || []) max[p.element] = p.utilisation;
   for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
   for (const b of res?.beams || []) max[b.element] = b.utilisation;
+  for (const d of res?.slabs || []) max[d.element] = d.utilisation;
   let selected = null;
   const show = () => {
     const el = geo.elements.find((e) => e.element === selected);
@@ -895,6 +914,83 @@ async function renderView3dTab(host) {
     show();
   }));
   show();
+}
+
+// ---------------------------------------------------------------- Slabs
+const LAYER_NAME = { bottom_x: "Bottom, bars along X", bottom_y: "Bottom, bars along Y", top_x: "Top, bars along X", top_y: "Top, bars along Y" };
+
+function slabCard(d) {
+  const card = document.createElement("div");
+  card.className = "panel";
+  card.style.marginTop = "16px";
+  const ok = (x) => `<span class="sev ${x ? "ok" : "error"}">${x ? "passes" : "fails"}</span>`;
+  const st = d.steel || {};
+  const punch = d.punching || [];
+  const needs = punch.filter((q) => q.needs_reinforcement);
+  const sh = d.shear || {};
+  const layers = d.layers || {};
+  card.innerHTML = `<div class="element-head"><h3>${esc(d.element)}<span class="type">Slab, ${fmt(d.thickness_mm)} mm, ${esc(d.concrete || "")}, covers ${fmt(d.cover_top_mm)} top / ${fmt(d.cover_bottom_mm)} bottom, ${d.strips === "column_and_field" ? "column and field strips" : "uniform"}</span></h3>${ok(d.passed)}</div>
+    <div class="counts" style="margin-top:0">
+      <div class="count"><b>${fmt(d.utilisation, 2)}</b>max utilisation</div>
+      <div class="count"><b>${fmt(st.kg_per_m3)}</b>kg/m³ (${fmt(st.kg_per_m2, 1)} kg/m², links not included)</div>
+      <div class="count"><b>${fmt(st.total_t, 1)} t</b>bars over ${fmt(st.area_m2)} m²</div>
+      <div class="count"><b>${needs.length} of ${punch.length}</b>piles need punching links</div>
+      <div class="count"><b>${sh.cells_needing_links ?? 0}</b>${fmt(d.zone_size_m, 1)} m cells need shear links</div>
+    </div>
+    ${(d.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${v3dSlot(d.element)}
+    <h3 style="margin-top:18px">Bars per metre</h3>
+    <div class="scroll"><table><tr><th>Layer</th><th>Basic mesh</th><th>Zones</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
+      ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)</td>
+        <td>${l.zones.length ? `${l.zones.length}: ${esc([...new Set(l.zones.map((z) => z.label))].join(", "))}` : "none"}</td>
+        <td class="cell ${l.utilisation <= 1 ? "ok" : "error"}">${fmt(l.utilisation, 2)}</td><td>${fmt(l.cells_set_by_cracks)} cells</td><td>${fmt(l.d_mm)} mm</td></tr>`).join("")}
+    </table></div>
+    <div class="row" style="margin:10px 0 4px">${Object.keys(layers).map((k, i) => `<button class="quiet${i ? "" : " on"}" data-layer="${k}">${esc(LAYER_NAME[k] || k)}</button>`).join("")}</div>
+    <div class="chart wide" data-kind="plan"></div>
+    <h3 style="margin-top:18px">Punching at the piles</h3>
+    ${punch.length ? `<div class="scroll"><table><tr><th>Pile</th><th>X, Y</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Links</th><th></th></tr>
+      ${punch.map((q) => `<tr><td>${esc(q.pile)}</td><td>${fmt(q.x, 1)}, ${fmt(q.y, 1)}</td><td>${fmt(q.V_kN)} kN, ${esc(q.direction)}<br><span class="status">${esc(q.combination)}</span></td><td>${fmt(q.beta, 2)}</td>
+        <td>${fmt(q.vEd_MPa, 3)} / ${fmt(q.vRd_c_MPa, 3)}</td><td>${fmt(q.vEd_face_MPa, 2)} / ${fmt(q.vRd_max_MPa, 2)}</td>
+        <td>${q.needs_reinforcement ? (q.perimeters ? `${q.perimeters} perimeters @ ${fmt(q.radial_spacing_mm)} mm, ${fmt(q.asw_mm2_per_perimeter)} mm² each, to ${fmt(q.reinforced_to_mm)} mm from the face` : "–") : "none"}</td><td>${ok(q.passed)}</td></tr>`).join("")}
+    </table></div><p class="status">EN 1992-1-1 6.4: u1 = π(D + 4d), β = 1 + 0.6π·e/(D + 4d) from the pile head moments, ρl of the face in tension over the pile. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
+    <h3 style="margin-top:18px">Shear per metre ${ok(sh.passed !== false)}</h3>
+    <p>${sh.governing ? `Largest v − V<sub>Rd,c</sub>: ${esc(sh.governing.combination)} at X ${fmt(sh.governing.x, 1)}, Y ${fmt(sh.governing.y, 1)}: v = ${fmt(sh.governing.V_kN_per_m)} kN/m, V<sub>Rd,c</sub> = ${fmt(sh.governing.VRd_c_kN_per_m)} kN/m, V<sub>Rd,max</sub> = ${fmt(sh.governing.VRd_max_kN_per_m)} kN/m.` : ""}
+      ${sh.heaviest ? ` Links in ${sh.cells_needing_links} cells, heaviest ${esc(sh.heaviest.label)} (${fmt(sh.heaviest.asw_mm2_per_m2)} mm²/m²).` : " No shear links needed."}</p>
+    ${sh.method ? `<p class="status">${esc(sh.method)}.</p>` : ""}
+    <h3 style="margin-top:18px">Temperature and shrinkage restraint</h3>
+    <div class="scroll"><table><tr><th>Layer</th><th>w<sub>k</sub></th><th>Limit</th><th>Details</th><th></th></tr>
+      ${Object.entries(d.restraint?.layers || {}).map(([k, r]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td>${fmt(r.wk, 3)} mm</td><td>${fmt(r.limit, 2)} mm</td><td>ε<sub>r</sub> ${fmt(r.eps_r)} µε, s<sub>r,max</sub> ${fmt(r.sr_max)} mm</td><td>${ok(r.passed)}</td></tr>`).join("")}
+    </table></div>
+    <p class="status">${fmt(d.restraint?.length_m)} m between joints, R = ${fmt(d.restraint?.R, 2)} (${esc(d.restraint?.R_from || "")}).</p>`;
+  const plan = card.querySelector('[data-kind="plan"]');
+  const draw = (k) => slabPlan(plan, d, k);
+  card.querySelectorAll("[data-layer]").forEach((b) => (b.onclick = () => {
+    card.querySelectorAll("[data-layer]").forEach((x) => x.classList.toggle("on", x === b));
+    draw(b.dataset.layer);
+  }));
+  draw(Object.keys(layers)[0]);
+  return card;
+}
+
+function slabPlan(el, d, key) {
+  // Plan of one layer: the basic mesh everywhere, zones of heavier bars, piles.
+  const l = d.layers[key];
+  const [x0, x1] = d.box.X, [y0, y1] = d.box.Y;
+  const W = 820, pad = 30;
+  const sc = (W - 2 * pad) / (x1 - x0);
+  const H = (y1 - y0) * sc + 2 * pad;
+  const X = (x) => pad + (x - x0) * sc, Y = (y) => H - pad - (y - y0) * sc;
+  const labels = [...new Set(l.zones.map((z) => z.label))].sort((a, b) => l.zones.find((z) => z.label === a).as_mm2_per_m - l.zones.find((z) => z.label === b).as_mm2_per_m);
+  const shade = (lab) => `rgba(214,48,39,${0.25 + 0.6 * (labels.indexOf(lab) + 1) / Math.max(labels.length, 1)})`;
+  const zones = l.zones.map((z) => `<rect x="${X(z.x[0])}" y="${Y(z.y[1])}" width="${(z.x[1] - z.x[0]) * sc}" height="${(z.y[1] - z.y[0]) * sc}" fill="${shade(z.label)}"><title>${esc(z.label)} (${fmt(z.as_mm2_per_m)} mm²/m), X ${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}, Y ${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</title></rect>`).join("");
+  const piles = (d.punching || []).map((q) => `<circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.D_mm / 2000) * sc}" fill="none" stroke="var(--text)" stroke-width="1.5"><title>${esc(q.pile)}</title></circle>`).join("");
+  el.innerHTML = `<div class="chart-title">${esc(LAYER_NAME[key] || key)}: basic ${esc(l.basic.label)}${labels.length ? `, zones ${esc(labels.join(", "))}` : ""}</div>
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Slab plan of ${esc(key)}">
+      <rect x="${X(x0)}" y="${Y(y1)}" width="${(x1 - x0) * sc}" height="${(y1 - y0) * sc}" fill="var(--miss-bg)" stroke="var(--muted)"/>
+      ${zones}${piles}
+      <text class="tick" x="${X(x0)}" y="${H - 8}">X ${fmt(x0, 1)}</text><text class="tick" x="${X(x1)}" y="${H - 8}" text-anchor="end">X ${fmt(x1, 1)}</text>
+      <text class="tick" x="${pad - 4}" y="${Y(y1) + 4}" text-anchor="end">Y ${fmt(y1, 0)}</text><text class="tick" x="${pad - 4}" y="${Y(y0)}" text-anchor="end">${fmt(y0, 0)}</text>
+    </svg>`;
 }
 
 // ---------------------------------------------------------------- Beams

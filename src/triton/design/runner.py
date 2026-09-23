@@ -9,13 +9,14 @@ from ..elements import ElementType
 from ..forces import scale_forces
 from ..geometry import section_geometry
 from ..importer import SheetData
-from ..project import BeamInput, CombiWallInput, DesignSettings, PileInput, Section, _now
+from ..project import BeamInput, CombiWallInput, DesignSettings, PileInput, Section, SlabInput, _now
 from ..validation import ImportResult
 from .beams import design_beam
 from .combi import design_combi_wall
 from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
 from .piles import design_pile
+from .slabs import design_slab
 
 
 def factored_elements(section: Section, workbook: ImportResult) -> dict[str, dict[str, SheetData]]:
@@ -166,6 +167,23 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
         b = design_beam(name, element, settings, own, geometry, section.elements, axes.get(name))
         b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
         beams.append(b)
+    slabs = []
+    pile_sheets = {
+        n: sheets[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in sheets
+    }
+    for name, element in section.elements.items():
+        if not isinstance(element, SlabInput):
+            continue
+        if name not in sheets or all(s.frame.empty for s in sheets[name].values()):
+            where = " inside the working zone" if name in sheets else ""
+            skipped.append(f"{name}: no usable results in the workbook{where}.")
+            continue
+        if geometry is None:
+            geometry = section_geometry(workbook)
+        own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
+        d = design_slab(name, element, settings, own, geometry, section.elements, axes.get(name), pile_sheets)
+        d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+        slabs.append(d)
     if missing:
         skipped.append(f"Load multiplier sheets not in the workbook: {', '.join(missing)}.")
     return {
@@ -174,5 +192,6 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
         "combi_walls": walls,
         "sheet_pile_walls": spws,
         "beams": beams,
+        "slabs": slabs,
         "skipped": skipped,
     }
