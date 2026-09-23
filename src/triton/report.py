@@ -312,10 +312,10 @@ def _sections(r: Report, section: Section, res: dict) -> None:
                     t.get("utilisation"),
                     g.get("M_kNm"),
                     g.get("M_Rd_kNm"),
-                    g.get("combination"),
+                    _sheet(w["element"], g.get("combination")),
                 ]
             )
-        rows += _part_rows(f"{w['element']} – infill", w.get("infill") or {})
+        rows += _part_rows(f"{w['element']} – infill", w.get("infill") or {}, w["element"])
     for p in res.get("piles", []):
         rows += _part_rows(p["element"], p)
     for b in res.get("beams", []):
@@ -328,7 +328,7 @@ def _sections(r: Report, section: Section, res: dict) -> None:
                 (b.get("bending") or {}).get("utilisation"),
                 g.get("Mv_kNm"),
                 g.get("MRd_v_kNm"),
-                g.get("combination"),
+                _sheet(b["element"], g.get("combination")),
             ]
         )
     r.caption(f"Table 3-1: Summary of design results for {section.name}")
@@ -368,8 +368,14 @@ def _sections(r: Report, section: Section, res: dict) -> None:
         r.note(s)
 
 
-def _part_rows(name: str, p: dict) -> list[list[Any]]:
+def _sheet(element: str, combination: Any) -> Any:
+    """The combination as the workbook's sheet name, e.g. Pile(1)-PT-C-Apron, as the office tables."""
+    return f"{element}-{combination}" if isinstance(combination, str) and combination else combination
+
+
+def _part_rows(name: str, p: dict, element: str | None = None) -> list[list[Any]]:
     """One row per station (part) of a pile: crack width, M/MRd, MEd, MRd and combination."""
+    element = element or name
     stations = p.get("governing_sets") or []
     cracks = {(c["top"], c["bottom"]): c["wk_mm"] for c in (p.get("cracks") or {}).get("stations", [])}
     rows = []
@@ -385,7 +391,7 @@ def _part_rows(name: str, p: dict) -> list[list[Any]]:
                 g.get("moment_ratio"),
                 g.get("M_kNm"),
                 g.get("M_Rd_kNm"),
-                g.get("combination"),
+                _sheet(element, g.get("combination")),
             ]
         )
     if not rows and p:
@@ -397,7 +403,7 @@ def _part_rows(name: str, p: dict) -> list[list[Any]]:
                 p.get("utilisation"),
                 g.get("M_kNm"),
                 g.get("M_Rd_kNm"),
-                g.get("combination"),
+                _sheet(element, g.get("combination")),
             ]
         )
     return rows
@@ -431,7 +437,7 @@ def _slab_summary(r: Report, s: dict) -> None:
                     x.get("ratio"),
                     x.get("M_kNm_per_m"),
                     x.get("MRd_kNm_per_m"),
-                    x.get("combination"),
+                    _sheet(s["element"], x.get("combination")),
                     f"{x['face']}, {x['bars']}",
                 ]
                 for x in sd["summary"]
