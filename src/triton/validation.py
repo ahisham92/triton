@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .axes import infer_axes
 from .elements import CombinationType, combination_type
 from .importer import SheetData, clean_sheet
 from .issues import Issue, Severity
@@ -21,6 +22,7 @@ from .reader import Row, read_workbook
 class ImportResult:
     sheets: list[SheetData]
     issues: list[Issue] = field(default_factory=list)
+    axes: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def usable(self) -> list[SheetData]:
@@ -56,6 +58,7 @@ class ImportResult:
             "coverage": coverage,
             "sheets": [_sheet_summary(s) for s in self.sheets],
             "issues": [i.to_dict() for i in sorted(issues, key=_issue_sort_key)],
+            "axes": sorted(getattr(self, "axes", []), key=lambda a: _element_sort_key(a["element"])),
         }
 
 
@@ -115,6 +118,8 @@ def import_sheets(raw: dict[str, list[Row]]) -> ImportResult:
     _check_coverage(result)
     _check_identical_combinations(result)
     _check_mesh_consistency(result)
+    result.axes, issues = infer_axes(result.elements())
+    result.issues.extend(issues)
     return result
 
 

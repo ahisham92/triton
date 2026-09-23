@@ -477,6 +477,9 @@ function checkerHtml() {
       <div class="panel scroll"><table id="coverage"></table></div>
       <h2>Problems to review</h2>
       <div class="panel scroll"><table id="problems"></table></div>
+      <div id="axes-block" hidden><h2>Directions of the actions</h2>
+        <p class="status">Worked out from the results (shears against the moments' change, forces against depth). Confirm them against the Plaxis model.</p>
+        <div class="panel scroll"><table id="axes"></table></div></div>
       <details class="panel" style="margin-top:16px"><summary>Automatic clean-ups</summary>
         <div class="scroll"><table id="cleanups"></table></div></details>
     </div>`;
@@ -639,6 +642,11 @@ function renderReport(d) {
   const problems = d.issues.filter((i) => i.severity !== "info");
   document.getElementById("problems").innerHTML = problems.length ? head + problems.map(row).join("") : "<tr><td>No problems found.</td></tr>";
   document.getElementById("cleanups").innerHTML = head + d.issues.filter((i) => i.severity === "info").map(row).join("");
+  const axes = d.axes || [];
+  document.getElementById("axes-block").hidden = !axes.length;
+  document.getElementById("axes").innerHTML = "<tr><th>Element</th><th></th><th>Finding</th></tr>" + axes
+    .map((a) => `<tr><th>${esc(a.element)}</th><td><span class="sev ${a.clear ? "ok" : "warning"}">${a.clear ? "clear" : "unclear"}</span></td><td>${esc(a.text)}</td></tr>`)
+    .join("");
   document.getElementById("report").hidden = false;
 }
 

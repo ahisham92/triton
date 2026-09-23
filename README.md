@@ -217,7 +217,23 @@ Combinations: `PT-B-*` / `PT-C-*` are ULS (Set B / Set C), `QP` is quasi-permane
 | Severity | Check |
 |---|---|
 | Error | no header, missing force columns, text in number cells, empty force cells, a node with two different coordinates, two sheets for the same element and combination |
-| Warning | two combinations of one element with identical forces (copy-paste), a combination that sibling elements have but this one lacks, no QP sheet, different node sets between combinations, values outside their own min/max, unexpected units, unknown sheet names |
+| Warning | two combinations of one element with identical forces (copy-paste), a combination that sibling elements have but this one lacks, no QP sheet, different node sets between combinations, values outside their own min/max, unexpected units, unknown sheet names, directions of the actions that the results do not confirm, or elements of one type whose directions disagree |
+
+### Directions of the actions
+
+The workbook has Plaxis local-axis actions but not the axes. The Workbook tab works them out per
+element from equilibrium and shows the evidence:
+
+- Beams (piles, combi wall): along the member dM3/dz follows Q12 and dM2/dz follows Q13; the larger
+  moment is the main bending, taken as across the quay line.
+- Plates (deck, beams): Q13 = dM11/dx1 + dM12/dx2 and Q23 = dM12/dx1 + dM22/dx2, with the gradients
+  fitted from neighbouring nodes; the global axis for local 1 that makes the shears fit is the
+  model's. N1 and N2 act along the same axes.
+- Walls whose moments are too small to tell (the sheet piles between king piles): the in-plane force
+  that builds up steadily with depth is the vertical one.
+
+The quay line is the longer horizontal extent of the walls (else of the beams). Rank correlations
+are used, so single FE spikes do not decide it.
 
 ## Design conventions already in place
 
