@@ -314,7 +314,9 @@ are closer than that.
   with the slab bottom bars). The factored pull (γ = 1.5) square to the quay face against
   Σ As·fyd·cos β·cos α, and the lap to EN 1992-1-1 8.7.3. The pull along the quay goes into the
   beam's longitudinal bars; the fender loads are carried by the beam's own reinforcement.
-- **Not yet included:** the torsion longitudinal steel added to the bending steel (it is reported).
+- **Torsion longitudinal steel (6.3.2(3)):** shared round the perimeter (top and bottom by the width,
+  each side by the depth; all to the top and bottom when there are no side bars) and taken out of
+  those bars before the bending check, so the cage grows to carry both.
 
 ## Slab (deck)
 

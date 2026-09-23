@@ -204,3 +204,33 @@ def test_bollard_ties_as_the_office_drawing():
         DesignSettings(),
     )
     assert more["passed"] and more["laps"][0]["l0_mm"] <= 1600
+
+
+def test_torsion_steel_comes_out_of_the_cage():
+    def twist(m12):
+        return lambda x, y: [0.0, 0.0, 0.0, 80.0, 0.0, 300.0, 400.0, m12]
+
+    def run(m12):
+        raw = {"Front Beam-PT-B-Apron": beam_rows(twist(m12)), "Front Beam-QP": beam_rows(twist(0.0))}
+        wb = import_sheets(raw)
+        el = BeamInput(depth=1500)
+        return design_beam(
+            "Front Beam",
+            el,
+            DesignSettings(),
+            wb.elements()["Front Beam"],
+            [],
+            {"Front Beam": el},
+            {"1": "X", "2": "Y"},
+        )
+
+    plain, twisted = run(0.0), run(600.0)
+    t = twisted["bending"]["torsion_steel"]
+    assert t["asl_mm2"] > 0
+    per = 2 * (2000 + 1500)
+    if twisted["cage"]["side"]["count"]:
+        assert t["side_mm2"] == pytest.approx(t["asl_mm2"] * 1500 / per, abs=1)
+    assert t["top_mm2"] + t["bottom_mm2"] + 2 * t["side_mm2"] == pytest.approx(t["asl_mm2"], abs=2)
+    assert "torsion_steel" not in plain["bending"]
+    assert twisted["steel"]["longitudinal_kg_per_m"] >= plain["steel"]["longitudinal_kg_per_m"]
+    assert any("6.3.2(3)" in n for n in twisted["notes"])

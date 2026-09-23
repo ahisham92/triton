@@ -356,13 +356,29 @@ def side_candidates(g: Geometry, settings: DesignSettings, top: Face, bottom: Fa
     return sorted(out, key=lambda f: (f.area, -f.phi))
 
 
-def cage_bars(g: Geometry, cage: Cage, dg: float) -> Bars:
+def torsion_shares(g: Geometry, cage: Cage, asl: float) -> dict[str, float]:
+    """The torsion longitudinal steel (6.3.2(3)) each face gives up, by the face's share of the
+    perimeter; without side bars the top and bottom bars take it all."""
+    per = 2 * (g.b + g.h)
+    side = asl * g.h / per if cage.side.count else 0.0
+    rest = (asl - 2 * side) / 2
+    return {"top": rest, "bottom": rest, "side": side}
+
+
+def cage_bars(g: Geometry, cage: Cage, dg: float, torsion: float = 0.0) -> Bars:
+    """The cage's bars; with ``torsion`` (Asl, mm²) each face's bars keep only what torsion leaves."""
+    share = torsion_shares(g, cage, torsion)
+
+    def left(face: Face, name: str) -> float:
+        return max(0.0, 1 - share[name] / face.area) if face.area else 1.0
+
     groups = []
-    for face, up in ((cage.top, 1), (cage.bottom, -1)):
+    for face, up, name in ((cage.top, 1, "top"), (cage.bottom, -1, "bottom")):
         half_w = g.b / 2 - g.inner(face.phi)
         for k in range(face.layers):
             v = up * (g.h / 2 - g.inner(face.phi) - k * g.layer_gap(face.phi, dg))
-            groups.append(Bars.row(face.count, face.phi, v, half_w))
+            row = Bars.row(face.count, face.phi, v, half_w)
+            groups.append(Bars(row.u, row.v, row.area * left(face, name)))
     if cage.side.count:
         v_top = g.h / 2 - g.inner(cage.top.phi)
         v_bot = -(g.h / 2 - g.inner(cage.bottom.phi))
@@ -371,7 +387,7 @@ def cage_bars(g: Geometry, cage: Cage, dg: float) -> Bars:
         for side in (1, -1):
             u = side * (g.b / 2 - g.inner(cage.side.phi))
             col = Bars.column(cage.side.count, cage.side.phi, u, half_h)
-            groups.append(Bars(col.u, col.v + mid, col.area))
+            groups.append(Bars(col.u, col.v + mid, col.area * left(cage.side, "side")))
     return Bars.join(*groups)
 
 
@@ -850,67 +866,91 @@ def design_beam(
         notes.append("No bars fit the beam width with the chosen spacing limits.")
         return {**base, "utilisation": None, "passed": False}
     as_min = as_min_beam(conc.fctm, fyk, g.b, g.h - g.inner(25))
-    ti = bi = next((i for i, f in enumerate(tops) if f.area >= as_min), len(tops) - 1)
-    sides = side_candidates(g, settings, tops[ti], tops[bi])
-    si = 0
+
+    def grow_cage(asl: float):
+        """Step the faces up until bending (with ``asl`` of torsion steel taken out of the faces),
+        cracking and restraint pass."""
+        ti = bi = next((i for i, f in enumerate(tops) if f.area >= as_min), len(tops) - 1)
+        sides = side_candidates(g, settings, tops[ti], tops[bi])
+        si = 0
+        status = "ok"
+        for _ in range(400):
+            cage = Cage(tops[ti], tops[bi], sides[si])
+            sec = RectSection(
+                g.b, g.h, cage_bars(g, cage, dg, asl), cl, sl, deduct=settings.partial_factors.deduct_bar_area
+            )
+            u = sec.utilisation(n, mv, mh)
+            full = sec
+            if asl:
+                full = RectSection(
+                    g.b, g.h, cage_bars(g, cage, dg), cl, sl, deduct=settings.partial_factors.deduct_bar_area
+                )
+            cracks = crack_check(full, g, cage, qp_m, e_eff, conc)
+            restr = restraint_check(beam, settings, g, cage, conc)
+            grow = None
+            if u.max() > 1:
+                j = int(np.argmax(u))
+                rv = sec.m_rd("v", np.array([1 if mv[j] >= 0 else -1]), n[j : j + 1])[0]
+                rh = sec.m_rd("h", np.array([1 if mh[j] >= 0 else -1]), n[j : j + 1])[0]
+                tv = abs(mv[j]) / rv if rv > 0 else math.inf
+                th = abs(mh[j]) / rh if rh > 0 else math.inf
+                if th > tv:
+                    grow = "side"
+                else:
+                    grow = "bottom" if mv[j] >= 0 else "top"
+                if n[j] > 0 and abs(mv[j]) < 1e-6 and abs(mh[j]) < 1e-6:
+                    grow = "top"
+            if grow is None:
+                for face in ("top", "bottom"):
+                    if face in cracks and cracks[face]["wk"] > limits[face] + 1e-9:
+                        grow = face
+                        break
+            if grow is None:
+                for face in ("top", "bottom", "side"):
+                    if restr["faces"][face]["wk"] > limits[face] + 1e-9:
+                        grow = face
+                        break
+            if grow is None:
+                break
+            if grow == "side":
+                if si + 1 >= len(sides):
+                    status = "side bars exhausted"
+                    break
+                si += 1
+            elif grow == "top":
+                if ti + 1 >= len(tops):
+                    status = "top bars exhausted"
+                    break
+                ti += 1
+                sides = side_candidates(g, settings, tops[ti], tops[bi])
+                si = min(si, len(sides) - 1)
+            else:
+                if bi + 1 >= len(tops):
+                    status = "bottom bars exhausted"
+                    break
+                bi += 1
+                sides = side_candidates(g, settings, tops[ti], tops[bi])
+                si = min(si, len(sides) - 1)
+        return cage, sec, u, cracks, restr, status
+
     limits = {"top": beam.crack_width_limit, "bottom": beam.crack_width_limit_bottom}
     limits["side"] = min(limits.values())
-    status = "ok"
     n = mom["N"].to_numpy(float)
     mv = mom["Mv"].to_numpy(float)
     mh = mom["Mh"].to_numpy(float)
-    for _ in range(400):
-        cage = Cage(tops[ti], tops[bi], sides[si])
-        sec = RectSection(
-            g.b, g.h, cage_bars(g, cage, dg), cl, sl, deduct=settings.partial_factors.deduct_bar_area
-        )
-        u = sec.utilisation(n, mv, mh)
-        cracks = crack_check(sec, g, cage, qp_m, e_eff, conc)
-        restr = restraint_check(beam, settings, g, cage, conc)
-        grow = None
-        if u.max() > 1:
-            j = int(np.argmax(u))
-            rv = sec.m_rd("v", np.array([1 if mv[j] >= 0 else -1]), n[j : j + 1])[0]
-            rh = sec.m_rd("h", np.array([1 if mh[j] >= 0 else -1]), n[j : j + 1])[0]
-            tv = abs(mv[j]) / rv if rv > 0 else math.inf
-            th = abs(mh[j]) / rh if rh > 0 else math.inf
-            if th > tv:
-                grow = "side"
-            else:
-                grow = "bottom" if mv[j] >= 0 else "top"
-            if n[j] > 0 and abs(mv[j]) < 1e-6 and abs(mh[j]) < 1e-6:
-                grow = "top"
-        if grow is None:
-            for face in ("top", "bottom"):
-                if face in cracks and cracks[face]["wk"] > limits[face] + 1e-9:
-                    grow = face
-                    break
-        if grow is None:
-            for face in ("top", "bottom", "side"):
-                if restr["faces"][face]["wk"] > limits[face] + 1e-9:
-                    grow = face
-                    break
-        if grow is None:
-            break
-        if grow == "side":
-            if si + 1 >= len(sides):
-                status = "side bars exhausted"
-                break
-            si += 1
-        elif grow == "top":
-            if ti + 1 >= len(tops):
-                status = "top bars exhausted"
-                break
-            ti += 1
-            sides = side_candidates(g, settings, tops[ti], tops[bi])
-            si = min(si, len(sides) - 1)
-        else:
-            if bi + 1 >= len(tops):
-                status = "bottom bars exhausted"
-                break
-            bi += 1
-            sides = side_candidates(g, settings, tops[ti], tops[bi])
-            si = min(si, len(sides) - 1)
+    cage, sec, u, cracks, restr, status = grow_cage(0.0)
+
+    # Torsion (6.3.2(3)): its longitudinal steel is shared round the perimeter and comes out of the
+    # bars that bending uses, so the cage is grown again with it taken out of each face.
+    t_keep = transverse_nodes(t_uls, supports, 0.0)
+    t_qp_keep = t_qp[transverse_nodes(t_qp, supports, 0.0)] if len(t_qp) else t_qp
+    t_shear = t_uls[transverse_nodes(t_uls, supports, dv)]
+    trans = transverse_design(beam, settings, g, cage, t_uls[t_keep], t_qp_keep)
+    asl = float(
+        link_design(beam, settings, g, cage, shr, t_shear, trans).get("torsion_long_steel_mm2") or 0.0
+    )
+    if asl > 0:
+        cage, sec, u, cracks, restr, status = grow_cage(asl)
     if status != "ok":
         notes.append(f"No cage within the bar sizes and spacing limits passes every check ({status}).")
     u_max = float(u.max())
@@ -945,26 +985,17 @@ def design_beam(
         c["limit"] = limits[f]
         c["passed"] = c["wk"] <= limits[f] + 1e-9
 
-    # Transverse bars and links.
-    t_keep = transverse_nodes(t_uls, supports, 0.0)
-    trans = transverse_design(
-        beam,
-        settings,
-        g,
-        cage,
-        t_uls[t_keep],
-        t_qp[transverse_nodes(t_qp, supports, 0.0)] if len(t_qp) else t_qp,
-    )
-    t_shear = t_uls[transverse_nodes(t_uls, supports, dv)]
+    # Transverse bars and links, on the final cage.
+    trans = transverse_design(beam, settings, g, cage, t_uls[t_keep], t_qp_keep)
     links = link_design(beam, settings, g, cage, shr, t_shear, trans)
-    if links.get("torsion_long_steel_mm2", 0) > 0:
-        side_share = links["torsion_long_steel_mm2"] * g.h / (g.b + g.h)
-        if 2 * cage.side.area < side_share:
-            notes.append(
-                f"Torsion needs about {side_share:.0f} mm² of longitudinal steel on the side faces; "
-                f"the side bars "
-                f"give {2 * cage.side.area:.0f} mm²."
-            )
+    if asl > 0:
+        sh_t = torsion_shares(g, cage, asl)
+        bending["torsion_steel"] = {"asl_mm2": round(asl), **{f"{k}_mm2": round(v) for k, v in sh_t.items()}}
+        notes.append(
+            f"Torsion needs {asl:.0f} mm² of longitudinal steel (6.3.2(3)). It is taken out of the cage "
+            f"by perimeter share before the bending check: {sh_t['top']:.0f} mm² from the top and from "
+            "the bottom" + (f", {sh_t['side']:.0f} mm² from each side." if sh_t["side"] else ".")
+        )
 
     # Steel and utilisation.
     length = lay.end - lay.start
