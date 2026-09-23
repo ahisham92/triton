@@ -255,6 +255,35 @@ class Durability(_Model):
     corrosion: CorrosionAllowances = Field(default_factory=CorrosionAllowances, title="Corrosion allowances")
 
 
+class Cracking(_Model):
+    """Crack widths under QP loads, and cracking from restrained temperature and shrinkage."""
+
+    creep_coefficient: float = Field(
+        2.0,
+        title="Creep coefficient φ for QP stresses",
+        ge=0,
+        le=5,
+        description="Cracked-section stresses under QP loads use Ec,eff = Ecm / (1 + φ).",
+    )
+    early_age_drop: float = Field(
+        30.0,
+        title="Early-age temperature drop T1",
+        ge=0,
+        json_schema_extra={"unit": "°C"},
+        description="Peak hydration temperature to ambient (CIRIA C660). About 25 to 35 °C for 1 to 2 m "
+        "sections with blended cements.",
+    )
+    seasonal_drop: float = Field(
+        20.0, title="Seasonal temperature drop T2", ge=0, json_schema_extra={"unit": "°C"}
+    )
+    thermal_expansion: float = Field(
+        10.0, title="Coefficient of thermal expansion", gt=0, json_schema_extra={"unit": "µε/°C"}
+    )
+    creep_factor: float = Field(
+        0.65, title="K1 creep factor on restrained strain", gt=0, le=1, description="CIRIA C660: 0.65."
+    )
+
+
 class DesignSettings(_Model):
     code: Literal["EN 1992 / EN 1993 + BS 6349"] = Field("EN 1992 / EN 1993 + BS 6349", title="Design code")
     design_life_years: int = Field(50, title="Design life", ge=1, json_schema_extra={"unit": "years"})
@@ -263,6 +292,13 @@ class DesignSettings(_Model):
     partial_factors: PartialFactors = Field(default_factory=PartialFactors, title="Partial factors")
     reinforcement: ReinforcementSettings = Field(default_factory=ReinforcementSettings, title="Reinforcement")
     piles: PileReinforcement = Field(default_factory=PileReinforcement, title="Pile reinforcement")
+    cracking: Cracking = Field(default_factory=Cracking, title="Cracking and restraint")
+    plate_positive_moment: Literal["sagging", "hogging"] = Field(
+        "sagging",
+        title="Positive plate moments (M11, M22) in the workbook",
+        description="Sagging: positive M puts the bottom face of slabs and beams in tension. In the sample "
+        "the deck's M11 peaks negative at every pile head, so positive is sagging there.",
+    )
     shear_check_distance: Literal["d", "2d"] = Field(
         "d", title="Shear checked at", description="Distance from the support face"
     )
@@ -441,9 +477,25 @@ class SlabInput(_ConcreteSection):
 
 class BeamInput(_ConcreteSection):
     kind: Literal["front_beam", "rear_beam", "transverse_beam"] = "front_beam"
-    width: float = _mm("Beam width", 2000.0, gt=0)
+    width: float | None = _mm(
+        "Beam width", None, gt=0, description="Empty: the beam's width in the Plaxis model."
+    )
     depth: float = _mm("Beam depth", 2000.0, gt=0)
-    cover: float | None = _mm("Cover", None, gt=0, description=_PROJECT_VALUE)
+    cover: float | None = _mm("Cover to links", None, gt=0, description=_PROJECT_VALUE)
+    link_diameter: float = _mm("Link diameter", 16.0, gt=0)
+    joint_spacing: float = _m(
+        "Length between movement joints",
+        30.0,
+        gt=0,
+        description="For the temperature and shrinkage restraint check (restraint from length / depth).",
+    )
+    restraint_factor: float | None = Field(
+        None,
+        title="Restraint factor R",
+        ge=0,
+        le=1,
+        description="Empty: from the length between joints and the depth (edge restraint, ACI 207.2R).",
+    )
     crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.3, gt=0, le=0.5)
     crack_width_limit_bottom: float = _mm(
         "Crack width limit wk (QP), bottom face",

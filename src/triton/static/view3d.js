@@ -122,8 +122,23 @@ export class View3D {
           p[v] = c[v][b];
           return [p.X, p.Y, p.Z];
         };
-        items.push({ kind: "quad", pts: [at(0, 0), at(1, 0), at(1, 1), at(0, 1)], faded, element: e.element,
+        items.push({ kind: "quad", pts: [at(0, 0), at(1, 0), at(1, 1), at(0, 1)], faded, element: e.element, under: true,
           fill: e.type === "sheet_pile_wall" ? "rgba(120,130,145,0.30)" : "rgba(150,158,168,0.22)" });
+        const b = bands[e.element] || [];
+        if (b.length && flat === "Z") {
+          // Beams: 0.5 m bands along the beam, across its full width.
+          const along = Y[1] - Y[0] >= X[1] - X[0] ? "Y" : "X";
+          const across = along === "Y" ? "X" : "Y";
+          for (const [x, y, z, u] of b) {
+            const s0 = (along === "Y" ? y : x) - 0.27;
+            const s1 = s0 + 0.54;
+            const pt = (sv, tv) => (along === "Y" ? [tv, sv, z] : [sv, tv, z]);
+            const [t0, t1] = c[across];
+            items.push({ kind: "quad", pts: [pt(s0, t0), pt(s1, t0), pt(s1, t1), pt(s0, t1)], faded, element: e.element,
+              fill: heat(u), stroke: false,
+              tip: `${e.element} at ${along} ${(along === "Y" ? y : x).toFixed(1)} m: utilisation ${u.toFixed(2)}` });
+          }
+        }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);
         items.push({ kind: "label", at: mid, text: e.element, faded, element: e.element });
       }
@@ -204,7 +219,7 @@ export class View3D {
         drawn.push({ it, depth: (a[2] + b[2]) / 2, a, b });
       } else if (it.kind === "quad") {
         const ps = it.pts.map((p) => this._project(p));
-        drawn.push({ it, depth: ps.reduce((s, p) => s + p[2], 0) / 4 - 1e6, ps }); // panels behind lines
+        drawn.push({ it, depth: ps.reduce((s, p) => s + p[2], 0) / 4 - (it.under ? 2e6 : 1e6), ps }); // panels behind lines
       }
     }
     drawn.sort((p, q) => p.depth - q.depth);
@@ -217,9 +232,12 @@ export class View3D {
         ctx.closePath();
         ctx.fillStyle = d.it.fill;
         ctx.fill();
-        ctx.strokeStyle = muted;
-        ctx.lineWidth = 1;
-        ctx.stroke();
+        if (d.it.stroke !== false) {
+          ctx.strokeStyle = muted;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+        if (d.it.tip && !d.it.faded) this.hits.push(d);
       } else {
         ctx.beginPath();
         ctx.moveTo(d.a[0], d.a[1]);
@@ -327,8 +345,20 @@ export class View3D {
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
     let best = null;
+    let band = null; // lines drawn over a beam win over its bands
     let bd = 8;
     for (const d of this.hits || []) {
+      if (d.ps) {
+        // A band of a beam: inside its outline.
+        let inside = false;
+        for (let i = 0, j = d.ps.length - 1; i < d.ps.length; j = i++) {
+          const [xi, yi] = d.ps[i];
+          const [xj, yj] = d.ps[j];
+          if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+        }
+        if (inside) band = d;
+        continue;
+      }
       const [ax, ay] = d.a;
       const [bx, by] = d.b;
       const l2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
@@ -339,6 +369,7 @@ export class View3D {
         best = d;
       }
     }
+    best = best || band;
     if (!best) {
       this.tip.hidden = true;
       return;

@@ -7,9 +7,11 @@ from typing import Any
 
 from ..elements import ElementType
 from ..forces import scale_forces
+from ..geometry import section_geometry
 from ..importer import SheetData
-from ..project import CombiWallInput, DesignSettings, PileInput, Section, _now
+from ..project import BeamInput, CombiWallInput, DesignSettings, PileInput, Section, _now
 from ..validation import ImportResult
+from .beams import design_beam
 from .combi import design_combi_wall
 from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
@@ -84,7 +86,7 @@ def combi_bands(wall: dict[str, Any], positions: list[list[float]]) -> list[list
 
 
 def run_section(settings: DesignSettings, section: Section, workbook: ImportResult) -> dict[str, Any]:
-    """Design the piles and combi walls of one section, and pick the sheet pile wall's governing sets."""
+    """Design the piles, combi walls and beams of one section; pick the sheet pile wall's governing sets."""
     raw = workbook.elements()
     sheets = factored_elements(section, workbook)
     known = {s.name for s in workbook.sheets}
@@ -148,6 +150,22 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
             skipped.append(f"{name}: no usable results in the workbook{where}.")
             continue
         spws.append({"element": name, "kind": "sheet_pile_wall", "governing_sets": sets})
+    beams = []
+    geometry = None
+    axes = {a["element"]: a.get("local") for a in (getattr(workbook, "axes", None) or [])}
+    for name, element in section.elements.items():
+        if not isinstance(element, BeamInput):
+            continue
+        if name not in sheets or all(s.frame.empty for s in sheets[name].values()):
+            where = " inside the working zone" if name in sheets else ""
+            skipped.append(f"{name}: no usable results in the workbook{where}.")
+            continue
+        if geometry is None:
+            geometry = section_geometry(workbook)
+        own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
+        b = design_beam(name, element, settings, own, geometry, section.elements, axes.get(name))
+        b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+        beams.append(b)
     if missing:
         skipped.append(f"Load multiplier sheets not in the workbook: {', '.join(missing)}.")
     return {
@@ -155,5 +173,6 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
         "piles": piles,
         "combi_walls": walls,
         "sheet_pile_walls": spws,
+        "beams": beams,
         "skipped": skipped,
     }

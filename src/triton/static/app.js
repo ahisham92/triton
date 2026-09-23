@@ -354,6 +354,8 @@ async function applyDurabilityDefaults() {
 
 function inheritNumber(key, path) {
   // Unset element covers and corrosion allowances use the project values (Design settings).
+  if (key === "width" && /beam/i.test(path)) return "From the model";
+  if (key === "restraint_factor") return "From length / depth";
   const d = state?.project?.design?.durability;
   if (!d) return "not set";
   const cv = d.covers, co = d.corrosion;
@@ -684,15 +686,17 @@ function renderReport(d) {
 }
 
 // ---------------------------------------------------------------- design tab
+const DESIGNED = new Set(["pile", "combi_wall", "front_beam", "rear_beam", "transverse_beam"]);
+
 async function renderDesignTab(host) {
   const url = secUrl();
-  const els = Object.entries(sec().elements).filter(([, e]) => e.kind === "pile" || e.kind === "combi_wall");
+  const els = Object.entries(sec().elements).filter(([, e]) => DESIGNED.has(e.kind));
   host.innerHTML = `<div class="panel row">
-      <button id="run-design" ${els.length ? "" : "disabled"}>Design piles and combi wall</button>
+      <button id="run-design" ${els.length ? "" : "disabled"}>Design the elements</button>
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       ${Object.values(sec().elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
-      <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile or combi wall elements first."}</span>
+      <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile, combi wall or beam elements first."}</span>
     </div><div id="design-out"></div>`;
   document.getElementById("run-design").onclick = async () => {
     if (state.dirty) await save();
@@ -720,10 +724,11 @@ function renderResults(res) {
   if (!out) return;
   const walls = res.combi_walls || [];
   const spws = res.sheet_pile_walls || [];
+  const beams = res.beams || [];
   const link = document.getElementById("cages");
   if (link) link.hidden = !res.piles.length && !walls.length;
   const sets = document.getElementById("sets");
-  if (sets) sets.hidden = !res.piles.length && !walls.length && !spws.length;
+  if (sets) sets.hidden = !res.piles.length && !walls.length && !spws.length && !beams.length;
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
@@ -736,16 +741,23 @@ function renderResults(res) {
         <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(kg)}</td></tr>`;
     })
     .join("");
-  out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}. Crack width comes next.</p>
+  out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}.</p>
     ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
     ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
     <div id="pile-cards"></div><div id="combi-cards"></div>
+    ${beams.length ? `<h2>Beams</h2><div class="panel scroll"><table><tr><th>Element</th><th>b × h</th><th>Longitudinal bars</th><th>Links</th><th>Transverse bars (top / bottom)</th><th>Max util.</th><th>kg/m³</th></tr>
+      ${beams.map((b) => `<tr><td>${esc(b.element)}</td><td>${fmt(b.width_mm)} × ${fmt(b.depth_mm)}</td><td>${b.cage ? esc(b.cage.label) : "–"}</td>
+        <td>${b.shear?.link ? esc(b.shear.link.label) : "–"}</td><td>${b.transverse ? `${esc(b.transverse.top.label)} / ${esc(b.transverse.bottom.label)}` : "–"}</td>
+        <td class="cell ${b.passed ? "ok" : "error"}">${fmt(b.utilisation, 2)}</td><td>${fmt(b.steel?.kg_per_m3)}</td></tr>`).join("")}</table></div>` : ""}
+    <div id="beam-cards"></div>
     ${spws.length ? `<h2>Sheet pile wall</h2>${spws.map((w) => `<div class="panel"><h3>${esc(w.element)}</h3><p class="status">Designed in the sheet pile program; these are its straining actions.</p>${steelSetsBlock(w.governing_sets, "kN/m, kNm/m", true)}</div>`).join("")}` : ""}`;
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
   const combi = document.getElementById("combi-cards");
   if (walls.length) combi.insertAdjacentHTML("beforeend", "<h2>Combi wall</h2>");
   for (const w of walls) combi.append(combiCard(w));
+  const bc = document.getElementById("beam-cards");
+  for (const b of beams) bc.append(beamCard(b));
   mountElementViews(res);
 }
 
@@ -773,6 +785,7 @@ function resultBands(res) {
   const bands = {};
   for (const p of res?.piles || []) bands[p.element] = p.bands || [];
   for (const w of res?.combi_walls || []) bands[w.element] = w.bands || [];
+  for (const b of res?.beams || []) bands[b.element] = b.bands || [];
   return bands;
 }
 
@@ -816,6 +829,25 @@ function alerts(res) {
     if (t > 1) add("unsafe", w.element, `steel tube utilisation ${fmt(t, 2)} (${esc(w.tube.governing?.check || "")})`);
     else if (t >= 0.95) add("limit", w.element, `steel tube utilisation ${fmt(t, 2)}: close to the limit`);
   }
+  for (const b of res.beams || []) {
+    const at2 = (g) => (g?.combination ? ` (${g.combination}, at ${fmt(g.s, 1)} m)` : "");
+    const checks = [
+      ["bending", b.bending?.utilisation, b.bending?.governing],
+      ["shear and torsion", b.shear?.utilisation, b.shear?.governing],
+      ["transverse bending", b.transverse?.utilisation, b.transverse?.governing],
+    ];
+    for (const [f, c] of Object.entries(b.cracks || {})) checks.push([`${f} crack width ${fmt(c.wk, 2)} mm of ${fmt(c.limit, 2)}`, c.wk / c.limit, c]);
+    for (const [f, c] of Object.entries(b.restraint?.faces || {})) {
+      if (isFinite(c.wk)) checks.push([`${f} restraint crack ${fmt(c.wk, 2)} mm of ${fmt(c.limit, 2)}`, c.wk / c.limit, null]);
+    }
+    if (b.utilisation == null) add("unsafe", b.element, "no reinforcement passes");
+    for (const [what, u, g] of checks) {
+      if (u == null) continue;
+      if (u > 1) add("unsafe", b.element, `${what}: ${fmt(u, 2)}${at2(g)}`);
+      else if (u >= 0.95) add("limit", b.element, `${what}: ${fmt(u, 2)}${at2(g)}, close to the limit`);
+    }
+    if (b.utilisation != null && b.utilisation < 0.5) add("safe", b.element, `max utilisation ${fmt(b.utilisation, 2)}: very safe`);
+  }
   const rank = { unsafe: 0, limit: 1, safe: 2 };
   return out.sort((a, b) => rank[a.level] - rank[b.level]);
 }
@@ -840,6 +872,7 @@ async function renderView3dTab(host) {
   const max = {};
   for (const p of res?.piles || []) max[p.element] = p.utilisation;
   for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
+  for (const b of res?.beams || []) max[b.element] = b.utilisation;
   let selected = null;
   const show = () => {
     const el = geo.elements.find((e) => e.element === selected);
@@ -862,6 +895,126 @@ async function renderView3dTab(host) {
     show();
   }));
   show();
+}
+
+// ---------------------------------------------------------------- Beams
+const BEAM_KIND = { front_beam: "Front beam", rear_beam: "Rear beam", transverse_beam: "Transverse beam" };
+
+function beamCard(b) {
+  const card = document.createElement("div");
+  card.className = "panel";
+  card.style.marginTop = "16px";
+  const c = b.cage;
+  const bend = b.bending || {};
+  const g = bend.governing || {};
+  const sh = b.shear || {};
+  const tr = b.transverse || {};
+  const st = b.steel || {};
+  const r = b.restraint || {};
+  const ok = (x) => `<span class="sev ${x ? "ok" : "error"}">${x ? "passes" : "fails"}</span>`;
+  const ex = bend.extremes || {};
+  const exRow = (k, label, unit) => ex[k] ? `<tr><td>${label}</td><td>${fmt(ex[k].max)} / ${fmt(ex[k].min)} ${unit}</td></tr>` : "";
+  const worstCrack = Object.values(b.cracks || {}).reduce((m, x) => Math.max(m, x.wk), 0);
+  card.innerHTML = `<div class="element-head"><h3>${esc(b.element)}<span class="type">${esc(BEAM_KIND[b.kind] || "Beam")}, ${fmt(b.width_mm)} × ${fmt(b.depth_mm)} mm, ${esc(b.concrete || "")}, cover ${fmt(b.cover_mm)} mm</span></h3>
+      ${ok(b.passed)}</div>
+    <div class="counts" style="margin-top:0">
+      <div class="count"><b>${fmt(b.utilisation, 2)}</b>max utilisation (all checks)</div>
+      <div class="count"><b>${fmt(bend.utilisation, 2)}</b>N with biaxial bending</div>
+      <div class="count"><b>${fmt(sh.utilisation, 2)}</b>shear and torsion</div>
+      <div class="count"><b>${fmt(worstCrack, 2)} mm</b>largest QP crack width</div>
+      <div class="count"><b>${fmt(st.kg_per_m3)}</b>kg/m³ (${fmt(st.kg_per_m)} kg/m)</div>
+      ${st.element_total_t != null ? `<div class="count"><b>${fmt(st.element_total_t, 1)} t</b>steel over ${fmt(st.length_m, 1)} m</div>` : ""}
+    </div>
+    ${b.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${v3dSlot(b.element)}
+    ${c ? `<h3 style="margin-top:18px">Longitudinal cage, one for the whole beam</h3>
+    <div class="cage"><div class="chart" data-kind="section"></div><div class="scroll"><table>
+      <tr><th>Face</th><th>Bars</th></tr>
+      <tr><td>Top</td><td>${c.top.count}Ø${c.top.phi}${c.top.layers > 1 ? ` in ${c.top.layers} layers` : ""}</td></tr>
+      <tr><td>Bottom</td><td>${c.bottom.count}Ø${c.bottom.phi}${c.bottom.layers > 1 ? ` in ${c.bottom.layers} layers` : ""}</td></tr>
+      <tr><td>Each side</td><td>${c.side.count ? `${c.side.count}Ø${c.side.phi}` : "none"}</td></tr>
+      <tr><td>Total</td><td>${fmt(c.area_mm2)} mm², ${fmt(c.ratio_pct, 2)}%, ${fmt(c.kg_per_m, 1)} kg/m</td></tr>
+      <tr><th colspan="2">Actions, max / min (ULS, at support faces and between)</th></tr>
+      ${exRow("N", "N (compression +)", "kN")}${exRow("Mv", "M vertical (sagging +)", "kNm")}${exRow("Mh", "M horizontal", "kNm")}
+      ${exRow("V", "V vertical", "kN")}${exRow("Vh", "V horizontal", "kN")}${exRow("T", "Torsion", "kNm")}
+    </table></div></div>
+    ${g.combination ? `<p>Governing bending: ${esc(g.combination)} at ${fmt(g.s, 2)} m along the beam. N = ${fmt(g.N_kN)} kN, M<sub>v</sub> = ${fmt(g.Mv_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_v_kNm)}), M<sub>h</sub> = ${fmt(g.Mh_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_h_kNm)}), exponent a = ${fmt(g.a, 2)}. ${esc(bend.method || "")}.</p>` : ""}
+    <div class="charts"><div class="chart" data-kind="moments"></div><div class="chart" data-kind="profile"></div></div>` : ""}
+    <h3 style="margin-top:18px">Crack widths</h3>
+    <div class="scroll"><table><tr><th>Check</th><th>Face</th><th>w<sub>k</sub></th><th>Limit</th><th>Details</th><th></th></tr>
+      ${Object.entries(b.cracks || {}).map(([f, x]) => `<tr><td>QP loads (7.3.4)</td><td>${f}</td><td>${fmt(x.wk, 3)} mm</td><td>${fmt(x.limit, 2)} mm</td>
+        <td>${x.sigma_s > 0 ? `σ<sub>s</sub> ${fmt(x.sigma_s)} MPa, s<sub>r,max</sub> ${fmt(x.sr_max)} mm, ${esc(x.combination)} at ${fmt(x.s, 1)} m` : "no tension at this face under QP loads"}</td><td>${ok(x.passed)}</td></tr>`).join("")}
+      ${Object.entries(r.faces || {}).map(([f, x]) => `<tr><td>Restraint</td><td>${f}</td><td>${isFinite(x.wk) ? `${fmt(x.wk, 3)} mm` : "–"}</td><td>${fmt(x.limit, 2)} mm</td>
+        <td>${x.note ? esc(x.note) : `ε<sub>r</sub> ${fmt(x.eps_r)} µε, crack strain ${fmt(x.eps_cr)} µε, s<sub>r,max</sub> ${fmt(x.sr_max)} mm`}</td><td>${ok(x.passed)}</td></tr>`).join("")}
+    </table></div>
+    ${r.faces ? `<p class="status">Restraint: ${fmt(r.length_m)} m between joints, R = ${fmt(r.R, 2)} (${esc(r.R_from)}), K1 = ${fmt(r.K1, 2)}, T1 = ${fmt(r.T1)} °C, T2 = ${fmt(r.T2)} °C, plus autogenous shrinkage (EN 1992-3 Annex M, CIRIA C660).</p>` : ""}
+    ${sh.link ? `<h3 style="margin-top:18px">Links ${ok(sh.passed)}</h3>
+    <p><b>${esc(sh.link.label)}</b>, ${fmt(sh.link.kg_per_m, 1)} kg/m, one arrangement for the whole beam (largest spacing ${fmt(sh.max_spacing_mm)} mm).
+      ${sh.governing ? `Governing: ${esc(sh.governing.combination)} at ${fmt(sh.governing.s, 2)} m, V = ${fmt(sh.governing.V_kN)} kN, T = ${fmt(sh.governing.T_kNm)} kNm, N = ${fmt(sh.governing.N_kN)} kN; V<sub>Rd,c</sub> ${fmt(sh.governing.VRd_c_kN)} kN${sh.governing.N_kN < 0 ? " (tension: no concrete contribution)" : ""}, V<sub>Rd,max</sub> ${fmt(sh.governing.VRd_max_kN)} kN, T<sub>Rd,max</sub> ${fmt(sh.governing.TRd_max_kNm)} kNm, cot θ ${fmt(sh.governing.cot_theta, 2)}.` : ""}</p>
+    <p class="status">${esc(sh.method)}. Horizontal shear ${fmt(sh.horizontal?.V_kN)} kN. Torsion needs ${fmt(sh.torsion_long_steel_mm2)} mm² of longitudinal steel around the perimeter.${sh.transverse_shear_needs_links ? " The transverse shear per metre also needs links; they are included." : ""}</p>
+    ${(sh.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}` : ""}
+    ${tr.top ? `<h3 style="margin-top:18px">Transverse bars (per metre, across the beam) ${ok(tr.passed)}</h3>
+    <p>Top <b>${esc(tr.top.label)}</b> (${fmt(tr.top.as_mm2_per_m)} mm²/m), bottom <b>${esc(tr.bottom.label)}</b> (${fmt(tr.bottom.as_mm2_per_m)} mm²/m). Bending utilisation ${fmt(tr.utilisation, 2)}${tr.governing ? `, governed by ${esc(tr.governing.combination)} at ${fmt(tr.governing.s, 1)} m, M = ${fmt(tr.governing.M_kNm_per_m)} kNm/m with N = ${fmt(tr.governing.N_kN_per_m)} kN/m` : ""}.
+      ${Object.entries(tr.cracks || {}).map(([f, x]) => `QP crack at the ${f}: ${fmt(x.wk, 3)} mm of ${fmt(x.limit, 2)}.`).join(" ")}</p>` : ""}
+    ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}`;
+  if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
+  if (b.profile?.length) {
+    beamMoments(card.querySelector('[data-kind="moments"]'), b.profile);
+    const prof = { profile: b.profile.map((q) => ({ z: q.s, util: q.u })) };
+    alongChart(card.querySelector('[data-kind="profile"]'), prof.profile, "Utilisation along the beam", "Utilisation", (q) => q.util, 1);
+  }
+  return card;
+}
+
+function beamSection(el, b) {
+  // Cross-section to scale: outline, link, bars.
+  const w = b.width_mm, h = b.depth_mm, c = b.cover_mm, lk = b.cage.link_diameter_mm;
+  const pad = Math.max(w, h) * 0.06;
+  const bars = b.cage.bars.map(([u, v, phi]) => `<circle class="bar" cx="${u}" cy="${-v}" r="${phi / 2}"><title>Ø${phi}</title></circle>`).join("");
+  el.innerHTML = `<div class="chart-title">Section ${fmt(w)} × ${fmt(h)} mm</div>
+    <svg viewBox="${-w / 2 - pad} ${-h / 2 - pad} ${w + 2 * pad} ${h + 2 * pad}" role="img" aria-label="Beam cross-section">
+      <rect class="outline" x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}"/>
+      <rect class="link" x="${-w / 2 + c + lk / 2}" y="${-h / 2 + c + lk / 2}" width="${w - 2 * c - lk}" height="${h - 2 * c - lk}" stroke-width="${lk}" fill="none"/>
+      ${bars}</svg>`;
+}
+
+function beamMoments(el, prof) {
+  // Vertical bending envelope along the beam (ULS), sagging +.
+  const xs = prof.map((q) => q.s);
+  const lo = Math.min(0, ...prof.map((q) => q.Mv_min)), hi = Math.max(0, ...prof.map((q) => q.Mv_max));
+  const padm = (hi - lo) * 0.05 || 1;
+  const c = frame(el, { xDomain: [Math.min(...xs), Math.max(...xs)], yDomain: [lo - padm, hi + padm],
+    xLabel: "Position along the beam (m)", yLabel: "M vertical (kNm)", title: "Vertical bending, ULS envelope (sagging +)" });
+  // Break the line over the supports, where there are no results.
+  const line = (k) => prof.map((q, i) => `${i && q.s - prof[i - 1].s < 0.6 ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
+  c.g.innerHTML = `<line class="grid" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(0)}" y2="${c.y(0)}"/>
+    <path class="series" d="${line("Mv_max")}"/><path class="series" d="${line("Mv_min")}" stroke-dasharray="5 3"/>`;
+  c.svg.onmousemove = (evt) => {
+    const r = c.svg.getBoundingClientRect();
+    const sx = ((evt.clientX - r.left) / r.width) * c.w;
+    let best = 0;
+    prof.forEach((q, i) => { if (Math.abs(c.x(q.s) - sx) < Math.abs(c.x(prof[best].s) - sx)) best = i; });
+    const q = prof[best];
+    showTip(c, evt, `${fmt(q.s, 2)} m<br>M ${fmt(q.Mv_min)} to ${fmt(q.Mv_max)} kNm`);
+  };
+  c.svg.onmouseleave = () => { c.tip.hidden = true; };
+}
+
+function alongChart(el, rows, title, yLabel, val, limit = null) {
+  // A value along the beam (x = position), with an optional limit line.
+  const xs = rows.map((q) => q.z);
+  const hi = Math.max(limit ?? 0, ...rows.map(val)) * 1.08 || 1;
+  const c = frame(el, { xDomain: [Math.min(...xs), Math.max(...xs)], yDomain: [0, hi], xLabel: "Position along the beam (m)", yLabel, title });
+  const path = rows.map((q, i) => `${i && q.z - rows[i - 1].z < 0.6 ? "L" : "M"}${c.x(q.z).toFixed(1)},${c.y(val(q)).toFixed(1)}`).join("");
+  c.g.innerHTML = (limit != null ? `<line class="limit" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(limit)}" y2="${c.y(limit)}"/>` : "") + `<path class="series" d="${path}"/>`;
+  c.svg.onmousemove = (evt) => {
+    const r = c.svg.getBoundingClientRect();
+    const sx = ((evt.clientX - r.left) / r.width) * c.w;
+    let best = 0;
+    rows.forEach((q, i) => { if (Math.abs(c.x(q.z) - sx) < Math.abs(c.x(rows[best].z) - sx)) best = i; });
+    showTip(c, evt, `${fmt(rows[best].z, 2)} m<br>${esc(yLabel)} ${fmt(val(rows[best]), 3)}`);
+  };
+  c.svg.onmouseleave = () => { c.tip.hidden = true; };
 }
 
 function combiCard(w) {
@@ -1020,7 +1173,7 @@ function steelSetsBlock(sets, unit, open = false) {
     <div class="scroll"><table class="sets"><tr><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th>${head.map((h) => `<th>${h}</th>`).join("")}</tr>${rows}</table></div></details>`;
 }
 
-function setsBlock(stations) {
+function setsBlock(stations, note = null) {
   // The seven governing ULS and QP sets per station, as entered in AdSec.
   if (!stations?.length) return "";
   const rows = stations
@@ -1038,7 +1191,7 @@ function setsBlock(stations) {
     )
     .join("");
   return `<details style="margin-top:12px"><summary>Governing sets per station for AdSec (${stations.length} station${stations.length === 1 ? "" : "s"}, 7 QP + 7 ULS each)</summary>
-    <p class="status">N in the concrete sign convention (Plaxis N × −1, compression +). M2 and M3 as in Plaxis. For QP the 7th set is the largest resultant moment until crack width is checked.</p>
+    <p class="status">${esc(note || "N in the concrete sign convention (Plaxis N × −1, compression +). M2 and M3 as in Plaxis.")} For QP the 7th set is the largest resultant moment.</p>
     <div class="scroll"><table class="sets"><tr><th>Station (m)</th><th>Limit state</th><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th><th>N kN</th><th>M2 kNm</th><th>M3 kNm</th><th>N–M util.</th></tr>${rows}</table></div></details>`;
 }
 

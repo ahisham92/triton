@@ -203,7 +203,7 @@ CONCRETE_HEADER = [
 def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
     """Governing straining actions laid out for copy and paste into AdSec.
 
-    ``Concrete``: for each pile and combi wall infill (and each station where the cage
+    ``Concrete``: for each pile, combi wall infill and beam (and each station where the cage
     changes down the element), its name, then 7 QP rows and 7 ULS rows underneath.
     ``Steel``: for each combi wall tube and sheet pile wall, its name and 10 ULS rows.
     """
@@ -222,12 +222,20 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
     )
     designs = [(p["element"], p) for p in results.get("piles", [])]
     designs += [(f"{w['element']} infill", w["infill"]) for w in results.get("combi_walls", [])]
+    designs += [
+        (
+            f"{b['element']} · M3 vertical bending (sagging +), M2 horizontal; "
+            "z = position along the beam (m)",
+            b,
+        )
+        for b in results.get("beams", [])
+    ]
     for name, d in designs:
         stations = d.get("governing_sets") or []
         for st in stations:
             ws.append([])
             title = name
-            if len(stations) > 1:
+            if len(stations) > 1 and "beam" not in d.get("kind", ""):
                 title += f" · {st['top']:g} to {st['bottom']:g} m · {st['cage']}"
             ws.append([title])
             ws.cell(ws.max_row, 1).font = bold

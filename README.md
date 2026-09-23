@@ -217,6 +217,37 @@ that is 67% to the infill. Below the infill the tube carries everything.
   as EN 1993-5 5.5.4(7) refers tubes to EN 1993-1-6.
 - **Not yet included:** shell buckling under shear, and forces from the secondary sheet piles.
 
+## Beams (front, rear, transverse)
+
+The beams are plate strips in Plaxis. Triton turns them into beam section forces at stations along
+the beam. At each station it fits the plate results across the width, over ±0.8 m along the beam:
+N, vertical bending, horizontal bending (from the in-plane force varying across the width),
+vertical and horizontal shear, and torsion (twisting moments plus the vertical shear's lever arm).
+The span direction is the longer plan extent, and the local axis along it comes from the directions
+check. Piles and king piles that reach the beam are supports: results inside them are left out,
+bending is taken at their faces, and shear is taken at d (or 2d) from them, or midway when supports
+are closer than that.
+
+- **Cage:** one longitudinal cage for the whole beam, with top, bottom and side bars. It is checked
+  for N with biaxial bending by EN 1992-1-1 5.8.9(4), using N–M curves about each axis for both
+  senses. The minimum steel is 9.2.1.1. The cheapest bars per face come first, and the face that
+  governs is stepped up.
+- **Crack widths:** 7.3.4 under QP loads at the top and bottom faces, each against its own limit.
+  Stresses come from the cracked section with Ec,eff = Ecm/(1 + φ).
+- **Temperature and shrinkage restraint:** EN 1992-3 Annex M / CIRIA C660. The restrained strain is
+  K1·R·(α(T1 + T2) + εca), minus half the tensile strain capacity, over sr,max at each face. R comes
+  from the length between joints over the depth (ACI 207.2R), unless it is entered. T1, T2, α, K1
+  and φ are in Design settings under Cracking and restraint.
+- **Links:** one arrangement for the whole beam. They cover vertical shear with torsion (6.2, 6.3.2),
+  with σcp from compression and no concrete contribution in tension. They also cover horizontal
+  shear, the transverse shear per metre, and the 9.2.2 minimum and spacing rules.
+- **Transverse bars:** top and bottom bars per metre from the transverse moments at each node,
+  with their own QP crack widths.
+- Plate moment sign: positive M11/M22 is sagging by default (Design settings). In the sample the
+  deck's M11 peaks negative at every pile head.
+- **Not yet included:** fender and bollard reinforcement, and the torsion longitudinal steel added
+  to the bending steel (it is reported).
+
 ## Workbook format
 
 One sheet per element and load combination, named `<Element>-<Combination>`:
