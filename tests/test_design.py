@@ -259,7 +259,7 @@ def test_overloaded_pile_reports_the_strongest_arrangement():
 
 
 def test_extra_rows_only_when_needed():
-    sheets = pile_sheets([(1, 0.0, -2000.0, 4500.0, 0.0)])
+    sheets = pile_sheets([(1, 0.0, -2000.0, 3000.0, 0.0)])
     pile = PileInput(head_level=1.0)
     default = design_pile("Pile(1)", pile, DesignSettings(), sheets)
     assert default.passed and default.arrangement.rows == 1

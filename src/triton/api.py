@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .design.export import pile_cages
 from .design.runner import run_piles
 from .materials import catalogue
 from .project import DesignSettings, Project, ProjectInfo
@@ -190,3 +192,17 @@ def pile_results(project_id: str) -> dict:
     if results is None:
         raise HTTPException(404, "The piles have not been designed yet.")
     return results
+
+
+@app.get("/api/projects/{project_id}/design/piles/cages.json")
+def pile_cage_export(project_id: str) -> JSONResponse:
+    """Bar runs of every designed pile, for a Revit / Dynamo script."""
+    project = _get(project_id)
+    results = store().load_results(project_id)
+    if results is None:
+        raise HTTPException(404, "The piles have not been designed yet.")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", project.info.name).strip("_") or "project"
+    return JSONResponse(
+        pile_cages(project.info.name, results),
+        headers={"Content-Disposition": f'attachment; filename="{name}-pile-cages.json"'},
+    )

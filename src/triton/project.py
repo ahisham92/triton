@@ -67,7 +67,7 @@ class PartialFactors(_Model):
 class ReinforcementSettings(_Model):
     grade: RebarGrade = Field("B500B", title="Reinforcement grade")
     bar_diameters: list[int] = Field(
-        default_factory=lambda: [16, 20, 25, 32, 40],
+        default_factory=lambda: [10, 12, 16, 20, 25, 32],
         title="Bars available on this project",
         description="Only these sizes are used in any design.",
         json_schema_extra={"unit": "mm"},
@@ -98,24 +98,27 @@ RowOption = Literal[1, 1.5, 2, 2.5, 3]
 
 class PileReinforcement(_Model):
     even_bar_count: bool = Field(True, title="Even number of bars in each row")
+    aggregate_size: float = _mm("Maximum aggregate size dg", 20.0, gt=0)
     min_clear_spacing: float = _mm(
         "Minimum clear spacing between bars",
         80.0,
         gt=0,
-        description="Between neighbouring bars of a row, measured around the circle. Applies to every row.",
+        description="Project value, between neighbouring bars of every row, measured around the circle. "
+        "Never less than EN 1992-1-1 8.2(2): max(φ, dg + 5 mm, 20 mm).",
     )
     max_clear_spacing: float = _mm(
         "Maximum clear spacing between bars",
         200.0,
         gt=0,
-        description="Outer row. EN 1992-1-1 9.8.5(3) allows at most 200 mm.",
+        le=200,
+        description="Outer row, around the periphery. EN 1992-1-1 9.8.5(3): at most 200 mm.",
     )
     row_clear_spacing: float | None = _mm(
         "Clear gap between rows",
         None,
         gt=0,
-        description="Radial gap between rows. Empty: the EN 1992-1-1 8.2 minimum "
-        "(largest bar, aggregate + 5 mm, 20 mm).",
+        description="Radial gap between rows. Empty: the EN 1992-1-1 8.2(2) minimum "
+        "max(φ, dg + 5 mm, 20 mm) for the larger bar.",
     )
     rows: list[RowOption] = Field(
         default_factory=lambda: [1, 1.5, 2, 2.5, 3],
@@ -128,6 +131,37 @@ class PileReinforcement(_Model):
         title="Use extra rows only when one row is not enough",
         description="Off: pick the lightest cage even if it has more rows.",
     )
+    splice: Literal["lap", "coupler"] = Field("lap", title="Bar splices")
+    lap_factor: float = Field(
+        45.0,
+        title="Lap length",
+        gt=0,
+        description="Lap length as a multiple of the bar diameter (45 gives 45φ).",
+        json_schema_extra={"unit": "φ"},
+    )
+    max_steel_ratio: float = Field(
+        4.0,
+        title="Maximum steel ratio",
+        gt=0,
+        le=8,
+        description="EN 1992-1-1 9.5.2(3): 4% outside laps and 8% at laps (recommended values). "
+        "Above 4% only with couplers.",
+        json_schema_extra={"unit": "%"},
+    )
+    curtail: bool = Field(True, title="Reduce the reinforcement down the pile")
+    curtailment: Literal["least_steel", "standard_lengths"] = Field(
+        "least_steel",
+        title="Choose the zones for",
+        description="Least steel with zones of at least the minimum length, or bar lengths from the "
+        "standard cut lengths where possible.",
+    )
+    min_zone_length: float = _m("Minimum zone length", 3.0, gt=0)
+    standard_bar_lengths: list[float] = Field(
+        default_factory=lambda: [6.0, 8.0, 9.0, 12.0],
+        title="Standard cut lengths",
+        json_schema_extra={"unit": "m"},
+    )
+    max_bar_length: float = _m("Longest bar", 12.0, gt=0)
 
     @field_validator("rows")
     @classmethod
@@ -136,10 +170,21 @@ class PileReinforcement(_Model):
             raise ValueError("Allow at least one row option.")
         return sorted(set(v))
 
+    @field_validator("standard_bar_lengths")
+    @classmethod
+    def _lengths(cls, v: list[float]) -> list[float]:
+        if not v or any(x <= 0 for x in v):
+            raise ValueError("Give at least one positive cut length.")
+        return sorted(set(v))
+
     @model_validator(mode="after")
-    def _spacing_order(self) -> PileReinforcement:
+    def _checks(self) -> PileReinforcement:
         if self.min_clear_spacing >= self.max_clear_spacing:
             raise ValueError("The minimum clear spacing must be less than the maximum.")
+        if self.max_steel_ratio > 4.0 and self.splice != "coupler":
+            raise ValueError("A steel ratio above 4% needs couplers (EN 1992-1-1 9.5.2(3)).")
+        if self.max_bar_length < self.min_zone_length:
+            raise ValueError("The longest bar must be at least the minimum zone length.")
         return self
 
 

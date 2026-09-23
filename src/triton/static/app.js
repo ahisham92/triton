@@ -264,6 +264,17 @@ function renderField(obj, key, prop, inner, nullable, path) {
     return f;
   }
 
+  if (inner.type === "array" && (inner.items?.type === "number" || inner.items?.type === "integer")) {
+    // e.g. standard cut lengths: "6, 8, 9, 12"
+    f.innerHTML = `<label>${esc(title)}</label><div class="inputwrap"><input type="text" value="${esc((value || []).join(", "))}">${unit ? `<span class="unit">${esc(unit)}</span>` : ""}</div>${hint}`;
+    const input = f.querySelector("input");
+    input.oninput = () => {
+      obj[key] = input.value.split(/[,;\s]+/).filter(Boolean).map(Number);
+      markDirty();
+    };
+    return f;
+  }
+
   if (inner.type === "boolean") {
     f.innerHTML = `<label class="toggle" style="color:var(--text);font-size:14px"><input type="checkbox" ${value ? "checked" : ""}> ${esc(title)}</label>${hint}`;
     f.querySelector("input").onchange = (e) => {
@@ -303,6 +314,7 @@ function optionLabel(key, o) {
 
 function prettyOption(o) {
   const map = { crack_only: "Crack width only", structural: "Structural (shares load)", min_steel: "Least steel",
+    lap: "Lapped", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
     min_cost: "Lowest cost", uniform: "Uniform slab", column_and_field: "Column and field strips" };
   return map[o] || o;
 }
@@ -476,6 +488,7 @@ async function renderDesignTab(host) {
   const piles = Object.entries(state.project.elements).filter(([, e]) => e.kind === "pile");
   host.innerHTML = `<div class="panel row">
       <button id="run-piles" ${piles.length ? "" : "disabled"}>Design piles</button>
+      <a class="quiet-link" id="cages" href="/api/projects/${id}/design/piles/cages.json" hidden>Download cages for Revit (JSON)</a>
       <span class="status" id="design-status">${piles.length ? `${piles.length} pile element(s): ${esc(piles.map(([n]) => n).join(", "))}` : "Add pile elements first."}</span>
     </div><div id="design-out"></div>`;
   document.getElementById("run-piles").onclick = async () => {
@@ -502,19 +515,21 @@ const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : Number(v).toLocal
 function renderPileResults(res) {
   const out = document.getElementById("design-out");
   if (!out) return;
+  const link = document.getElementById("cages");
+  if (link) link.hidden = !res.piles.length;
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
       const g = p.governing;
       return `<tr><td>${esc(p.element)}</td><td>${a ? esc(a.label) : "–"}</td>
         <td class="cell ${p.passed ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
-        <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(p.steel_ratio_kg_m3)}</td>
+        <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3)}</td>
         <td>${g.combination ? `${esc(g.combination)}, z ${fmt(g.z, 2)} m` : "–"}</td></tr>`;
     })
     .join("");
   out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}. Longitudinal steel only; links and crack width come next.</p>
     ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
-    <div class="panel scroll"><table><tr><th>Element</th><th>Bars</th><th>Utilisation</th><th>ρ</th><th>kg/m³</th><th>Governing</th></tr>${rows}</table></div>
+    <div class="panel scroll"><table><tr><th>Element</th><th>Bars</th><th>Utilisation</th><th>ρ at head</th><th>kg/m³ over pile</th><th>Governing</th></tr>${rows}</table></div>
     <div id="pile-cards"></div>`;
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
@@ -532,7 +547,7 @@ function pileCard(p) {
       <span class="sev ${p.passed ? "ok" : "error"}">${p.passed ? "passes" : "fails"}</span></div>
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(p.utilisation, 2)}</b>max utilisation</div>
-      <div class="count"><b>${fmt(p.steel_ratio_kg_m3)}</b>kg/m³ longitudinal</div>
+      <div class="count"><b>${fmt(p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3)}</b>${p.curtailment?.runs?.length ? "kg/m³ over the pile, with laps" : "kg/m³ longitudinal"}</div>
       <div class="count"><b>${a ? fmt(a.clear_spacing_mm) : "–"} mm</b>clear spacing, outer row (allowed ${fmt(lim.min_clear_mm)} to ${fmt(lim.max_clear_mm)} mm)</div>
     </div>
     ${g.combination ? `<p>Governing: ${esc(g.combination)}, node ${g.node}, y ${fmt(g.y, 2)} m, z ${fmt(g.z, 2)} m.
@@ -544,17 +559,60 @@ function pileCard(p) {
       <tr><td>Total</td><td>${a.bar_count} bars</td><td colspan="2">${fmt(a.area_mm2)} mm², ${fmt(p.reinforcement_ratio_pct, 2)}%, ${fmt(a.weight_kg_per_m, 1)} kg/m</td></tr>
       </table>
       <p class="status">Clear gap between rows: ${lim.row_gap_mm == null ? "EN 1992-1-1 8.2 minimum" : `${fmt(lim.row_gap_mm)} mm`}.</p></div></div>` : ""}
+    ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
     <details style="margin-top:12px"><summary>Other cages that pass</summary><div class="scroll"><table>
       <tr><th>Bars</th><th>Rows</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
       ${p.alternatives.map((x) => `<tr${x.chosen ? ' style="font-weight:600"' : ""}><td>${esc(x.label)}${x.chosen ? " (chosen)" : ""}</td><td>${x.rows}</td><td>${fmt(x.area_mm2)}</td><td>${fmt(x.utilisation, 3)}</td><td>${fmt(x.steel_ratio_kg_m3)}</td><td>${fmt(x.clear_spacing_mm)}</td></tr>`).join("")}
     </table></div></details>`;
   if (a?.rings) sectionDrawing(card.querySelector('[data-kind="section"]'), p);
+  if (p.curtailment?.runs?.length) elevationDrawing(card.querySelector('[data-kind="elevation"]'), p.curtailment);
   if (p.curve.length) {
     nmChart(card.querySelector('[data-kind="nm"]'), p);
     profileChart(card.querySelector('[data-kind="profile"]'), p);
   }
   return card;
+}
+
+function curtailmentBlock(c) {
+  const mode = c.mode === "standard_lengths" ? "standard cut lengths" : "least steel";
+  const joint = { lap: "lap", coupler: "coupler", toe: "toe" };
+  const saving = c.unified_weight_kg ? Math.round((1 - c.weight_kg / c.unified_weight_kg) * 100) : null;
+  return `<h3 style="margin:20px 0 4px;font-size:15px">Reinforcement down the pile</h3>
+    <p class="status" style="margin:0 0 8px">Zones chosen for ${mode}. ${fmt(c.weight_kg)} kg per pile, ${fmt(c.steel_ratio_kg_m3)} kg/m³${saving != null ? `, against ${fmt(c.unified_steel_ratio_kg_m3)} kg/m³ with the head cage all the way down (${saving}% less)` : ""}.${c.couplers ? ` ${c.couplers} couplers.` : ""}</p>
+    <div class="cage"><div class="chart" data-kind="elevation"></div><div class="scroll"><table>
+      <tr><th>From</th><th>To</th><th>Cage</th><th>Bar lengths</th><th>Below</th><th>Utilisation</th></tr>
+      ${c.runs.map((r) => `<tr><td>${fmt(r.top, 2)}</td><td>${fmt(r.bottom, 2)}</td><td>${esc(r.cage.label)}</td>
+        <td>${r.bar_lengths_m.map((x) => fmt(x, 2)).join(" / ")} m</td>
+        <td>${r.joint === "toe" ? "toe" : r.joint === "coupler" ? "couplers" : `lap ${r.lap_below_m.map((x) => fmt(x, 2)).join(" / ")} m`}</td>
+        <td>${fmt(r.utilisation, 2)}</td></tr>`).join("")}
+    </table>
+    ${c.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}</div></div>`;
+}
+
+function elevationDrawing(el, c) {
+  // Pile elevation: each run's bars drawn from its top to the end of its lap, alternating sides.
+  const w = 300, h = 460, m = { t: 16, b: 16, l: 52 };
+  const top = c.head_level, toe = c.toe_level;
+  const y = (z) => m.t + ((top - z) / (top - toe)) * (h - m.t - m.b);
+  const x0 = m.l + 20, pw = 70;
+  const levels = ticks(toe, top, 6);
+  const runs = c.runs
+    .map((r, i) => {
+      const x = x0 + (i % 2 ? pw * 0.62 : pw * 0.38);
+      const end = r.bottom - Math.max(...r.lap_below_m);
+      const sw = Math.max(1.5, r.cage.rings[0].diameter / 8);
+      return `<line class="rebar" x1="${x}" x2="${x}" y1="${y(r.top)}" y2="${y(end)}" stroke-width="${sw}"><title>${esc(r.cage.label)}: ${fmt(r.top, 2)} to ${fmt(end, 2)} m</title></line>
+        ${i ? `<line class="grid" x1="${x0 - 10}" x2="${w - 8}" y1="${y(r.top)}" y2="${y(r.top)}" stroke-dasharray="4 4"/>` : ""}
+        <text class="label" x="${x0 + pw + 12}" y="${(y(r.top) + y(r.bottom)) / 2 + 4}">${esc(r.cage.label)}</text>`;
+    })
+    .join("");
+  el.innerHTML = `<div class="chart-title">Elevation, ${fmt(top, 2)} to ${fmt(toe, 2)} m</div>
+    <svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Pile elevation with reinforcement zones">
+      ${levels.map((v) => `<text class="tick" x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end">${fmt(v)}</text>`).join("")}
+      <rect class="outline" x="${x0}" y="${y(top)}" width="${pw}" height="${y(toe) - y(top)}" style="stroke-width:1.5"/>
+      ${runs}
+    </svg>`;
 }
 
 function sectionDrawing(el, p) {

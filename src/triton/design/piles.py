@@ -24,8 +24,8 @@ from .circular import CircularSection, ConcreteLaw, Ring, SteelLaw, hull_indices
 
 MIN_BAR = 16  # mm, EN 1992-1-1 9.8.5(3)
 MIN_BARS = 6  # 9.8.5(3)
-MAX_RATIO = 0.04  # 9.5.2(3)
-AGGREGATE = 20.0  # mm, for the 8.2(2) clear spacing rule
+MAX_RATIO = 0.04  # 9.5.2(3), outside laps
+MAX_RATIO_AT_LAPS = 0.08  # 9.5.2(3)
 
 
 def min_area_pile(ac_mm2: float) -> float:
@@ -138,6 +138,8 @@ class PileDesign:
     reinforcement_ratio: float
     spacing_limits: dict = field(default_factory=dict)
     section: dict = field(default_factory=dict)
+    positions: list[list[float]] = field(default_factory=list)
+    curtailment: dict | None = None
     alternatives: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     curve: list[list[float]] = field(default_factory=list)
@@ -156,6 +158,8 @@ class PileDesign:
             "area_max_mm2": round(self.area_max),
             "spacing_limits": self.spacing_limits,
             "section": self.section,
+            "positions": self.positions,
+            "curtailment": self.curtailment,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
             "reinforcement_ratio_pct": round(100 * self.reinforcement_ratio, 3),
             "alternatives": self.alternatives,
@@ -180,12 +184,21 @@ ROW_LAYOUTS: dict[float, tuple[tuple[float, int], ...]] = {
 
 def _min_clear(settings: DesignSettings, phi: float) -> float:
     """Clear spacing within a row: the project minimum, and never below EN 1992-1-1 8.2(2)."""
-    return max(settings.piles.min_clear_spacing, phi, AGGREGATE + 5, 20.0)
+    return max(settings.piles.min_clear_spacing, ec2_min_clear(settings, phi))
+
+
+def ec2_min_clear(settings: DesignSettings, phi: float) -> float:
+    """EN 1992-1-1 8.2(2) with the recommended k1 = 1, k2 = 5 mm."""
+    return max(phi, settings.piles.aggregate_size + 5, 20.0)
+
+
+def max_ratio(settings: DesignSettings) -> float:
+    return settings.piles.max_steel_ratio / 100
 
 
 def _row_gap(settings: DesignSettings, phi_a: float, phi_b: float) -> float:
     gap = settings.piles.row_clear_spacing
-    return gap if gap is not None else max(phi_a, phi_b, AGGREGATE + 5, 20.0)
+    return gap if gap is not None else ec2_min_clear(settings, max(phi_a, phi_b))
 
 
 def make_arrangement(
@@ -214,7 +227,7 @@ def make_arrangement(
         rings.append(RingSpec(count, phi, radius, clear))
         prev_phi = phi
     area = sum(x.area for x in rings)
-    if area > MAX_RATIO * math.pi * pile.diameter**2 / 4:
+    if area > max_ratio(settings) * math.pi * pile.diameter**2 / 4:
         return None
     weight = area / 1e6 * STEEL_DENSITY
     bars = sum(x.count for x in rings)
@@ -327,14 +340,19 @@ def design_pile(
 ) -> PileDesign:
     loads = PileLoads.from_sheets(sheets, pile.head_level).frame
     ac = math.pi * pile.diameter**2 / 4
-    area_min, area_max = min_area_pile(ac), MAX_RATIO * ac
+    area_min, area_max = min_area_pile(ac), max_ratio(settings) * ac
     pr = settings.piles
     limits = {
         "min_clear_mm": pr.min_clear_spacing,
         "max_clear_mm": pr.max_clear_spacing,
         "row_gap_mm": pr.row_clear_spacing,
+        "aggregate_mm": pr.aggregate_size,
+        "max_ratio_pct": pr.max_steel_ratio,
     }
     geom = {"diameter_mm": pile.diameter, "cover_mm": pile.cover, "link_diameter_mm": pile.link_diameter}
+    if not loads.empty:
+        head = pile.head_level if pile.head_level is not None else float(loads["Z"].max())
+        geom |= {"head_level_m": round(head, 2), "toe_level_m": round(float(loads["Z"].min()), 2)}
     notes: list[str] = []
     if pile.casing is not None and pile.casing.role == "structural":
         notes.append(
@@ -384,8 +402,20 @@ def design_pile(
     else:
         chosen = strongest
         notes.append(
-            "No cage within the 4% limit and the allowed rows carries the loads; the strongest one is shown."
+            f"No cage within the {pr.max_steel_ratio:g}% limit and the allowed rows carries the loads; "
+            "the strongest one is shown."
         )
+
+    curtailment = None
+    if pr.curtail and passed:
+        from .curtailment import curtail  # imports this module
+
+        curtailment = curtail(name, pile, settings, loads, chosen, area_min)
+    positions = (
+        loads[["X", "Y"]].round(2).drop_duplicates().sort_values(["Y", "X"]).to_numpy().tolist()
+        if {"X", "Y"} <= set(loads.columns)
+        else []
+    )
 
     chosen_util = _utilisation(pile, chosen, settings, loads)
     i = int(np.argmax(chosen_util))
@@ -425,6 +455,8 @@ def design_pile(
         reinforcement_ratio=chosen.area / ac,
         spacing_limits=limits,
         section=geom,
+        positions=positions,
+        curtailment=curtailment,
         alternatives=alternatives,
         notes=notes,
         curve=np.round(sec.interaction(), 1).tolist(),

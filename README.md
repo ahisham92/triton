@@ -44,9 +44,11 @@ if that is the chosen objective.
 - Cages: 1, 1.5, 2, 2.5 or 3 rows. 1.5 rows is a full outer row plus half as many bars behind every
   second bar (e.g. 26Ø32 + 13Ø16); inner rows use one bar size no larger than the outer bars.
   Extra rows are used only when one row is not enough, unless that setting is switched off.
-- Project settings (Design settings, *Pile reinforcement*): bars available on the project, even bar
-  counts, minimum and maximum clear spacing between bars (default 80 and 200 mm), the clear gap
-  between rows (default: the 8.2 minimum) and the rows allowed. Each pile can also fix the number of
+- Project settings (Design settings, *Pile reinforcement*): bars available on the project (default
+  10 to 32 mm; piles use 16 mm and up), even bar counts, aggregate size, minimum clear spacing
+  (project value, never below 8.2(2): max(φ, dg + 5, 20 mm)), maximum clear spacing (at most
+  200 mm, 9.8.5(3)), the clear gap between rows (default: the 8.2(2) minimum), the rows allowed,
+  laps or couplers, lap length (45φ) and the maximum steel ratio (4%, more only with couplers). Each pile can also fix the number of
   bars in its outer row (e.g. 26 for a 1200 mm pile).
 - Section: EN 1992-1-1 parabola-rectangle concrete, bilinear steel with a horizontal top branch, strain
   limits of 6.1, displaced concrete deducted (the AdSec EC2 defaults). M is the resultant of M_2 and M_3.
@@ -62,9 +64,32 @@ if that is the chosen objective.
   governing point, the N–M chart with every load point, utilisation along the pile, and the best
   other cages for each number of rows and outer bar size.
 
+### Reinforcement down the pile
+
+The head cage is then reduced down the pile in bar runs. Consecutive runs keep the same number of
+bars in the outer row so they can be lapped (26Ø32 above 26Ø16) and may drop rows (2 rows above
+1 row); no row gets bigger bars than the row above it. Each cage carries every load in its own run.
+Bars run on below their run by the lap (lap factor × φ of the larger lapped bar, rounded up to
+50 mm; the project default is 45φ) or join with couplers, and no bar is longer than the longest bar.
+At laps the two cages together stay within 8% (9.5.2(3)); with couplers the 4% limit may be raised.
+
+- *Least steel*: least total weight including laps, every run at least the minimum zone length (3 m).
+- *Standard cut lengths*: as many bars as possible with a standard length (6, 8, 9, 12 m), then least weight.
+
+The card shows the pile elevation, the bar schedule (levels, cage, bar lengths, laps, utilisation)
+and the weight and kg/m³ against running the head cage all the way down.
+
+### Export for Revit
+
+**Download cages for Revit (JSON)** on the Design tab (`GET /api/projects/{id}/design/piles/cages.json`)
+gives, for every pile element: diameter, cover, link, head and toe levels, the X, Y of each pile in
+the Plaxis model, and each run row by row (bar count, diameter, radius of the bar circle, angle of
+the first bar from the model X axis, bar top and bottom levels and length). A Revit / Dynamo script
+can place the bars from this file alone; it only has to map Plaxis coordinates to the project base point.
+
 Set each pile's **head level** to the slab soffit: results above it are FE peaks inside the slab.
 Not yet included: links and shear, crack width, and a structural casing acting with the concrete
-(the pile is then designed as reinforced concrete alone, which is conservative).
+(the pile is then designed as reinforced concrete alone, which is conservative), and starter bars into the slab.
 
 ## Workbook format
 
