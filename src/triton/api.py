@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import html
+import os
 import re
 import shutil
 import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
@@ -48,8 +50,15 @@ def store() -> ProjectStore:
 
 
 @app.get("/")
-def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+def index() -> HTMLResponse:
+    page = (STATIC / "index.html").read_text(encoding="utf-8")
+    home = os.environ.get("TRITON_HOME_URL")
+    if home:
+        # Hosted inside another site (e.g. Project Control): a way back to it in the header.
+        label = os.environ.get("TRITON_HOME_LABEL") or "Home"
+        link = f'<a class="home" href="{html.escape(home)}">&larr; {html.escape(label)}</a>'
+        page = page.replace("</div></header>", link + "</div></header>", 1)
+    return HTMLResponse(page)
 
 
 # --- Reference data --------------------------------------------------------------

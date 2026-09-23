@@ -24,6 +24,14 @@ def xlsx_bytes(sheets):
 def test_index_page():
     r = client.get("/")
     assert r.status_code == 200 and "Triton" in r.text
+    assert 'class="home"' not in r.text
+
+
+def test_index_links_back_to_the_host_site(monkeypatch):
+    monkeypatch.setenv("TRITON_HOME_URL", "/")
+    monkeypatch.setenv("TRITON_HOME_LABEL", "Project Control")
+    r = client.get("/")
+    assert '<a class="home" href="/">&larr; Project Control</a></div></header>' in r.text
 
 
 def test_check_workbook():

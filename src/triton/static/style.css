@@ -20,6 +20,7 @@ header.top { border-bottom: 1px solid var(--line); background: var(--panel); }
 header.top .in { max-width: 1100px; margin: 0 auto; padding: 12px 16px; display: flex; gap: 16px; align-items: center; }
 header.top a.brand { font-weight: 700; font-size: 18px; color: var(--text); text-decoration: none; }
 header.top nav a { color: var(--muted); text-decoration: none; margin-right: 12px; }
+header.top a.home { margin-left: auto; color: var(--muted); text-decoration: none; }
 main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 96px; }
 h1 { font-size: 22px; margin: 0 0 4px; }
 h2 { font-size: 16px; margin: 28px 0 8px; }
