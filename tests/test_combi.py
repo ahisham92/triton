@@ -99,6 +99,8 @@ def test_combi_wall_design():
     )
     assert w["utilisation"] == max(infill["utilisation"], tube["utilisation"])
     assert w["count"] == 1 and infill["count"] == 1
+    # The tube is a casing: the infill's QP sets are 1s.
+    assert all(r["N_kN"] == 1.0 for st in infill["governing_sets"] for r in st["qp"])
 
 
 def test_section_run_and_export_include_the_combi_wall():

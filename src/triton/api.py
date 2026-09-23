@@ -8,11 +8,12 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from .design.export import pile_cages
+from .design.governing import workbook as governing_workbook
 from .design.runner import run_section
 from .materials import catalogue
 from .project import DesignSettings, Project, ProjectInfo, Section
@@ -256,4 +257,20 @@ def pile_cage_export(project_id: str, section_id: str) -> JSONResponse:
     return JSONResponse(
         pile_cages(project.info.name, results, section=section.name),
         headers={"Content-Disposition": f'attachment; filename="{name}-cages.json"'},
+    )
+
+
+@app.get(SECTION + "/design/governing.xlsx")
+def governing_sets_export(project_id: str, section_id: str) -> Response:
+    """The seven governing ULS and QP sets per station of every pile and combi wall infill."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    results = store().load_results(project_id, section_id)
+    if results is None:
+        raise HTTPException(404, "This section has not been designed yet.")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name}").strip("_") or "project"
+    return Response(
+        governing_workbook(project.info.name, section.name, results),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}-governing-sets.xlsx"'},
     )

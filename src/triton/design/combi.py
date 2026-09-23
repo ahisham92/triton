@@ -20,6 +20,7 @@ from ..forces import CombiSection, scale_forces
 from ..importer import SheetData
 from ..materials import concrete
 from ..project import CombiWallInput, DesignSettings, PileInput
+from .governing import placeholder_sets
 from .piles import design_pile
 from .tube import Tube, check_tube, tube_loads
 
@@ -66,6 +67,8 @@ def design_combi_wall(
         if not n.startswith("No pile top level")
     ]
     infill["head_name"] = "the front beam"
+    for station in infill.get("governing_sets") or []:
+        station["qp"] = placeholder_sets()  # the tube is a casing: no crack width check
 
     tube = Tube(
         wall.tube_diameter, wall.tube_thickness, wall.corrosion_loss, wall.steel, wall.fabrication_class

@@ -638,6 +638,7 @@ async function renderDesignTab(host) {
   host.innerHTML = `<div class="panel row">
       <button id="run-design" ${els.length ? "" : "disabled"}>Design piles and combi wall</button>
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
+      <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets (Excel)</a>
       <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile or combi wall elements first."}</span>
     </div><div id="design-out"></div>`;
   document.getElementById("run-design").onclick = async () => {
@@ -667,6 +668,8 @@ function renderResults(res) {
   const walls = res.combi_walls || [];
   const link = document.getElementById("cages");
   if (link) link.hidden = !res.piles.length && !walls.length;
+  const sets = document.getElementById("sets");
+  if (sets) sets.hidden = !res.piles.length && !walls.length;
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
@@ -759,6 +762,7 @@ function pileCard(p) {
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
     ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
+    ${setsBlock(p.governing_sets)}
     <details style="margin-top:12px"><summary>Other cages that pass</summary><div class="scroll"><table>
       <tr><th>Bars</th><th>Rows</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
       ${p.alternatives.map((x) => `<tr${x.chosen ? ' style="font-weight:600"' : ""}><td>${esc(x.label)}${x.chosen ? " (chosen)" : ""}</td><td>${x.rows}</td><td>${fmt(x.area_mm2)}</td><td>${fmt(x.utilisation, 3)}</td><td>${fmt(x.steel_ratio_kg_m3)}</td><td>${fmt(x.clear_spacing_mm)}</td></tr>`).join("")}
@@ -770,6 +774,28 @@ function pileCard(p) {
     profileChart(card.querySelector('[data-kind="profile"]'), p);
   }
   return card;
+}
+
+function setsBlock(stations) {
+  // The seven governing ULS and QP sets per station, as entered in AdSec.
+  if (!stations?.length) return "";
+  const rows = stations
+    .map((st) =>
+      [["ULS", st.uls], ["QP", st.qp]]
+        .map(([ls, list], k) =>
+          list
+            .map((r, i) => `<tr${i === 0 && k === 0 ? ' class="group"' : ""}>
+              <td>${i === 0 && k === 0 ? `${fmt(st.top, 2)} to ${fmt(st.bottom, 2)}<br><span class="status">${esc(st.cage)}</span>` : ""}</td>
+              <td>${i === 0 ? ls : ""}</td><td>${esc(r.case)}</td><td>${esc(r.combination)}</td><td>${r.node ?? "–"}</td>
+              <td>${fmt(r.z, 2)}</td><td>${fmt(r.N_kN)}</td><td>${fmt(r.M2_kNm)}</td><td>${fmt(r.M3_kNm)}</td><td>${r.utilisation == null ? "–" : fmt(r.utilisation, 3)}</td></tr>`)
+            .join("")
+        )
+        .join("")
+    )
+    .join("");
+  return `<details style="margin-top:12px"><summary>Governing sets per station for AdSec (${stations.length} station${stations.length === 1 ? "" : "s"}, 7 ULS + 7 QP each)</summary>
+    <p class="status">N in the concrete sign convention (Plaxis N × −1, compression +). M2 and M3 as in Plaxis. For QP the 7th set is the largest resultant moment until crack width is checked.</p>
+    <div class="scroll"><table class="sets"><tr><th>Station (m)</th><th>Limit state</th><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th><th>N kN</th><th>M2 kNm</th><th>M3 kNm</th><th>N–M util.</th></tr>${rows}</table></div></details>`;
 }
 
 function shearBlock(sh, above = "the slab") {

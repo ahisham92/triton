@@ -104,3 +104,6 @@ def test_cage_export_endpoint(tmp_path, monkeypatch):
     out = r.json()
     assert out["section"] == "Section 1"
     assert out["piles"][0]["element"] == "Pile(1)" and out["piles"][0]["count"] == 1
+    x = client.get(f"{url}/design/governing.xlsx")
+    assert x.status_code == 200
+    assert "Berth_1_Section_1-governing-sets.xlsx" in x.headers["content-disposition"]

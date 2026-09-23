@@ -121,6 +121,16 @@ for all piles of each type.
 Not yet included: crack width, and a structural casing acting with the concrete
 (the pile is then designed as reinforced concrete alone, which is conservative), and starter bars into the slab.
 
+### Governing sets for AdSec
+
+For every station (a length with one cage: each run of the reinforcement down the pile, or the
+whole pile) the Design tab and **Download governing sets (Excel)**
+(`GET /api/projects/{id}/sections/{section}/design/governing.xlsx`) give seven ULS and seven QP sets:
+max and min N with the M2 and M3 at the same point, max and min M2 with N and M3, max and min M3
+with N and M2, and the most utilised point (ULS: highest N–M utilisation with the station's cage;
+QP: largest resultant moment until crack width is checked). N is in the concrete (AdSec) sign
+convention, Plaxis N × −1. The combi wall infill gets the same sets with its share of the actions.
+
 ## Combi wall
 
 Between the front beam soffit and the infill bottom level (default −25 m) every straining action,

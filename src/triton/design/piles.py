@@ -21,6 +21,7 @@ from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput
 from .circular import CircularSection, ConcreteLaw, Ring, SteelLaw, hull_indices
+from .governing import qp_loads, station_sets
 
 MIN_BAR = 16  # mm, EN 1992-1-1 9.8.5(3)
 MIN_BARS = 6  # 9.8.5(3)
@@ -110,13 +111,16 @@ class PileLoads:
 
     @classmethod
     def from_sheets(
-        cls, sheets: dict[str, SheetData], head_level: float | None, above: float = 0.0
+        cls, sheets: dict[str, SheetData], head_level: float | None, above: float = 0.0, qp: bool = False
     ) -> PileLoads:
-        """Results up to ``above`` (m) over the head level are kept and taken at the head level."""
+        """ULS results (or the QP ones with ``qp``) in the design sign convention.
+
+        Results up to ``above`` (m) over the head level are kept and taken at the head level.
+        """
         parts = []
         for combo, sheet in sheets.items():
             ctype = combination_type(combo)
-            if ctype is CombinationType.SLS_QP:
+            if (ctype is CombinationType.SLS_QP) != qp:
                 continue
             f = design_forces(sheet.frame, sheet.parsed.spec, ["N", "Q_12", "Q_13", "M_2", "M_3"])
             if head_level is not None:
@@ -147,6 +151,7 @@ class PileDesign:
     shear: dict | None = None
     steel: dict | None = None
     alternatives: list[dict] = field(default_factory=list)
+    governing_sets: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     curve: list[list[float]] = field(default_factory=list)
     profile: list[dict] = field(default_factory=list)
@@ -168,6 +173,7 @@ class PileDesign:
             "curtailment": self.curtailment,
             "shear": self.shear,
             "steel": self.steel,
+            "governing_sets": self.governing_sets,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
             "reinforcement_ratio_pct": round(100 * self.reinforcement_ratio, 3),
             "alternatives": self.alternatives,
@@ -449,6 +455,11 @@ def design_pile(
     profile = (
         loads.groupby(loads["Z"].round(1))["util"].max().sort_index(ascending=False).reset_index().round(3)
     )
+    runs = (curtailment or {}).get("runs") or []
+    stations = [(r["top"], r["bottom"], r["cage"]) for r in runs] or [
+        (geom["head_level_m"], geom["toe_level_m"], chosen.to_dict())
+    ]
+    governing_sets = station_sets(pile, settings, loads, qp_loads(sheets, pile.head_level, above), stations)
     alternatives = [
         {
             **a.to_dict(),
@@ -475,6 +486,7 @@ def design_pile(
         shear=shear,
         steel=steel,
         alternatives=alternatives,
+        governing_sets=governing_sets,
         notes=notes,
         curve=np.round(sec.interaction(), 1).tolist(),
         profile=[{"z": float(r.Z), "util": float(r.util)} for r in profile.itertuples()],

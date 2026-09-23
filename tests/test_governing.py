@@ -1,0 +1,90 @@
+import io
+
+import numpy as np
+import pandas as pd
+import pytest
+from openpyxl import load_workbook
+from test_curtailment import LOADS
+from test_design import pile_sheets
+
+from triton.design.governing import pick_sets, workbook
+from triton.design.piles import design_pile
+from triton.project import DesignSettings, PileInput
+
+
+def frame():
+    return pd.DataFrame(
+        {
+            "combination": ["A", "A", "B", "B"],
+            "Node": [1, 2, 3, 4],
+            "Z": [0.0, -1.0, 0.0, -1.0],
+            "N": [100.0, 400.0, -50.0, 250.0],
+            "M_2": [10.0, -30.0, 5.0, 20.0],
+            "M_3": [500.0, 100.0, -700.0, 300.0],
+        }
+    )
+
+
+def test_seven_sets_with_corresponding_actions():
+    rows = pick_sets(frame(), np.array([0.2, 0.9, 0.5, 0.3]), "most utilised")
+    by = {r["case"]: r for r in rows}
+    cases = ["max N", "min N", "max M2", "min M2", "max M3", "min M3", "most utilised"]
+    assert [r["case"] for r in rows] == cases
+    assert (by["max N"]["node"], by["max N"]["M2_kNm"], by["max N"]["M3_kNm"]) == (2, -30.0, 100.0)
+    assert by["min N"]["node"] == 3
+    assert by["max M2"]["node"] == 4 and by["min M2"]["node"] == 2
+    assert by["max M3"]["node"] == 1 and by["min M3"]["node"] == 3
+    assert by["most utilised"]["node"] == 2 and by["most utilised"]["utilisation"] == 0.9
+    # Without utilisations (QP) the 7th set is the largest resultant moment.
+    assert pick_sets(frame(), None, "largest resultant M")[-1]["node"] == 3
+
+
+def test_sets_per_station_of_a_curtailed_pile():
+    qp = [(n, z, 0.5 * nn, 0.5 * m2, m3) for n, z, nn, m2, m3 in LOADS]
+    d = design_pile("Pile(1)", PileInput(head_level=0.0), DesignSettings(), pile_sheets(LOADS, qp)).to_dict()
+    runs = d["curtailment"]["runs"]
+    sets = d["governing_sets"]
+    assert [(s["top"], s["bottom"]) for s in sets] == [(r["top"], r["bottom"]) for r in runs]
+    top = sets[0]
+    assert len(top["uls"]) == 7 and len(top["qp"]) == 7
+    assert all(top["bottom"] - 1e-9 <= r["z"] <= top["top"] + 1e-9 for r in top["uls"] + top["qp"])
+    # Concrete sign: Plaxis N = -3000 is +3000 here; QP is half.
+    assert top["uls"][0]["N_kN"] == pytest.approx(3000.0)
+    assert top["qp"][0]["N_kN"] == pytest.approx(1500.0)
+    # The head station's most utilised point is the pile's governing point.
+    assert top["uls"][-1]["utilisation"] == pytest.approx(d["utilisation"], abs=1e-3)
+    assert top["qp"][-1]["utilisation"] is None
+
+
+def test_governing_sets_workbook():
+    d = design_pile("Pile(1)", PileInput(head_level=0.0), DesignSettings(), pile_sheets(LOADS)).to_dict()
+    data = workbook("Berth", "Section 01a", {"piles": [d], "combi_walls": []})
+    ws = load_workbook(io.BytesIO(data))["Pile(1)"]
+    assert ws["A4"].value == "Station top (m)"
+    rows = list(ws.iter_rows(min_row=5, values_only=True))
+    assert len(rows) == 14 * len(d["governing_sets"])
+    assert rows[0][3:5] == ("ULS", "max N") and rows[7][3:5] == ("QP", "max N")
+
+
+def test_single_station_when_not_curtailed():
+    settings = DesignSettings()
+    settings.piles.curtail = False
+    sheets = pile_sheets([(1, 0.0, -2000.0, 1500.0, 0.0), (2, -5.0, -2500.0, 800.0, 0.0)])
+    d = design_pile("Pile(1)", PileInput(head_level=0.0), settings, sheets).to_dict()
+    (st,) = d["governing_sets"]
+    assert (st["top"], st["bottom"], st["cage"]) == (0.0, -5.0, d["arrangement"]["label"])
+
+
+def test_no_crack_check_gives_qp_rows_of_ones():
+    from triton.project import Casing
+
+    pile = PileInput(head_level=0.0, casing=Casing(top_level=0.0, bottom_level=-30.0))
+    d = design_pile("Pile(1)", pile, DesignSettings(), pile_sheets(LOADS)).to_dict()
+    for st in d["governing_sets"]:
+        assert len(st["qp"]) == 7
+        assert {(r["N_kN"], r["M2_kNm"], r["M3_kNm"]) for r in st["qp"]} == {(1.0, 1.0, 1.0)}
+        assert st["uls"][0]["N_kN"] == pytest.approx(3000.0)
+    # A casing over the top 4 m only: stations below it keep their QP sets.
+    pile = PileInput(head_level=0.0, casing=Casing(top_level=0.0, bottom_level=-4.0))
+    d = design_pile("Pile(1)", pile, DesignSettings(), pile_sheets(LOADS)).to_dict()
+    assert d["governing_sets"][-1]["qp"][0]["N_kN"] == pytest.approx(3000.0)
