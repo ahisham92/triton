@@ -50,7 +50,7 @@ def infill_as_pile(wall: CombiWallInput) -> PileInput:
 def design_combi_wall(
     name: str, wall: CombiWallInput, settings: DesignSettings, sheets: dict[str, SheetData]
 ) -> dict[str, Any]:
-    wall = with_project_grades(wall, settings.materials)
+    wall = with_project_grades(wall, settings.materials, settings.durability)
     sec = combi_section(wall)
     share = sec.steel_share
     bottom = wall.concrete_bottom_level

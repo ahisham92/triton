@@ -316,7 +316,7 @@ function renderField(obj, key, prop, inner, nullable, path) {
       .map((o) => `<option value="${esc(o)}" ${o === value ? "selected" : ""}>${esc(typeof o === "string" ? prettyOption(o) : o)}</option>`)
       .join("")}</select>`;
   } else if (inner.type === "number" || inner.type === "integer") {
-    control = `<input type="number" step="any" value="${value ?? ""}" ${nullable ? 'placeholder="not set"' : ""}>`;
+    control = `<input type="number" step="any" value="${value ?? ""}" ${nullable ? `placeholder="${esc(inheritNumber(key, path))}"` : ""}>`;
   } else {
     control = `<input type="text" value="${esc(value ?? "")}">`;
   }
@@ -328,8 +328,36 @@ function renderField(obj, key, prop, inner, nullable, path) {
     else if (inner.type === "number" || inner.type === "integer") v = v === "" ? (nullable ? null : v) : Number(v);
     obj[key] = v;
     markDirty();
+    if (DURABILITY_KEYS.has(path)) applyDurabilityDefaults();
   };
   return f;
+}
+
+// Changing the codes or the design life fills in the project covers and corrosion allowances.
+const DURABILITY_KEYS = new Set(["design.design_life_years", "design.durability.cover_code", "design.durability.corrosion_code"]);
+async function applyDurabilityDefaults() {
+  const d = state.project.design;
+  const life = Number(d.design_life_years);
+  if (!(life >= 1)) return;
+  const q = new URLSearchParams({ cover_code: d.durability.cover_code, corrosion_code: d.durability.corrosion_code, life });
+  const res = await api(`/api/durability-defaults?${q}`);
+  if (res.covers) d.durability.covers = res.covers;
+  if (res.corrosion) d.durability.corrosion = res.corrosion;
+  markDirty();
+  await route();
+  if (res.notes.length) showSaveState(`Unsaved changes. ${res.notes.join(" ")}`);
+}
+
+function inheritNumber(key, path) {
+  // Unset element covers and corrosion allowances use the project values (Design settings).
+  const d = state?.project?.design?.durability;
+  if (!d) return "not set";
+  const cv = d.covers, co = d.corrosion;
+  const combi = /Combi/.test(path), casing = /casing/.test(path);
+  const v = { cover: combi ? cv.combi_infill : /Beam|beam/.test(path) ? cv.beams : cv.piles, cover_top: cv.slab_top,
+    cover_bottom: cv.slab_bottom, corrosion_loss: casing ? co.casing : co.combi_tube,
+    corrosion_loss_per_face: co.sheet_pile_per_face }[key];
+  return v == null ? "not set" : `Project value (${v})`;
 }
 
 function inheritLabel(key, path) {
@@ -349,7 +377,7 @@ function optionLabel(key, o) {
 function prettyOption(o) {
   const map = { crack_only: "Crack width only", structural: "Structural (shares load)", min_steel: "Least steel",
     lap: "Lapped", raw: "Raw values", average: "Average with neighbours", unified: "Unified", zoned: "Zoned", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
-    min_cost: "Lowest cost", uniform: "Uniform slab", column_and_field: "Column and field strips" };
+    min_cost: "Lowest cost", en1992: "EN 1992-1-1 (Table 4.4N)", en1993_5: "EN 1993-5 (Table 4.2)", bs6349: "BS 6349-1-4 (maritime)", uniform: "Uniform slab", column_and_field: "Column and field strips" };
   return map[o] || o;
 }
 
@@ -784,6 +812,7 @@ function pileCard(p) {
       <p class="status">Clear gap between rows: ${lim.row_gap_mm == null ? "EN 1992-1-1 8.2 minimum" : `${fmt(lim.row_gap_mm)} mm`}.</p></div></div>` : ""}
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
     ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
+    ${connectionBlock(p.connection)}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
     ${p.moments?.length ? `<div class="charts"><div class="chart" data-kind="moments"></div><div data-kind="peaks"></div></div>` : ""}
     ${setsBlock(p.governing_sets)}
@@ -888,6 +917,17 @@ function setsBlock(stations) {
   return `<details style="margin-top:12px"><summary>Governing sets per station for AdSec (${stations.length} station${stations.length === 1 ? "" : "s"}, 7 QP + 7 ULS each)</summary>
     <p class="status">N in the concrete sign convention (Plaxis N × −1, compression +). M2 and M3 as in Plaxis. For QP the 7th set is the largest resultant moment until crack width is checked.</p>
     <div class="scroll"><table class="sets"><tr><th>Station (m)</th><th>Limit state</th><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th><th>N kN</th><th>M2 kNm</th><th>M3 kNm</th><th>N–M util.</th></tr>${rows}</table></div></details>`;
+}
+
+function connectionBlock(c) {
+  // Where a structural casing stops: welded bars (cover 0) and the cage, no casing.
+  if (!c) return "";
+  const g = c.governing;
+  return `<h3 style="margin-top:18px">Casing connection, ${fmt(c.top, 2)} to ${fmt(c.bottom, 2)} m
+      ${c.passed == null ? "" : `<span class="sev ${c.passed ? "ok" : "error"}">${c.passed ? "passes" : "fails"}</span>`}</h3>
+    <p>Checked without the casing: ${c.welded ? `${esc(c.welded)} welded to the casing (cover 0) plus ` : ""}the head cage ${esc(c.cage)}.
+      ${c.utilisation == null ? "" : `Utilisation ${fmt(c.utilisation, 2)}${g ? `, governed by ${esc(g.combination)} at z ${fmt(g.z, 2)} m (N = ${fmt(g.N_kN)} kN, M = ${fmt(g.M_kNm)} kNm)` : ""}.`}</p>
+    ${c.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
 }
 
 function shearBlock(sh, above = "the slab") {

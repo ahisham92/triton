@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
+from . import durability
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
 from .design.runner import factored_elements, run_section
@@ -46,6 +47,14 @@ def index() -> FileResponse:
 @app.get("/api/materials")
 def materials() -> dict:
     return catalogue()
+
+
+@app.get("/api/durability-defaults")
+def durability_defaults(cover_code: str = "en1992", corrosion_code: str = "en1993_5", life: int = 50) -> dict:
+    """Covers and corrosion allowances for the chosen codes and design life."""
+    if life < 1:
+        raise HTTPException(422, "Design life must be at least 1 year.")
+    return durability.defaults(cover_code, corrosion_code, life)
 
 
 @app.get("/api/schema/project")

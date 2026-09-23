@@ -10,7 +10,7 @@ the bar spacing rules of 8.2.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,7 @@ from ..elements import CombinationType, combination_type
 from ..forces import design_forces
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
-from ..project import DesignSettings, PileInput, with_project_grades
+from ..project import DesignSettings, PileInput, pile_cover, with_project_grades
 from .circular import CircularSection, ConcreteLaw, Ring, SteelLaw, hull_indices
 from .governing import qp_loads, station_sets
 
@@ -152,6 +152,7 @@ class PileDesign:
     steel: dict | None = None
     alternatives: list[dict] = field(default_factory=list)
     governing_sets: list[dict] = field(default_factory=list)
+    connection: dict | None = None
     moments: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     curve: list[list[float]] = field(default_factory=list)
@@ -175,6 +176,7 @@ class PileDesign:
             "shear": self.shear,
             "steel": self.steel,
             "governing_sets": self.governing_sets,
+            "connection": self.connection,
             "moments": self.moments,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
             "reinforcement_ratio_pct": round(100 * self.reinforcement_ratio, 3),
@@ -225,7 +227,7 @@ def make_arrangement(
     layout = ROW_LAYOUTS[rows]
     if any(f == 0.5 for f, _ in layout) and n % 2:
         return None  # a half row sits behind every second bar
-    radius = pile.diameter / 2 - pile.cover - pile.link_diameter - phi1 / 2
+    radius = pile.diameter / 2 - pile_cover(pile, settings) - pile.link_diameter - phi1 / 2
     rings: list[RingSpec] = []
     prev_phi = None
     for i, (factor, which) in enumerate(layout):
@@ -266,7 +268,7 @@ def _families(pile: PileInput, settings: DesignSettings) -> list[list[Arrangemen
     bars = [d for d in settings.reinforcement.bar_diameters if d >= MIN_BAR]
     out = []
     for phi1 in bars:
-        radius = pile.diameter / 2 - pile.cover - pile.link_diameter - phi1 / 2
+        radius = pile.diameter / 2 - pile_cover(pile, settings) - pile.link_diameter - phi1 / 2
         if radius <= 0:
             continue
         circumference = 2 * math.pi * radius
@@ -354,7 +356,7 @@ class _Checker:
 def design_pile(
     name: str, pile: PileInput, settings: DesignSettings, sheets: dict[str, SheetData]
 ) -> PileDesign:
-    pile = with_project_grades(pile, settings.materials)
+    pile = with_project_grades(pile, settings.materials, settings.durability)
     above = settings.results_into_connection / 1e3
     loads = PileLoads.from_sheets(sheets, pile.head_level, above).frame
     ac = math.pi * pile.diameter**2 / 4
@@ -375,7 +377,8 @@ def design_pile(
     if pile.casing is not None and pile.casing.role == "structural":
         notes.append(
             "The structural casing is not yet included in the N–M check; the pile is designed as "
-            "reinforced concrete only, which is conservative."
+            "reinforced concrete only, which is conservative. The connection where the casing stops "
+            "is checked on its own."
         )
     if pile.head_level is None:
         notes.append("No pile top level is set, so results inside the slab are included.")
@@ -490,6 +493,7 @@ def design_pile(
         steel=steel,
         alternatives=alternatives,
         governing_sets=governing_sets,
+        connection=connection_check(pile, settings, loads, chosen),
         moments=[
             {"z": float(z), "M_kNm": round(float(m), 1)}
             for z, m in loads.groupby(loads["Z"].mul(2).round() / 2)["M"]
@@ -505,6 +509,66 @@ def design_pile(
             for c, n, m, u in loads[["combination", "N", "M", "util"]].itertuples(index=False)
         ],
     )
+
+
+def connection_check(
+    pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, cage: Arrangement
+) -> dict | None:
+    """N–M check where a structural casing stops: welded bars (cover 0) plus the head cage, no casing.
+
+    The zone runs ``connection_length`` up from the casing top, or down from the pile's top level when
+    the casing reaches it. The concrete diameter is the pile diameter; the welded bars sit against the
+    casing, their centres φ/2 inside it.
+    """
+    c = pile.casing
+    if c is None or c.role != "structural" or loads.empty:
+        return None
+    top = pile.head_level if pile.head_level is not None else float(loads["Z"].max())
+    if c.top_level < top - 1e-9:
+        lo, hi = c.top_level, min(c.top_level + c.connection_length, top)
+    else:
+        lo, hi = top - c.connection_length, top
+    zone = loads[(loads["Z"] >= lo - 1e-9) & (loads["Z"] <= hi + 1e-9)]
+    phi = c.connection_bar_diameter
+    welded = c.connection_bar_count or 0
+    rings = list(cage.rings)
+    if welded:
+        spacing = math.pi * (pile.diameter - phi) / welded - phi
+        rings.insert(0, RingSpec(welded, phi, pile.diameter / 2 - phi / 2, spacing))
+    section = replace(cage, rings=tuple(rings))
+    out = {
+        "top": round(hi, 2),
+        "bottom": round(lo, 2),
+        "welded": f"{welded}Ø{phi}" if welded else None,
+        "cage": cage.label,
+        "utilisation": None,
+        "passed": None,
+        "governing": None,
+        "notes": [],
+    }
+    if not welded:
+        out["notes"].append("No welded bars are entered: the cage alone is checked.")
+    if zone.empty:
+        out["notes"].append("No results in the connection zone.")
+        return out
+    util = _utilisation(pile, section, settings, zone)
+    i = int(np.argmax(util))
+    g = zone.iloc[i]
+    out |= {
+        "utilisation": round(float(util[i]), 3),
+        "passed": bool(util[i] <= 1.0),
+        "governing": {
+            "combination": g["combination"],
+            "z": round(float(g["Z"]), 2),
+            "N_kN": round(float(g["N"]), 1),
+            "M_kNm": round(float(g["M"]), 1),
+        },
+    }
+    if welded and spacing < _min_clear(settings, phi):
+        out["notes"].append(
+            f"The welded bars are {spacing:.0f} mm apart, closer than the minimum clear spacing."
+        )
+    return out
 
 
 def _shear_and_steel(pile, settings, loads, chosen, curtailment, geom) -> tuple[dict | None, dict | None]:

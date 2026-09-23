@@ -27,7 +27,7 @@ import pandas as pd
 
 from ..elements import CombinationType
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
-from ..project import DesignSettings, PileInput
+from ..project import DesignSettings, PileInput, pile_cover
 
 MIN_LINK_SPACING = 75.0  # mm, practical minimum pitch
 STEP = 0.05  # m, level grid
@@ -162,7 +162,7 @@ def design_shear(
         spacing[:] = spacing[j]
         reason[:] = reason[j]
     out_zones = _zones(head, toe, spacing, reason, link)
-    hoop_len = math.pi * (D - 2 * pile.cover - link) / 1000  # m
+    hoop_len = math.pi * (D - 2 * pile_cover(pile, settings) - link) / 1000  # m
     weight = sum((zz["top"] - zz["bottom"]) * 1000 / zz["spacing_mm"] * hoop_len for zz in out_zones)
     weight *= asw / 1e6 * STEEL_DENSITY
     provided = np.array(

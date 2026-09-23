@@ -43,6 +43,21 @@ Each element gets its own inputs:
 combi wall infill concrete, tube and casing steel, and sheet pile steel. An element can set its own
 grade instead; left at *Project grade*, it follows the project value.
 
+**Covers and corrosion** (Design settings) are project values too. Choosing the code for covers
+(EN 1992-1-1 Table 4.4N, or BS 6349-1-4) or for corrosion (EN 1993-5 Table 4.2, or BS 6349-1-4) or
+changing the design life fills them in; they stay editable, and an element's own value wins.
+
+- EN 1992 covers: c_min,dur + 10 mm, structural class S4 at 50 years, S5 at 75, S6 at 100. Piles
+  XS3 and at least 75 mm, combi wall infill XS2, slab top XS1, slab bottom and beams XS3.
+- EN 1993-5 corrosion (per face, interpolated between the tabulated lives): casing and combi tube in
+  the zone of high attack, sheet piles in the permanent immersion or intertidal zone.
+- The BS 6349-1-4 tables are not loaded yet; choosing BS 6349 keeps the values that are set.
+
+A **structural casing** can have bars welded to it at its top. Where the casing stops, the
+connection zone (0.5 m by default, from the casing top upward, or down from the pile top when the
+casing reaches it) is checked for N–M with no help from the casing: the welded bars at cover 0 plus
+the head cage.
+
 Pile links are unified by default: one spacing over the whole pile, the closest one needed
 anywhere (Design settings, *Links along the pile*; *Zoned* spaces them by need instead).
 

@@ -14,6 +14,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .durability import en1992_covers, en1993_5_corrosion
 from .elements import ElementType, parse_sheet_name
 from .materials import (
     BAR_DIAMETERS,
@@ -202,10 +203,63 @@ class Materials(_Model):
     sheet_pile_steel: SheetPileGrade = Field("S355GP", title="Sheet pile steel grade")
 
 
+_EN_COVERS = en1992_covers(50)
+_EN_CORROSION = en1993_5_corrosion(50)
+
+
+class Covers(_Model):
+    """Project covers to the outer bars' links. Each element uses these unless it sets its own."""
+
+    piles: float = _mm("Piles", _EN_COVERS["piles"], gt=0, description="EN 1992: XS3, at least 75 mm.")
+    combi_infill: float = _mm(
+        "Combi wall infill", _EN_COVERS["combi_infill"], gt=0, description="EN 1992: XS2, inside the tube."
+    )
+    slab_top: float = _mm("Slab top", _EN_COVERS["slab_top"], gt=0, description="EN 1992: XS1.")
+    slab_bottom: float = _mm("Slab bottom", _EN_COVERS["slab_bottom"], gt=0, description="EN 1992: XS3.")
+    beams: float = _mm("Beams", _EN_COVERS["beams"], gt=0, description="EN 1992: XS3.")
+
+
+class CorrosionAllowances(_Model):
+    """Loss of steel thickness over the design life. Each element uses these unless it sets its own."""
+
+    casing: float = _mm(
+        "Pile casing", _EN_CORROSION["casing"], ge=0, description="EN 1993-5: sea water, zone of high attack."
+    )
+    combi_tube: float = _mm(
+        "Combi wall tube",
+        _EN_CORROSION["combi_tube"],
+        ge=0,
+        description="EN 1993-5: sea water, zone of high attack.",
+    )
+    sheet_pile_per_face: float = _mm(
+        "Sheet piles, per face",
+        _EN_CORROSION["sheet_pile_per_face"],
+        ge=0,
+        description="EN 1993-5: sea water, permanent immersion or intertidal.",
+    )
+
+
+class Durability(_Model):
+    cover_code: Literal["en1992", "bs6349"] = Field(
+        "en1992",
+        title="Covers from",
+        description="Choosing the code or changing the design life fills in the covers below; "
+        "they can still be edited.",
+    )
+    corrosion_code: Literal["en1993_5", "bs6349"] = Field(
+        "en1993_5",
+        title="Corrosion allowances from",
+        description="Choosing the code or changing the design life fills in the allowances below.",
+    )
+    covers: Covers = Field(default_factory=Covers, title="Covers")
+    corrosion: CorrosionAllowances = Field(default_factory=CorrosionAllowances, title="Corrosion allowances")
+
+
 class DesignSettings(_Model):
     code: Literal["EN 1992 / EN 1993 + BS 6349"] = Field("EN 1992 / EN 1993 + BS 6349", title="Design code")
     design_life_years: int = Field(50, title="Design life", ge=1, json_schema_extra={"unit": "years"})
     materials: Materials = Field(default_factory=Materials, title="Project grades")
+    durability: Durability = Field(default_factory=Durability, title="Covers and corrosion")
     partial_factors: PartialFactors = Field(default_factory=PartialFactors, title="Partial factors")
     reinforcement: ReinforcementSettings = Field(default_factory=ReinforcementSettings, title="Reinforcement")
     piles: PileReinforcement = Field(default_factory=PileReinforcement, title="Pile reinforcement")
@@ -226,6 +280,7 @@ class DesignSettings(_Model):
 
 
 _PROJECT_GRADE = "Empty: the project grade from Design settings."
+_PROJECT_VALUE = "Empty: the project value from Design settings (Covers and corrosion)."
 
 
 class _ConcreteSection(_Model):
@@ -246,14 +301,31 @@ class Casing(_Model):
     top_level: float = _m("Casing top level", 2.7)
     bottom_level: float = _m("Casing bottom level", -1.3)
     thickness: float = _mm("Casing wall thickness", 16.0, gt=0)
-    corrosion_loss: float = _mm("Corrosion loss over design life", 2.0, ge=0)
+    corrosion_loss: float | None = _mm(
+        "Corrosion loss over design life", None, ge=0, description=_PROJECT_VALUE
+    )
     steel: SteelGrade | None = Field(None, title="Casing steel grade", description=_PROJECT_GRADE)
+    connection_bar_count: int | None = Field(
+        None,
+        title="Bars welded to the casing at its top",
+        ge=0,
+        description="Structural casing only. Where the casing stops, these bars (cover 0, welded to the "
+        "pipe) and the cage carry the forces with no help from the casing.",
+    )
+    connection_bar_diameter: int = Field(32, title="Welded bar diameter", json_schema_extra={"unit": "mm"})
+    connection_length: float = _m(
+        "Connection zone length",
+        0.5,
+        gt=0,
+        description="Length checked without the casing, from the casing top upward (or the top of the pile "
+        "downward when the casing reaches it).",
+    )
 
     @model_validator(mode="after")
     def _levels(self) -> Casing:
         if self.bottom_level >= self.top_level:
             raise ValueError("Casing bottom level must be below its top level.")
-        if self.corrosion_loss >= self.thickness:
+        if self.corrosion_loss is not None and self.corrosion_loss >= self.thickness:
             raise ValueError("Corrosion loss must be less than the casing thickness.")
         return self
 
@@ -261,7 +333,7 @@ class Casing(_Model):
 class PileInput(_ConcreteSection):
     kind: Literal["pile"] = "pile"
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
-    cover: float = _mm("Cover to links", 75.0, gt=0)
+    cover: float | None = _mm("Cover to links", None, gt=0, description=_PROJECT_VALUE)
     link_diameter: float = _mm("Link diameter", 12.0, gt=0)
     count: int | None = Field(
         None,
@@ -290,7 +362,9 @@ class CombiWallInput(_Model):
     kind: Literal["combi_wall"] = "combi_wall"
     tube_diameter: float = _mm("King pile tube diameter", 1626.0, gt=0)
     tube_thickness: float = _mm("Tube wall thickness", 18.0, gt=0)
-    corrosion_loss: float = _mm("Corrosion loss over design life", 3.0, ge=0)
+    corrosion_loss: float | None = _mm(
+        "Corrosion loss over design life", None, ge=0, description=_PROJECT_VALUE
+    )
     steel: SteelGrade | None = Field(None, title="Tube steel grade", description=_PROJECT_GRADE)
     concrete: ConcreteGrade | None = Field(None, title="Infill concrete grade", description=_PROJECT_GRADE)
     concrete_bottom_level: float = _m("Concrete infill bottom level", -25.0)
@@ -300,7 +374,7 @@ class CombiWallInput(_Model):
         description="Results more than the distance set in Design settings (default 10 cm) above it are "
         "inside the front beam and ignored. Empty: every result is used.",
     )
-    cover: float = _mm("Cover to infill links", 75.0, gt=0)
+    cover: float | None = _mm("Cover to infill links", None, gt=0, description=_PROJECT_VALUE)
     link_diameter: float = _mm("Infill link diameter", 12.0, gt=0)
     bar_count: int | None = Field(
         None,
@@ -325,7 +399,7 @@ class CombiWallInput(_Model):
     def _tube(self) -> CombiWallInput:
         if self.tube_diameter <= 2 * self.tube_thickness:
             raise ValueError("Tube thickness must be less than half the diameter.")
-        if self.corrosion_loss >= self.tube_thickness:
+        if self.corrosion_loss is not None and self.corrosion_loss >= self.tube_thickness:
             raise ValueError("Corrosion loss must be less than the tube thickness.")
         return self
 
@@ -342,14 +416,16 @@ class SheetPileInput(_Model):
         None, title="Plastic section modulus Wpl per m", gt=0, json_schema_extra={"unit": "cm³/m"}
     )
     section_class: Literal[1, 2, 3, 4] = Field(2, title="Section class")
-    corrosion_loss_per_face: float = _mm("Corrosion loss per face", 2.0, ge=0)
+    corrosion_loss_per_face: float | None = _mm(
+        "Corrosion loss per face", None, ge=0, description=_PROJECT_VALUE
+    )
 
 
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
     thickness: float = _mm("Slab thickness", 1000.0, gt=0)
-    cover_top: float = _mm("Top cover", 75.0, gt=0)
-    cover_bottom: float = _mm("Bottom cover", 75.0, gt=0)
+    cover_top: float | None = _mm("Top cover", None, gt=0, description=_PROJECT_VALUE)
+    cover_bottom: float | None = _mm("Bottom cover", None, gt=0, description=_PROJECT_VALUE)
     strips: Literal["uniform", "column_and_field"] = Field(
         "uniform", title="Reinforcement layout", description="One uniform slab, or column and field strips"
     )
@@ -367,7 +443,7 @@ class BeamInput(_ConcreteSection):
     kind: Literal["front_beam", "rear_beam", "transverse_beam"] = "front_beam"
     width: float = _mm("Beam width", 2000.0, gt=0)
     depth: float = _mm("Beam depth", 2000.0, gt=0)
-    cover: float = _mm("Cover", 75.0, gt=0)
+    cover: float | None = _mm("Cover", None, gt=0, description=_PROJECT_VALUE)
     crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.3, gt=0, le=0.5)
     crack_width_limit_bottom: float = _mm(
         "Crack width limit wk (QP), bottom face",
@@ -394,20 +470,46 @@ _KIND_FOR_TYPE = {
 }
 
 
-def with_project_grades(element: Any, materials: Materials) -> Any:
-    """A copy of ``element`` with every unset grade taken from the project grades."""
+def with_project_grades(element: Any, materials: Materials, durability: Durability | None = None) -> Any:
+    """A copy of ``element`` with every unset grade, cover and corrosion allowance taken from the project."""
+    d = durability or Durability()
+    cv, co = d.covers, d.corrosion
     update: dict[str, Any] = {}
     if isinstance(element, CombiWallInput):
         update = {"concrete": element.concrete or materials.infill_concrete}
         update["steel"] = element.steel or materials.structural_steel
+        update["cover"] = _or(element.cover, cv.combi_infill)
+        update["corrosion_loss"] = _or(element.corrosion_loss, co.combi_tube)
     elif isinstance(element, SheetPileInput):
         update = {"steel": element.steel or materials.sheet_pile_steel}
+        update["corrosion_loss_per_face"] = _or(element.corrosion_loss_per_face, co.sheet_pile_per_face)
     elif isinstance(element, _ConcreteSection):
         update = {"concrete": element.concrete or materials.concrete}
+        if isinstance(element, PileInput):
+            update["cover"] = _or(element.cover, cv.piles)
+        elif isinstance(element, SlabInput):
+            update["cover_top"] = _or(element.cover_top, cv.slab_top)
+            update["cover_bottom"] = _or(element.cover_bottom, cv.slab_bottom)
+        elif isinstance(element, BeamInput):
+            update["cover"] = _or(element.cover, cv.beams)
         casing = getattr(element, "casing", None)
-        if casing is not None and casing.steel is None:
-            update["casing"] = casing.model_copy(update={"steel": materials.structural_steel})
+        if casing is not None:
+            update["casing"] = casing.model_copy(
+                update={
+                    "steel": casing.steel or materials.structural_steel,
+                    "corrosion_loss": _or(casing.corrosion_loss, co.casing),
+                }
+            )
     return element.model_copy(update=update)
+
+
+def pile_cover(pile: PileInput, settings: DesignSettings) -> float:
+    """The pile's cover to links, or the project cover when it has none of its own."""
+    return settings.durability.covers.piles if pile.cover is None else pile.cover
+
+
+def _or(value: float | None, default: float) -> float:
+    return default if value is None else value
 
 
 def default_element(name: str) -> ElementInput | None:
