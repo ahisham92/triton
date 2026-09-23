@@ -76,11 +76,22 @@ class SteelLaw:
 
 
 @dataclass(frozen=True)
+class Ring:
+    """Equal bars evenly spaced on one circle, the first one at angle 0."""
+
+    count: int
+    diameter: float  # mm
+    radius: float  # mm, radius of the circle through the bar centres
+
+    @property
+    def area(self) -> float:
+        return self.count * math.pi * self.diameter**2 / 4
+
+
+@dataclass(frozen=True)
 class CircularSection:
     diameter: float  # mm
-    bar_count: int
-    bar_diameter: float  # mm
-    bar_radius: float  # mm, radius of the circle through the bar centres
+    rings: tuple[Ring, ...]  # outer row first
     concrete: ConcreteLaw
     steel: SteelLaw
     strips: int = 400
@@ -91,17 +102,28 @@ class CircularSection:
         return math.pi * self.diameter**2 / 4
 
     @property
-    def bar_area(self) -> float:
-        return math.pi * self.bar_diameter**2 / 4
+    def area_steel(self) -> float:
+        return sum(r.area for r in self.rings)
 
     @property
-    def area_steel(self) -> float:
-        return self.bar_count * self.bar_area
+    def rotations(self) -> tuple[float, ...]:
+        """Bar orientations to check: a bar on the bending axis, and midway between bars.
 
-    def _bars_y(self, rotation: float) -> np.ndarray:
-        """Depth of each bar below the top fibre for a given bar rotation (rad)."""
-        angles = rotation + 2 * math.pi * np.arange(self.bar_count) / self.bar_count
-        return self.diameter / 2 - self.bar_radius * np.cos(angles)
+        With a half row behind every second bar the pattern repeats every
+        2π / (bars in the half row), so its midway orientation is checked too.
+        """
+        outer = self.rings[0].count
+        fewest = min(r.count for r in self.rings)
+        return tuple(sorted({0.0, math.pi / outer, math.pi / fewest}))
+
+    def _bars(self, rotation: float) -> tuple[np.ndarray, np.ndarray]:
+        """Depth of each bar below the top fibre, and its area, for a given rotation (rad)."""
+        ys, areas = [], []
+        for r in self.rings:
+            angles = rotation + 2 * math.pi * np.arange(r.count) / r.count
+            ys.append(self.diameter / 2 - r.radius * np.cos(angles))
+            areas.append(np.full(r.count, math.pi * r.diameter**2 / 4))
+        return np.concatenate(ys), np.concatenate(areas)
 
     def _strips(self) -> tuple[np.ndarray, np.ndarray]:
         """Depth of strip centroids and exact strip areas of the circle."""
@@ -127,11 +149,11 @@ class CircularSection:
         n_c = (sc * a).sum(axis=1)
         m_c = (sc * a * (self.diameter / 2 - y)).sum(axis=1)
 
-        yb = self._bars_y(rotation)
+        yb, ab = self._bars(rotation)
         eps_s = eps_top[:, None] - curvature[:, None] * yb[None, :]
         ss = self.steel.stress(eps_s) - self.concrete.stress(eps_s)  # deduct displaced concrete
-        n_s = (ss * self.bar_area).sum(axis=1)
-        m_s = (ss * self.bar_area * (self.diameter / 2 - yb)).sum(axis=1)
+        n_s = (ss * ab).sum(axis=1)
+        m_s = (ss * ab * (self.diameter / 2 - yb)).sum(axis=1)
         return n_c + n_s, m_c + m_s
 
     def interaction(self, rotation: float = 0.0, points: int = 240) -> np.ndarray:
@@ -162,18 +184,18 @@ class CircularSection:
     def utilisation(self, n_ed: np.ndarray, m_ed: np.ndarray) -> np.ndarray:
         """Radial utilisation of loads (kN, kNm): load / capacity along the ray from the origin.
 
-        The worst of two bar orientations (a bar on the axis of bending, and midway
-        between bars) is taken, since the moment direction varies along the pile.
+        The worst bar orientation is taken (see ``rotations``), since the moment
+        direction varies along the pile.
         """
         worst = np.zeros(len(n_ed))
-        for rotation in (0.0, math.pi / self.bar_count):
+        for rotation in self.rotations:
             worst = np.maximum(worst, radial_utilisation(self.interaction(rotation), n_ed, m_ed))
         return worst
 
     def moment_capacity(self, n_ed: float) -> float:
         """M_Rd (kNm) at a given axial force (kN), worst bar orientation."""
         caps = []
-        for rotation in (0.0, math.pi / self.bar_count):
+        for rotation in self.rotations:
             c = self.interaction(rotation)
             if not c[-1, 0] <= n_ed <= c[0, 0]:
                 return 0.0
@@ -203,3 +225,31 @@ def radial_utilisation(curve: np.ndarray, n_ed: np.ndarray, m_ed: np.ndarray) ->
         util = np.where(t > 0, 1.0 / t, np.inf)
     util[(n_ed == 0) & (m_ed == 0)] = 0.0
     return util
+
+
+def hull_indices(n: np.ndarray, m: np.ndarray) -> np.ndarray:
+    """Indices of the convex hull vertices of the load points (N, |M|).
+
+    Radial utilisation against a convex capacity domain around the origin is a
+    convex function of the load, so its maximum over any set of points is at a
+    vertex of their convex hull. Checking only these points gives the same
+    maximum utilisation at a fraction of the cost.
+    """
+    pts = np.column_stack([np.asarray(n, float), np.abs(np.asarray(m, float))])
+    if len(pts) <= 3:
+        return np.arange(len(pts))
+    order = np.lexsort((pts[:, 1], pts[:, 0]))
+
+    def cross(o, a, b) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    def chain(idx) -> list[int]:
+        out: list[int] = []
+        for i in idx:
+            while len(out) >= 2 and cross(pts[out[-2]], pts[out[-1]], pts[i]) <= 0:
+                out.pop()
+            out.append(i)
+        return out
+
+    lower, upper = chain(order), chain(order[::-1])
+    return np.unique(np.array(lower[:-1] + upper[:-1]))

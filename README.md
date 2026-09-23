@@ -38,18 +38,29 @@ in `data/projects/` (set `TRITON_DATA_DIR` to move it).
 
 Upload the workbook on the project's **Workbook** tab, then press **Design piles** on the **Design** tab.
 For each pile element Triton takes every ULS result (all piles of the row, every node below the pile
-head level; QP is not used) and picks the arrangement of equal bars on one circle that carries all of
-them with the least steel, or the lowest cost if that is the chosen objective.
+head level; QP is not used) and picks the lightest cage that carries all of them, or the cheapest
+if that is the chosen objective.
 
+- Cages: 1, 1.5, 2, 2.5 or 3 rows. 1.5 rows is a full outer row plus half as many bars behind every
+  second bar (e.g. 26Ø32 + 13Ø16); inner rows use one bar size no larger than the outer bars.
+  Extra rows are used only when one row is not enough, unless that setting is switched off.
+- Project settings (Design settings, *Pile reinforcement*): bars available on the project, even bar
+  counts, minimum and maximum clear spacing between bars (default 80 and 200 mm), the clear gap
+  between rows (default: the 8.2 minimum) and the rows allowed. Each pile can also fix the number of
+  bars in its outer row (e.g. 26 for a 1200 mm pile).
 - Section: EN 1992-1-1 parabola-rectangle concrete, bilinear steel with a horizontal top branch, strain
   limits of 6.1, displaced concrete deducted (the AdSec EC2 defaults). M is the resultant of M_2 and M_3.
-- Utilisation is measured along the ray from the origin to each (N, M) point, taking the worse of two
-  bar orientations (a bar on the bending axis, and midway between two bars).
+- Utilisation is measured along the ray from the origin to each (N, M) point, taking the worst bar
+  orientation (a bar on the bending axis, and midway between bars of each row).
 - Seismic and accidental combinations use γc 1.2 and γs 1.0.
-- Detailing: bars at least 16 mm, at least 6 bars, clear spacing between the project minimum and 200 mm
-  (9.8.5), steel between Table 9.6N and 4% (9.5.2). Bars sit at cover + link + φ/2 from the face.
-- Results: bars, utilisation, ρ and kg/m³, the governing point, the N–M chart with every load point,
-  utilisation along the pile, and other bar sizes that also pass.
+- Detailing: bars at least 16 mm, at least 6 bars in the outer row, every row's clear spacing at least
+  the project minimum and the 8.2 minimum, the outer row's at most the project maximum (9.8.5 allows
+  200 mm), steel between Table 9.6N and 4% (9.5.2). The outer bars sit at cover + link + φ/2.
+- Only the corners of the convex hull of the (N, M) points are checked while searching; the maximum
+  utilisation is always at one of them, because the capacity domain is convex.
+- Results: the cage row by row with its cross-section drawn to scale, utilisation, ρ and kg/m³, the
+  governing point, the N–M chart with every load point, utilisation along the pile, and the best
+  other cages for each number of rows and outer bar size.
 
 Set each pile's **head level** to the slab soffit: results above it are FE peaks inside the slab.
 Not yet included: links and shear, crack width, and a structural casing acting with the concrete

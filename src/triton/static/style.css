@@ -102,3 +102,9 @@ legend { font-weight: 600; padding: 0 6px; }
 .chart .hover { fill: var(--series-1); stroke: var(--panel); stroke-width: 2; }
 .chart .tip { position: absolute; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
   padding: 6px 8px; font-size: 12px; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.12); min-width: 140px; }
+.cage { display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 16px; align-items: start; margin-top: 12px; }
+@media (max-width: 640px) { .cage { grid-template-columns: 1fr; } }
+.chart .outline { fill: var(--miss-bg); stroke: var(--text); stroke-width: 6; }
+.chart .link { fill: none; stroke: var(--muted); stroke-dasharray: 24 14; }
+.chart .bar { fill: var(--text); }
+.chart .bar.inner { fill: var(--series-1); }

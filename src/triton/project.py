@@ -68,13 +68,14 @@ class ReinforcementSettings(_Model):
     grade: RebarGrade = Field("B500B", title="Reinforcement grade")
     bar_diameters: list[int] = Field(
         default_factory=lambda: [16, 20, 25, 32, 40],
-        title="Bar sizes to try",
+        title="Bars available on this project",
+        description="Only these sizes are used in any design.",
         json_schema_extra={"unit": "mm"},
     )
-    min_clear_spacing: float = _mm("Minimum clear spacing between bars", 50.0, gt=0)
-    max_spacing: float = _mm("Maximum bar spacing", 250.0, gt=0)
-    spacing_step: float = _mm("Spacing increment", 25.0, gt=0)
-    max_layers: int = Field(2, title="Maximum bar layers per face", ge=1, le=3)
+    min_clear_spacing: float = _mm("Minimum clear spacing (slabs and beams)", 50.0, gt=0)
+    max_spacing: float = _mm("Maximum bar spacing (slabs and beams)", 250.0, gt=0)
+    spacing_step: float = _mm("Spacing increment (slabs and beams)", 25.0, gt=0)
+    max_layers: int = Field(2, title="Maximum bar layers per face (slabs and beams)", ge=1, le=3)
     objective: Literal["min_steel", "min_cost"] = Field(
         "min_steel", title="Choose arrangement by", description="Least steel ratio or lowest cost"
     )
@@ -92,11 +93,62 @@ class ReinforcementSettings(_Model):
         return sorted(set(v))
 
 
+RowOption = Literal[1, 1.5, 2, 2.5, 3]
+
+
+class PileReinforcement(_Model):
+    even_bar_count: bool = Field(True, title="Even number of bars in each row")
+    min_clear_spacing: float = _mm(
+        "Minimum clear spacing between bars",
+        80.0,
+        gt=0,
+        description="Between neighbouring bars of a row, measured around the circle. Applies to every row.",
+    )
+    max_clear_spacing: float = _mm(
+        "Maximum clear spacing between bars",
+        200.0,
+        gt=0,
+        description="Outer row. EN 1992-1-1 9.8.5(3) allows at most 200 mm.",
+    )
+    row_clear_spacing: float | None = _mm(
+        "Clear gap between rows",
+        None,
+        gt=0,
+        description="Radial gap between rows. Empty: the EN 1992-1-1 8.2 minimum "
+        "(largest bar, aggregate + 5 mm, 20 mm).",
+    )
+    rows: list[RowOption] = Field(
+        default_factory=lambda: [1, 1.5, 2, 2.5, 3],
+        title="Rows allowed",
+        description="1.5 rows is a full outer row plus half as many bars behind every second bar, "
+        "e.g. 26Ø32 + 13Ø16.",
+    )
+    extra_rows_only_when_needed: bool = Field(
+        True,
+        title="Use extra rows only when one row is not enough",
+        description="Off: pick the lightest cage even if it has more rows.",
+    )
+
+    @field_validator("rows")
+    @classmethod
+    def _some_rows(cls, v: list[float]) -> list[float]:
+        if not v:
+            raise ValueError("Allow at least one row option.")
+        return sorted(set(v))
+
+    @model_validator(mode="after")
+    def _spacing_order(self) -> PileReinforcement:
+        if self.min_clear_spacing >= self.max_clear_spacing:
+            raise ValueError("The minimum clear spacing must be less than the maximum.")
+        return self
+
+
 class DesignSettings(_Model):
     code: Literal["EN 1992 / EN 1993 + BS 6349"] = Field("EN 1992 / EN 1993 + BS 6349", title="Design code")
     design_life_years: int = Field(50, title="Design life", ge=1, json_schema_extra={"unit": "years"})
     partial_factors: PartialFactors = Field(default_factory=PartialFactors, title="Partial factors")
     reinforcement: ReinforcementSettings = Field(default_factory=ReinforcementSettings, title="Reinforcement")
+    piles: PileReinforcement = Field(default_factory=PileReinforcement, title="Pile reinforcement")
     shear_check_distance: Literal["d", "2d"] = Field(
         "d", title="Shear checked at", description="Distance from the support face"
     )
@@ -140,6 +192,12 @@ class PileInput(_ConcreteSection):
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
     cover: float = _mm("Cover to links", 75.0, gt=0)
     link_diameter: float = _mm("Link diameter", 12.0, gt=0)
+    bar_count: int | None = Field(
+        None,
+        title="Bars in the outer row",
+        ge=6,
+        description="Leave empty to let Triton choose, or fix it (e.g. 26 for a 1200 mm pile).",
+    )
     head_level: float | None = _m(
         "Pile head level (slab soffit)",
         None,

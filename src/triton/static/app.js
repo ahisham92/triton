@@ -248,6 +248,31 @@ function renderField(obj, key, prop, inner, nullable, path) {
     return f;
   }
 
+  if (inner.type === "array" && inner.items?.enum) {
+    // e.g. the rows allowed in a pile cage
+    f.classList.add("full");
+    f.innerHTML = `<label>${esc(title)}</label><div class="checks">${inner.items.enum
+      .map((o) => `<label><input type="checkbox" value="${o}" ${value.includes(o) ? "checked" : ""}> ${esc(optionLabel(key, o))}</label>`)
+      .join("")}</div>${hint}`;
+    f.querySelectorAll("input").forEach(
+      (c) =>
+        (c.onchange = () => {
+          obj[key] = [...f.querySelectorAll("input:checked")].map((x) => Number(x.value));
+          markDirty();
+        })
+    );
+    return f;
+  }
+
+  if (inner.type === "boolean") {
+    f.innerHTML = `<label class="toggle" style="color:var(--text);font-size:14px"><input type="checkbox" ${value ? "checked" : ""}> ${esc(title)}</label>${hint}`;
+    f.querySelector("input").onchange = (e) => {
+      obj[key] = e.target.checked;
+      markDirty();
+    };
+    return f;
+  }
+
   const options = inner.enum || (inner.const !== undefined ? [inner.const] : null);
   let control;
   if (options) {
@@ -269,6 +294,11 @@ function renderField(obj, key, prop, inner, nullable, path) {
     markDirty();
   };
   return f;
+}
+
+function optionLabel(key, o) {
+  if (key === "rows") return o === 1 ? "1 row" : `${o} rows`;
+  return String(o);
 }
 
 function prettyOption(o) {
@@ -496,26 +526,59 @@ function pileCard(p) {
   card.style.marginTop = "16px";
   const a = p.arrangement;
   const g = p.governing;
-  card.innerHTML = `<div class="element-head"><h3>${esc(p.element)}<span class="type">${a ? `${esc(a.label)}, ${fmt(a.area_mm2)} mm²` : "no arrangement"}</span></h3>
+  const lim = p.spacing_limits || {};
+  const rowsText = (r) => (r === 1 ? "1 row" : `${r} rows`);
+  card.innerHTML = `<div class="element-head"><h3>${esc(p.element)}<span class="type">${a ? `${esc(a.label)}, ${rowsText(a.rows)}, ${fmt(a.area_mm2)} mm²` : "no arrangement"}</span></h3>
       <span class="sev ${p.passed ? "ok" : "error"}">${p.passed ? "passes" : "fails"}</span></div>
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(p.utilisation, 2)}</b>max utilisation</div>
       <div class="count"><b>${fmt(p.steel_ratio_kg_m3)}</b>kg/m³ longitudinal</div>
-      <div class="count"><b>${a ? fmt(a.clear_spacing_mm) : "–"}</b>mm clear spacing</div>
+      <div class="count"><b>${a ? fmt(a.clear_spacing_mm) : "–"} mm</b>clear spacing, outer row (allowed ${fmt(lim.min_clear_mm)} to ${fmt(lim.max_clear_mm)} mm)</div>
     </div>
     ${g.combination ? `<p>Governing: ${esc(g.combination)}, node ${g.node}, y ${fmt(g.y, 2)} m, z ${fmt(g.z, 2)} m.
       N<sub>Ed</sub> = ${fmt(g.N_kN)} kN (compression +), M<sub>Ed</sub> = ${fmt(g.M_kNm)} kNm, M<sub>Rd</sub> at this N = ${fmt(g.M_Rd_kNm)} kNm.</p>` : ""}
     ${p.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${a?.rings ? `<div class="cage"><div class="chart" data-kind="section"></div><div class="scroll"><table>
+      <tr><th>Row</th><th>Bars</th><th>Bar circle radius</th><th>Clear spacing</th></tr>
+      ${a.rings.map((r, i) => `<tr><td>${i ? (r.count < a.rings[0].count ? `${i + 1} (half row)` : i + 1) : "1 (outer)"}</td><td>${r.count}Ø${r.diameter}</td><td>${fmt(r.radius)} mm</td><td>${fmt(r.clear_spacing_mm)} mm</td></tr>`).join("")}
+      <tr><td>Total</td><td>${a.bar_count} bars</td><td colspan="2">${fmt(a.area_mm2)} mm², ${fmt(p.reinforcement_ratio_pct, 2)}%, ${fmt(a.weight_kg_per_m, 1)} kg/m</td></tr>
+      </table>
+      <p class="status">Clear gap between rows: ${lim.row_gap_mm == null ? "EN 1992-1-1 8.2 minimum" : `${fmt(lim.row_gap_mm)} mm`}.</p></div></div>` : ""}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
-    <details style="margin-top:12px"><summary>Other bar sizes that pass</summary><div class="scroll"><table>
-      <tr><th>Bars</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
-      ${p.alternatives.map((x) => `<tr><td>${esc(x.label)}</td><td>${fmt(x.area_mm2)}</td><td>${fmt(x.utilisation, 3)}</td><td>${fmt(x.steel_ratio_kg_m3)}</td><td>${fmt(x.clear_spacing_mm)}</td></tr>`).join("")}
+    <details style="margin-top:12px"><summary>Other cages that pass</summary><div class="scroll"><table>
+      <tr><th>Bars</th><th>Rows</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
+      ${p.alternatives.map((x) => `<tr${x.chosen ? ' style="font-weight:600"' : ""}><td>${esc(x.label)}${x.chosen ? " (chosen)" : ""}</td><td>${x.rows}</td><td>${fmt(x.area_mm2)}</td><td>${fmt(x.utilisation, 3)}</td><td>${fmt(x.steel_ratio_kg_m3)}</td><td>${fmt(x.clear_spacing_mm)}</td></tr>`).join("")}
     </table></div></details>`;
+  if (a?.rings) sectionDrawing(card.querySelector('[data-kind="section"]'), p);
   if (p.curve.length) {
     nmChart(card.querySelector('[data-kind="nm"]'), p);
     profileChart(card.querySelector('[data-kind="profile"]'), p);
   }
   return card;
+}
+
+function sectionDrawing(el, p) {
+  // Cross-section to scale: pile outline, link, bars row by row (outer row first).
+  const s = p.section;
+  const a = p.arrangement;
+  const R = s.diameter_mm / 2;
+  const pad = R * 0.08;
+  const box = 2 * (R + pad);
+  const link = R - s.cover_mm - s.link_diameter_mm / 2;
+  const bars = a.rings
+    .map((r, i) =>
+      Array.from({ length: r.count }, (_, k) => {
+        const t = -Math.PI / 2 + (2 * Math.PI * k) / r.count;
+        return `<circle class="${i ? "bar inner" : "bar"}" cx="${(r.radius * Math.cos(t)).toFixed(1)}" cy="${(r.radius * Math.sin(t)).toFixed(1)}" r="${r.diameter / 2}"><title>Row ${i + 1}: Ø${r.diameter}</title></circle>`;
+      }).join("")
+    )
+    .join("");
+  el.innerHTML = `<div class="chart-title">Section, Ø${fmt(s.diameter_mm)} mm</div>
+    <svg viewBox="${-R - pad} ${-R - pad} ${box} ${box}" role="img" aria-label="Pile cross-section with ${esc(a.label)}">
+      <circle class="outline" r="${R}"/>
+      <circle class="link" r="${link}" stroke-width="${s.link_diameter_mm}"/>
+      ${bars}
+    </svg>`;
 }
 
 // Small SVG chart helpers ------------------------------------------------------
