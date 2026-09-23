@@ -165,6 +165,18 @@ class PileReinforcement(_Model):
         description="Unified: one spacing over the whole pile, the closest one needed anywhere. "
         "Zoned: closer links only where shear, the slab connection or laps need them.",
     )
+    shear_depth: Literal["0.8D", "feltham"] = Field(
+        "0.8D",
+        title="Effective depth for shear",
+        description="0.8D: d = 0.8 × diameter, as in the office pile shear sheets. "
+        "Feltham: d = r + 2rs/π (about 5% less).",
+    )
+    hoop_legs: Literal["two_legs", "feltham"] = Field(
+        "two_legs",
+        title="A circular link counts as",
+        description="Two legs: 2 × the bar area, as in the office pile shear sheets. "
+        "Feltham: π/2 × the bar area (the hoop's component across the shear).",
+    )
     curtail: bool = Field(True, title="Reduce the reinforcement down the pile")
     curtailment: Literal["least_steel", "standard_lengths"] = Field(
         "least_steel",
@@ -512,6 +524,12 @@ class SlabInput(_ConcreteSection):
     cover_bottom: float | None = _mm("Bottom cover", None, gt=0, description=_PROJECT_VALUE)
     strips: Literal["uniform", "column_and_field"] = Field(
         "uniform", title="Reinforcement layout", description="One uniform slab, or column and field strips"
+    )
+    shear_links: Literal["office", "ec2"] = Field(
+        "office",
+        title="Shear links carry",
+        description="Office: V = Asw/s · 0.8d · 0.8fyk (θ = 45°), as in the office slab sheets. "
+        "EC2: 6.2.3 with cot θ = 2.5, z = 0.9d and fyk/γs (about 3 times more per link).",
     )
     zone_size: float = _m(
         "Zone grid",

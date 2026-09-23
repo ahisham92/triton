@@ -116,9 +116,11 @@ if that is the chosen objective.
   200 mm, 9.8.5(3)), the clear gap between rows (default: the 8.2(2) minimum), the rows allowed,
   laps or couplers, lap length (45φ) and the maximum steel ratio (4%, more only with couplers). Each pile can also fix the number of
   bars in its outer row (e.g. 26 for a 1200 mm pile).
-- Section: EN 1992-1-1 parabola-rectangle concrete, bilinear steel with a horizontal top branch, strain
-  limits of 6.1, displaced concrete deducted (the AdSec EC2 defaults; Design settings can use the
-  gross area instead). M is the resultant of M_2 and M_3.
+- Section: EN 1992-1-1 parabola-rectangle concrete with αcc = 1.0, bilinear steel with a horizontal
+  top branch, strain limits of 6.1, gross concrete area (as the office AdSec files; Design settings
+  can deduct the bars instead). M is the resultant of M_2 and M_3.
+- Checked against Ahmed's AdSec file (Middle Pile 2 Part 1: 1200 mm, C40/50, 26Ø25 + 13Ø32): at the
+  N of each of its six ULS loads, Triton's MRd is within 1% of AdSec's (`tests/test_adsec.py`).
 - Checked against Ahmed's capacities sheet (1200 mm pile, C40/50, B500): with the sheet's αcc = 1.0,
   gross concrete area and bars 60 mm clear of the face, single-row curves agree within 0.2% on
   average and 2.3% at worst (`tests/test_capacity_sheet.py`).
@@ -151,11 +153,11 @@ and the weight and kg/m³ against running the head cage all the way down.
 
 ### Shear and links
 
-Shear to EN 1992-1-1 6.2 on the usual equivalent section of a circular pile: bw = D and
-d = r + 2·rs/π (rs the bar circle radius), z = 0.9d, half the bars as tension steel. VEd is the
-resultant of Q_12 and Q_13. Where the pile is in tension the concrete takes no shear (project rule),
-so links carry it all. Circular hoops count as two legs of π/4 each: VRd,s = (π/2)·(Asw/s)·z·fywd·cot θ,
-with cot θ up to 2.5 while VRd,max holds. Links follow 9.5.3: at least max(6 mm, φl/4), spacing at
+Shear to EN 1992-1-1 6.2 on the equivalent section of a circular pile, as the office pile shear
+sheets: bw = D, d = 0.8D, z = 0.9d, half the bars as tension steel. VEd is the resultant of Q_12
+and Q_13. Where the pile is in tension the concrete takes no shear (project rule), so links carry it
+all. A circular hoop counts as two legs: VRd,s = 2·(Asw/s)·z·fywd·cot θ, with cot θ up to 2.5 while
+VRd,max holds. Design settings offer Feltham's d = r + 2·rs/π and π/2 legs instead. Links follow 9.5.3: at least max(6 mm, φl/4), spacing at
 most min(20·φl,min, D, 400 mm), and 0.6 of that for a length D below the slab and over laps of bars
 above 14 mm. Spacings are rounded down to the spacing step and grouped into zones of at least 1 m.
 The steel per pile and kg/m³ include the links.
@@ -202,6 +204,26 @@ Plaxis N × −1. Points inside a steel casing are left out of the QP rows; wher
 rows each: max and min N, M2, M3, Q1 and Q2 with the other actions at the same point, in the
 Plaxis sign. There is no most utilised row, as steel is not designed with these sets. For the
 sheet pile wall (a plate) N, M2, M3, Q1 and Q2 are N_1, M_11, M_22, Q_13 and Q_23.
+
+### AdSec files
+
+**Download AdSec files** (`GET …/design/adsec.zip`) gives one AdSec 8.3 file per pile part (and per
+combi wall infill part), named like the office files, e.g. `Pile(2) - 1200mm - Part 1.ads`: the
+circular section in the pile's grade, the cage as bar groups (outer ring round the perimeter, inner
+rings as circles, the first bar on +y so a half row sits behind every second outer bar), the part's
+7 QP loads as long-term SLS cases and its 7 ULS loads as short-term ULS cases, N compression +,
+My = M2, Mz = M3. The records Triton writes match the office file byte for byte for the same
+section and loads; the rest (code, national parameters, bar rules, materials) are copied from it.
+
+## Calculation reports
+
+**Report** on the Design tab: Summary or Detailed, as Word, PDF or Excel
+(`GET …/design/report.{docx|pdf|xlsx}?detail=summary|detailed`). The layout follows the office
+design reports: 1 Introduction (purpose, scope, methodology, units), 2 Design criteria (standards,
+materials, crack limits, covers, corrosion, factors, combinations), 3 Design of sections (Table 3-1
+per element part: crack width, M/MRd, acting moment, capacity, governing combination; the slab
+table; shear tables for piles and beams; punching per pile; reinforcement quantities). The
+detailed report adds Appendix A with each element's calculation.
 
 ## Sheet pile wall
 
@@ -288,10 +310,13 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   being a quarter of the pile spacing each side of a pile line.
 - **Shear per metre:** v = √(Vx² + Vy²) from d (or 2d) off the pile faces, and at least 2d where
   punching governs. No concrete contribution where the slab is in tension; links are given per
-  cell as Ø @ s × s.
+  cell as Ø @ s × s, sized as the office slab sheets, V = Asw/s · 0.8d · 0.8fyk (or, as a slab
+  setting, 6.2.3 with cot θ = 2.5).
 - **Punching (6.4):** at every pile head not under a beam, from the pile face (vRd,max = 0.4·ν·fcd)
-  out to u1 = π(D + 4d) at 2d, nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile force
-  and moment at the slab soffit, as in the pile design. Links per perimeter by 6.52 out to u_out.
+  out to u1 = π(D + 4d) at 2d, nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) at u1 and, as the
+  office punching sheets, β0 = 1 + 0.6π·e/D at the pile face, with the pile force and moment at the
+  slab soffit, as in the pile design. Links per perimeter by 6.52 out to u_out, and never beyond
+  kmax·vRd,c with kmax = 1.5 (6.4.5(1), A1).
   The thickness is the slab's, a slab-wide punching thickness, or one entered per pile (slopes).
   Each pile has a plan and a section drawing of its perimeters and links.
 - **Restraint:** the basic mesh at each face against temperature and shrinkage cracking, as for the

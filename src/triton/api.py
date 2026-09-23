@@ -30,6 +30,7 @@ from .project import (
     with_project_grades,
 )
 from .reader import UnsupportedWorkbook
+from .report import RENDERERS, build_report
 from .store import ProjectNotFound, ProjectStore
 from .validation import ImportResult, import_workbook
 
@@ -325,6 +326,31 @@ def adsec_export(project_id: str, section_id: str) -> Response:
         adsec.zip_files(files),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{name}-adsec.zip"'},
+    )
+
+
+@app.get(SECTION + "/design/report.{fmt}")
+def design_report(project_id: str, section_id: str, fmt: str, detail: str = "summary") -> Response:
+    """The calculation report of a designed section: summary or detailed, as Word, PDF or Excel."""
+    if fmt not in RENDERERS:
+        raise HTTPException(404, "Reports are Word (.docx), PDF (.pdf) or Excel (.xlsx).")
+    if detail not in ("summary", "detailed"):
+        raise HTTPException(422, "detail is 'summary' or 'detailed'.")
+    project = _get(project_id)
+    section = _section(project, section_id)
+    results = store().load_results(project_id, section_id)
+    if results is None:
+        raise HTTPException(404, "This section has not been designed yet.")
+    rep = build_report(project, section, results, detail)
+    name = (
+        re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name} {detail}").strip("_")
+        or "report"
+    )
+    render, media = RENDERERS[fmt]
+    return Response(
+        render(rep),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'},
     )
 
 

@@ -472,6 +472,9 @@ def pile_heads(
     return out
 
 
+KMAX = 1.5  # EN 1992-1-1/A1 6.4.5(1), recommended
+
+
 def punching_depth(slab: SlabInput, x: float, y: float) -> tuple[float, str]:
     """Slab thickness for punching at a pile: its own entry, the slab's punching value, or the thickness."""
     for p in slab.punching_depths:
@@ -526,7 +529,8 @@ def punching(
             rho = min(rho_at(x, y, face), 0.02)
             vrdc = max(0.18 / pf.gamma_c * k * (100 * rho * fck) ** (1 / 3), v_min)
             ved = beta * v * 1e3 / (u1 * d)
-            ved0 = beta * v * 1e3 / (u0 * d)
+            beta0 = 1 + 0.6 * math.pi * e / D  # at the pile face, as the office punching sheets
+            ved0 = max(beta, beta0) * v * 1e3 / (u0 * d)
             vrdmax = 0.4 * nu * fcd
             u = max(ved / vrdc, ved0 / vrdmax)
             if worst is None or u > worst["utilisation"]:
@@ -559,6 +563,10 @@ def punching(
         needs = worst["vEd_MPa"] > worst["vRd_c_MPa"]
         worst["needs_reinforcement"] = bool(needs)
         worst["passed"] = worst["vEd_face_MPa"] <= worst["vRd_max_MPa"]
+        # EN 1992-1-1/A1 6.4.5(1): links can raise the resistance to kmax·vRd,c at most.
+        worst["kmax_ratio"] = round(worst["vEd_MPa"] / (KMAX * worst["vRd_c_MPa"]), 3)
+        if needs and worst["kmax_ratio"] > 1:
+            worst["passed"] = False
         if needs and worst["passed"]:
             # 6.52 with sr = 0.75d: Asw per perimeter.
             sr = 0.75 * d
@@ -567,7 +575,9 @@ def punching(
             r_out = u_out / math.pi / 2 - D / 2  # from the pile face
             perimeters = max(2, math.ceil((r_out - 1.5 * d) / sr) + 1)
             worst |= {
-                "utilisation_with_links": round(worst["vEd_face_MPa"] / worst["vRd_max_MPa"], 3),
+                "utilisation_with_links": round(
+                    max(worst["vEd_face_MPa"] / worst["vRd_max_MPa"], worst["kmax_ratio"]), 3
+                ),
                 "asw_mm2_per_perimeter": round(asw),
                 "radial_spacing_mm": round(sr),
                 "u_out_mm": round(u_out),
@@ -951,7 +961,12 @@ def design_slab(
         nu1 = 0.6 * (1 - conc.fck / 250)
         vrd_max = 1000 * z_s * nu1 * fcd / (2.5 + 1 / 2.5) / 1e3  # kN/m at cot θ = 2.5
         need = v > vrdc
-        asw = np.where(need, v * 1e3 / (z_s * fyw * 2.5), 0.0) * 1000  # mm² per m² of slab
+        if slab.shear_links == "office":
+            fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
+            carried = 0.8 * d_s * 0.8 * fyk  # N per (mm²/mm): V = Asw/s · 0.8d · 0.8fyk
+        else:
+            carried = z_s * fyw * 2.5
+        asw = np.where(need, v * 1e3 / carried, 0.0) * 1000  # mm² per m² of slab
         cells = pd.DataFrame({"i": si, "j": sj, "need": need, "asw": asw}).groupby(["i", "j"]).max()
         cells = cells[cells["need"]].reset_index()
         s_max = min(0.75 * d_s, 600.0)
@@ -989,7 +1004,8 @@ def design_slab(
         shear = {
             "method": "EN 1992-1-1 6.2 per metre, v = √(Vx² + Vy²), at "
             + settings.shear_check_distance
-            + " from the pile faces; no concrete contribution in tension",
+            + " from the pile faces; no concrete contribution in tension; links "
+            + ("V = Asw/s · 0.8d · 0.8fyk" if slab.shear_links == "office" else "6.2.3, cot θ = 2.5"),
             "cells_needing_links": int(len(cells)),
             "links": links,
             "heaviest": heaviest,

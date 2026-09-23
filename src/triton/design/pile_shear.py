@@ -1,17 +1,18 @@
 """Shear in circular piles to EN 1992-1-1 6.2, and the links (hoops).
 
-Circular section as an equivalent rectangle (Feltham, The Structural Engineer,
-2004): width bw = D and effective depth d = r + 2·rs/π, with rs the radius of
-the bar circle and z = 0.9·d. Half the longitudinal bars are taken as the
-tension steel for ρl.
+Circular section as an equivalent rectangle: width bw = D, z = 0.9·d, and the
+effective depth d = 0.8·D as in the office pile shear sheets, or (setting)
+d = r + 2·rs/π after Feltham (The Structural Engineer, 2004), with rs the radius
+of the bar circle. Half the longitudinal bars are taken as the tension steel
+for ρl.
 
 * VRd,c from 6.2.2(1) with CRd,c = 0.18/γc, k1 = 0.15 and σcp = NEd/Ac
   (compression +, at most 0.2·fcd), and at least vmin. Where the pile is in
   tension the concrete is given no shear resistance (project rule), so links
   carry all of VEd.
 * Where VEd > VRd,c, links from 6.2.3: cot θ as large as possible up to 2.5
-  while VEd <= VRd,max. A circular hoop is taken as two legs, each π/4
-  effective, so VRd,s = (π/2)·(Asw/s)·z·fywd·cot θ with Asw one hoop bar.
+  while VEd <= VRd,max. VRd,s = n·(Asw/s)·z·fywd·cot θ with Asw one hoop bar and
+  n = 2 legs (office sheets) or, as a setting, π/2 (Feltham).
 * Detailing to 9.5.3: hoop diameter at least max(6 mm, φl,max/4), spacing at
   most min(20·φl,min, D, 400 mm), times 0.6 for a length D below the pile
   head (slab above) and over laps of bars larger than 14 mm.
@@ -84,7 +85,9 @@ def design_shear(
     v_ed = np.hypot(loads["Q_12"].to_numpy(), loads["Q_13"].to_numpy())  # kN
     n_ed = loads["N"].to_numpy()  # kN, compression +
     bw = D
-    d = r + 2 * rs / math.pi
+    pr = settings.piles
+    d = np.full(len(rs), 0.8 * D) if pr.shear_depth == "0.8D" else r + 2 * rs / math.pi
+    legs = 2.0 if pr.hoop_legs == "two_legs" else math.pi / 2
     zlev = 0.9 * d
     k = np.minimum(1 + np.sqrt(200 / d), 2.0)
     rho = np.minimum(area / 2 / (bw * d), 0.02)
@@ -113,7 +116,7 @@ def design_shear(
     crushed = np.isnan(cot)
     cot = np.clip(np.nan_to_num(cot, nan=1.0), 1.0, 2.5)
     # Required hoop area per mm of pile (one bar), where links carry the shear.
-    asw_s = np.where(v_ed > vrdc, v_ed * 1e3 / ((math.pi / 2) * zlev * fywd * cot), 0.0)
+    asw_s = np.where(v_ed > vrdc, v_ed * 1e3 / (legs * zlev * fywd * cot), 0.0)
 
     # Detailing limits.
     phi_l_max = max(zn.phi_max for zn in zones)
@@ -168,7 +171,7 @@ def design_shear(
     provided = np.array(
         [next(zz["spacing_mm"] for zz in out_zones if zz["bottom"] - 1e-9 <= lv) for lv in levels]
     )
-    vrds = _vrds(asw, provided[band], zlev, fywd, cot)
+    vrds = _vrds(legs * asw, provided[band], zlev, fywd, cot)
     util = v_ed / np.maximum(np.where(v_ed > vrdc, vrds, vrdc), 1e-9)
     util = np.where(crushed, np.inf, np.maximum(util, v_ed / vrd_max(cot)))
     i = int(np.argmax(util))
@@ -250,7 +253,8 @@ def _zones(head: float, toe: float, spacing: np.ndarray, reason: np.ndarray, lin
 
 
 def _vrds(asw: float, s: np.ndarray, z: np.ndarray, fywd: np.ndarray, cot: np.ndarray) -> np.ndarray:
-    return (math.pi / 2) * asw / s * z * fywd * cot / 1e3
+    """Link resistance (kN) with ``asw`` the effective area of one link (legs × bar area)."""
+    return asw / s * z * fywd * cot / 1e3
 
 
 def _profile(levels: np.ndarray, band: np.ndarray, v_ed: np.ndarray, vrdc: np.ndarray) -> list[dict]:

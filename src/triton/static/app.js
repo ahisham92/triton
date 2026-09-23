@@ -730,6 +730,12 @@ async function renderDesignTab(host) {
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec files (.ads per pile part)</a>
+      <span class="reports" id="reports" hidden>Report:
+        <select id="report-detail"><option value="summary">Summary</option><option value="detailed">Detailed</option></select>
+        <a class="quiet-link" data-fmt="docx" href="#">Word</a>
+        <a class="quiet-link" data-fmt="pdf" href="#">PDF</a>
+        <a class="quiet-link" data-fmt="xlsx" href="#">Excel</a>
+      </span>
       ${Object.values(sec().elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
       <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile, combi wall, beam or slab elements first."}</span>
     </div><div id="design-out"></div>`;
@@ -765,6 +771,17 @@ function renderResults(res) {
   if (link) link.hidden = !res.piles.length && !walls.length;
   const ads = document.getElementById("ads");
   if (ads) ads.hidden = !res.piles.length && !walls.length;
+  const reports = document.getElementById("reports");
+  if (reports) {
+    reports.hidden = false;
+    const detail = document.getElementById("report-detail");
+    const setLinks = () =>
+      reports.querySelectorAll("a[data-fmt]").forEach((a) => {
+        a.href = `${secUrl()}/design/report.${a.dataset.fmt}?detail=${detail.value}`;
+      });
+    detail.onchange = setLinks;
+    setLinks();
+  }
   const sets = document.getElementById("sets");
   if (sets) sets.hidden = !res.piles.length && !walls.length && !spws.length && !beams.length;
   const rows = res.piles

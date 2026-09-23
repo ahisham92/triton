@@ -19,11 +19,11 @@ def rows(loads):
     return out
 
 
-def design(loads, links="zoned", **pile):
+def design(loads, settings=None, links="zoned", **pile):
     sheets = import_sheets({"Pile(1)-PT-B-Apron": rows(loads), "Pile(1)-QP": rows(loads)}).elements()[
         "Pile(1)"
     ]
-    settings = DesignSettings()
+    settings = settings or DesignSettings()
     settings.piles.curtail = False
     settings.piles.links = links
     return design_pile("Pile(1)", PileInput(head_level=0.0, **pile), settings, sheets).to_dict()
@@ -37,13 +37,22 @@ def test_concrete_shear_resistance_by_hand():
     d = design(column(q=100.0))
     sh = d["shear"]
     a = d["arrangement"]
-    rs = a["rings"][0]["radius"]
-    dd = 600 + 2 * rs / math.pi
+    dd = 0.8 * 1200  # the office sheets' d = 0.8D
     k = 1 + math.sqrt(200 / dd)
     rho = a["area_mm2"] / 2 / (1200 * dd)
     v = max(0.18 / 1.5 * k * (100 * rho * 40) ** (1 / 3), 0.035 * k**1.5 * math.sqrt(40))
     assert sh["governing"]["VRd_c_kN"] == pytest.approx(v * 1200 * dd / 1e3, rel=1e-3)
     assert sh["passed"] and {z["reason"] for z in sh["zones"]} <= {"near slab", "minimum"}
+
+
+def test_feltham_depth_and_hoop_legs_as_settings():
+    loads = column(q=1500.0)
+    office = design(loads)["shear"]
+    s = DesignSettings()
+    s.piles.shear_depth, s.piles.hoop_legs = "feltham", "feltham"
+    feltham = design(loads, s)["shear"]
+    # π/2 legs and a smaller d need closer links for the same shear.
+    assert feltham["zones"][0]["spacing_mm"] < office["zones"][0]["spacing_mm"]
 
 
 def test_detailing_zones():

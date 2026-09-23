@@ -105,6 +105,10 @@ def test_slab_design_with_zones_punching_and_restraint():
     assert p["beta"] == pytest.approx(
         1 + 0.6 * math.pi * 100 / 1500 * 1000 / (1200 + 4 * p["d_mm"]), abs=1e-3
     )
+    # At the pile face β0 = 1 + 0.6πe/D, as the office sheets; the kmax = 1.5 limit on links.
+    beta0 = 1 + 0.6 * math.pi * 100 / 1500 * 1000 / 1200
+    assert p["vEd_face_MPa"] == pytest.approx(beta0 * 1500e3 / (math.pi * 1200 * p["d_mm"]), rel=2e-3)
+    assert p["kmax_ratio"] == pytest.approx(p["vEd_MPa"] / (1.5 * p["vRd_c_MPa"]), abs=2e-3)
     assert set(d["restraint"]["layers"]) == {"bottom_x", "bottom_y", "top_x", "top_y"}
     assert d["steel"]["kg_per_m3"] > 0 and d["bands"] and len(d["bands"][0]) == 5
 
