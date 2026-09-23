@@ -90,6 +90,13 @@ class ReinforcementSettings(_Model):
     min_clear_spacing: float = _mm("Minimum clear spacing (slabs and beams)", 50.0, gt=0)
     max_spacing: float = _mm("Maximum bar spacing (slabs and beams)", 250.0, gt=0)
     spacing_step: float = _mm("Spacing increment (slabs and beams)", 25.0, gt=0)
+    slab_spacings: list[float] = Field(
+        default_factory=lambda: [150.0, 200.0],
+        title="Slab mesh spacings",
+        description="The only spacings of slab meshes (additional bars go between the mesh bars). "
+        "Empty: from the maximum spacing down in the spacing increment.",
+        json_schema_extra={"unit": "mm"},
+    )
     max_layers: int = Field(2, title="Maximum bar layers per face (slabs and beams)", ge=1, le=3)
     objective: Literal["min_steel", "min_cost"] = Field(
         "min_steel", title="Choose arrangement by", description="Least steel ratio or lowest cost"
@@ -559,11 +566,18 @@ class CraneArea(_Model):
     y_to: float = _m("Y to", 0.0)
     mx: float = Field(0.0, title="Mx", json_schema_extra={"unit": "kNm/m"})
     my: float = Field(0.0, title="My", json_schema_extra={"unit": "kNm/m"})
-    mxy: float = Field(0.0, title="Mxy", json_schema_extra={"unit": "kNm/m"})
     vx: float = Field(0.0, title="Vx", json_schema_extra={"unit": "kN/m"})
     vy: float = Field(0.0, title="Vy", json_schema_extra={"unit": "kN/m"})
     nx: float = Field(0.0, title="Nx (compression +)", json_schema_extra={"unit": "kN/m"})
     ny: float = Field(0.0, title="Ny (compression +)", json_schema_extra={"unit": "kN/m"})
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_twisting(cls, data: Any) -> Any:
+        # The SAP output gives Mx, My, Vx, Vy, Nx and Ny only; older projects may carry an Mxy.
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if k != "mxy"}
+        return data
 
 
 class SlabInput(_ConcreteSection):
@@ -702,6 +716,52 @@ class SlabInput(_ConcreteSection):
     )
 
 
+class TieBars(_Model):
+    """A group of straight tie bars from a bollard back into the deck, at a plan angle."""
+
+    count: int = Field(3, title="Bars", ge=1)
+    diameter: int = Field(32, title="Bar diameter", json_schema_extra={"unit": "mm"})
+    angle: float = Field(
+        0.0,
+        title="Plan angle",
+        ge=-90,
+        le=90,
+        description="From the line straight back from the quay face (0°), positive one way along the quay.",
+        json_schema_extra={"unit": "°"},
+    )
+
+
+def _office_ties() -> list[TieBars]:
+    # As the office drawing SC-502: 2Ø32 straight back, and a fan of 3Ø32 at 45° each side.
+    return [TieBars(count=2, angle=0.0), TieBars(count=3, angle=45.0), TieBars(count=3, angle=-45.0)]
+
+
+class Bollard(_Model):
+    """A bollard on the front beam, tied back into the deck by straight bars (the fender loads are
+    carried by the beam's own bars)."""
+
+    capacity: float = Field(150.0, title="Bollard capacity", gt=0, json_schema_extra={"unit": "t"})
+    load_factor: float = Field(
+        1.5,
+        title="Load factor",
+        ge=1,
+        description="On the rated capacity, taken as the characteristic mooring load (EN 1990 variable "
+        "action).",
+    )
+    ties: list[TieBars] = Field(default_factory=_office_ties, title="Tie bars")
+    tie_slope: float = Field(
+        8.11,
+        title="Tie bar slope in elevation",
+        ge=0,
+        lt=60,
+        description="The ties run down from the bollard into the slab's bottom layer (8.11° on SC-502).",
+        json_schema_extra={"unit": "°"},
+    )
+    lap_length: float = _mm(
+        "Lap with the slab bottom bars", 1600.0, gt=0, description="SC-502: at least 1600 mm."
+    )
+
+
 class BeamInput(_ConcreteSection):
     kind: Literal["front_beam", "rear_beam", "transverse_beam"] = "front_beam"
     width: float | None = _mm(
@@ -733,6 +793,9 @@ class BeamInput(_ConcreteSection):
         gt=0,
         le=0.5,
         description="e.g. tighter where the soffit is in the splash zone",
+    )
+    bollard: Bollard | None = Field(
+        None, title="Bollard", description="Front beam: a bollard and its tie bars. Empty: no bollard check."
     )
 
 

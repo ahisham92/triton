@@ -150,11 +150,16 @@ def bar_options(settings: DesignSettings) -> list[tuple[float, int, float, int]]
     for phi in r.bar_diameters:
         if phi < 10:
             continue
-        s = r.max_spacing
-        while s >= max(100.0, phi + r.min_clear_spacing) - 1e-9:
+        if r.slab_spacings:
+            spacings = sorted({float(s) for s in r.slab_spacings if s >= phi + r.min_clear_spacing - 1e-9})
+        else:
+            spacings, s = [], r.max_spacing
+            while s >= max(100.0, phi + r.min_clear_spacing) - 1e-9:
+                spacings.append(s)
+                s -= r.spacing_step
+        for s in spacings:
             for layers in range(1, (r.max_layers if phi >= 25 else 1) + 1):
                 out.append((layers * 1000 * math.pi * phi * phi / 4 / s, phi, s, layers))
-            s -= r.spacing_step
     # Cheapest first; a second layer costs 10% more to place.
     return sorted(out, key=lambda o: (o[0] * (1 + 0.1 * (o[3] - 1)), -o[1]))
 
@@ -352,7 +357,6 @@ def add_crane(uls: pd.DataFrame, slab: SlabInput) -> tuple[pd.DataFrame, int]:
         for col, v in (
             ("Mx", a.mx),
             ("My", a.my),
-            ("Mxy", a.mxy),
             ("Vx", a.vx),
             ("Vy", a.vy),
             ("Nx", a.nx),

@@ -50,6 +50,7 @@ from ..elements import CombinationType, ElementType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import BeamInput, CombiWallInput, DesignSettings, PileInput, with_project_grades
+from .bollard import check_bollard
 from .circular import ConcreteLaw, SteelLaw
 from .crack import autogenous_shrinkage, crack_width, restraint_crack, restraint_factor
 from .governing import pick_sets
@@ -984,6 +985,9 @@ def design_beam(
     checks = [bending["utilisation"], links.get("utilisation"), trans.get("utilisation")]
     checks += [c["wk"] / c["limit"] for c in crack_out.values()]
     checks += [c["wk"] / c["limit"] for c in restr["faces"].values() if math.isfinite(c["wk"])]
+    bollard = check_bollard(beam.bollard, beam.concrete, settings) if beam.bollard is not None else None
+    if bollard is not None:
+        checks.append(bollard["utilisation"])
     finite = [c for c in checks if c is not None]
     passed = (
         bending["passed"]
@@ -992,6 +996,7 @@ def design_beam(
         and all(c["passed"] for c in crack_out.values())
         and all(c["passed"] for c in restr["faces"].values())
         and status == "ok"
+        and (bollard is None or bollard["passed"])
     )
     # Links and restraint are one arrangement for the whole beam, so they colour every band.
     uniform = max([c for c in checks[1:] if c is not None and math.isfinite(c)], default=0.0)
@@ -1014,6 +1019,7 @@ def design_beam(
         "restraint": restr,
         "shear": links,
         "transverse": trans,
+        "bollard": bollard,
         "steel": steel,
         "bands": bands,
         "profile": _profile(mom, u),

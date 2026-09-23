@@ -221,3 +221,11 @@ def test_column_and_field_strips_by_station():
     }
     assert design_deck(stations=[3.0, 5.0])["strip_design"]["stations"] == [0.0, 3.0, 5.0, 8.0]
     assert design_deck(strips="uniform")["strip_design"] is None
+
+
+def test_slab_meshes_at_150_or_200():
+    d = design_deck()
+    assert {lay["basic"]["spacing_mm"] for lay in d["layers"].values()} <= {150.0, 200.0}
+    s = DesignSettings()
+    s.reinforcement.slab_spacings = []
+    assert {o[2] for o in bar_options(s)} > {150.0, 200.0}

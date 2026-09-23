@@ -185,3 +185,22 @@ def test_design_beam_with_supports_and_export():
     ws = load_workbook(BytesIO(workbook("P", "S", res)))["Concrete"]
     titles = [r[0] for r in ws.iter_rows(values_only=True) if r[0] and str(r[0]).startswith("Front Beam")]
     assert titles and "M3 vertical" in titles[0]
+
+
+def test_bollard_ties_as_the_office_drawing():
+    from triton.design.bollard import check_bollard
+    from triton.project import Bollard, TieBars
+
+    d = check_bollard(Bollard(), "C40/50", DesignSettings())
+    # 150 t × 1.5 × g square to the quay; 2Ø32 straight and 3Ø32 at ±45°, 8.11° down.
+    assert d["F_Ed_kN"] == round(1.5 * 150 * 9.81)
+    fyd = 500 / 1.15
+    bar = math.pi * 32**2 / 4 * fyd * math.cos(math.radians(8.11)) / 1e3
+    assert d["R_kN"] == pytest.approx(2 * bar + 6 * bar * math.cos(math.pi / 4), abs=2)
+    assert d["tie_utilisation"] == pytest.approx(d["F_Ed_kN"] / d["R_kN"], abs=2e-3)
+    more = check_bollard(
+        Bollard(ties=[TieBars(count=2), TieBars(count=6, angle=45), TieBars(count=6, angle=-45)]),
+        "C40/50",
+        DesignSettings(),
+    )
+    assert more["passed"] and more["laps"][0]["l0_mm"] <= 1600

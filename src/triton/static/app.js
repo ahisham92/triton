@@ -1194,6 +1194,9 @@ function beamCard(b) {
     ${tr.top ? `<h3 style="margin-top:18px">Transverse bars (per metre, across the beam) ${ok(tr.passed)}</h3>
     <p>Top <b>${esc(tr.top.label)}</b> (${fmt(tr.top.as_mm2_per_m)} mm²/m), bottom <b>${esc(tr.bottom.label)}</b> (${fmt(tr.bottom.as_mm2_per_m)} mm²/m). Bending utilisation ${fmt(tr.utilisation, 2)}${tr.governing ? `, governed by ${esc(tr.governing.combination)} at ${fmt(tr.governing.s, 1)} m, M = ${fmt(tr.governing.M_kNm_per_m)} kNm/m with N = ${fmt(tr.governing.N_kN_per_m)} kN/m` : ""}.
       ${Object.entries(tr.cracks || {}).map(([f, x]) => `QP crack at the ${f}: ${fmt(x.wk, 3)} mm of ${fmt(x.limit, 2)}.`).join(" ")}</p>` : ""}
+    ${b.bollard ? `<h3 style="margin-top:18px">Bollard tie bars ${ok(b.bollard.passed)}</h3>
+    <p>${fmt(b.bollard.capacity_t)} t bollard: F<sub>Ed</sub> = ${fmt(b.bollard.F_Ed_kN)} kN against ${fmt(b.bollard.R_kN)} kN from ${esc(b.bollard.ties.map((t) => `${t.bars} at ${fmt(t.angle_deg)}°`).join(", "))} (utilisation ${fmt(b.bollard.tie_utilisation, 2)}). Laps with the slab bottom bars: ${fmt(Math.max(...b.bollard.laps.map((x) => x.l0_mm)))} mm needed, ${fmt(b.bollard.lap_length_mm)} mm given.</p>
+    <p class="status">${esc(b.bollard.method)}</p>` : ""}
     ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}`;
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
   if (b.profile?.length) {

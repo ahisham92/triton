@@ -885,6 +885,28 @@ def _beam(r: Report, b: dict) -> None:
             ("Per metre", f"{st.get('kg_per_m', 0):.0f} kg/m"),
         ]
     )
+    bo = b.get("bollard")
+    if bo:
+        r.h(3, "Bollard tie bars")
+        r.p(bo["method"])
+        r.table(
+            ["Tie bars", "Plan angle (°)", "T_Rd (kN)", "Square to the quay (kN)", "Lap l0 needed (mm)"],
+            [
+                [t["bars"], t["angle_deg"], t["T_Rd_kN"], t["normal_kN"], lap["l0_mm"]]
+                for t, lap in zip(bo["ties"], bo["laps"], strict=False)
+            ],
+        )
+        r.kv(
+            [
+                (
+                    "Bollard",
+                    f"{bo['capacity_t']:g} t × {bo['load_factor']:g}: F_Ed = {_fmt(bo['F_Ed_kN'])} kN",
+                ),
+                ("Ties", f"{_fmt(bo['R_kN'])} kN, utilisation {bo['tie_utilisation']}"),
+                ("Lap given", f"{bo['lap_length_mm']:g} mm, utilisation {bo['lap_utilisation']}"),
+                ("Result", _ok(bo.get("passed"))),
+            ]
+        )
     for n in b.get("notes", []):
         r.note(n)
     _sets(r, b.get("governing_sets"), "Governing sets")
