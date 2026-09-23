@@ -67,15 +67,18 @@ under `/triton` of the existing site and behind that site's own sign-in:
    app, wrap it:
    ```python
    import os
+
    os.environ["TRITON_DATA_DIR"] = "/home/<username>/triton-data"
    from triton.wsgi import guarded, mount
 
    # Flask with Flask-Login (for Django, see triton/wsgi.py):
    from flask_login import current_user
 
+
    def signed_in(environ):
        with flask_app.request_context(environ):
            return current_user.is_authenticated
+
 
    application = mount(flask_app, "/triton", guarded(signed_in, sign_in_url="/login"))
    ```
