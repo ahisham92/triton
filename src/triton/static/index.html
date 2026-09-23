@@ -4,132 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Triton</title>
-<style>
-  :root {
-    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e1dc;
-    --ok: #2f7d4f; --ok-bg: #e5f2ea; --warn: #9a6200; --warn-bg: #fbf0d9;
-    --err: #b3261e; --err-bg: #f9e3e1; --miss-bg: #efeeea; --accent: #1f5f8b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #161615; --panel: #1f1f1d; --text: #ecebe6; --muted: #a09f98; --line: #34332f;
-      --ok: #7cc79a; --ok-bg: #1f3428; --warn: #e5b45a; --warn-bg: #3a2f17;
-      --err: #f08b82; --err-bg: #3d1f1c; --miss-bg: #2a2a27; --accent: #7db4dc;
-    }
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text);
-         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  h2 { font-size: 16px; margin: 32px 0 8px; }
-  p.sub { color: var(--muted); margin: 0 0 24px; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
-  .drop { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 9px 16px;
-           font: inherit; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  .status { color: var(--muted); }
-  .counts { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
-  .count { flex: 1 1 140px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-           padding: 12px 16px; }
-  .count b { display: block; font-size: 26px; }
-  .count.error b { color: var(--err); } .count.warning b { color: var(--warn); }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: 14px; }
-  th, td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
-  td.cell { text-align: center; font-weight: 600; white-space: nowrap; }
-  .ok { background: var(--ok-bg); color: var(--ok); }
-  .warning { background: var(--warn-bg); color: var(--warn); }
-  .error { background: var(--err-bg); color: var(--err); }
-  .missing { background: var(--miss-bg); color: var(--muted); }
-  .sev { border-radius: 6px; padding: 1px 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; }
-  .rows { color: var(--muted); font-size: 13px; }
-  details summary { cursor: pointer; color: var(--muted); margin-top: 8px; }
-</style>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<main>
-  <h1>Triton</h1>
-  <p class="sub">Upload the Plaxis straining-actions workbook to check it before design.</p>
-
-  <div class="panel drop">
-    <input type="file" id="file" accept=".xlsb,.xlsx,.xlsm">
-    <button id="run" disabled>Check workbook</button>
-    <span class="status" id="status"></span>
-  </div>
-
-  <div id="report" hidden>
-    <div class="counts">
-      <div class="count error"><b id="n-error">0</b>errors</div>
-      <div class="count warning"><b id="n-warning">0</b>warnings</div>
-      <div class="count"><b id="n-info">0</b>automatic clean-ups</div>
-    </div>
-
-    <h2>Sheets found</h2>
-    <div class="panel scroll"><table id="coverage"></table></div>
-
-    <h2>Problems to review</h2>
-    <div class="panel scroll"><table id="problems"></table></div>
-
-    <details class="panel" style="margin-top:16px">
-      <summary>Automatic clean-ups</summary>
-      <div class="scroll"><table id="cleanups"></table></div>
-    </details>
-  </div>
-</main>
-<script>
-const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const LABEL = { ok: "OK", warning: "Check", error: "Error", missing: "—" };
-
-$("file").addEventListener("change", () => { $("run").disabled = !$("file").files.length; });
-$("run").addEventListener("click", async () => {
-  const f = $("file").files[0];
-  if (!f) return;
-  $("run").disabled = true;
-  $("status").textContent = `Reading ${f.name}…`;
-  const body = new FormData();
-  body.append("file", f);
-  try {
-    const res = await fetch("/api/workbooks/check", { method: "POST", body });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || res.statusText);
-    render(data);
-    $("status").textContent = `Checked ${data.file}`;
-  } catch (e) {
-    $("status").textContent = `Failed: ${e.message}`;
-  } finally {
-    $("run").disabled = false;
-  }
-});
-
-function render(d) {
-  for (const k of ["error", "warning", "info"]) $("n-" + k).textContent = d.counts[k];
-  const combos = d.combinations.map((c) => c.name);
-  let h = "<tr><th>Element</th>" + combos.map((c) => `<th>${esc(c)}</th>`).join("") + "</tr>";
-  for (const e of d.elements) {
-    h += `<tr><th>${esc(e)}</th>` + combos.map((c) => {
-      const s = d.coverage[e][c];
-      return `<td class="cell ${s}">${LABEL[s]}</td>`;
-    }).join("") + "</tr>";
-  }
-  $("coverage").innerHTML = h;
-
-  const row = (i) => {
-    const where = i.sheet || [i.element, i.combination].filter(Boolean).join(" ");
-    const rows = i.rows.length ? `<div class="rows">Excel rows ${i.rows.join(", ")}${i.rows.length >= 20 ? "…" : ""}</div>` : "";
-    return `<tr><td><span class="sev ${i.severity}">${i.severity}</span></td><td>${esc(where)}</td>` +
-           `<td>${esc(i.message)}${rows}</td></tr>`;
-  };
-  const head = "<tr><th></th><th>Sheet</th><th>What was found</th></tr>";
-  const problems = d.issues.filter((i) => i.severity !== "info");
-  $("problems").innerHTML = problems.length ? head + problems.map(row).join("")
-    : "<tr><td>No problems found.</td></tr>";
-  $("cleanups").innerHTML = head + d.issues.filter((i) => i.severity === "info").map(row).join("");
-  $("report").hidden = false;
-}
-</script>
+<header class="top"><div class="in">
+  <a class="brand" href="#/">Triton</a>
+  <nav><a href="#/">Projects</a><a href="#/check">Check a workbook</a></nav>
+</div></header>
+<main id="app"></main>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>
