@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "triton"
+version = "0.1.0"
+description = "Structural design of marine structure elements from Plaxis straining actions"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "numpy>=1.26",
+    "openpyxl>=3.1",
+    "pandas>=2.1",
+    "python-multipart>=0.0.9",
+    "pyxlsb>=1.0.10",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+dev = ["httpx>=0.27", "pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+triton = "triton.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+triton = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
