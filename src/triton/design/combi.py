@@ -144,6 +144,7 @@ def design_combi_wall(
         "infill_bottom_level": bottom,
         "positions": positions,
         "steel_share": round(share, 3),
+        "top_level_set": wall.top_level_to_ignore is not None,
         "utilisation": max(u) if len(u) == 2 else None,
         "passed": bool(infill["passed"] and steel["passed"]),
         "infill": infill,

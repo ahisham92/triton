@@ -36,8 +36,8 @@ Each element gets its own inputs:
 | Steel casing | top and bottom level, thickness, corrosion loss, steel grade, and its role: *crack width only* or *structural* (shares forces with the concrete by E·I) |
 | Combi wall | tube diameter and thickness, corrosion loss, steel and infill grades, infill bottom level (default −25 m), top level (front beam soffit), infill cover and links, number of king piles, tube fabrication quality class |
 | Sheet pile wall | section, steel grade, A / Wel / Wpl per m, class, corrosion loss per face, corrosion zones (bottom level, front and back loss) and shear for Durability |
-| Slab | thickness, top and bottom cover, uniform or column and field strips, crack width limits for the top and bottom faces |
-| Front / rear beam | width, depth, cover, crack width limits for the top and bottom faces (e.g. a soffit in the splash zone) |
+| Slab | thickness (default 700 mm), top and bottom cover, uniform or column and field strips, crack width limits for the top and bottom faces |
+| Front / rear beam | width, depth (default 1.6 m front, 2.0 m rear), cover, crack width limits for the top and bottom faces (e.g. a soffit in the splash zone) |
 
 **Project grades** (Design settings) apply to every element: concrete for piles, slabs and beams,
 combi wall infill concrete, tube and casing steel, and sheet pile steel. An element can set its own
@@ -90,6 +90,9 @@ Grey is not designed yet (outside the working zone, above the top level, or an e
 designed yet). Alerts list anything unsafe, close to the limit (0.95 or more) or very safe (below
 0.5). Picking an element shows it with the others faded and arrows for the directions of its
 actions, from the workbook's direction check. Each element on the Design tab has the same view.
+The Design tab opens with a "To look at" list of the unsafe and close-to-the-limit alerts, plus
+inputs that change the results when left empty: a pile or king pile with no top level, or a section
+with no working zone.
 Drag to orbit, shift-drag or right-drag to pan, scroll to zoom; presets for 3D, plan, from the sea
 and along the quay.
 
@@ -260,8 +263,10 @@ that is 67% to the infill. Below the infill the tube carries everything. A combi
 put every action on the tube (the infill is still designed for its share).
 
 The tube is checked in corrosion zones down its length (per wall: bottom level, loss outside and
-inside, e.g. 4.5 mm splash to −5 m, then 1.75 mm both faces below the infill; empty: the single
-loss above), with γM0 = 1.10 and γM1 = 1.1 as the office sheets.
+inside; empty: the single loss above), with γM0 = 1.10 and γM1 = 1.1 as the office sheets. A new
+wall starts with the office's king pile zones: 4.5 mm splash to −0.5, 2.5 mm immersion to −16.12,
+1.75 mm soil to −25, then 1.75 mm on both faces below the infill (the last zone runs on to the toe).
+On the sample Section 01a this gives a tube utilisation of 0.663, against 66.2% in the office sheet.
 
 - **Infill:** a circular reinforced concrete section of the tube's inner diameter, designed exactly
   like a pile (N–M cage, reductions down the length, links), from the front beam soffit to the infill

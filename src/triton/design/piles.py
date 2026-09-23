@@ -417,7 +417,11 @@ def design_pile(
     geom = {"diameter_mm": pile.diameter, "cover_mm": pile.cover, "link_diameter_mm": pile.link_diameter}
     if not loads.empty:
         head = pile.head_level if pile.head_level is not None else float(loads["Z"].max())
-        geom |= {"head_level_m": round(head, 2), "toe_level_m": round(float(loads["Z"].min()), 2)}
+        geom |= {
+            "head_level_m": round(head, 2),
+            "toe_level_m": round(float(loads["Z"].min()), 2),
+            "head_level_set": pile.head_level is not None,
+        }
     notes: list[str] = []
     if pile.casing is not None and pile.casing.role == "structural":
         notes.append(

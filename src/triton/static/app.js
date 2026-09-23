@@ -871,6 +871,10 @@ function renderResults(res) {
     .join("");
   out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}.</p>
     ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
+    ${(() => {
+      const list = alerts(res).filter((a) => a.level !== "safe");
+      return list.length ? `<div class="panel"><h3 style="margin-top:0">To look at</h3>${alertsHtml(list)}</div>` : "";
+    })()}
     ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>Crack mm</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
     <div id="pile-cards"></div><div id="combi-cards"></div>
     ${beams.length ? `<h2>Beams</h2><div class="panel scroll"><table><tr><th>Element</th><th>b × h</th><th>Longitudinal bars</th><th>Links</th><th>Transverse bars (top / bottom)</th><th>Max util.</th><th>kg/m³</th></tr>
@@ -953,10 +957,13 @@ function alerts(res) {
     if (p.shear && !p.shear.passed) add("unsafe", p.element, `shear utilisation ${fmt(p.shear.utilisation, 2)}`);
     if (p.connection?.passed === false) add("unsafe", p.element, `casing connection utilisation ${fmt(p.connection.utilisation, 2)}`);
   }
+  const noTop = (res.piles || []).filter((p) => p.section?.head_level_set === false).map((p) => p.element);
+  if (noTop.length) add("limit", noTop.join(", "), "no top level set, so results inside the slab are included: set it on the Elements tab");
   for (const w of res.combi_walls || []) {
     const u = w.infill?.utilisation;
     if (u > 1) add("unsafe", w.element, `infill N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}`);
     else if (u >= 0.95) add("limit", w.element, `infill N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}: close to the limit`);
+    if (w.top_level_set === false) add("limit", w.element, "no top level set, so results inside the front beam are included: set it on the Elements tab");
     const t = w.tube?.utilisation;
     if (t > 1) add("unsafe", w.element, `steel tube utilisation ${fmt(t, 2)} (${esc(w.tube.governing?.check || "")})`);
     else if (t >= 0.95) add("limit", w.element, `steel tube utilisation ${fmt(t, 2)}: close to the limit`);
@@ -984,17 +991,34 @@ function alerts(res) {
     for (const [k, l] of Object.entries(d.layers || {})) {
       if (l.utilisation > 1) add("unsafe", d.element, `${k.replace("_", " bars along ")}: ${fmt(l.utilisation, 2)} of the steel needed`);
     }
+    const where = (q) => `${q.pile} (X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)})`;
     for (const q of d.punching || []) {
-      if (!q.passed) add("unsafe", d.element, `punching at ${q.pile} (X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)}): crushes at the pile face`);
-      else if (q.needs_reinforcement) add("limit", d.element, `punching links needed at ${q.pile} (X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)}), ${q.perimeters} perimeters`);
+      if (!q.passed) add("unsafe", d.element, `punching at ${where(q)}: crushes at the pile face`);
+    }
+    const links = (d.punching || []).filter((q) => q.passed && q.needs_reinforcement);
+    if (links.length === 1) add("limit", d.element, `punching links needed at ${where(links[0])}, ${links[0].perimeters} perimeters`);
+    else if (links.length) {
+      const by = {};
+      for (const q of links) by[q.pile] = (by[q.pile] || 0) + 1;
+      const most = Math.max(...links.map((q) => q.perimeters));
+      add("limit", d.element, `punching links needed at ${links.length} piles (${Object.entries(by).map(([k, n]) => `${n} × ${k}`).join(", ")}), up to ${most} perimeters: see the punching table`);
     }
     if (d.shear && d.shear.passed === false) add("unsafe", d.element, `shear per metre ${fmt(d.shear.utilisation, 2)}`);
     for (const [k, r] of Object.entries(d.restraint?.layers || {})) {
       if (!r.passed) add("unsafe", d.element, `restraint crack ${k.replace("_", " ")} ${fmt(r.wk, 2)} mm of ${fmt(r.limit, 2)}`);
     }
   }
+  const s = state?.project ? sec() : null;
+  if (s && [s.x_min, s.x_max, s.y_min, s.y_max].every((v) => v == null))
+    add("limit", s.name, "no working zone set, so results up to the model's boundaries are included: set it on the Sections tab");
   const rank = { unsafe: 0, limit: 1, safe: 2 };
   return out.sort((a, b) => rank[a.level] - rank[b.level]);
+}
+
+function alertsHtml(list) {
+  const label = { unsafe: "Unsafe", limit: "Check", safe: "Very safe" };
+  const sevClass = { unsafe: "error", limit: "warning", safe: "ok" };
+  return `<ul class="alerts">${list.map((a) => `<li><span class="sev ${sevClass[a.level]}">${label[a.level]}</span> <b>${esc(a.name)}</b>: ${esc(a.text)}</li>`).join("")}</ul>`;
 }
 
 async function renderView3dTab(host) {
@@ -1028,11 +1052,9 @@ async function renderView3dTab(host) {
   };
   const side = document.getElementById("v3d-side");
   const list = alerts(res || {});
-  const label = { unsafe: "Unsafe", limit: "Check", safe: "Very safe" };
-  const sevClass = { unsafe: "error", limit: "warning", safe: "ok" };
   side.innerHTML = `<h3 style="margin-top:0">Alerts</h3>
     ${res ? "" : '<p class="status">Not designed yet: run the design on the Design tab to colour the elements.</p>'}
-    ${list.length ? `<ul class="alerts">${list.map((a) => `<li><span class="sev ${sevClass[a.level]}">${label[a.level]}</span> <b>${esc(a.name)}</b>: ${esc(a.text)}</li>`).join("")}</ul>` : res ? '<p class="status">Nothing unsafe or close to the limit.</p>' : ""}
+    ${list.length ? alertsHtml(list) : res ? '<p class="status">Nothing unsafe or close to the limit.</p>' : ""}
     <h3>Elements</h3><p class="status">Pick one to see it alone with the directions of its actions.</p>
     <div class="v3d-picks">${geo.elements.map((e) => `<button class="quiet" data-pick="${esc(e.element)}">
       <i style="background:${heat(max[e.element])}"></i>${esc(e.element)}<span>${max[e.element] == null ? "not designed" : fmt(max[e.element], 2)}</span></button>`).join("")}</div>`;

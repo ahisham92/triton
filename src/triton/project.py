@@ -445,6 +445,18 @@ class CorrosionZone(_Model):
     inside: float = _mm("Loss on the inside face", 0.0, ge=0, description="e.g. below the infill")
 
 
+def _office_tube_zones() -> list[CorrosionZone]:
+    # The office's king pile sheets: splash, immersion, immersion with soil, soil (filled), then the
+    # steel-only length below the infill with 1.75 mm lost inside as well. BS 6349-1-4 mean losses.
+    return [
+        CorrosionZone(bottom_level=-0.5, outside=4.5),
+        CorrosionZone(bottom_level=-14.5, outside=2.5),
+        CorrosionZone(bottom_level=-16.12, outside=2.5),
+        CorrosionZone(bottom_level=-25.0, outside=1.75),
+        CorrosionZone(bottom_level=-39.0, outside=1.75, inside=1.75),
+    ]
+
+
 class CombiWallInput(_Model):
     kind: Literal["combi_wall"] = "combi_wall"
     tube_diameter: float = _mm("King pile tube diameter", 1626.0, gt=0)
@@ -489,10 +501,11 @@ class CombiWallInput(_Model):
         "not. EN 1993: plastic where filled (EN 1993-5 5.5.4(9)), shell buckling to EN 1993-1-6 where empty.",
     )
     corrosion_zones: list[CorrosionZone] = Field(
-        default_factory=list,
+        default_factory=_office_tube_zones,
         title="Corrosion by zone",
-        description="From the top down, e.g. splash 4.5 to −0.5, immersion 2.5 to −14.5, soil 1.75 to "
-        "−25, then 1.75 outside and inside below the infill. Empty: the single loss above, outside only.",
+        description="From the top down; the last zone runs on to the toe. The values are the office's "
+        "king pile sheets: splash 4.5 to −0.5, immersion 2.5 to −16.12, soil 1.75 to −25, then 1.75 "
+        "outside and inside below the infill. Empty: the single loss above, outside only.",
     )
     buckling_length_factor: float = Field(
         0.7,
@@ -617,7 +630,7 @@ class CraneArea(_Model):
 
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
-    thickness: float = _mm("Slab thickness", 1000.0, gt=0)
+    thickness: float = _mm("Slab thickness", 700.0, gt=0)
     cover_top: float | None = _mm("Top cover", None, gt=0, description=_PROJECT_VALUE)
     cover_bottom: float | None = _mm("Bottom cover", None, gt=0, description=_PROJECT_VALUE)
     strips: Literal["uniform", "column_and_field"] = Field(
@@ -901,7 +914,9 @@ def default_element(name: str) -> ElementInput | None:
     if cls is None:
         return None
     if cls is BeamInput:
-        return BeamInput(kind=parsed.spec.type.value)
+        # The office's usual sizes: front beam 1.6 m deep, rear beam 2.0 m.
+        kind = parsed.spec.type.value
+        return BeamInput(kind=kind, depth=1600.0 if kind == "front_beam" else 2000.0)
     return cls()
 
 
