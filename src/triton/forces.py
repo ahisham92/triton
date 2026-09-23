@@ -85,8 +85,9 @@ def split_combi_wall(
 
     Above ``concrete_bottom_level`` the actions are shared between steel and
     concrete in proportion to their flexural stiffness (E x I, with the
-    corroded steel section). Below it the steel carries everything. The
-    concrete part gets the concrete sign convention for N.
+    corroded steel section). The axial force uses the same ratio as the
+    moments and shears. Below it the steel carries everything. The concrete
+    part gets the concrete sign convention for N.
     """
     base = phase_values(frame, actions)
     filled = base["Z"] >= section.concrete_bottom_level

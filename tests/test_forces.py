@@ -60,3 +60,9 @@ def test_combi_section_rejects_bad_input():
         CombiSection(1.0, 0.6, 0.0)
     with pytest.raises(ValueError):
         CombiSection(1.0, 0.02, 0.02)
+
+
+def test_combi_split_matches_design_office_example():
+    # 1.626 m x 18 mm tube, 3 mm corrosion, C32/40 core (Ecm 33 GPa): about 67% to the concrete.
+    sec = CombiSection(1.626, 0.018, 0.003, e_concrete=33e6)
+    assert 1 - sec.steel_share == pytest.approx(0.67, abs=0.005)
