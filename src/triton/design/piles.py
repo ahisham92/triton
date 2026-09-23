@@ -140,6 +140,8 @@ class PileDesign:
     section: dict = field(default_factory=dict)
     positions: list[list[float]] = field(default_factory=list)
     curtailment: dict | None = None
+    shear: dict | None = None
+    steel: dict | None = None
     alternatives: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     curve: list[list[float]] = field(default_factory=list)
@@ -160,6 +162,8 @@ class PileDesign:
             "section": self.section,
             "positions": self.positions,
             "curtailment": self.curtailment,
+            "shear": self.shear,
+            "steel": self.steel,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
             "reinforcement_ratio_pct": round(100 * self.reinforcement_ratio, 3),
             "alternatives": self.alternatives,
@@ -411,6 +415,7 @@ def design_pile(
         from .curtailment import curtail  # imports this module
 
         curtailment = curtail(name, pile, settings, loads, chosen, area_min)
+    shear, steel = _shear_and_steel(pile, settings, loads, chosen, curtailment, geom)
     positions = (
         loads[["X", "Y"]].round(2).drop_duplicates().sort_values(["Y", "X"]).to_numpy().tolist()
         if {"X", "Y"} <= set(loads.columns)
@@ -457,6 +462,8 @@ def design_pile(
         section=geom,
         positions=positions,
         curtailment=curtailment,
+        shear=shear,
+        steel=steel,
         alternatives=alternatives,
         notes=notes,
         curve=np.round(sec.interaction(), 1).tolist(),
@@ -466,6 +473,45 @@ def design_pile(
             for c, n, m, u in loads[["combination", "N", "M", "util"]].itertuples(index=False)
         ],
     )
+
+
+def _shear_and_steel(pile, settings, loads, chosen, curtailment, geom) -> tuple[dict | None, dict | None]:
+    """Links for shear, and the steel of one pile: longitudinal (with laps) and links."""
+    from .pile_shear import CageZone, design_shear
+
+    head, toe = geom.get("head_level_m"), geom.get("toe_level_m")
+    if head is None or toe is None or head <= toe:
+        return None, None
+    runs = (curtailment or {}).get("runs") or []
+    if runs:
+        zones = [
+            CageZone(
+                r["top"],
+                r["bottom"],
+                r["cage"]["area_mm2"],
+                r["cage"]["rings"][0]["radius"],
+                max(g["diameter"] for g in r["cage"]["rings"]),
+                min(g["diameter"] for g in r["cage"]["rings"]),
+                max(r["lap_below_m"]),
+            )
+            for r in runs
+        ]
+        longitudinal = curtailment["weight_kg"]
+    else:
+        diameters = [g.diameter for g in chosen.rings]
+        zones = [CageZone(head, toe, chosen.area, chosen.outer.radius, max(diameters), min(diameters), 0.0)]
+        longitudinal = chosen.weight_per_m * (head - toe)
+    shear = design_shear(pile, settings, loads, zones)
+    volume = math.pi * pile.diameter**2 / 4 / 1e6 * (head - toe)
+    total = longitudinal + shear["links_kg"]
+    steel = {
+        "longitudinal_kg": round(longitudinal, 1),
+        "links_kg": shear["links_kg"],
+        "total_kg": round(total, 1),
+        "kg_per_m3": round(total / volume, 1),
+        "concrete_m3": round(volume, 2),
+    }
+    return shear, steel
 
 
 def _alternatives(chosen: Arrangement, passing: list[Arrangement], key) -> list[Arrangement]:

@@ -86,6 +86,17 @@ At laps the two cages together stay within 8% (9.5.2(3)); with couplers the 4% l
 The card shows the pile elevation, the bar schedule (levels, cage, bar lengths, laps, utilisation)
 and the weight and kg/m³ against running the head cage all the way down.
 
+### Shear and links
+
+Shear to EN 1992-1-1 6.2 on the usual equivalent section of a circular pile: bw = D and
+d = r + 2·rs/π (rs the bar circle radius), z = 0.9d, half the bars as tension steel. VEd is the
+resultant of Q_12 and Q_13. Where the pile is in tension the concrete takes no shear (project rule),
+so links carry it all. Circular hoops count as two legs of π/4 each: VRd,s = (π/2)·(Asw/s)·z·fywd·cot θ,
+with cot θ up to 2.5 while VRd,max holds. Links follow 9.5.3: at least max(6 mm, φl/4), spacing at
+most min(20·φl,min, D, 400 mm), and 0.6 of that for a length D below the slab and over laps of bars
+above 14 mm. Spacings are rounded down to the spacing step and grouped into zones of at least 1 m.
+The steel per pile and kg/m³ include the links.
+
 ### Export for Revit
 
 **Download cages for Revit (JSON)** on the Design tab (`GET /api/projects/{id}/design/piles/cages.json`)
@@ -95,7 +106,7 @@ the first bar from the model X axis, bar top and bottom levels and length). A Re
 can place the bars from this file alone; it only has to map Plaxis coordinates to the project base point.
 
 Set each pile's **head level** to the slab soffit: results above it are FE peaks inside the slab.
-Not yet included: links and shear, crack width, and a structural casing acting with the concrete
+Not yet included: crack width, and a structural casing acting with the concrete
 (the pile is then designed as reinforced concrete alone, which is conservative), and starter bars into the slab.
 
 ## Workbook format

@@ -597,16 +597,18 @@ function renderPileResults(res) {
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
-      const g = p.governing;
+      const sh = p.shear;
+      const kg = p.steel?.kg_per_m3 ?? p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3;
       return `<tr><td>${esc(p.element)}</td><td>${a ? esc(a.label) : "–"}</td>
         <td class="cell ${p.passed ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
-        <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3)}</td>
-        <td>${g.combination ? `${esc(g.combination)}, z ${fmt(g.z, 2)} m` : "–"}</td></tr>`;
+        <td>${sh ? esc(sh.zones[0].link) : "–"}</td>
+        <td class="cell ${sh ? (sh.passed ? "ok" : "error") : ""}">${sh ? fmt(sh.utilisation, 2) : "–"}</td>
+        <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(kg)}</td></tr>`;
     })
     .join("");
-  out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}. Longitudinal steel only; links and crack width come next.</p>
+  out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}. Crack width comes next.</p>
     ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
-    <div class="panel scroll"><table><tr><th>Element</th><th>Bars</th><th>Utilisation</th><th>ρ at head</th><th>kg/m³ over pile</th><th>Governing</th></tr>${rows}</table></div>
+    <div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>
     <div id="pile-cards"></div>`;
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
@@ -624,7 +626,7 @@ function pileCard(p) {
       <span class="sev ${p.passed ? "ok" : "error"}">${p.passed ? "passes" : "fails"}</span></div>
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(p.utilisation, 2)}</b>max utilisation</div>
-      <div class="count"><b>${fmt(p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3)}</b>${p.curtailment?.runs?.length ? "kg/m³ over the pile, with laps" : "kg/m³ longitudinal"}</div>
+      <div class="count"><b>${fmt(p.steel?.kg_per_m3 ?? p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3)}</b>${p.steel ? `kg/m³ over the pile (${fmt(p.steel.longitudinal_kg)} kg bars with laps + ${fmt(p.steel.links_kg)} kg links)` : "kg/m³ longitudinal"}</div>
       <div class="count"><b>${a ? fmt(a.clear_spacing_mm) : "–"} mm</b>clear spacing, outer row (allowed ${fmt(lim.min_clear_mm)} to ${fmt(lim.max_clear_mm)} mm)</div>
     </div>
     ${g.combination ? `<p>Governing: ${esc(g.combination)}, node ${g.node}, y ${fmt(g.y, 2)} m, z ${fmt(g.z, 2)} m.
@@ -637,6 +639,7 @@ function pileCard(p) {
       </table>
       <p class="status">Clear gap between rows: ${lim.row_gap_mm == null ? "EN 1992-1-1 8.2 minimum" : `${fmt(lim.row_gap_mm)} mm`}.</p></div></div>` : ""}
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
+    ${p.shear ? shearBlock(p.shear) : ""}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
     <details style="margin-top:12px"><summary>Other cages that pass</summary><div class="scroll"><table>
       <tr><th>Bars</th><th>Rows</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
@@ -651,12 +654,25 @@ function pileCard(p) {
   return card;
 }
 
+function shearBlock(sh) {
+  const g = sh.governing;
+  const why = { shear: "shear", minimum: "9.5.3 maximum spacing", "near slab": "0.6 × spacing below the slab", "at lap": "0.6 × spacing at laps" };
+  return `<h3 style="margin:20px 0 4px;font-size:15px">Shear and links <span class="sev ${sh.passed ? "ok" : "error"}">${sh.passed ? "passes" : "fails"}</span></h3>
+    <p style="margin:4px 0 8px">Governing: ${esc(g.combination)}, z ${fmt(g.z, 2)} m. V<sub>Ed</sub> = ${fmt(g.V_kN)} kN with N<sub>Ed</sub> = ${fmt(g.N_kN)} kN;
+      V<sub>Rd,c</sub> = ${fmt(g.VRd_c_kN)} kN${g.N_kN < 0 ? " (pile in tension: no concrete contribution)" : ""}, V<sub>Rd,max</sub> = ${fmt(g.VRd_max_kN)} kN at cot θ = ${fmt(g.cot_theta, 2)}. Utilisation ${fmt(sh.utilisation, 2)}.</p>
+    <div class="scroll"><table><tr><th>From</th><th>To</th><th>Links</th><th>Set by</th></tr>
+      ${sh.zones.map((z) => `<tr><td>${fmt(z.top, 2)}</td><td>${fmt(z.bottom, 2)}</td><td>${esc(z.link)}</td><td>${esc(why[z.reason] || z.reason)}</td></tr>`).join("")}
+    </table></div>
+    <p class="status">${esc(sh.method)}. Largest spacing ${fmt(sh.max_spacing_mm)} mm, smallest link Ø${fmt(sh.min_link_diameter_mm)} (9.5.3). ${fmt(sh.links_kg)} kg of links per pile.</p>
+    ${sh.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
+}
+
 function curtailmentBlock(c) {
   const mode = c.mode === "standard_lengths" ? "standard cut lengths" : "least steel";
   const joint = { lap: "lap", coupler: "coupler", toe: "toe" };
   const saving = c.unified_weight_kg ? Math.round((1 - c.weight_kg / c.unified_weight_kg) * 100) : null;
   return `<h3 style="margin:20px 0 4px;font-size:15px">Reinforcement down the pile</h3>
-    <p class="status" style="margin:0 0 8px">Zones chosen for ${mode}. ${fmt(c.weight_kg)} kg per pile, ${fmt(c.steel_ratio_kg_m3)} kg/m³${saving != null ? `, against ${fmt(c.unified_steel_ratio_kg_m3)} kg/m³ with the head cage all the way down (${saving}% less)` : ""}.${c.couplers ? ` ${c.couplers} couplers.` : ""}</p>
+    <p class="status" style="margin:0 0 8px">Zones chosen for ${mode}. Main bars: ${fmt(c.weight_kg)} kg per pile, ${fmt(c.steel_ratio_kg_m3)} kg/m³${saving != null ? `, against ${fmt(c.unified_steel_ratio_kg_m3)} kg/m³ with the head cage all the way down (${saving}% less)` : ""}.${c.couplers ? ` ${c.couplers} couplers.` : ""}</p>
     <div class="cage"><div class="chart" data-kind="elevation"></div><div class="scroll"><table>
       <tr><th>From</th><th>To</th><th>Cage</th><th>Bar lengths</th><th>Below</th><th>Utilisation</th></tr>
       ${c.runs.map((r) => `<tr><td>${fmt(r.top, 2)}</td><td>${fmt(r.bottom, 2)}</td><td>${esc(r.cage.label)}</td>
