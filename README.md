@@ -39,6 +39,10 @@ Each element gets its own inputs:
 | Slab | thickness, top and bottom cover, uniform or column and field strips, crack width limits for the top and bottom faces |
 | Front / rear beam | width, depth, cover, crack width limits for the top and bottom faces (e.g. a soffit in the splash zone) |
 
+**Project grades** (Design settings) apply to every element: concrete for piles, slabs and beams,
+combi wall infill concrete, tube and casing steel, and sheet pile steel. An element can set its own
+grade instead; left at *Project grade*, it follows the project value.
+
 Project-wide settings: partial factors, bar sizes to try, spacing limits, and whether the
 reinforcement is chosen for the least steel or the lowest cost. Projects are saved as JSON
 in `data/projects/`, with each section's checked workbook and results in

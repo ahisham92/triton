@@ -187,9 +187,19 @@ class PileReinforcement(_Model):
         return self
 
 
+class Materials(_Model):
+    """Project grades. Each element uses these unless it sets its own."""
+
+    concrete: ConcreteGrade = Field("C40/50", title="Concrete grade (piles, slabs, beams)")
+    infill_concrete: ConcreteGrade = Field("C32/40", title="Combi wall infill concrete grade")
+    structural_steel: SteelGrade = Field("S355", title="Tube and casing steel grade")
+    sheet_pile_steel: SheetPileGrade = Field("S355GP", title="Sheet pile steel grade")
+
+
 class DesignSettings(_Model):
     code: Literal["EN 1992 / EN 1993 + BS 6349"] = Field("EN 1992 / EN 1993 + BS 6349", title="Design code")
     design_life_years: int = Field(50, title="Design life", ge=1, json_schema_extra={"unit": "years"})
+    materials: Materials = Field(default_factory=Materials, title="Project grades")
     partial_factors: PartialFactors = Field(default_factory=PartialFactors, title="Partial factors")
     reinforcement: ReinforcementSettings = Field(default_factory=ReinforcementSettings, title="Reinforcement")
     piles: PileReinforcement = Field(default_factory=PileReinforcement, title="Pile reinforcement")
@@ -209,8 +219,11 @@ class DesignSettings(_Model):
 # --- Element inputs ----------------------------------------------------------
 
 
+_PROJECT_GRADE = "Empty: the project grade from Design settings."
+
+
 class _ConcreteSection(_Model):
-    concrete: ConcreteGrade = Field("C40/50", title="Concrete grade")
+    concrete: ConcreteGrade | None = Field(None, title="Concrete grade", description=_PROJECT_GRADE)
     crack_width_limit: float = _mm("Crack width limit wk (QP)", 0.3, gt=0, le=0.5)
 
 
@@ -228,7 +241,7 @@ class Casing(_Model):
     bottom_level: float = _m("Casing bottom level", -1.3)
     thickness: float = _mm("Casing wall thickness", 16.0, gt=0)
     corrosion_loss: float = _mm("Corrosion loss over design life", 2.0, ge=0)
-    steel: SteelGrade = Field("S355", title="Casing steel grade")
+    steel: SteelGrade | None = Field(None, title="Casing steel grade", description=_PROJECT_GRADE)
 
     @model_validator(mode="after")
     def _levels(self) -> Casing:
@@ -272,8 +285,8 @@ class CombiWallInput(_Model):
     tube_diameter: float = _mm("King pile tube diameter", 1626.0, gt=0)
     tube_thickness: float = _mm("Tube wall thickness", 18.0, gt=0)
     corrosion_loss: float = _mm("Corrosion loss over design life", 3.0, ge=0)
-    steel: SteelGrade = Field("S355", title="Tube steel grade")
-    concrete: ConcreteGrade = Field("C32/40", title="Infill concrete grade")
+    steel: SteelGrade | None = Field(None, title="Tube steel grade", description=_PROJECT_GRADE)
+    concrete: ConcreteGrade | None = Field(None, title="Infill concrete grade", description=_PROJECT_GRADE)
     concrete_bottom_level: float = _m("Concrete infill bottom level", -25.0)
     top_level_to_ignore: float | None = _m(
         "Top level of the king pile (front beam soffit)",
@@ -314,7 +327,7 @@ class CombiWallInput(_Model):
 class SheetPileInput(_Model):
     kind: Literal["sheet_pile_wall"] = "sheet_pile_wall"
     section_name: str = Field("", title="Sheet pile section", description="e.g. AZ 26-700")
-    steel: SheetPileGrade = Field("S355GP", title="Steel grade")
+    steel: SheetPileGrade | None = Field(None, title="Steel grade", description=_PROJECT_GRADE)
     area: float | None = Field(None, title="Area per m", gt=0, json_schema_extra={"unit": "cm²/m"})
     elastic_modulus: float | None = Field(
         None, title="Elastic section modulus Wel per m", gt=0, json_schema_extra={"unit": "cm³/m"}
@@ -372,6 +385,22 @@ _KIND_FOR_TYPE = {
     ElementType.FRONT_BEAM: BeamInput,
     ElementType.REAR_BEAM: BeamInput,
 }
+
+
+def with_project_grades(element: Any, materials: Materials) -> Any:
+    """A copy of ``element`` with every unset grade taken from the project grades."""
+    update: dict[str, Any] = {}
+    if isinstance(element, CombiWallInput):
+        update = {"concrete": element.concrete or materials.infill_concrete}
+        update["steel"] = element.steel or materials.structural_steel
+    elif isinstance(element, SheetPileInput):
+        update = {"steel": element.steel or materials.sheet_pile_steel}
+    elif isinstance(element, _ConcreteSection):
+        update = {"concrete": element.concrete or materials.concrete}
+        casing = getattr(element, "casing", None)
+        if casing is not None and casing.steel is None:
+            update["casing"] = casing.model_copy(update={"steel": materials.structural_steel})
+    return element.model_copy(update=update)
 
 
 def default_element(name: str) -> ElementInput | None:

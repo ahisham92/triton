@@ -19,7 +19,7 @@ from typing import Any
 from ..forces import CombiSection, scale_forces
 from ..importer import SheetData
 from ..materials import concrete
-from ..project import CombiWallInput, DesignSettings, PileInput
+from ..project import CombiWallInput, DesignSettings, PileInput, with_project_grades
 from .governing import placeholder_sets
 from .piles import design_pile
 from .tube import Tube, check_tube, tube_loads
@@ -50,6 +50,7 @@ def infill_as_pile(wall: CombiWallInput) -> PileInput:
 def design_combi_wall(
     name: str, wall: CombiWallInput, settings: DesignSettings, sheets: dict[str, SheetData]
 ) -> dict[str, Any]:
+    wall = with_project_grades(wall, settings.materials)
     sec = combi_section(wall)
     share = sec.steel_share
     bottom = wall.concrete_bottom_level

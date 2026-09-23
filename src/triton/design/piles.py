@@ -19,7 +19,7 @@ from ..elements import CombinationType, combination_type
 from ..forces import design_forces
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
-from ..project import DesignSettings, PileInput
+from ..project import DesignSettings, PileInput, with_project_grades
 from .circular import CircularSection, ConcreteLaw, Ring, SteelLaw, hull_indices
 from .governing import qp_loads, station_sets
 
@@ -352,6 +352,7 @@ class _Checker:
 def design_pile(
     name: str, pile: PileInput, settings: DesignSettings, sheets: dict[str, SheetData]
 ) -> PileDesign:
+    pile = with_project_grades(pile, settings.materials)
     above = settings.results_into_connection / 1e3
     loads = PileLoads.from_sheets(sheets, pile.head_level, above).frame
     ac = math.pi * pile.diameter**2 / 4

@@ -132,3 +132,16 @@ def test_reference_endpoints(client):
     assert "C40/50" in [c["grade"] for c in client.get("/api/materials").json()["concrete"]]
     schema = client.get("/api/schema/project").json()
     assert "PileInput" in schema["$defs"]
+
+
+def test_elements_use_project_grades_unless_set():
+    from triton.project import Materials, SheetPileInput, with_project_grades
+
+    m = Materials(concrete="C50/60", infill_concrete="C35/45", structural_steel="S460")
+    pile = with_project_grades(PileInput(casing=Casing()), m)
+    assert pile.concrete == "C50/60" and pile.casing.steel == "S460"
+    assert with_project_grades(PileInput(concrete="C30/37"), m).concrete == "C30/37"
+    wall = with_project_grades(CombiWallInput(), m)
+    assert (wall.concrete, wall.steel) == ("C35/45", "S460")
+    assert with_project_grades(SheetPileInput(), m).steel == "S355GP"
+    assert PileInput().concrete is None  # unset until designed

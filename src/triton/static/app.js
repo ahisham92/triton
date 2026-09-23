@@ -311,7 +311,8 @@ function renderField(obj, key, prop, inner, nullable, path) {
   const options = inner.enum || (inner.const !== undefined ? [inner.const] : null);
   let control;
   if (options) {
-    control = `<select>${options
+    const inherit = nullable ? `<option value="" ${value == null ? "selected" : ""}>${esc(inheritLabel(key, path))}</option>` : "";
+    control = `<select>${inherit}${options
       .map((o) => `<option value="${esc(o)}" ${o === value ? "selected" : ""}>${esc(typeof o === "string" ? prettyOption(o) : o)}</option>`)
       .join("")}</select>`;
   } else if (inner.type === "number" || inner.type === "integer") {
@@ -323,12 +324,21 @@ function renderField(obj, key, prop, inner, nullable, path) {
   const input = f.querySelector("input, select");
   input.oninput = input.onchange = () => {
     let v = input.value;
-    if (options) v = options.find((o) => String(o) === v);
+    if (options) v = v === "" && nullable ? null : options.find((o) => String(o) === v);
     else if (inner.type === "number" || inner.type === "integer") v = v === "" ? (nullable ? null : v) : Number(v);
     obj[key] = v;
     markDirty();
   };
   return f;
+}
+
+function inheritLabel(key, path) {
+  // Unset element grades use the project grades (Design settings).
+  const m = state?.project?.design?.materials || {};
+  const combi = /Combi/.test(path);
+  const grade = key === "concrete" ? (combi ? m.infill_concrete : m.concrete)
+    : key === "steel" ? (/sheet_pile|SPW/.test(path) ? m.sheet_pile_steel : m.structural_steel) : null;
+  return grade ? `Project grade (${grade})` : "Project grade";
 }
 
 function optionLabel(key, o) {
