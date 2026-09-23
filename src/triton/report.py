@@ -403,7 +403,47 @@ def _part_rows(name: str, p: dict) -> list[list[Any]]:
     return rows
 
 
+def _strip_label(s: dict, row: dict) -> str:
+    a, b = row["station"]
+    return f"{s['element']} – {row['moment']} – Station {a:g} to {b:g} – {row['strip'].capitalize()} Strip"
+
+
 def _slab_summary(r: Report, s: dict) -> None:
+    sd = s.get("strip_design")
+    if sd:
+        r.caption(
+            f"Table 3-2: Summary of design results for {s['element']} ({s.get('thickness_mm', 0):g} mm)"
+        )
+        r.table(
+            [
+                "Slab",
+                "Crack width (mm)",
+                "Ultimate moment / moment capacity",
+                "Acting moment (kN.m/m)",
+                "Moment capacity (kN.m/m)",
+                "Governing load combination",
+                "Face, bars",
+            ],
+            [
+                [
+                    _strip_label(s, x),
+                    x.get("wk_mm"),
+                    x.get("ratio"),
+                    x.get("M_kNm_per_m"),
+                    x.get("MRd_kNm_per_m"),
+                    x.get("combination"),
+                    f"{x['face']}, {x['bars']}",
+                ]
+                for x in sd["summary"]
+            ],
+        )
+        r.note(
+            f"Stations are distances along the strips ({sd['along']}) from the slab edge at the {sd['from']}. "
+            f"Column strips are {sd['column_width_m']:g} m wide on the lines of piles, field strips "
+            f"{sd['field_width_m']:g} m between them; moments are per metre, averaged across the strip, and every "
+            "column (field) strip is designed together. Each row is the face that governs; Appendix A has both."
+        )
+        return
     rows = []
     rest = (s.get("restraint") or {}).get("layers") or {}
     for k, lay in (s.get("layers") or {}).items():
@@ -869,6 +909,46 @@ def _slab(r: Report, s: dict) -> None:
             ("Result", _ok(s.get("passed"))),
         ]
     )
+    sd = s.get("strip_design")
+    if sd:
+        r.h(3, "Column and field strips")
+        r.p(
+            f"Strips along {sd['along']} from the {sd['from']}: column strips {sd['column_width_m']:g} m wide on the "
+            f"lines of piles at {sd['along'] == 'X' and 'Y' or 'X'} = "
+            + ", ".join(f"{v:g}" for v in sd["lines"])
+            + f" m, field strips {sd['field_width_m']:g} m between them. Stations: "
+            + ", ".join(f"{v:g}" for v in sd["stations"])
+            + " m. At every cut along a strip the Wood–Armer moment and N are averaged across its width; the "
+            "worst cut of any column (field) strip in a station sets that station's bars, and the QP crack width "
+            "is checked the same way. MRd with the tension bars only, rectangular block 0.8x."
+        )
+        r.table(
+            [
+                "Strip",
+                "Face",
+                "MEd kN.m/m",
+                "NEd kN/m",
+                "Combination",
+                "Bars",
+                "MRd kN.m/m",
+                "M/MRd",
+                "wk mm",
+            ],
+            [
+                [
+                    _strip_label(s, x),
+                    x["face"],
+                    x["M_kNm_per_m"],
+                    x["N_kN_per_m"],
+                    x["combination"],
+                    x["bars"],
+                    x["MRd_kNm_per_m"],
+                    x["ratio"],
+                    x["wk_mm"],
+                ]
+                for x in sd["rows"]
+            ],
+        )
     r.h(3, "Bars per metre")
     r.p(
         "Wood–Armer moments with the in-plane N; a mesh everywhere and additional bars between its bars where needed."

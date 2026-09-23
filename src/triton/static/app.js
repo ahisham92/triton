@@ -417,7 +417,9 @@ function optionLabel(key, o) {
 function prettyOption(o) {
   const map = { crack_only: "Crack width only", structural: "Structural (shares load)", min_steel: "Least steel",
     lap: "Lapped", raw: "Raw values", average: "Average with neighbours", unified: "Unified", zoned: "Zoned", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
-    min_cost: "Lowest cost", en1992: "EN 1992-1-1 (Table 4.4N)", en1993_5: "EN 1993-5 (Table 4.2)", bs6349: "BS 6349-1-4 (maritime)", uniform: "Uniform slab", column_and_field: "Column and field strips" };
+    min_cost: "Lowest cost", en1992: "EN 1992-1-1 (Table 4.4N)", en1993_5: "EN 1993-5 (Table 4.2)", bs6349: "BS 6349-1-4 (maritime)", uniform: "Uniform slab", column_and_field: "Column and field strips",
+    office: "Office sheets", ec2: "EN 1992-1-1", ec3: "EN 1993 (plastic filled, shell buckling empty)", ei_split: "E·I split where filled", all: "All actions on the tube",
+    feltham: "Feltham", two_legs: "Two legs per hoop" };
   return map[o] || o;
 }
 
@@ -974,6 +976,18 @@ async function renderView3dTab(host) {
 // ---------------------------------------------------------------- Slabs
 const LAYER_NAME = { bottom_x: "Bottom, bars along X", bottom_y: "Bottom, bars along Y", top_x: "Top, bars along X", top_y: "Top, bars along Y" };
 
+function stripTable(d) {
+  const sd = d.strip_design;
+  const row = (r) => `<tr><td>${esc(r.moment)} – Station ${fmt(r.station[0], 2)} to ${fmt(r.station[1], 2)} – ${r.strip === "column" ? "Column" : "Field"} strip</td><td>${esc(r.face)}</td>
+    <td class="cell ${r.wk_mm == null || r.wk_mm <= r.wk_limit_mm ? "ok" : "error"}">${r.wk_mm == null ? "–" : fmt(r.wk_mm, 3)}</td>
+    <td class="cell ${r.ratio != null && r.ratio <= 1 ? "ok" : "error"}">${fmt(r.ratio, 2)}</td><td>${fmt(r.M_kNm_per_m)}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
+    <td>${esc(r.combination)}</td><td>${esc(r.bars)}</td></tr>`;
+  return `<h3 style="margin-top:18px">Column and field strips</h3>
+    <p class="status">Stations are metres along ${esc(sd.along)} from the ${esc(sd.from)}. Column strips ${fmt(sd.column_width_m, 1)} m on the pile lines, field strips ${fmt(sd.field_width_m, 1)} m between them; moments per metre averaged across each strip, all column (field) strips designed together. Governing face per row; the report's appendix lists both faces.</p>
+    <div class="scroll"><table><tr><th>Slab</th><th>Face</th><th>Crack width (mm)</th><th>M / M<sub>Rd</sub></th><th>Acting M (kNm/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bars</th></tr>
+      ${sd.summary.map(row).join("")}</table></div>`;
+}
+
 function slabCard(d) {
   const card = document.createElement("div");
   card.className = "panel";
@@ -994,6 +1008,7 @@ function slabCard(d) {
     </div>
     ${(d.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${v3dSlot(d.element)}
+    ${d.strip_design ? stripTable(d) : ""}
     <h3 style="margin-top:18px">Bars per metre</h3>
     <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (between the mesh bars)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
       ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)${l.basic.set_by === "user" ? "<br><span class=\"status\">your mesh</span>" : ""}</td>

@@ -6,7 +6,7 @@ import pytest
 from conftest import PLATE_HEADER, pile_sheet
 
 from triton.design.runner import run_section
-from triton.design.slabs import bar_options, required_as, wood_armer, zones_for
+from triton.design.slabs import auto_stations, bar_options, required_as, wood_armer, zones_for
 from triton.project import CraneArea, DesignSettings, PileInput, PunchingDepth, Section, SlabInput, SlabMesh
 from triton.validation import import_sheets
 
@@ -195,3 +195,29 @@ def test_office_beta_at_the_pile_face():
     beta0 = 1 + 0.6 * math.pi * 100 / 1500 * 1000 / 1200
     assert p["vEd_face_MPa"] == pytest.approx(beta0 * 1500e3 / (math.pi * 1200 * p["d_mm"]), rel=2e-3)
     assert p["vEd_face_MPa"] > ec2["vEd_face_MPa"]
+
+
+def test_automatic_stations_round_the_pile_rows():
+    # The sample's rows 6.5, 11 and 17 m from the front beam, slab 22.2 m: 8.5 and 9 meet halfway.
+    assert auto_stations([6.5, 11.0, 17.0], 22.2) == [0.0, 4.5, 8.75, 13.0, 15.0, 19.0, 22.2]
+    assert auto_stations([0.5], 10.0) == [0.0, 2.5, 10.0]
+
+
+def test_column_and_field_strips_by_station():
+    d = design_deck()
+    sd = d["strip_design"]
+    assert d["strips"] == "column_and_field" and sd["lines"] == [0.0] and sd["column_width_m"] == 2.2
+    # No front beam here: stations from the X = 0 edge, 2 m each side of the pile row at 4 m.
+    assert sd["stations"] == [0.0, 2.0, 6.0, 8.0]
+    rows = {(r["layer"], tuple(r["station"]), r["strip"]): r for r in sd["rows"]}
+    col = rows[("top_x", (2.0, 6.0), "column")]
+    # Every node of the column strip at the pile row (outside the pile) hogs 600 kNm/m.
+    assert col["M_kNm_per_m"] == pytest.approx(600.0) and col["moment"] == "M11"
+    assert col["MRd_kNm_per_m"] >= 600 and col["ratio"] <= 1 and col["wk_mm"] <= 0.3
+    field = rows[("top_x", (2.0, 6.0), "field")]
+    assert field["M_kNm_per_m"] < 600 and field["as_mm2_per_m"] <= col["as_mm2_per_m"]
+    assert {(r["moment"], r["strip"]) for r in sd["summary"]} == {
+        (m, s) for m in ("M11", "M22") for s in ("column", "field")
+    }
+    assert design_deck(stations=[3.0, 5.0])["strip_design"]["stations"] == [0.0, 3.0, 5.0, 8.0]
+    assert design_deck(strips="uniform")["strip_design"] is None

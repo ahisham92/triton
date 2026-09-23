@@ -21,8 +21,15 @@ Bars per metre, EN 1992-1-1, for each face and direction:
 Zones. The slab is cut into square cells (1 m by default). Each face and direction gets a
 basic mesh over the whole slab and, where a cell needs more, zones of heavier bars.
 The basic mesh is the one with the least total steel counting a 10% premium for each
-cell in a zone. With column and field strips the need is averaged over each strip's width
-(EN 1992-1-1 Annex I): column strips a quarter of the pile spacing each side of a pile line.
+cell in a zone.
+
+Column and field strips (the default, as the office's slab design): strips run from the front
+beam to the rear beam. A column strip (2.2 m) is centred on each line of piles, a field strip
+(2.0 m) between two lines. At every cut along a strip the moment and axial force are averaged
+across the strip's width; every column strip is designed together, and every field strip, at
+stations along the strips (2 m each side of every row of piles and the spans between, or the
+user's). Each station and strip gets one set of bars for its worst cut (ULS) and QP crack width;
+M/MRd uses the rectangular block with the tension steel only.
 
 Shear per metre, 6.2.2: v = √(Vx² + Vy²) against VRd,c with σcp from compression; in
 tension no concrete contribution. Cells where links are needed are listed.
@@ -221,18 +228,114 @@ def _cells(x: np.ndarray, y: np.ndarray, x0: float, y0: float, size: float) -> t
     return np.floor((x - x0) / size + 1e-9).astype(int), np.floor((y - y0) / size + 1e-9).astype(int)
 
 
-def _strips(coord: np.ndarray, lines: list[float]) -> np.ndarray:
-    """Strip id for each coordinate: column strips a quarter spacing each side of a pile line."""
-    if len(lines) < 2:
-        return np.zeros(len(coord), int)
-    lines = sorted(lines)
-    gap = float(np.median(np.diff(lines)))
-    ids = np.full(len(coord), -1)
-    for i, ln in enumerate(lines):
-        ids[np.abs(coord - ln) <= gap / 4] = 2 * i  # column strip
-    field = ids < 0
-    ids[field] = 2 * np.searchsorted(lines, coord[field]) - 1  # field strip between lines
-    return ids
+SUPPORT_ZONE = 2.0  # m each side of a row of piles, for the automatic stations
+
+
+def auto_stations(
+    rows: list[float], length: float, half: float = SUPPORT_ZONE, shortest: float = 1.0
+) -> list[float]:
+    """Station boundaries: a station ``half`` each side of every pile row and the spans between them.
+
+    Two pile rows closer than 2·half + ``shortest`` share the boundary halfway between them.
+    """
+    zones = [[max(0.0, r - half), min(length, r + half)] for r in rows]
+    for a, b in zip(zones, zones[1:], strict=False):
+        if b[0] - a[1] < shortest:
+            a[1] = b[0] = (a[1] + b[0]) / 2
+    cuts = {0.0, round(length, 2)}
+    for z in zones:
+        cuts |= {round(v, 2) for v in z if shortest <= v <= length - shortest}
+    return sorted(cuts)
+
+
+def strip_frame(slab: SlabInput, box: dict, piles: list[tuple], beams: list[dict]) -> dict | None:
+    """Where the column and field strips lie: the lines of piles along the strips, the distance along
+    them from the slab edge at the front beam, and the station boundaries."""
+    along = slab.strip_direction
+    ai, ci = (0, 1) if along == "X" else (1, 0)
+    lines = sorted({round(p[ci], 1) for p in piles})
+    if not lines:
+        return None
+    lo, hi = box[along]
+    front = next((b for b in beams if b.get("type") == "front_beam"), None)
+    mid = None if front is None else sum(front["box"][along]) / 2
+    from_hi = mid is None or abs(mid - hi) <= abs(mid - lo)
+    origin, sign = (hi, -1.0) if from_hi else (lo, 1.0)
+    length = hi - lo
+    rows = sorted({round((p[ai] - origin) * sign, 2) for p in piles})
+    rows = [r for r in rows if 0 < r < length]
+    if slab.stations:
+        bounds = sorted({0.0, round(length, 2), *(round(b, 2) for b in slab.stations if 0 < b < length)})
+    else:
+        bounds = auto_stations(rows, length)
+    return {
+        "along": along,
+        "across": "Y" if along == "X" else "X",
+        "origin": origin,
+        "sign": sign,
+        "length": length,
+        "lines": lines,
+        "rows": rows,
+        "bounds": bounds,
+        "column": slab.column_strip_width,
+        "field": slab.field_strip_width,
+        "from": "front beam" if front is not None else f"{along} = {origin:g}",
+    }
+
+
+def locate(frame: dict, along: np.ndarray, across: np.ndarray) -> dict[str, np.ndarray]:
+    """Distance along the strips, station, strip kind (0 column, 1 field), which strip, and whether
+    the point lies inside a strip's width (points between strips wider than the pile spacing are
+    designed as field strip but not averaged)."""
+    s = (along - frame["origin"]) * frame["sign"]
+    b = frame["bounds"]
+    st = np.clip(np.searchsorted(b, s + 1e-9, side="right") - 1, 0, len(b) - 2)
+    lines = np.array(frame["lines"])
+    dist = np.abs(across[:, None] - lines[None, :])
+    k = dist.argmin(axis=1)
+    col = dist[np.arange(len(k)), k] <= frame["column"] / 2 + 1e-6
+    if len(lines) > 1:
+        mids = (lines[1:] + lines[:-1]) / 2
+        dm = np.abs(across[:, None] - mids[None, :])
+        km = dm.argmin(axis=1)
+        field = ~col & (dm[np.arange(len(km)), km] <= frame["field"] / 2 + 1e-6)
+    else:  # one line of piles: a field strip each side of it
+        km, field = (across > lines[0]).astype(int), ~col
+    return {
+        "s": s,
+        "st": st,
+        "kind": np.where(col, 0, 1),
+        "inst": np.where(col, k, km),
+        "averaged": col | field,
+    }
+
+
+def strip_average(f: pd.DataFrame, m: np.ndarray, n: np.ndarray, loc: dict, size: float) -> pd.DataFrame:
+    """Moment and axial force per metre averaged across each strip's width, at every cut along it
+    (``size`` apart) and for every combination."""
+    df = pd.DataFrame(
+        {
+            "combination": f["combination"].to_numpy(),
+            "st": loc["st"],
+            "kind": loc["kind"],
+            "inst": loc["inst"],
+            "cut": np.floor(loc["s"] / size + 1e-9).astype(int),
+            "m": m,
+            "n": n,
+        }
+    )[loc["averaged"]]
+    keys = ["st", "kind", "inst", "cut", "combination"]
+    return df.groupby(keys, sort=False)[["m", "n"]].mean().reset_index()
+
+
+def strip_mrd(area: float, d: float, h: float, n: float, fcd: float, fyd: float) -> float:
+    """Moment capacity per metre (kNm/m) of a strip with tension steel only, under N (kN/m, compression +),
+    about the mid-depth, rectangular block 0.8x."""
+    fc = area * fyd + n * 1e3
+    if fc <= 0:
+        return 0.0
+    x = fc / (0.8 * 1000 * fcd)
+    return max(fc * (h / 2 - 0.4 * x) + area * fyd * (d - h / 2), 0.0) / 1e6
 
 
 def add_crane(uls: pd.DataFrame, slab: SlabInput) -> tuple[pd.DataFrame, int]:
@@ -733,8 +836,16 @@ def design_slab(
         if len(qp_m)
         else None
     )
-    pile_x = sorted({round(p[0], 1) for p in piles})
-    pile_y = sorted({round(p[1], 1) for p in piles})
+    frame = strip_frame(slab, box, piles, beams) if slab.strips == "column_and_field" else None
+    strips = frame is not None
+    if slab.strips == "column_and_field" and not strips:
+        notes.append("No piles under the slab to set out the column strips: designed as a uniform slab.")
+    strip_rows: list[dict] = []
+    if strips:
+        ax, cx = frame["along"], frame["across"]
+        uloc = locate(frame, uls_m[ax].to_numpy(), uls_m[cx].to_numpy())
+        qloc = locate(frame, qp_m[ax].to_numpy(), qp_m[cx].to_numpy()) if len(qp_m) else None
+        fcd_s = settings.partial_factors.alpha_cc * conc.fck / settings.partial_factors.gamma_c
 
     R = (
         slab.restraint_factor
@@ -777,6 +888,38 @@ def design_slab(
             nq = qp_m["Nx" if direction == "x" else "Ny"].to_numpy()
             key = pd.MultiIndex.from_arrays([qp_m["i"], qp_m["j"]])
             pos = pd.MultiIndex.from_arrays([cell["i"], cell["j"]]).get_indexer(key)
+        groups: dict = {}
+        members: dict = {}
+        qgroups: dict = {}
+        if strips:
+            # Every column strip together and every field strip together, station by station: the need
+            # is the worst cut across a strip's width, averaged over that width.
+            other = "top" if face == "bottom" else "bottom"
+            n_u = uls_m["Nx" if direction == "x" else "Ny"].to_numpy()
+            env = strip_average(uls_m, wa[layer], n_u, uloc, size)
+            a_env, _, _ = required_as(
+                env["m"].to_numpy(), env["n"].to_numpy(), h, d, conc.fck, fyd, h - depth(other, direction)
+            )
+            env["req"] = np.maximum(a_env, a_min)
+            gov = env.loc[env.groupby(["st", "kind"])["req"].idxmax()]
+            groups = {(int(r.st), int(r.kind)): r for r in gov.itertuples(index=False)}
+            cxs = x0 + (cell["i"].to_numpy() + 0.5) * size
+            cys = y0 + (cell["j"].to_numpy() + 0.5) * size
+            cl = locate(frame, cxs if ax == "X" else cys, cys if ax == "X" else cxs)
+            keys = list(zip(cl["st"].tolist(), cl["kind"].tolist(), strict=True))
+            for c, k in enumerate(keys):
+                members.setdefault(k, []).append(c)
+            cell["req"] = [
+                groups[k].req if k in groups else r for k, r in zip(keys, cell["req"], strict=True)
+            ]
+            if wq is not None and qloc is not None:
+                qenv = strip_average(qp_m, wq[layer], nq, qloc, size)
+                for k, g in qenv.groupby(["st", "kind"]):
+                    qgroups[(int(k[0]), int(k[1]))] = (
+                        g["m"].to_numpy(),
+                        g["n"].to_numpy(),
+                        g["combination"].to_numpy(),
+                    )
 
         def assess(
             opts: list[tuple],
@@ -788,6 +931,8 @@ def design_slab(
             layer=layer,
             nq=nq,
             pos=pos,
+            qgroups=qgroups,
+            members=members,
         ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
             """Area worth at depth d, and ok[cell, option] for strength alone and for all checks.
 
@@ -807,6 +952,16 @@ def design_slab(
             if wq is not None:
                 crack_ok = np.ones_like(ok)
                 for oi, o in enumerate(opts):
+                    if strips:
+                        for k, (qm, qn, _) in qgroups.items():
+                            if k not in members:
+                                continue
+                            w = crack_widths(
+                                qm, qn, o[0], o[1], o[2], h, d_opt[oi], covers[face], conc, e_eff
+                            )
+                            if w.max() > limits[face] + 1e-9:
+                                crack_ok[members[k], oi] = False
+                        continue
                     w = crack_widths(wq[layer], nq, o[0], o[1], o[2], h, d_opt[oi], covers[face], conc, e_eff)
                     crack_ok[pos[(w > limits[face] + 1e-9) & (pos >= 0)], oi] = False
                 ok &= crack_ok
@@ -824,18 +979,6 @@ def design_slab(
         cell["idx"] = first(ok)
         cell["uidx"] = first(strength_ok)
         req_eff = cell["req"].to_numpy()
-        strips = slab.strips == "column_and_field" and len(pile_x) > 1 and len(pile_y) > 1
-        if strips:
-            # Average the need over each strip's width (Annex I).
-            across = "j" if direction == "x" else "i"
-            lines = pile_y if direction == "x" else pile_x
-            origin = y0 if direction == "x" else x0
-            centre = origin + (cell[across].to_numpy() + 0.5) * size
-            groups = [cell["i" if direction == "x" else "j"].to_numpy(), _strips(centre, lines)]
-            avg = pd.Series(eff[cell["idx"].to_numpy()]).groupby(groups).transform("mean").to_numpy()
-            ok = (eff[None, :] >= avg[:, None] - 1e-6) & ok.any(axis=0)[None, :]
-            req_eff = pd.Series(req_eff).groupby(groups).transform("mean").to_numpy()
-            cell["idx"] = first(ok)
         forced = options.index(meshes[layer]) if layer in meshes else None
         along = "X" if direction == "x" else "Y"
         mode = getattr(slab, f"layout_{layer}")
@@ -846,10 +989,11 @@ def design_slab(
             z = zones_for(cell, ok, options, size, x0, y0, along, size, b)
             z["zones"], z["cell_index"] = [], np.full(len(cell), b)
             opts, eff_all, labels = options, eff, [label(o) for o in options]
+            dphis = [o[1] for o in options]
         else:
             # A mesh everywhere, and additional bars between its bars where it is not enough. The mesh
             # is the one with the least steel overall, its additional bars included.
-            target = req_eff if strips else cell["req"].to_numpy()
+            target = req_eff
             min_clear = settings.reinforcement.min_clear_spacing
             cands = (
                 [forced]
@@ -863,7 +1007,7 @@ def design_slab(
             for k in cands:
                 combos, dphi, labels = additional_options(options[k], settings)
                 eff2, _, ok2, _ = assess(combos, dphi)
-                ok2 = (eff2[None, :] >= target[:, None] - 1e-6) & (ok2 | strips)
+                ok2 = (eff2[None, :] >= target[:, None] - 1e-6) & ok2
                 idx = first(ok2)
                 ar = np.array([o[0] for o in combos])
                 # A cell nothing fits is priced at twice the heaviest bars, so that a few cells a thicker
@@ -871,8 +1015,8 @@ def design_slab(
                 short = np.where(ok2.any(axis=1), 1.0, 2.0)
                 cost = float((ar[idx] * np.where(idx > 0, 1 + PREMIUM, 1.0) * short).sum())
                 if best is None or cost < best[0] - 1e-6:
-                    best = (cost, k, combos, labels, eff2, ok2)
-            _, b, opts, labels, eff_all, ok2 = best
+                    best = (cost, k, combos, labels, eff2, ok2, dphi)
+            _, b, opts, labels, eff_all, ok2, dphis = best
             z = zones_for(
                 cell.assign(idx=first(ok2)), ok2, opts, size, x0, y0, along, slab.min_zone_length, 0, labels
             )
@@ -891,6 +1035,45 @@ def design_slab(
                 f"{LAYER_TEXT[layer].capitalize()}: the heaviest bars ({labels[-1]}) are not enough "
                 f"at X {wx:.1f}, Y {wy:.1f} ({util:.2f}): a thicker slab or a haunch is needed there."
             )
+        if strips:
+            eff_c = eff_all[chosen]
+            name_m = _map(axes)["Mx" if direction == "x" else "My"].replace("_", "")
+            for k, g in sorted(groups.items()):
+                idxs = members.get(k)
+                if not idxs:
+                    continue
+                c = idxs[int(np.argmin(eff_c[idxs]))]
+                oi = int(chosen[c])
+                o, f = opts[oi], dphis[oi]
+                d_o = h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
+                mrd = strip_mrd(o[0], d_o, h, float(g.n), fcd_s, fyd)
+                wk = qcomb = None
+                if k in qgroups:
+                    qm, qn, qc = qgroups[k]
+                    w = crack_widths(qm, qn, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+                    wi = int(np.argmax(w))
+                    wk, qcomb = round(float(w[wi]), 3), str(qc[wi])
+                bars = labels[oi] if mode == "mesh_only" or oi == 0 else f"{label(options[b])} + {labels[oi]}"
+                strip_rows.append(
+                    {
+                        "moment": name_m,
+                        "layer": layer,
+                        "face": face,
+                        "station": [frame["bounds"][k[0]], frame["bounds"][k[0] + 1]],
+                        "strip": "column" if k[1] == 0 else "field",
+                        "M_kNm_per_m": round(abs(float(g.m)), 1),
+                        "N_kN_per_m": round(float(g.n), 1),
+                        "combination": str(g.combination),
+                        "as_req_mm2_per_m": round(float(g.req)),
+                        "bars": bars,
+                        "as_mm2_per_m": round(o[0]),
+                        "MRd_kNm_per_m": round(mrd, 1),
+                        "ratio": round(abs(float(g.m)) / mrd, 3) if mrd > 0 else None,
+                        "wk_mm": wk,
+                        "wk_limit_mm": limits[face],
+                        "qp_combination": qcomb,
+                    }
+                )
         crack_gov = int((areas[cell["idx"].to_numpy()] > areas[cell["uidx"].to_numpy()] + 1e-6).sum())
         z.pop("basic_index")
         layers[layer] = {
@@ -1090,6 +1273,36 @@ def design_slab(
         [p.get("utilisation_with_links", p["utilisation"]) for p in punch if p.get("passed")], default=0.0
     )
     lay_u = max(layers[layer]["utilisation"] for layer in LAYERS)
+    strip_design = None
+    if strips:
+        summary = {}
+        for r in strip_rows:
+            key = (r["moment"], tuple(r["station"]), r["strip"])
+            score = max(r["ratio"] or 0, (r["wk_mm"] or 0) / r["wk_limit_mm"])
+            if key not in summary or score > summary[key][0]:
+                summary[key] = (score, r)
+        strip_design = {
+            "along": frame["along"],
+            "from": frame["from"],
+            "column_width_m": frame["column"],
+            "field_width_m": frame["field"],
+            "lines": frame["lines"],
+            "pile_rows_m": frame["rows"],
+            "stations": frame["bounds"],
+            "rows": strip_rows,
+            "summary": sorted(
+                (v[1] for v in summary.values()), key=lambda r: (r["moment"], r["station"][0], r["strip"])
+            ),
+        }
+        worst = max((r["ratio"] or 0 for r in strip_rows), default=0.0)
+        cracks = [r["wk_mm"] / r["wk_limit_mm"] for r in strip_rows if r["wk_mm"] is not None]
+        lay_u = max(lay_u, worst, max(cracks, default=0.0))
+        notes.append(
+            f"Column strips {frame['column']:g} m wide on the {len(frame['lines'])} lines of piles "
+            f"along {frame['along']}, field strips {frame['field']:g} m between them; each strip's "
+            "moments are averaged across its width and all column (field) strips are designed together "
+            f"at {len(frame['bounds']) - 1} stations measured from the {frame['from']}."
+        )
     passed = (
         shear["passed"]
         and all(p["passed"] for p in punch)
@@ -1101,7 +1314,8 @@ def design_slab(
         "cover_top_mm": slab.cover_top,
         "cover_bottom_mm": slab.cover_bottom,
         "zone_size_m": size,
-        "strips": slab.strips,
+        "strips": "column_and_field" if strips else "uniform",
+        "strip_design": strip_design,
         "box": box,
         "level_m": round(level, 2),
         "layers": layers,

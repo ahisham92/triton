@@ -478,8 +478,8 @@ class CombiWallInput(_Model):
     tube_check: Literal["office", "ec3"] = Field(
         "office",
         title="Tube check",
-        description="Office sheets: elastic, class 4 effective properties wherever d/t > 90ε², filled or not. "
-        "EN 1993: plastic where filled (EN 1993-5 5.5.4(9)), shell buckling to EN 1993-1-6 where empty.",
+        description="Office sheets: elastic, class 4 effective properties wherever d/t > 90ε², filled or "
+        "not. EN 1993: plastic where filled (EN 1993-5 5.5.4(9)), shell buckling to EN 1993-1-6 where empty.",
     )
     corrosion_zones: list[CorrosionZone] = Field(
         default_factory=list,
@@ -572,7 +572,35 @@ class SlabInput(_ConcreteSection):
     cover_top: float | None = _mm("Top cover", None, gt=0, description=_PROJECT_VALUE)
     cover_bottom: float | None = _mm("Bottom cover", None, gt=0, description=_PROJECT_VALUE)
     strips: Literal["uniform", "column_and_field"] = Field(
-        "uniform", title="Reinforcement layout", description="One uniform slab, or column and field strips"
+        "column_and_field",
+        title="Reinforcement layout",
+        description="Column and field strips: strips from the front beam to the rear beam, each designed "
+        "for its moments averaged across its width, every column strip together and every field strip "
+        "together, station by station. Uniform: bars per 1 m cell, zoned.",
+    )
+    strip_direction: Literal["X", "Y"] = Field(
+        "X",
+        title="Strips run along",
+        description="The global axis the strips run along, from the wall to the rear beam (across the quay).",
+    )
+    column_strip_width: float = _m(
+        "Column strip width",
+        2.2,
+        gt=0,
+        description="Centred on each line of piles along the strip.",
+    )
+    field_strip_width: float = _m(
+        "Field strip width",
+        2.0,
+        gt=0,
+        description="Centred between two lines of piles; it passes through no pile.",
+    )
+    stations: list[float] = Field(
+        default_factory=list,
+        title="Station boundaries",
+        description="Distances (m) along the strips from the slab edge at the front beam. Empty: a station "
+        "2 m each side of every row of piles, and the spans between them.",
+        json_schema_extra={"unit": "m"},
     )
     punching_face_beta: Literal["ec2", "office"] = Field(
         "ec2",

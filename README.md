@@ -239,14 +239,26 @@ each level.
 Between the front beam soffit and the infill bottom level (default −25 m) every straining action,
 axial force included, is shared between the steel tube and the concrete infill by E·I, using the
 corroded tube and the infill grade's Ecm. For a 1626 × 18 mm tube with 3 mm corrosion and C32/40
-that is 67% to the infill. Below the infill the tube carries everything.
+that is 67% to the infill. Below the infill the tube carries everything. A combi wall can instead
+put every action on the tube (the infill is still designed for its share).
+
+The tube is checked in corrosion zones down its length (per wall: bottom level, loss outside and
+inside, e.g. 4.5 mm splash to −5 m, then 1.75 mm both faces below the infill; empty: the single
+loss above), with γM0 = 1.10 and γM1 = 1.1 as the office sheets.
 
 - **Infill:** a circular reinforced concrete section of the tube's inner diameter, designed exactly
   like a pile (N–M cage, reductions down the length, links), from the front beam soffit to the infill
   bottom. There is no crack width check, because the tube is a permanent casing.
-- **Tube, filled part:** full plastic resistance, whatever its D/t (EN 1993-5 5.5.4(9)), with
-  M_N,Rd = M_pl,Rd cos(πn/2) and the 6.2.8 shear reduction.
-- **Tube, below the infill:** class from EN 1993-1-1 Table 5.2 on the corroded section. Classes 1 and 2
+- **Tube, office check (default):** as the office steel sheets, elastic with class 4 effective
+  properties wherever d/t > 90ε², filled or not: A_eff = A·√(90ε²/(d/t)),
+  W_eff = W_el·(140ε²/(d/t))^0.25, σ = N/A_eff + M/W_eff ≤ fy/γM0, and V ≤ V_pl,Rd.
+- **Column buckling:** the king pile as a composite column over its length from the top level to the
+  toe: EI_eff = EaIa + 0.6·Ecm·Ic, N_pl,Rk = A_eff·fy + 0.85·Ac·fck (both averaged along the
+  length), Lcr = 0.7L, curve c, N_b,Rd = χ·N_pl,Rk/γM1, and N/N_b,Rd + k_yy·M/M_eff,Rd ≤ 1 with
+  k_yy = 0.9(1 + 0.6λN/N_b,Rd). Factor and curve are per wall.
+- **Tube, EN 1993 check (option), filled part:** full plastic resistance, whatever its D/t (EN 1993-5
+  5.5.4(9)), with M_N,Rd = M_pl,Rd cos(πn/2) and the 6.2.8 shear reduction.
+- **Tube, EN 1993 check, below the infill:** class from EN 1993-1-1 Table 5.2 on the corroded section. Classes 1 and 2
   are checked plastically and class 3 elastically. Class 4 is checked elastically plus for meridional
   shell buckling to EN 1993-1-6 Annex D.1.2 (C_x = 1, fabrication quality class A/B/C, γM1 = 1.1),
   as EN 1993-5 5.5.4(7) refers tubes to EN 1993-1-6.
@@ -306,21 +318,28 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
 - **Mobile crane:** areas with the extra factored actions from the SAP model (factored crane minus
   factored live load, M, V, N per metre) are added to every ULS combination over each area, so
   the governing combination carries them. Pile reactions for punching stay as Plaxis gives them.
-- **Column and field strips (option):** the need is averaged across each strip, the column strip
-  being a quarter of the pile spacing each side of a pile line.
+- **Column and field strips (default, as the office's slab design):** strips run from the front beam
+  to the rear beam (along X by default). A column strip (2.2 m) is centred on each line of piles and
+  a field strip (2.0 m) between two lines. At every 1 m cut along a strip the moments and N are
+  averaged across its width; all column strips are designed together, and all field strips, at
+  stations measured from the front beam edge (2 m each side of each pile row and the spans between,
+  or your own boundaries). Each station and strip gets its bars from the worst cut and its QP crack
+  width, and the table gives, as the office report's slab summary: crack width, M/MRd, acting M,
+  MRd (tension bars, rectangular block) and the governing combination, per M11/M22, station and
+  strip. The uniform layout (per 1 m cell) stays as an option.
 - **Shear per metre:** v = √(Vx² + Vy²) from d (or 2d) off the pile faces, and at least 2d where
   punching governs. No concrete contribution where the slab is in tension; links are given per
   cell as Ø @ s × s, sized as the office slab sheets, V = Asw/s · 0.8d · 0.8fyk (or, as a slab
   setting, 6.2.3 with cot θ = 2.5).
 - **Punching (6.4):** at every pile head not under a beam, from the pile face (vRd,max = 0.4·ν·fcd)
-  out to u1 = π(D + 4d) at 2d, nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) at u1 and, as the
-  office punching sheets, β0 = 1 + 0.6π·e/D at the pile face, with the pile force and moment at the
-  slab soffit, as in the pile design. Links per perimeter by 6.52 out to u_out, and never beyond
+  out to u1 = π(D + 4d) at 2d, nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) at u1 and at the
+  pile face (6.4.5(3)); as a slab setting, the office punching sheets' β0 = 1 + 0.6π·e/D at the face.
+  The pile force and moment are at the slab soffit, as in the pile design. Links per perimeter by 6.52 out to u_out, and never beyond
   kmax·vRd,c with kmax = 1.5 (6.4.5(1), A1).
   The thickness is the slab's, a slab-wide punching thickness, or one entered per pile (slopes).
   Each pile has a plan and a section drawing of its perimeters and links.
 - **Restraint:** the basic mesh at each face against temperature and shrinkage cracking, as for the
-  beams, with R from the joint spacing over the thickness.
+  beams, with R from the joint spacing (58 m by default, the office's) over the thickness.
 - The utilisation heat map in 3D shows, per cell, the bending steel needed over the bars given.
 
 ## Workbook format
