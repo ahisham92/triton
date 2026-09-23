@@ -153,6 +153,7 @@ class PileDesign:
     alternatives: list[dict] = field(default_factory=list)
     governing_sets: list[dict] = field(default_factory=list)
     connection: dict | None = None
+    bands: list[list[float]] = field(default_factory=list)
     moments: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     curve: list[list[float]] = field(default_factory=list)
@@ -177,6 +178,7 @@ class PileDesign:
             "steel": self.steel,
             "governing_sets": self.governing_sets,
             "connection": self.connection,
+            "bands": self.bands,
             "moments": self.moments,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
             "reinforcement_ratio_pct": round(100 * self.reinforcement_ratio, 3),
@@ -494,6 +496,7 @@ def design_pile(
         alternatives=alternatives,
         governing_sets=governing_sets,
         connection=connection_check(pile, settings, loads, chosen),
+        bands=util_bands(loads),
         moments=[
             {"z": float(z), "M_kNm": round(float(m), 1)}
             for z, m in loads.groupby(loads["Z"].mul(2).round() / 2)["M"]
@@ -509,6 +512,15 @@ def design_pile(
             for c, n, m, u in loads[["combination", "N", "M", "util"]].itertuples(index=False)
         ],
     )
+
+
+def util_bands(loads: pd.DataFrame) -> list[list[float]]:
+    """[x, y, z, utilisation]: the highest utilisation of each pile per 0.5 m band, for the 3D view."""
+    if not {"X", "Y", "Z", "util"} <= set(loads.columns):
+        return []
+    key = [loads["X"].round(2), loads["Y"].round(2), loads["Z"].mul(2).round() / 2]
+    g = loads.groupby(key)["util"].max()
+    return [[float(x), float(y), float(z), round(float(u), 3)] for (x, y, z), u in g.items()]
 
 
 def connection_check(

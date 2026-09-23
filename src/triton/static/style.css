@@ -118,3 +118,27 @@ table.sets tr.group td { border-top: 2px solid var(--line); }
 table.sets td { white-space: nowrap; }
 .chart .peak { fill: var(--err); stroke: var(--panel); stroke-width: 2; }
 .chart .peak.out { fill: var(--panel); stroke: var(--err); }
+.view3d { position: relative; }
+.view3d canvas { width: 100%; display: block; cursor: grab; touch-action: none; border-radius: 8px; background: var(--bg); }
+.v3d-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.v3d-bar button { padding: 4px 10px; font-size: 13px; }
+.v3d-tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 4px 8px; font-size: 12px; max-width: 260px; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.v3d-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+@media (max-width: 800px) { .v3d-layout { grid-template-columns: 1fr; } }
+.v3d-side h3 { font-size: 15px; margin: 16px 0 6px; }
+.v3d-picks { display: flex; flex-direction: column; gap: 4px; }
+.v3d-picks button { display: flex; align-items: center; gap: 8px; text-align: left; width: 100%; }
+.v3d-picks button i { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+.v3d-picks button span { margin-left: auto; color: var(--muted); font-size: 13px; }
+.v3d-picks button.on { outline: 2px solid var(--accent); }
+ul.alerts { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.heat-legend { margin-top: 8px; font-size: 12px; color: var(--muted); max-width: 420px; }
+.heat-legend .bar { height: 10px; border-radius: 3px; margin: 4px 0 2px; }
+.heat-legend .ticks { position: relative; height: 16px; }
+.heat-legend .ticks span { position: absolute; transform: translateX(-50%); }
+.heat-legend .ticks span:first-child { transform: none; left: 0; }
+.heat-legend .ticks span:last-child { transform: translateX(-100%); }
+.heat-legend .grey i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
+.v3d-details { margin-top: 12px; }
+.v3d-details .view3d { margin-top: 8px; }

@@ -80,6 +80,19 @@ and listed under each element. The section setting uses them **as they are** or 
 with the nodes either side; ticking *Leave out* on a peak drops that node for that combination at
 the next design run.
 
+### 3D view
+
+The **3D view** tab draws the section from the workbook's node coordinates: piles and king piles as
+lines, the deck, beams and sheet pile wall as panels. After a design run each pile is coloured by
+its N–M utilisation per 0.5 m (green very safe, yellow, orange, red at 1.0, dark red above 1.0);
+the combi wall takes the higher of the infill and the tube, and the tube alone below the infill.
+Grey is not designed yet (outside the working zone, above the top level, or an element type not
+designed yet). Alerts list anything unsafe, close to the limit (0.95 or more) or very safe (below
+0.5). Picking an element shows it with the others faded and arrows for the directions of its
+actions, from the workbook's direction check. Each element on the Design tab has the same view.
+Drag to orbit, shift-drag or right-drag to pan, scroll to zoom; presets for 3D, plan, from the sea
+and along the quay.
+
 ## Load multipliers
 
 On the Workbook tab, add a multiplier (e.g. 1.35) and tick the combinations or single sheets it

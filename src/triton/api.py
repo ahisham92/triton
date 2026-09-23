@@ -18,6 +18,7 @@ from .design.governing import workbook as governing_workbook
 from .design.runner import factored_elements, run_section
 from .design.spw import workbook as spw_workbook
 from .elements import ElementType
+from .geometry import section_geometry
 from .materials import catalogue
 from .project import DesignSettings, Project, ProjectInfo, Section
 from .reader import UnsupportedWorkbook
@@ -285,6 +286,17 @@ def governing_sets_export(project_id: str, section_id: str) -> Response:
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}-governing-sets.xlsx"'},
     )
+
+
+@app.get(SECTION + "/geometry")
+def geometry(project_id: str, section_id: str) -> dict:
+    """Element geometry for the 3D view, with the directions found in the workbook check."""
+    _section(_get(project_id), section_id)
+    wb = store().load_workbook(project_id, section_id)
+    if wb is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    summary = store().workbook_summary(project_id, section_id) or {}
+    return {"elements": section_geometry(wb), "axes": summary.get("axes", [])}
 
 
 @app.get(SECTION + "/spw.xlsx")

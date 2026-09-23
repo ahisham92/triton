@@ -1,4 +1,6 @@
 // Triton front end: projects, schema-driven setup forms and the workbook check.
+import { View3D, directionArrows, heat, legendHtml } from "./view3d.js";
+
 const $app = document.getElementById("app");
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -72,7 +74,7 @@ async function projectsPage() {
 let state = null; // { project, sectionId, dirty, errors }
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -98,6 +100,7 @@ async function projectPage(id, tab, sectionId) {
     ["elements", `Elements (${Object.keys(sec().elements).length})`],
     ["workbook", "Workbook"],
     ["design", "Design"],
+    ["view3d", "3D view"],
   ];
   const picker = SECTION_TABS.has(tab)
     ? `<div class="row section-pick"><label for="section-pick">Section</label>
@@ -134,6 +137,7 @@ async function projectPage(id, tab, sectionId) {
   else if (tab === "sections") renderSections(host);
   else if (tab === "elements") renderElements(host);
   else if (tab === "workbook") renderWorkbookTab(host);
+  else if (tab === "view3d") renderView3dTab(host);
   showSaveState();
   showErrors();
 }
@@ -551,6 +555,7 @@ async function renderWorkbookTab(host) {
     document.getElementById("wb-note").textContent =
       `Workbook in use: ${data.file}, uploaded ${String(data.uploaded_at || "").replace("T", " ").slice(0, 16)}. Upload again to replace it.`;
     renderFactors(data);
+    if (state.geometry?.uploaded !== data.uploaded_at) state.geometry = { uploaded: data.uploaded_at };
     const missing = data.elements.filter((e) => !(e in sec().elements));
     const box = document.getElementById("add-found");
     if (!missing.length) {
@@ -741,6 +746,122 @@ function renderResults(res) {
   const combi = document.getElementById("combi-cards");
   if (walls.length) combi.insertAdjacentHTML("beforeend", "<h2>Combi wall</h2>");
   for (const w of walls) combi.append(combiCard(w));
+  mountElementViews(res);
+}
+
+// ---------------------------------------------------------------- 3D
+function v3dSlot(name) {
+  return `<details class="v3d-details" open><summary>In 3D, with the directions of the actions</summary>
+    <div class="v3d-slot" data-element="${esc(name)}"></div>${legendHtml()}</details>`;
+}
+
+async function sectionGeometry() {
+  // Cached per section; a new workbook upload clears it.
+  if (state.geometry?.section !== sec().id) {
+    let data = null;
+    try {
+      data = await api(`${secUrl()}/geometry`);
+    } catch {
+      /* no workbook yet */
+    }
+    state.geometry = { section: sec().id, data };
+  }
+  return state.geometry.data;
+}
+
+function resultBands(res) {
+  const bands = {};
+  for (const p of res?.piles || []) bands[p.element] = p.bands || [];
+  for (const w of res?.combi_walls || []) bands[w.element] = w.bands || [];
+  return bands;
+}
+
+async function mountElementViews(res) {
+  const slots = [...document.querySelectorAll(".v3d-slot")];
+  if (!slots.length) return;
+  const geo = await sectionGeometry();
+  if (!geo) {
+    slots.forEach((s) => (s.innerHTML = '<p class="status">Upload the workbook to see the 3D view.</p>'));
+    return;
+  }
+  const bands = resultBands(res);
+  for (const slot of slots) {
+    const name = slot.dataset.element;
+    const el = geo.elements.find((e) => e.element === name);
+    const view = new View3D(slot, { height: 380, compact: true });
+    view.setScene({ elements: geo.elements, bands, selected: name, focus: name,
+      arrows: directionArrows(el, geo.axes.find((a) => a.element === name)) });
+  }
+}
+
+function alerts(res) {
+  // Unsafe first, then close to the limit, then very safe.
+  const out = [];
+  const add = (level, name, text) => out.push({ level, name, text });
+  const at = (g) => (g?.combination ? ` (${g.combination}, z ${fmt(g.z, 2)} m)` : "");
+  for (const p of res.piles || []) {
+    const u = p.utilisation;
+    if (u == null) add("unsafe", p.element, "no cage carries the loads");
+    else if (u > 1) add("unsafe", p.element, `N–M utilisation ${fmt(u, 2)}${at(p.governing)}: needs a stronger cage`);
+    else if (u >= 0.95) add("limit", p.element, `N–M utilisation ${fmt(u, 2)}${at(p.governing)}: close to the limit`);
+    else if (u < 0.5) add("safe", p.element, `N–M utilisation ${fmt(u, 2)}: very safe, could be lighter`);
+    if (p.shear && !p.shear.passed) add("unsafe", p.element, `shear utilisation ${fmt(p.shear.utilisation, 2)}`);
+    if (p.connection?.passed === false) add("unsafe", p.element, `casing connection utilisation ${fmt(p.connection.utilisation, 2)}`);
+  }
+  for (const w of res.combi_walls || []) {
+    const u = w.infill?.utilisation;
+    if (u > 1) add("unsafe", w.element, `infill N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}`);
+    else if (u >= 0.95) add("limit", w.element, `infill N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}: close to the limit`);
+    const t = w.tube?.utilisation;
+    if (t > 1) add("unsafe", w.element, `steel tube utilisation ${fmt(t, 2)} (${esc(w.tube.governing?.check || "")})`);
+    else if (t >= 0.95) add("limit", w.element, `steel tube utilisation ${fmt(t, 2)}: close to the limit`);
+  }
+  const rank = { unsafe: 0, limit: 1, safe: 2 };
+  return out.sort((a, b) => rank[a.level] - rank[b.level]);
+}
+
+async function renderView3dTab(host) {
+  host.innerHTML = `<div class="v3d-layout"><div><div class="panel" id="v3d-main"></div>${legendHtml()}</div>
+    <div class="panel v3d-side" id="v3d-side"><p class="status">Loading…</p></div></div>`;
+  const geo = await sectionGeometry();
+  if (!geo) {
+    document.getElementById("v3d-main").innerHTML = '<p class="status">Upload this section\'s workbook on the Workbook tab first.</p>';
+    document.getElementById("v3d-side").innerHTML = "";
+    return;
+  }
+  let res = null;
+  try {
+    res = await api(`${secUrl()}/design`);
+  } catch {
+    /* not designed yet */
+  }
+  const view = new View3D(document.getElementById("v3d-main"), { height: 560 });
+  const bands = resultBands(res);
+  const max = {};
+  for (const p of res?.piles || []) max[p.element] = p.utilisation;
+  for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
+  let selected = null;
+  const show = () => {
+    const el = geo.elements.find((e) => e.element === selected);
+    view.setScene({ elements: geo.elements, bands, selected,
+      arrows: selected ? directionArrows(el, geo.axes.find((a) => a.element === selected)) : [] });
+    side.querySelectorAll("[data-pick]").forEach((b) => b.classList.toggle("on", b.dataset.pick === selected));
+  };
+  const side = document.getElementById("v3d-side");
+  const list = alerts(res || {});
+  const label = { unsafe: "Unsafe", limit: "Check", safe: "Very safe" };
+  const sevClass = { unsafe: "error", limit: "warning", safe: "ok" };
+  side.innerHTML = `<h3 style="margin-top:0">Alerts</h3>
+    ${res ? "" : '<p class="status">Not designed yet: run the design on the Design tab to colour the elements.</p>'}
+    ${list.length ? `<ul class="alerts">${list.map((a) => `<li><span class="sev ${sevClass[a.level]}">${label[a.level]}</span> <b>${esc(a.name)}</b>: ${esc(a.text)}</li>`).join("")}</ul>` : res ? '<p class="status">Nothing unsafe or close to the limit.</p>' : ""}
+    <h3>Elements</h3><p class="status">Pick one to see it alone with the directions of its actions.</p>
+    <div class="v3d-picks">${geo.elements.map((e) => `<button class="quiet" data-pick="${esc(e.element)}">
+      <i style="background:${heat(max[e.element])}"></i>${esc(e.element)}<span>${max[e.element] == null ? "not designed" : fmt(max[e.element], 2)}</span></button>`).join("")}</div>`;
+  side.querySelectorAll("[data-pick]").forEach((b) => (b.onclick = () => {
+    selected = selected === b.dataset.pick ? null : b.dataset.pick;
+    show();
+  }));
+  show();
 }
 
 function combiCard(w) {
@@ -761,6 +882,7 @@ function combiCard(w) {
       <div class="count"><b>${fmt(t.utilisation, 2)}</b>steel tube</div>
     </div>
     ${w.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${v3dSlot(w.element)}
     <h3 style="margin-top:18px">Steel tube</h3>
     <div class="cage"><div class="chart" data-kind="tube"></div><div class="scroll"><table>
       <tr><th colspan="2">Corroded section (${fmt(s.corrosion_mm, 1)} mm lost outside)</th></tr>
@@ -804,6 +926,7 @@ function pileCard(p) {
     ${g.combination ? `<p>Governing: ${esc(g.combination)}, node ${g.node}, y ${fmt(g.y, 2)} m, z ${fmt(g.z, 2)} m.
       N<sub>Ed</sub> = ${fmt(g.N_kN)} kN (compression +), M<sub>Ed</sub> = ${fmt(g.M_kNm)} kNm, M<sub>Rd</sub> at this N = ${fmt(g.M_Rd_kNm)} kNm.</p>` : ""}
     ${p.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${p.element.endsWith(" infill") ? "" : v3dSlot(p.element)}
     ${a?.rings ? `<div class="cage"><div class="chart" data-kind="section"></div><div class="scroll"><table>
       <tr><th>Row</th><th>Bars</th><th>Bar circle radius</th><th>Clear spacing</th></tr>
       ${a.rings.map((r, i) => `<tr><td>${i ? (r.count < a.rings[0].count ? `${i + 1} (half row)` : i + 1) : "1 (outer)"}</td><td>${r.count}Ø${r.diameter}</td><td>${fmt(r.radius)} mm</td><td>${fmt(r.clear_spacing_mm)} mm</td></tr>`).join("")}

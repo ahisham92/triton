@@ -68,6 +68,21 @@ def _peak_note(section: Section, peaks: list[dict]) -> str | None:
     return text + (f"; {left} left out." if left else ".")
 
 
+def combi_bands(wall: dict[str, Any], positions: list[list[float]]) -> list[list[float]]:
+    """[x, y, z, utilisation] per king pile and 0.5 m band: the infill's or the tube's, whichever is higher.
+
+    Below the infill only the tube works; its utilisation is per level, the same at every king pile.
+    """
+    tube = {float(q["z"]): float(q["util"]) for q in wall["tube"].get("profile") or []}
+    out: dict[tuple[float, float, float], float] = {}
+    for x, y, z, u in wall["infill"].get("bands") or []:
+        out[(x, y, z)] = max(u, tube.get(z, 0.0))
+    for x, y in positions:
+        for z, u in tube.items():
+            out.setdefault((x, y, z), u)
+    return [[x, y, z, round(u, 3)] for (x, y, z), u in out.items()]
+
+
 def run_section(settings: DesignSettings, section: Section, workbook: ImportResult) -> dict[str, Any]:
     """Design the piles and combi walls of one section, and pick the sheet pile wall's governing sets."""
     raw = workbook.elements()
@@ -104,6 +119,7 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
                 }
                 for q in peaks
             ]
+            wall["bands"] = combi_bands(wall, positions)
             wall["positions"] = wall["infill"]["positions"] = positions
             wall["count"] = wall["infill"]["count"] = count
             if (wall["infill"].get("steel") or {}).get("total_kg") is not None:
