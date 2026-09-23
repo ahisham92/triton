@@ -155,3 +155,10 @@ def test_corrosion_zones_set_the_tube_per_level():
     assert low["top"] == -5.0 and low["bottom"] == -40.0
     with pytest.raises(ValueError):
         CombiWallInput(corrosion_zones=[{"bottom_level": -5.0, "outside": 10.0, "inside": 9.0}])
+
+
+def test_infill_has_no_crack_check_inside_the_tube():
+    wall = CombiWallInput(top_level_to_ignore=0.0)
+    w = design_combi_wall("Combi Wall", wall, DesignSettings(), combi_sheets().elements()["Combi Wall"])
+    cracks = w["infill"]["cracks"]
+    assert cracks["wk_mm"] is None and cracks["passed"] and "permanent casing" in cracks["casing"]

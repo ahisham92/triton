@@ -20,7 +20,7 @@ from typing import Any
 from ..forces import CombiSection, scale_forces
 from ..importer import SheetData
 from ..materials import concrete
-from ..project import CombiWallInput, DesignSettings, PileInput, with_project_grades
+from ..project import Casing, CombiWallInput, DesignSettings, PileInput, with_project_grades
 from .governing import placeholder_sets, steel_sets
 from .piles import design_pile
 from .tube import Tube, check_tube, tube_loads
@@ -62,6 +62,11 @@ def infill_as_pile(wall: CombiWallInput) -> PileInput:
         concrete=wall.concrete,
         bar_count=wall.bar_count,
         head_level=wall.top_level_to_ignore,
+        # The tube is a permanent casing over the whole infill: no crack width check, so the cracks
+        # do not drive the infill cage either.
+        casing=Casing(
+            role="crack_only", top_level=1000.0, bottom_level=-1000.0, thickness=wall.tube_thickness
+        ),
     )
 
 
@@ -86,6 +91,9 @@ def design_combi_wall(
         if not n.startswith("No pile top level")
     ]
     infill["head_name"] = "the front beam"
+    if infill.get("cracks"):
+        infill["cracks"]["casing"] = "The tube is a permanent casing: no crack width check."
+        infill["cracks"].pop("note", None)
     for station in infill.get("governing_sets") or []:
         station["qp"] = placeholder_sets()  # the tube is a casing: no crack width check
 
