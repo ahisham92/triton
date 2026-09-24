@@ -1290,7 +1290,18 @@ def _office_steel_prices() -> list[SteelPrice]:
 class Prices(_Model):
     """Unit prices for the Costing tab. They do not change any design."""
 
-    currency: str = Field("EGP", title="Currency")
+    @model_validator(mode="before")
+    @classmethod
+    def _usd_default(cls, data: Any) -> Any:
+        # Saved before USD became the default (2026-09-24): "EGP" was the old default, not a choice.
+        if isinstance(data, dict) and "currency_default" not in data and data.get("currency") == "EGP":
+            data = {**data, "currency": "USD"}
+        return data
+
+    currency: str = Field("USD", title="Currency")
+    currency_default: int = Field(
+        2, json_schema_extra=_HIDDEN, description="Set by Triton: which default the currency was saved with."
+    )
     concrete_slab: float | None = Field(
         None, title="Concrete, slab", ge=0, json_schema_extra={"unit": "per m³"}
     )
