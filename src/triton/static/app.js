@@ -103,6 +103,7 @@ async function projectPage(id, tab, sectionId) {
     ["workbook", "Workbook"],
     ["design", "Design"],
     ["view3d", "3D view"],
+    ["costing", "Costing"],
   ];
   const picker = SECTION_TABS.has(tab)
     ? `<div class="row section-pick"><label for="section-pick">Section</label>
@@ -133,13 +134,17 @@ async function projectPage(id, tab, sectionId) {
     location.hash = "#/";
   };
   const host = document.getElementById("tab");
-  if (tab === "info") host.append(renderObject(SCHEMA.properties.info, p.info, "info", "Project"));
+  if (tab === "info") {
+    host.append(renderObject(SCHEMA.properties.info, p.info, "info", "Project"));
+    host.append(renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)"));
+  }
   else if (tab === "settings") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
   else if (tab === "design") renderDesignTab(host);
   else if (tab === "sections") renderSections(host);
   else if (tab === "elements") renderElements(host);
   else if (tab === "workbook") renderWorkbookTab(host);
   else if (tab === "view3d") renderView3dTab(host);
+  else if (tab === "costing") renderCostingTab(host);
   showSaveState();
   showErrors();
 }
@@ -289,11 +294,17 @@ function renderField(obj, key, prop, inner, nullable, path) {
         .map(([k, c]) => `<th>${esc(c.title || pretty(k))}${c.unit ? ` (${esc(c.unit)})` : ""}</th>`)
         .join("")}<th></th></tr>${rows
         .map((r, i) => `<tr>${cols
-          .map(([k]) => `<td><input type="number" step="any" data-i="${i}" data-k="${esc(k)}" value="${r[k] ?? ""}"></td>`)
+          .map(([k, c]) => {
+            const t = resolve(c);
+            if (t.enum)
+              return `<td><select data-i="${i}" data-k="${esc(k)}">${t.enum.map((o) => `<option ${r[k] === o ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></td>`;
+            const text = t.type === "string";
+            return `<td><input type="${text ? "text" : "number"}" ${text ? "" : 'step="any"'} data-i="${i}" data-k="${esc(k)}" data-text="${text ? 1 : ""}" value="${esc(r[k] ?? "")}"></td>`;
+          })
           .join("")}<td><button type="button" class="quiet" data-del="${i}">Remove</button></td></tr>`)
         .join("")}</table></div><button type="button" class="quiet" data-add style="margin-top:6px">Add a row</button>`;
-      f.querySelectorAll("input[data-i]").forEach((inp) => (inp.oninput = () => {
-        const v = inp.value === "" ? null : Number(inp.value);
+      f.querySelectorAll("[data-i]").forEach((inp) => (inp.oninput = inp.onchange = () => {
+        const v = inp.tagName === "SELECT" || inp.dataset.text ? inp.value : inp.value === "" ? null : Number(inp.value);
         obj[key][Number(inp.dataset.i)][inp.dataset.k] = v;
         markDirty();
       }));
@@ -1279,6 +1290,117 @@ function alertsHtml(list) {
   const label = { unsafe: "Unsafe", limit: "Check", safe: "Very safe" };
   const sevClass = { unsafe: "error", limit: "warning", safe: "ok" };
   return `<ul class="alerts">${list.map((a) => `<li><span class="sev ${sevClass[a.level]}">${label[a.level]}</span> <b>${esc(a.name)}</b>: ${esc(a.text)}</li>`).join("")}</ul>`;
+}
+
+// ---------------------------------------------------------------- costing tab
+// Quantities and cost of each designed section along its berth, and the sections side by side.
+// The inputs (berth length, spacing or number of each element, lengths) are saved with each section;
+// the unit prices are on the Project tab.
+async function renderCostingTab(host) {
+  let p = state.project;
+  const cur = p.prices.currency || "";
+  const money = (v) => (v == null ? "–" : `${fmt(v)}`);
+  host.innerHTML = `<p class="sub">Quantities and cost along the berth, from each section's latest design. Unit prices are on the
+      <a href="${tabHash("info")}">Project tab</a>; the numbers below change with them and with the inputs here.</p>
+    <div class="panel row"><button id="cost-run">Work out the costs</button><span class="status" id="cost-status"></span></div>
+    <div id="cost-out"></div>`;
+  const out = document.getElementById("cost-out");
+  const status = document.getElementById("cost-status");
+  const steelNames = p.prices.steel_elements.map((x) => x.name).filter(Boolean);
+
+  const input = (obj, key, placeholder, attrs = "") =>
+    `<input type="number" step="any" min="0" ${attrs} data-obj="${esc(obj)}" data-key="${esc(key)}" placeholder="${esc(placeholder ?? "")}">`;
+  const pick = (obj, key, value) =>
+    `<select data-obj="${esc(obj)}" data-key="${esc(key)}"><option value="">${key === "steel_element" ? "Structural steel price" : "None"}</option>${steelNames
+      .map((n) => `<option ${n === value ? "selected" : ""}>${esc(n)}</option>`)
+      .join("")}</select>`;
+
+  const draw = (data) => {
+    const sections = data.sections;
+    const costed = sections.filter((x) => x.totals);
+    const cards = sections
+      .map((c) => {
+        const section = p.sections.find((x) => x.id === c.section_id);
+        const cs = section.costing;
+        const head = `<h2>${esc(c.section)}</h2>${staleHtml(c)}`;
+        if (!c.rows.length && !c.totals)
+          return `${head}<div class="panel"><p class="status">${esc(c.notes.join(" "))}</p>
+            ${c.notes[0] === "Not designed yet." ? "" : `<div class="row"><label>Berth length (m) ${input(`${c.section_id}`, "berth_length", "")}</label></div>`}</div>`;
+        const rows = c.rows
+          .map((r) => {
+            const key = `${c.section_id}|${r.element}`;
+            const spaced = ["pile", "combi_wall"].includes(r.kind) || (r.kind === "beam" && r.count != null);
+            const steel = r.kind === "combi_wall" || r.kind === "sheet_pile_wall";
+            const e = cs.elements[r.element] || {};
+            return `<tr><td>${esc(r.element)}</td>
+              <td>${spaced ? input(key, "spacing", r.spacing_m != null ? fmt(r.spacing_m, 2) : "") : "–"}</td>
+              <td>${spaced ? input(key, "count", r.count ?? "", 'step="1"') : "–"}</td>
+              <td>${input(key, "length", r.length_m != null ? fmt(r.length_m, 1) : "")}</td>
+              <td>${steel ? pick(key, "steel_element", e.steel_element) : "–"}${r.kind === "combi_wall" ? `<div class="hint">Intermediate sheets</div>${pick(key, "intermediate_element", e.intermediate_element)}` : ""}</td>
+              <td class="basis">${esc(r.basis)}${r.flags.map((f) => `<div class="${/above/.test(f) ? "flag-bad" : "flag-ok"}">${esc(f)}</div>`).join("")}${r.missing.length ? `<div class="flag-bad">Missing: ${esc(r.missing.join(", "))}</div>` : ""}</td>
+              <td>${fmt(r.concrete_m3, 1)}</td><td>${fmt(r.rebar_t, 1)}</td><td>${fmt(r.steel_t, 1)}</td>
+              <td>${money(r.cost)}</td><td>${money(r.cost_per_m)}</td></tr>`;
+          })
+          .join("");
+        const t = c.totals;
+        return `${head}<div class="panel">
+          <div class="row">
+            <label>Berth length (m) ${input(c.section_id, "berth_length", fmt(c.berth_length_m, 1))}</label>
+            <label>Length the model covers (m) ${input(c.section_id, "model_length", c.model_length_m != null ? fmt(c.model_length_m, 1) : "")}</label>
+          </div>
+          <p class="status">Empty boxes use the value shown in grey, from the design. A number overrides the spacing.</p>
+          <div class="scroll"><table class="cost"><tr><th>Element</th><th>Spacing (m)</th><th>Number</th><th>Length (m)</th><th>Steel price</th><th>Basis</th>
+            <th>Concrete m³</th><th>Rebar t</th><th>Steel t</th><th>Cost (${esc(cur)})</th><th>Per m</th></tr>${rows}
+            <tr class="total"><td>Total</td><td colspan="5">${fmt(c.berth_length_m, 1)} m of berth${t.complete ? "" : " (incomplete: prices missing)"}</td>
+              <td>${fmt(t.concrete_m3, 1)}</td><td>${fmt(t.rebar_t, 1)}</td><td>${fmt(t.steel_t, 1)}</td><td>${money(t.cost)}</td><td>${money(c.per_m.cost)}</td></tr></table></div>
+          ${c.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}</div>`;
+      })
+      .join("");
+    const best = costed.filter((c) => c.totals.complete).sort((a, b) => a.per_m.cost - b.per_m.cost)[0];
+    const line = (label, f) => `<tr><th>${label}</th>${costed.map((c) => `<td class="${c === best && label.startsWith("Cost per m") ? "cell ok" : ""}">${f(c)}</td>`).join("")}${costed.length > 1 ? `<td>${f(null)}</td>` : ""}</tr>`;
+    const T = data.total;
+    const compare = costed.length
+      ? `<h2>Sections side by side</h2><div class="panel scroll"><table class="compare"><tr><th></th>${costed.map((c) => `<th>${esc(c.section)}</th>`).join("")}${costed.length > 1 ? "<th>All sections</th>" : ""}</tr>
+        ${line("Berth length (m)", (c) => fmt(c ? c.berth_length_m : T.berth_length_m, 1))}
+        ${line(`Cost (${esc(cur)})`, (c) => money(c ? c.totals.cost : T.cost))}
+        ${line(`Cost per m (${esc(cur)}/m)`, (c) => money(c ? c.per_m.cost : T.berth_length_m ? T.cost / T.berth_length_m : null))}
+        ${line("Concrete (m³/m)", (c) => fmt(c ? c.per_m.concrete_m3 : T.berth_length_m ? T.concrete_m3 / T.berth_length_m : null, 2))}
+        ${line("Reinforcement (t/m)", (c) => fmt(c ? c.per_m.rebar_t : T.berth_length_m ? T.rebar_t / T.berth_length_m : null, 3))}
+        ${line("Structural steel (t/m)", (c) => fmt(c ? c.per_m.steel_t : T.berth_length_m ? T.steel_t / T.berth_length_m : null, 3))}
+        ${line("Prices complete", (c) => ((c ? c.totals.complete : T.complete) ? "Yes" : "No"))}
+        </table></div>${best && costed.length > 1 ? `<p class="status">Lowest cost per metre: ${esc(best.section)}.</p>` : ""}`
+      : "";
+    out.innerHTML = compare + cards;
+    // Fill the inputs from the saved costing and write edits back to it.
+    out.querySelectorAll("[data-obj]").forEach((el) => {
+      const [sid, name] = el.dataset.obj.split("|");
+      const section = p.sections.find((x) => x.id === sid);
+      const target = () => (name ? (section.costing.elements[name] ??= {}) : section.costing);
+      const now = name ? section.costing.elements[name]?.[el.dataset.key] : section.costing[el.dataset.key];
+      if (el.tagName === "INPUT") el.value = now ?? "";
+      el.onchange = () => {
+        const v = el.tagName === "SELECT" ? el.value : el.value === "" ? null : Number(el.value);
+        target()[el.dataset.key] = el.dataset.key === "count" && v != null ? Math.round(v) : v;
+        markDirty();
+        status.textContent = "Changed: press Work out the costs.";
+      };
+    });
+  };
+
+  const run = async () => {
+    if (state.dirty) await save();
+    if (state.errors?.length) return;
+    p = state.project; // saving replaces it
+    status.textContent = "Working out…";
+    try {
+      draw(await api(`${ROOT}/api/projects/${p.id}/costing`));
+      status.textContent = "";
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  };
+  document.getElementById("cost-run").onclick = run;
+  run();
 }
 
 async function renderView3dTab(host) {

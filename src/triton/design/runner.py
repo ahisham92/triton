@@ -165,7 +165,20 @@ def run_section(
             where = " inside the working zone" if section.has_zone else ""
             skipped.append(f"{name}: no usable results in the workbook{where}.")
             continue
-        spws.append({"element": name, "kind": "sheet_pile_wall", "governing_sets": sets})
+        z = [
+            float(v)
+            for sh in combos.values()
+            if not sh.frame.empty
+            for v in (sh.frame["Z"].min(), sh.frame["Z"].max())
+        ]
+        spws.append(
+            {
+                "element": name,
+                "kind": "sheet_pile_wall",
+                "governing_sets": sets,
+                "length_m": round(max(z) - min(z), 2) if z else None,
+            }
+        )
     beams = []
     geometry = None
     axes = {a["element"]: a.get("local") for a in (getattr(workbook, "axes", None) or [])}

@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
 from . import adsec, durability, fresh
+from .costing import cost_project
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
 from .design.runner import factored_elements, run_section
@@ -574,6 +575,19 @@ def adsec_export(project_id: str, section_id: str) -> Response:
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{name}-adsec.zip"'},
     )
+
+
+@app.get("/api/projects/{project_id}/costing")
+def project_costing(project_id: str) -> dict:
+    """Quantities and cost of every designed section along its berth, for the Costing tab."""
+    project = _get(project_id)
+    results = {}
+    for s in project.sections:
+        res = store().load_results(project_id, s.id)
+        if res is not None:
+            res = fresh.with_status(project, s, res, store().workbook_summary(project_id, s.id))
+        results[s.id] = res
+    return cost_project(project, results)
 
 
 @app.get(SECTION + "/design/report.{fmt}")

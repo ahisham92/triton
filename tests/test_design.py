@@ -350,6 +350,18 @@ def test_design_endpoints(client):
     client.post(f"{url}/design")
     assert client.get(f"{url}/design").json()["changed"] == []
 
+    # The Costing tab's numbers come from the latest design; with no beam or slab to give the
+    # model's length, the berth length has to be given.
+    cost = client.get(f"/api/projects/{p['id']}/costing").json()
+    assert cost["sections"][0]["rows"] == [] and "berth length" in cost["sections"][0]["notes"][0]
+    project = client.get(f"/api/projects/{p['id']}").json()
+    project["sections"][0]["costing"]["berth_length"] = 20
+    client.put(f"/api/projects/{p['id']}", json=project)
+    assert client.get(f"{url}/design").json()["changed"] == []  # costing inputs are not design inputs
+    cost = client.get(f"/api/projects/{p['id']}/costing").json()
+    (sec,) = cost["sections"]
+    assert [r["element"] for r in sec["rows"]] == ["Pile(1)"] and cost["currency"] == "EGP"
+
 
 def test_a_second_upload_replaces_or_adds_tabs(client):
     p = client.post("/api/projects", json={"element_names": ["Pile(1)", "Pile(2)"]}).json()

@@ -14,7 +14,7 @@ from typing import Any
 
 from .project import Project, Section
 
-_SECTION_OWN = {"id", "name", "elements", "load_factors", "sheet_map"}
+_SECTION_OWN = {"id", "name", "elements", "load_factors", "sheet_map", "costing"}
 
 
 def _hash(value: Any) -> str:
