@@ -2135,10 +2135,7 @@ async function renderDesignTab(host) {
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
       <span class="reports" id="drawings" hidden>Drawings:
-        <select id="drawing-element"><option value="">All elements</option>${units
-          .filter((n) => section.elements[n].kind !== "sheet_pile_wall")
-          .map((n) => `<option>${esc(n)}</option>`)
-          .join("")}</select>
+        <span class="export-pick" id="drawing-pick"></span>
         <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
         <a class="quiet-link" data-draw="crm" href="#">Revit (.crm drawings file)</a>
         <a class="quiet-link" href="#" id="drawing-help">How to open in Revit</a>
@@ -2370,6 +2367,34 @@ function renderResults(full) {
   );
 }
 
+// Tick boxes for the elements an export covers: All, or any of them. The choice is kept per section
+// (state.exportPick) so every export on the Design tab can share it; onChange gets the names ([] = all).
+function exportPicker(box, names, onChange) {
+  state.exportPick ??= {};
+  const key = sec().id;
+  const draw = () => {
+    const picked = (state.exportPick[key] || []).filter((n) => names.includes(n));
+    box.innerHTML = `<label class="chip"><input type="checkbox" data-export="*" ${picked.length ? "" : "checked"}> All</label>
+      ${names
+        .map((n) => `<label class="chip"><input type="checkbox" data-export="${esc(n)}" ${picked.includes(n) ? "checked" : ""}> ${esc(n)}</label>`)
+        .join("")}`;
+    box.querySelectorAll("[data-export]").forEach(
+      (c) =>
+        (c.onchange = () => {
+          const n = c.dataset.export;
+          const now = new Set(picked);
+          if (n === "*") now.clear();
+          else if (c.checked) now.add(n);
+          else now.delete(n);
+          state.exportPick[key] = names.filter((x) => now.has(x)); // in the tab's order
+          draw();
+        })
+    );
+    onChange(picked);
+  };
+  draw();
+}
+
 // How the drawings open in AutoCAD and Revit, with the one-time Revit script downloads.
 function drawingHelp() {
   let box = document.getElementById("drawing-help-box");
@@ -2388,15 +2413,15 @@ function drawingHelp() {
     <p>Download <em>AutoCAD (DXF)</em> and open it (File › Open, file type DXF). The views sit side by side in model space, 1 unit = 1 mm.</p>
     <h3>Revit</h3>
     <ol>
-      <li>Once: download the <a class="quiet-link" href="${ROOT}/api/revit/triton-addin.zip">Triton add-in for Revit</a> (C# source),
-        open TritonDrawings.csproj in Visual Studio, set your Revit version in it and Build. The build installs it; restart Revit
-        and press Always Load. Its README has the steps.</li>
-      <li>Download <em>Revit (.crm drawings file)</em> for the section or elements.</li>
-      <li>In Revit: Add-Ins › Triton › Draw bars, pick the .crm file, tick the views and choose where: a drafting view for each, or the
-        view that is open, at a point you click.</li>
+      <li>Download <em>Revit (.crm drawings file)</em> for the elements ticked.</li>
+      <li>Paste <a class="quiet-link" href="${ROOT}/api/revit/triton-draw-bars.txt">the Triton DevKit code</a> into your DevKit code
+        runner in Revit and run it (Revit 2021 and later). It asks for the .crm file, lists its views to tick, and asks where: a
+        drafting view for each, or the view that is open, at a point you click.</li>
       <li>Drafting views are named "Triton - section - view". Drawing a new file redraws the same views, so views already on
         sheets stay there.</li>
     </ol>
+    <p class="status">The same code as a <a class="quiet-link" href="${ROOT}/api/revit/triton-addin.zip">Revit add-in</a> (build once in
+      Visual Studio) gives a Triton button on the Add-Ins tab instead.</p>
     <p class="status">Line styles your project lacks are made by the add-in, and it lists them when it finishes. Where a Revit family type is set
       for a bar size, cut bars are placed as that detail component and bars along the view as the line-based one.</p>`;
   document.getElementById("drawings").closest(".panel").after(box);
@@ -2429,13 +2454,13 @@ function drawResults(res, full = res) {
   const draw = document.getElementById("drawings");
   if (draw) {
     draw.hidden = !anyCages;
-    const pick = document.getElementById("drawing-element");
-    const setLinks = () =>
+    const names = designUnits(sec()).filter((n) => sec().elements[n].kind !== "sheet_pile_wall");
+    exportPicker(document.getElementById("drawing-pick"), names, (picked) =>
       draw.querySelectorAll("a[data-draw]").forEach((a) => {
-        a.href = `${secUrl()}/design/drawings.${a.dataset.draw}${pick.value ? `?element=${encodeURIComponent(pick.value)}` : ""}`;
-      });
-    pick.onchange = setLinks;
-    setLinks();
+        const q = picked.map((n) => `element=${encodeURIComponent(n)}`).join("&");
+        a.href = `${secUrl()}/design/drawings.${a.dataset.draw}${q ? `?${q}` : ""}`;
+      })
+    );
     document.getElementById("drawing-help").onclick = (e) => {
       e.preventDefault();
       drawingHelp();

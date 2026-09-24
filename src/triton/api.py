@@ -1116,6 +1116,16 @@ def revit_dynamo_graph(engine: str = "CPython3") -> Response:
     )
 
 
+@app.get("/api/revit/triton-draw-bars.txt")
+def revit_devkit_code() -> Response:
+    """C# statements to paste into a DevKit code runner in Revit: picks a .crm file and draws it."""
+    return Response(
+        revit.devkit_code(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="TritonDrawBars.txt"'},
+    )
+
+
 @app.get("/api/revit/triton-addin.zip")
 def revit_addin() -> Response:
     """The Revit add-in (C# source, build once in Visual Studio): a Triton button that draws the file."""

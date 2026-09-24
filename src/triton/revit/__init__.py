@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("triton_revit.py")
+DEVKIT = Path(__file__).with_name("TritonDrawBars.txt")  # C# statements for a paste-in code runner
 ADDIN = Path(__file__).with_name("addin")
 ADDIN_FILES = ("*.cs", "*.csproj", "*.addin", "README.txt")
 ENGINES = ("CPython3", "IronPython2")
@@ -23,6 +24,11 @@ ENGINES = ("CPython3", "IronPython2")
 
 def script() -> str:
     return SCRIPT.read_text("utf-8")
+
+
+def devkit_code() -> str:
+    """The same drawing code as C# statements (no usings, no namespace) for a paste-in DevKit runner."""
+    return DEVKIT.read_text("utf-8")
 
 
 def addin_zip() -> bytes:
