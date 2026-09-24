@@ -343,10 +343,20 @@ def _strip_zones(d: dict[str, Any]) -> dict[str, list[dict]]:
     cw, fw = sd.get("column_width_m") or 0.0, sd.get("field_width_m") or 0.0
     lo, hi = (box.get(across) or [min(lines, default=0.0), max(lines, default=0.0)])[:2]
     if len(lines) > 1:
-        field = [((a + b) / 2 - fw / 2, (a + b) / 2 + fw / 2) for a, b in zip(lines, lines[1:], strict=False)]
+        # The field strips fill the gaps between the column strips (their design width is per metre),
+        # and the outer column strips run on to the slab's edges: no part of the slab is left with the
+        # mesh alone next to a strip that needs additional bars.
+        column = [(c - cw / 2, c + cw / 2) for c in lines]
+        column[0] = (min(lo, column[0][0]), column[0][1])
+        column[-1] = (column[-1][0], max(hi, column[-1][1]))
+        field = [
+            (a[1], b[0]) if b[0] > a[1] else ((a[1] + b[0]) / 2 - fw / 2, (a[1] + b[0]) / 2 + fw / 2)
+            for a, b in zip(column, column[1:], strict=False)
+        ]
     else:  # one line of piles: a field strip each side of it
+        column = [(c - cw / 2, c + cw / 2) for c in lines]
         field = [(lo, lines[0] - cw / 2), (lines[0] + cw / 2, hi)] if lines else []
-    strips = {"column": [(c - cw / 2, c + cw / 2) for c in lines], "field": field}
+    strips = {"column": column, "field": field}
     out: dict[str, list[dict]] = {}
     for r in sd["rows"]:
         layer = r["layer"]
