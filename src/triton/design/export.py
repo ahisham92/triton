@@ -151,9 +151,18 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
             if "from_face_mm" in r
         ]
 
+    strip_zones = _strip_zones(d)
     faces = []
     for key, lay in (d.get("layers") or {}).items():
         face, direction = key.split("_")
+        # With column and field strips the designed bars are the strip design's rows (per station and
+        # strip along the strips, per zone across them), not the cell zones.
+        zones = strip_zones.get(key)
+        if zones is None:
+            zones = [
+                {"x_m": z["x"], "y_m": z["y"], "label": z.get("label"), "layers": z.get("bar_layers") or []}
+                for z in lay.get("zones") or []
+            ]
         faces.append(
             {
                 "face": face,
@@ -164,15 +173,7 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
                     "spacing_mm": (lay.get("basic") or {}).get("spacing_mm"),
                     "layers": placed(face, lay.get("mesh_bar_layers") or []),
                 },
-                "zones": [
-                    {
-                        "x_m": z["x"],
-                        "y_m": z["y"],
-                        "label": z.get("label"),
-                        "layers": placed(face, z.get("bar_layers") or []),
-                    }
-                    for z in lay.get("zones") or []
-                ],
+                "zones": [{**z, "layers": placed(face, z["layers"])} for z in zones],
             }
         )
     return {
@@ -193,6 +194,45 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
             for z in (d.get("shear") or {}).get("links") or []
         ],
     }
+
+
+def _strip_zones(d: dict[str, Any]) -> dict[str, list[dict]]:
+    """Zones of additional bars per layer from the strip design's rows: along the strips, one rectangle
+    per station and strip (column strips centred on the pile lines, field strips between them); across
+    them, each zone row's rectangle. Layers the strips do not cover are left out (the cell zones stand)."""
+    sd = d.get("strip_design")
+    if not sd or not sd.get("rows"):
+        return {}
+    box = d.get("box") or {}
+    along, sign, origin = sd["along"], sd["sign"], sd["origin"]
+    across = "Y" if along == "X" else "X"
+    lines = sorted(sd.get("lines") or [])
+    cw, fw = sd.get("column_width_m") or 0.0, sd.get("field_width_m") or 0.0
+    lo, hi = (box.get(across) or [min(lines, default=0.0), max(lines, default=0.0)])[:2]
+    if len(lines) > 1:
+        field = [((a + b) / 2 - fw / 2, (a + b) / 2 + fw / 2) for a, b in zip(lines, lines[1:], strict=False)]
+    else:  # one line of piles: a field strip each side of it
+        field = [(lo, lines[0] - cw / 2), (lines[0] + cw / 2, hi)] if lines else []
+    strips = {"column": [(c - cw / 2, c + cw / 2) for c in lines], "field": field}
+    out: dict[str, list[dict]] = {}
+    for r in sd["rows"]:
+        layer = r["layer"]
+        out.setdefault(layer, [])
+        if not r.get("additional_bars"):
+            continue  # the mesh alone
+        entry = {"label": r["bars"], "layers": r.get("bar_layers") or [], "row": r.get("key")}
+        if r.get("zone"):
+            (x0, x1), (y0, y1) = r["zone"]
+            out[layer].append({"x_m": [x0, x1], "y_m": [y0, y1], **entry})
+            continue
+        a, b = sorted(origin + sign * s for s in r["station"])
+        for t0, t1 in strips.get(r.get("strip"), []):
+            t0, t1 = max(t0, lo), min(t1, hi)
+            if t1 <= t0:
+                continue
+            rect = {along: [round(a, 3), round(b, 3)], across: [round(t0, 3), round(t1, 3)]}
+            out[layer].append({"x_m": rect["X"], "y_m": rect["Y"], **entry})
+    return out
 
 
 def _voids(v: dict[str, Any] | None) -> dict[str, Any] | None:

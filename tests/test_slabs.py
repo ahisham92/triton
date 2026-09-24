@@ -496,3 +496,21 @@ def test_pile_face_methods_keep_faces_and_directions_apart():
     assert env.loc[("B", 0), "Mx"] == env.loc[("A", 0), "Mx"] == pytest.approx(633.33, abs=0.01)
     # Old saved values still load.
     assert SlabInput(peaks="average").peaks == "face_mean" and SlabInput(peaks="design").peaks == "peak"
+
+
+def test_export_takes_the_strip_design_bars():
+    from triton.design.export import _slab
+
+    d = design_deck()
+    sd = d["strip_design"]
+    out = _slab(d)
+    along = f"bottom_{sd['along'].lower()}"
+    heavy = [r for r in sd["rows"] if r["layer"] == along and r.get("additional_bars") and not r.get("zone")]
+    face = next(f for f in out["faces"] if f["face"] == "bottom" and f["bars_along"] == sd["along"])
+    # Every strip row with added bars is drawn, with the row's own layers, on every line of piles.
+    for r in heavy:
+        mine = [z for z in face["zones"] if z.get("row") == r["key"]]
+        assert mine and all(
+            sum(q["as_mm2_per_m"] for q in z["layers"]) == sum(q["as_mm2_per_m"] for q in r["bar_layers"])
+            for z in mine
+        )
