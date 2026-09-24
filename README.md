@@ -487,8 +487,9 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   each face and where additional bars are added.
 - **Moments at the pile faces** (slab setting; nodes inside a pile are always left out):
   - *Peak:* the moments just outside the pile as they are.
-  - *Face mean* (default): each face on its own, from the face out to one slab thickness over the
-    pile diameter plus the slab thickness each side, only the moment that face's bars carry (Mx at
+  - *Face mean* (default): each face on its own: the nodes on that face's side of the pile (beside
+    the round head too) out to one slab thickness beyond the face, over the pile diameter plus the
+    slab thickness each side, only the moment that face's bars carry (Mx at
     the ±X faces, My at the ±Y faces) and Mxy, per combination; opposite faces are never mixed.
   - *Ring mean:* all round the pile over a ring one diameter wide, per combination (the method
     before 2026-09-24; it mixes opposite faces, so a 1624 face and a 40 face average to 773).
