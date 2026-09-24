@@ -172,6 +172,9 @@ async function projectPage(id, tab, sectionId) {
     const prices = renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)");
     prices.dataset.free = ""; // not a design input: open while the model is locked
     host.append(prices);
+    const names = renderObject(SCHEMA.properties.drawings, p.drawings, "drawings", "Drawing names (AutoCAD layers, Revit line styles and family types)");
+    names.dataset.free = ""; // not a design input either
+    host.append(names);
     const used = document.createElement("div");
     used.className = "panel";
     used.dataset.free = "";
@@ -2122,6 +2125,15 @@ async function renderDesignTab(host) {
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download bars for Revit (JSON: pile and infill cages, beams, slab)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
+      <span class="reports" id="drawings" hidden>Drawings:
+        <select id="drawing-element"><option value="">All elements</option>${units
+          .filter((n) => section.elements[n].kind !== "sheet_pile_wall")
+          .map((n) => `<option>${esc(n)}</option>`)
+          .join("")}</select>
+        <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
+        <a class="quiet-link" data-draw="json" href="#">Revit (drawings file)</a>
+        <a class="quiet-link" href="#" id="drawing-help">How to open in Revit</a>
+      </span>
       <span class="reports" id="reports" hidden>Report:
         <select id="report-detail"><option value="summary">Summary</option><option value="detailed">Detailed</option></select>
         <a class="quiet-link" data-fmt="docx" href="#">Word</a>
@@ -2349,6 +2361,38 @@ function renderResults(full) {
   );
 }
 
+// How the drawings open in AutoCAD and Revit, with the one-time Revit script downloads.
+function drawingHelp() {
+  let box = document.getElementById("drawing-help-box");
+  if (box) {
+    box.remove();
+    return;
+  }
+  box = document.createElement("div");
+  box.id = "drawing-help-box";
+  box.className = "panel";
+  box.innerHTML = `<h2>Reinforcement drawings in AutoCAD and Revit</h2>
+    <p>Every drawing is plain 2D detail lines: pile cage sections and elevations, beam sections, slab plans of each face and
+      direction, 1 m slab cuts and shear link zones. Each bar size is on its own layer (AutoCAD) or line style (Revit); the names
+      are on the Project tab under <em>Drawing names</em>. Until your office names are set there, they are placeholders (REBAR-16 …).</p>
+    <h3>AutoCAD</h3>
+    <p>Download <em>AutoCAD (DXF)</em> and open it (File › Open, file type DXF). The views sit side by side in model space, 1 unit = 1 mm.</p>
+    <h3>Revit</h3>
+    <ol>
+      <li>Once: download the Dynamo graph <a class="quiet-link" href="${ROOT}/api/revit/triton-drawings.dyn">Triton-drawings.dyn</a>
+        (Revit 2022 and later; for Revit 2021 or older use <a class="quiet-link" href="${ROOT}/api/revit/triton-drawings.dyn?engine=IronPython2">this one</a>).</li>
+      <li>Download <em>Revit (drawings file)</em> for the section or element.</li>
+      <li>In Revit: Manage › Dynamo, open Triton-drawings.dyn, press Browse on the first node and pick the drawings file, then Run.</li>
+      <li>Each Triton view becomes a drafting view named "Triton - section - view". Running it again with a new file redraws the same
+        views, so views already on sheets stay there.</li>
+    </ol>
+    <p class="status">Line styles your template lacks are made by the script and listed in its result. Where a Revit family type is set
+      for a bar size, cut bars are placed as that detail component and bars along the view as the line-based one. With pyRevit or
+      RevitPythonShell, <a class="quiet-link" href="${ROOT}/api/revit/triton_revit.py">the same script as a .py file</a> asks for the file itself.
+      Without either: Insert › Import CAD the DXF into a drafting view, then Explode.</p>`;
+  document.getElementById("drawings").closest(".panel").after(box);
+}
+
 function drawResults(res, full = res) {
   const out = document.getElementById("design-out");
   const walls = res.combi_walls || [];
@@ -2373,6 +2417,21 @@ function drawResults(res, full = res) {
   }
   const sets = document.getElementById("sets");
   if (sets) sets.hidden = !anyCages && !(full.sheet_pile_walls || []).length;
+  const draw = document.getElementById("drawings");
+  if (draw) {
+    draw.hidden = !anyCages;
+    const pick = document.getElementById("drawing-element");
+    const setLinks = () =>
+      draw.querySelectorAll("a[data-draw]").forEach((a) => {
+        a.href = `${secUrl()}/design/drawings.${a.dataset.draw}${pick.value ? `?element=${encodeURIComponent(pick.value)}` : ""}`;
+      });
+    pick.onchange = setLinks;
+    setLinks();
+    document.getElementById("drawing-help").onclick = (e) => {
+      e.preventDefault();
+      drawingHelp();
+    };
+  }
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
