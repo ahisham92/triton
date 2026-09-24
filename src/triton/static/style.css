@@ -391,3 +391,14 @@ tr.trial-idle td { color: var(--muted); }
 .method-doc summary { cursor: pointer; font-weight: 600; }
 .method-doc p, .method-doc ul { max-width: 60rem; }
 .method-doc pre.formula { background: var(--miss-bg); padding: 8px 12px; border-radius: 6px; overflow-x: auto; white-space: pre; }
+
+/* Over-reinforced sections and bar sections */
+.over-warn { border: 1px solid var(--warn); background: var(--warn-bg); border-radius: 8px; padding: 8px 12px; margin: 8px 0 12px; }
+.over-warn ul { margin: 4px 0; padding-left: 20px; }
+.over-warn p { margin: 6px 0 0; }
+.over-mark { color: var(--warn); font-weight: 600; white-space: nowrap; }
+circle.sec-mesh { fill: var(--muted); }
+circle.sec-add { fill: var(--accent); }
+.layer-lines { white-space: nowrap; }
+table.strip-table th { white-space: normal; min-width: 70px; }
+table.strip-table td:first-child { min-width: 150px; }

@@ -2942,16 +2942,25 @@ function stripTable(d) {
   const rows = sd.table || [];
   const faceName = (f) => (f === "bottom" ? "Bottom" : "Top");
   const setBy = (r) => (r.edit || Object.keys(r.set_by || {})).map((f) => `${faceName(f)}: ${esc(r.set_by?.[f] || "–")}`).join("<br>");
+  const barsCell = (r, f) => {
+    if (!r.bars[f]) return "–";
+    const lines = layerLines(r.bar_layers?.[f]);
+    const du = r.ductility?.[f] || {};
+    const warn = du.warnings?.length ? ` <span class="over-mark" title="${esc(du.warnings.join("; "))}">⚠ x/d ${fmt(du.x_d, 2)}</span>` : "";
+    // More than one layer: each layer on its own line instead of the one-line label.
+    if (lines.length > 1) return `<span class="layer-lines" title="${esc(r.bars[f])}">${lines.map(esc).join("<br>")}</span>${warn}`;
+    return `${esc(r.bars[f])}${warn}`;
+  };
   const line = (r, i) => `<tr data-row="${i}"><td>${esc(stripRowName(r))}${r.user_set ? '<span class="user-chip">your bars</span>' : ""}</td>
     <td class="cell ${r.wk_mm == null || r.wk_mm <= r.wk_limit_mm ? "ok" : "error"}" title="${esc(r.qp?.face || "")} face">${r.wk_mm == null ? "–" : fmt(r.wk_mm, 3)}</td>
     <td>${r.qp?.M_kNm_per_m == null ? "–" : `${fmt(r.qp.M_kNm_per_m)} / ${fmt(r.qp.N_kN_per_m)}`}</td><td>${esc(r.qp?.combination || "–")}</td>
     <td class="cell ${r.ratio != null && r.ratio <= 1 ? "ok" : "error"}" title="${esc(r.face)} face">${fmt(r.ratio, 2)}</td><td>${fmt(r.M_kNm_per_m)}${r.N_kN_per_m == null ? "" : ` / ${fmt(r.N_kN_per_m)}`}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
-    <td>${esc(r.combination)}</td><td>${esc(r.bars.bottom || "–")}</td><td>${esc(r.bars.top || "–")}</td><td class="set-by">${setBy(r)}</td>
+    <td>${esc(r.combination)}</td><td>${barsCell(r, "bottom")}</td><td>${barsCell(r, "top")}</td><td class="set-by">${setBy(r)}</td>
     <td><button class="quiet" data-bars="${i}">Change bars</button></td></tr>`;
   return `<h3 style="margin-top:18px">Slab design results</h3>
     <p class="status">As the calc report's slab table. Stations are metres from the ${esc(sd.from)}, on the sea side, increasing towards the rear. Bars along the strips (${esc(sd.along)}) are designed per station in column strips ${fmt(sd.column_width_m, 1)} m wide on the pile lines and field strips ${fmt(sd.field_width_m, 1)} m between them, all column strips together and all field strips together. Bars along the quay are one basic mesh over the whole deck, with zones of additional bars only where the deck needs more. "Set by" says which check chose each face's bars. Acting M is the size of the moment on the face that governs; the QP M and every N carry their sign (M sagging +, N compression +).</p>
     <p class="status">AdSec files and the Slabs sheet of the force-set Excel: per strip and direction, max N, min N, max M and min M over every combination for QP and for ULS, plus the set that governs each face's bars when it is not one of them. Each strip is a whole number of the tension face's mesh bars about 1 m wide (1050 mm for a 150 mm mesh, 1000 mm for 200 mm), with the forces per metre multiplied by width / 1000.</p>
-    <div class="scroll"><table><tr><th>Slab</th><th>Crack width (mm)</th><th>QP M / N for the crack width (kNm/m, kN/m)</th><th>QP combination</th><th>Ultimate M / M<sub>Rd</sub></th><th>Acting M / N (kNm/m, kN/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bottom bars</th><th>Top bars</th><th>Set by</th><th></th></tr>
+    <div class="scroll"><table class="strip-table"><tr><th>Slab</th><th>Crack width (mm)</th><th>QP M / N for the crack width (kNm/m, kN/m)</th><th>QP combination</th><th>Ultimate M / M<sub>Rd</sub></th><th>Acting M / N (kNm/m, kN/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bottom bars</th><th>Top bars</th><th>Set by</th><th></th></tr>
       ${rows.map(line).join("")}</table></div>`;
 }
 
@@ -3250,6 +3259,50 @@ function shortBars(t) {
   return String(t || "").replace(" in 2 layers", " ×2 layers").replace(/ \+ Ø\d+ (under the mesh|behind the mesh bars)/, " + behind").replace(/ between the mesh bars/g, " between").replace(/ layer (\d)/g, " (L$1)");
 }
 
+// A face's bars layer by layer, outermost first: "L1 Ø16 @ 150 + Ø32 @ 150 (between) · L2 Ø32 @ 75".
+function layerLines(bl, withMesh = true) {
+  return (bl || [])
+    .map((q) => {
+      const bars = (q.bars || []).filter((b) => withMesh || b.kind !== "mesh");
+      if (!bars.length) return null;
+      return `L${q.layer} ` + bars.map((b) => `Ø${fmt(b.diameter_mm)} @ ${fmt(b.spacing_mm)}${withMesh && b.kind === "between the mesh bars" ? " (between)" : ""}`).join(" + ");
+    })
+    .filter(Boolean);
+}
+
+// Warnings for sections short of ductility or over-reinforced (x/d, bars not yielding, over 4%).
+function overWarn(items) {
+  if (!items?.length) return "";
+  return `<div class="over-warn"><b>Over-reinforced sections:</b><ul>${items.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+    <p class="status">Checked at the moment capacity with εcu2 = 0.0035: x/d above 0.45 is beyond the ductility limit of EN 1992-1-1 5.5(4); where the tension bars would not reach fyd/Es the section is over-reinforced; 9.2.1.1(3) caps the steel at 4% of the concrete. A deeper section or compression bars bring x/d down.</p></div>`;
+}
+
+// Section through one face's bars, 1 m wide: every layer drawn at its own depth with its own bars.
+function barSection(bl, face, h, title) {
+  if (!bl?.length) return "";
+  const W = 1000, deepest = Math.max(...bl.map((q) => q.from_face_mm)) + 70;
+  const sc = 0.72, pad = 12, left = 24, lab = 330;
+  const Wpx = W * sc + left + lab, Hpx = deepest * sc + 2 * pad + 16;
+  const Y = (mm) => (face === "top" ? pad + mm * sc : pad + (deepest - mm) * sc);
+  const sMesh = bl[0].bars.find((b) => b.kind === "mesh")?.spacing_mm || 150;
+  const circles = [], labels = [];
+  bl.forEach((q) => {
+    q.bars.forEach((b) => {
+      const off = b.kind === "mesh" ? sMesh / 4 : b.kind === "between the mesh bars" ? sMesh / 4 + sMesh / 2 : b.spacing_mm >= sMesh - 1e-6 ? sMesh / 4 + sMesh / 2 : sMesh / 4;
+      for (let x = off; x < W; x += b.spacing_mm)
+        circles.push(`<circle class="${b.kind === "mesh" ? "sec-mesh" : "sec-add"}" cx="${(left + x * sc).toFixed(1)}" cy="${Y(q.from_face_mm).toFixed(1)}" r="${Math.max(2, (b.diameter_mm / 2) * sc).toFixed(1)}"><title>Layer ${q.layer}: Ø${fmt(b.diameter_mm)} @ ${fmt(b.spacing_mm)} (${esc(b.kind)}), centre ${fmt(q.from_face_mm)} mm from the ${face} face</title></circle>`);
+    });
+    labels.push(`<text class="tick" x="${left + W * sc + 10}" y="${(Y(q.from_face_mm) + 4).toFixed(1)}">${esc(layerLines([q])[0])} · ${fmt(q.from_face_mm)} mm</text>`);
+  });
+  const faceY = face === "top" ? pad : pad + deepest * sc;
+  const body = face === "top" ? `<rect class="bd-slab" x="${left}" y="${pad}" width="${W * sc}" height="${deepest * sc}"/>` : `<rect class="bd-slab" x="${left}" y="${pad}" width="${W * sc}" height="${deepest * sc}"/>`;
+  return `<div class="chart-title">${esc(title)}: ${bl.length} layer${bl.length > 1 ? "s" : ""} of bars, a 1 m wide cut through the ${face} face (slab ${fmt(h)} mm, the part near this face drawn).</div>
+    <svg viewBox="0 0 ${Wpx.toFixed(0)} ${Hpx.toFixed(0)}" role="img" aria-label="${esc(title)}">${body}
+      <line class="axis" x1="${left}" x2="${left + W * sc}" y1="${faceY}" y2="${faceY}"/>
+      <text class="tick" x="${left}" y="${face === "top" ? Hpx - 4 : 10}">${face === "top" ? "↑ top face" : "↓ bottom face"}; 1000 mm wide</text>
+      ${circles.join("")}${labels.join("")}</svg>`;
+}
+
 function barDiagrams(card, d) {
   // Elevations of the bars along X and along Y: the basic mesh of each face over the whole length and
   // the additional bars where they are added (per station and strip along the strips, per zone across).
@@ -3301,30 +3354,37 @@ function barDiagrams(card, d) {
         });
       }
     }
+    // Every layer of additional bars is its own line, layer 1 (between the mesh bars) nearest the mesh.
+    for (const f of ["top", "bottom"]) segs[f].forEach((s) => (s.lines = layerLines(s.layers, false).length ? layerLines(s.layers, false) : [shortBars(s.text)]));
+    const perLane = Math.max(1, ...segs.top.concat(segs.bottom).map((s) => s.lines.length));
     const nT = Math.max(1, ...segs.top.map((s) => s.lane + 1)), nB = Math.max(1, ...segs.bottom.map((s) => s.lane + 1));
-    const W = 860, L = 136, R = 16, lane = 20;
+    const W = 860, L = 136, R = 16, lane = 6 + 15 * perLane;
     const X = (s) => L + ((s - lo) / (hi - lo || 1)) * (W - L - R);
     const yMeshT = 16 + nT * lane + 8, slabTop = yMeshT - 7, slabBot = slabTop + 58, yMeshB = slabBot - 7;
     const laneY = (f, k) => (f === "top" ? yMeshT - 8 - (k + 0.5) * lane : yMeshB + 8 + (k + 0.5) * lane);
     const H = yMeshB + 8 + nB * lane + 44;
     const mesh = (f) => d.layers[`${f}_${v.dir}`]?.basic?.label || "–";
     const depth = (f) => (d.layers[`${f}_${v.dir}`]?.mesh_bar_layers || [])[0]?.from_face_mm;
-    const segSvg = (f) => segs[f].map((s) => {
-      const y = laneY(f, s.lane), x0 = X(s.a), x1 = X(s.b), w = Math.max(2, x1 - x0);
+    const segSvg = (f) => segs[f].map((s, si) => {
+      const x0 = X(s.a), x1 = X(s.b), w = Math.max(2, x1 - x0), room = Math.floor((w - 6) / 5.6);
       const lay = (s.layers || []).map((q) => `Layer ${q.layer}: ${q.text}, centre ${fmt(q.from_face_mm)} mm from the face`).join("\n");
-      const full = shortBars(s.text), room = Math.floor((w - 6) / 5.6);
-      const label = full.length <= room ? full : room > 4 ? `${full.slice(0, room - 1)}…` : "";
-      const fits = !!label;
-      return `<g class="bd-seg"><line x1="${x0.toFixed(1)}" x2="${x1.toFixed(1)}" y1="${y}" y2="${y}"/><line x1="${x0.toFixed(1)}" x2="${x0.toFixed(1)}" y1="${y - 4}" y2="${y + 4}"/><line x1="${x1.toFixed(1)}" x2="${x1.toFixed(1)}" y1="${y - 4}" y2="${y + 4}"/>
-        ${fits ? `<text class="tick" x="${((x0 + x1) / 2).toFixed(1)}" y="${y - 4}" text-anchor="middle">${esc(label)}</text>` : ""}
-        <rect x="${x0.toFixed(1)}" y="${y - lane / 2}" width="${w.toFixed(1)}" height="${lane}" fill="transparent"><title>${esc(`${f === "top" ? "Top" : "Bottom"}, ${s.what}, ${fmt(s.a, 2)} to ${fmt(s.b, 2)} m: ${s.text}\n${lay}`)}</title></rect></g>`;
+      const top = laneY(f, s.lane) - lane / 2;
+      // Layer 1 nearest the mesh: downwards from the top mesh, upwards from the bottom mesh.
+      const lines = s.lines.map((t, j) => {
+        const y = f === "top" ? top + lane - 6 - j * 15 : top + 10 + j * 15;
+        const label = t.length <= room ? t : room > 4 ? `${t.slice(0, room - 1)}…` : "";
+        return `<line x1="${x0.toFixed(1)}" x2="${x1.toFixed(1)}" y1="${y}" y2="${y}"/><line x1="${x0.toFixed(1)}" x2="${x0.toFixed(1)}" y1="${y - 3}" y2="${y + 3}"/><line x1="${x1.toFixed(1)}" x2="${x1.toFixed(1)}" y1="${y - 3}" y2="${y + 3}"/>
+          ${label ? `<text class="tick" x="${((x0 + x1) / 2).toFixed(1)}" y="${y - 3}" text-anchor="middle">${esc(label)}</text>` : ""}`;
+      }).join("");
+      return `<g class="bd-seg" data-seg="${f}:${si}" style="cursor:pointer">${lines}
+        <rect x="${x0.toFixed(1)}" y="${top}" width="${w.toFixed(1)}" height="${lane}" fill="transparent"><title>${esc(`${f === "top" ? "Top" : "Bottom"}, ${s.what}, ${fmt(s.a, 2)} to ${fmt(s.b, 2)} m: ${s.text}\n${lay}\nClick for the section through its layers.`)}</title></rect></g>`;
     }).join("");
     const marks = isAlong ? (sd.pile_rows_m || []) : (sd.lines || []);
     const ticks = isAlong ? sd.stations : marks;
     const axisY = H - 18;
     const piles = marks.map((m) => `<path class="pile-row" d="M${X(m).toFixed(1)},${axisY - 11} l-6,10 h12 z"><title>${isAlong ? "Row" : "Line"} of piles at ${fmt(m, 2)} m</title></path>`).join("");
     el.innerHTML = `<div class="chart-title">${esc(v.title)}: basic mesh of each face over the whole ${isAlong ? "deck" : "length"}, additional bars where they are added. ${isAlong ? "Sea side on the left; stations in m from the " + esc(sd.from) + "." : `${acrossAxis} in m along the quay.`}</div>
-      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (layer 1, at the cover)</span><span><i class="bd-add"></i>additional bars${isAlong ? ": column strip next to the mesh, field strip beyond" : ", one line per zone"}</span><span>▲ piles</span><span>hover a line for its layers and depths</span></div>
+      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (layer 1, at the cover)</span><span><i class="bd-add"></i>additional bars, one line per layer (L1 between the mesh bars, L2, L3… inside it)${isAlong ? ": column strip next to the mesh, field strip beyond" : ", one group per zone"}</span><span>▲ piles</span><span>click a group for its section</span></div>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(v.title)}">
         <rect x="${X(lo)}" y="${slabTop}" width="${X(hi) - X(lo)}" height="${slabBot - slabTop}" class="bd-slab"/>
         <line class="bd-mesh" x1="${X(lo)}" x2="${X(hi)}" y1="${yMeshT}" y2="${yMeshT}"><title>Top mesh ${esc(mesh("top"))}, centre ${fmt(depth("top"))} mm from the top</title></line>
@@ -3334,7 +3394,17 @@ function barDiagrams(card, d) {
         ${segSvg("top")}${segSvg("bottom")}${piles}
         <line class="axis" x1="${X(lo)}" x2="${X(hi)}" y1="${axisY}" y2="${axisY}"/>
         ${[lo, ...ticks, hi].map((t) => `<line class="axis" x1="${X(t)}" x2="${X(t)}" y1="${axisY}" y2="${axisY + 4}"/><text class="tick" x="${X(t)}" y="${axisY + 14}" text-anchor="middle">${fmt(t, 1)}</text>`).join("")}
-      </svg>`;
+      </svg><div data-kind="bar-section"></div>`;
+    const secEl = el.querySelector('[data-kind="bar-section"]');
+    const show = (f, s) => {
+      const title = `${f === "top" ? "Top" : "Bottom"} bars along ${v.dir.toUpperCase()}, ${s.what}, ${fmt(s.a, 2)} to ${fmt(s.b, 2)} m`;
+      secEl.innerHTML = barSection(s.layers, f, d.thickness_mm, title);
+    };
+    el.querySelectorAll("[data-seg]").forEach((g) => (g.onclick = () => { const [f, i] = g.dataset.seg.split(":"); show(f, segs[f][+i]); }));
+    // Start with the heaviest group: the most layers.
+    const all = ["bottom", "top"].flatMap((f) => segs[f].map((s) => [f, s]));
+    const first = all.sort((p, q) => (q[1].layers?.length || 0) - (p[1].layers?.length || 0))[0];
+    if (first && first[1].layers?.length) show(first[0], first[1]);
   };
   pick.querySelectorAll("[data-bd]").forEach((b) => (b.onclick = () => {
     view = Number(b.dataset.bd);
@@ -3430,6 +3500,7 @@ function slabCard(d) {
   const layers = d.layers || {};
   card.innerHTML = `<div class="element-head"><h3>${esc(d.key || d.element)}<span class="type">${partText(d)}Slab, ${fmt(d.thickness_mm)} mm, ${esc(d.concrete || "")}, covers ${fmt(d.cover_top_mm)} top / ${fmt(d.cover_bottom_mm)} bottom, ${d.strips === "column_and_field" ? "column and field strips" : "uniform"}</span></h3>${ok(d.passed)}</div>
     ${meshChooser(d)}
+    ${overWarn((d.ductility || []).map((q) => `${q.where}: ${q.bars}. ${q.warnings.join("; ")}.`))}
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(d.utilisation, 2)}</b>max utilisation</div>
       <div class="count"><b>${fmt(st.kg_per_m3)}</b>kg/m³ (${fmt(st.kg_per_m2, 1)} kg/m², links not included)</div>
@@ -3673,6 +3744,7 @@ function beamCard(b) {
   const worstCrack = Object.values(b.cracks || {}).reduce((m, x) => Math.max(m, x.wk), 0);
   card.innerHTML = `<div class="element-head"><h3>${esc(b.key || b.element)}<span class="type">${partText(b)}${esc(BEAM_KIND[b.kind] || "Beam")}, ${fmt(b.width_mm)} × ${fmt(b.depth_mm)} mm, ${esc(b.concrete || "")}, cover ${fmt(b.cover_mm)} mm</span></h3>
       ${ok(b.passed)}</div>
+    ${overWarn((b.ductility?.warnings || []).map((w) => `${w}.`))}
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(b.utilisation, 2)}</b>max utilisation (all checks)</div>
       <div class="count"><b>${fmt(bend.utilisation, 2)}</b>N with biaxial bending</div>

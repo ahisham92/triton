@@ -57,6 +57,7 @@ from ..elements import CombinationType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, SlabInput, SlabStrips, with_project_grades
+from . import ductility
 from . import voids as vd
 from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restraint_factor
 from .governing import crack_terms
@@ -436,6 +437,14 @@ def strip_table(rows: list[dict], frame: dict) -> list[dict]:
                         field: {f: mine[g[0]][f].get(field) for f in ("bottom", "top") if f in mine[g[0]]}
                         for field in ("set_by", "bar_layers", "spec", "mesh")
                     },
+                    "ductility": {
+                        f: max(
+                            (mine[k][f].get("ductility") or {} for k in g if f in mine[k]),
+                            key=lambda q: q.get("x_d") or 0,
+                        )
+                        for f in ("bottom", "top")
+                        if f in mine[g[0]]
+                    },
                 }
             )
     return out
@@ -496,6 +505,7 @@ def overall_table(entries: list[dict]) -> list[dict]:
                         field: {f: faces[f][field] for f in fs}
                         for field in ("set_by", "bar_layers", "spec", "mesh")
                     },
+                    "ductility": {f: faces[f].get("ductility") or {} for f in fs},
                 }
             )
     return out
@@ -703,6 +713,35 @@ def treat_pile_faces(f: pd.DataFrame, piles: list[tuple], method: str, h: float)
     if method == "ring_mean":
         return average_peaks(f, piles)
     return face_average(f, piles, h, envelope=method == "envelope_face_mean")
+
+
+def _centroid(bar_layers: list[dict]) -> tuple[float, float]:
+    """(mm²/m, depth of the centroid from the face) of a face's bar layers."""
+    area = sum(q["as_mm2_per_m"] for q in bar_layers)
+    return area, (sum(q["as_mm2_per_m"] * q["from_face_mm"] for q in bar_layers) / area if area else 0.0)
+
+
+def row_ductility(rows: list[dict], layers: dict, h: float, fcd: float, fyd: float) -> None:
+    """Give every designed row its ``ductility`` (see ``ductility``): the tension face's bars at their
+    capacity under the row's N, with the other face's bars in the same direction as compression steel
+    (the same strip and station where it has a row there, else that face's basic mesh)."""
+    other = {"top": "bottom", "bottom": "top"}
+    by_key = {(r["layer"], tuple(r["station"]), r["strip"]): r for r in rows if r.get("zone") is None}
+    for r in rows:
+        face, direction = r["layer"].split("_")
+        opp_layer = f"{other[face]}_{direction}"
+        opp = by_key.get((opp_layer, tuple(r["station"]), r["strip"])) if r.get("zone") is None else None
+        opp_layers = (
+            (opp or {}).get("bar_layers") or (layers.get(opp_layer) or {}).get("mesh_bar_layers") or []
+        )
+        a_t, c_t = _centroid(r.get("bar_layers") or [])
+        a_c, c_c = _centroid(opp_layers)
+        a_t = a_t or float(r["as_mm2_per_m"])
+        d = h - c_t if c_t else h - 60.0
+        dct = ductility.strip(a_t, d, float(r["N_kN_per_m"]), fcd, fyd, a_c, c_c)
+        dct["ratio_pct"] = round(100 * a_t / (1000 * h), 2)
+        dct["warnings"] = ductility.warnings(dct["x_d"], dct["eps_s"], dct["eps_yd"], dct["ratio_pct"])
+        r["ductility"] = dct
 
 
 def fits_between(phi_a: float, mesh_phi: float, mesh_spacing: float, settings: DesignSettings) -> bool:
@@ -2711,6 +2750,7 @@ def design_slab(
         [p.get("utilisation_with_links", p["utilisation"]) for p in punch if p.get("passed")], default=0.0
     )
     lay_u = max(layers[layer]["utilisation"] for layer in LAYERS)
+    row_ductility(strip_rows + overall_rows, layers, h, fcd_s, fyd)
     strip_design = None
     if strips:
         summary = {}
@@ -2757,6 +2797,29 @@ def design_slab(
         and lay_u <= 1 + 1e-6
         and (not rest_counts or all(r["passed"] for r in rest.values()))
     )
+    # Sections short of ductility or over-reinforced (x/d, bars not yielding, over 4%).
+    duct_rows = []
+    for r in strip_rows + overall_rows:
+        dct = r.get("ductility") or {}
+        if not dct.get("warnings"):
+            continue
+        where = r.get("label") or (f"{r['strip']} strip, station {r['station'][0]:g} to {r['station'][1]:g}")
+        duct_rows.append(
+            {
+                "layer": r["layer"],
+                "where": f"{LAYER_TEXT[r['layer']]}, {where}",
+                "bars": r["bars"],
+                "x_d": dct["x_d"],
+                "ratio_pct": dct["ratio_pct"],
+                "warnings": dct["warnings"],
+            }
+        )
+    if duct_rows:
+        notes.append(
+            f"Over-reinforced? {len(duct_rows)} strip or zone sections are short of ductility or "
+            "over-reinforced (x/d above 0.45, bars not yielding or more than 4% steel): see the warning "
+            "at the top of the slab."
+        )
     mc = uls_m.groupby(["i", "j"]).agg(
         mx_max=("Mx", "max"), mx_min=("Mx", "min"), my_max=("My", "max"), my_min=("My", "min")
     )
@@ -2779,6 +2842,7 @@ def design_slab(
         "zone_size_m": size,
         "strips": "column_and_field" if strips else "uniform",
         "strip_design": strip_design,
+        "ductility": duct_rows,
         "box": box,
         "level_m": round(level, 2),
         "layers": layers,

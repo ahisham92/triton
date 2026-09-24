@@ -1042,6 +1042,21 @@ def _beam(r: Report, b: dict) -> None:
             ("Steel area", f"{c.get('area_mm2', 0):,} mm² ({c.get('ratio_pct', 0):.2f}%)"),
             ("Utilisation (all checks)", b.get("utilisation")),
             ("Result", _ok(b.get("passed"))),
+            *(
+                [
+                    (
+                        "Ductility x/d (sagging / hogging)",
+                        f"{b['ductility']['faces']['bottom']['x_d']} / {b['ductility']['faces']['top']['x_d']}"
+                        + (
+                            ": " + "; ".join(b["ductility"]["warnings"])
+                            if b["ductility"]["warnings"]
+                            else " (limit 0.45, bars yield)"
+                        ),
+                    )
+                ]
+                if b.get("ductility")
+                else []
+            ),
         ]
     )
     bend = b.get("bending") or {}
@@ -1229,8 +1244,16 @@ def _slab(r: Report, s: dict) -> None:
             ),
             ("Utilisation", s.get("utilisation")),
             ("Result", _ok(s.get("passed"))),
+            (
+                "Ductility (x/d ≤ 0.45, bars yield, ≤ 4%)",
+                f"{len(s['ductility'])} sections over-reinforced or short of ductility"
+                if s.get("ductility")
+                else "every strip and zone section passes",
+            ),
         ]
     )
+    if s.get("ductility"):
+        r.bullets([f"{q['where']}: {q['bars']}. {'; '.join(q['warnings'])}." for q in s["ductility"]])
     sd = s.get("strip_design")
     if sd:
         r.h(3, "Column and field strips")

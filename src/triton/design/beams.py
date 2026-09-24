@@ -51,6 +51,7 @@ from ..elements import CombinationType, ElementType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import BeamCage, BeamInput, CombiWallInput, DesignSettings, PileInput, with_project_grades
+from . import ductility
 from .bollard import check_bollard
 from .circular import ConcreteLaw, SteelLaw
 from .crack import autogenous_shrinkage, crack_width, restraint_crack, restraint_factor
@@ -1273,6 +1274,26 @@ def design_beam(
         for r in st["qp"]:
             r["crack"] = beam_crack_terms(crack_sec, g, cage, r["N_kN"], r["M3_kNm"], e_eff, conc, limits)
             r["utilisation"] = r["crack"]["util"]  # SLS: crack width over its limit
+    # Ductility of the whole cage at its capacity, under the largest compression along the beam.
+    n_c = max(float(mom["N"].max()), 0.0) if len(mom) else 0.0
+    duct_faces = {}
+    for f, sense in (("bottom", 1), ("top", -1)):
+        r = crack_sec.ductility("v", sense, n_c)
+        r["N_kN"] = round(n_c, 1)
+        r["warnings"] = ductility.warnings(r["x_d"], r["eps_s"], r["eps_yd"], None)
+        duct_faces[f] = r
+    ratio_all = 100 * float(crack_sec.bars.total) / (g.b * g.h)
+    duct = {
+        "faces": duct_faces,
+        "ratio_pct": round(ratio_all, 2),
+        "warnings": [
+            f"{'Bottom' if f == 'bottom' else 'Top'} bars in tension: {w}"
+            for f, r in duct_faces.items()
+            for w in r["warnings"]
+        ]
+        + ductility.warnings(None, None, 0.0, ratio_all),
+    }
+    notes.extend(f"Over-reinforced? {w}." for w in duct["warnings"])
     faces = [
         {
             "face": f,
@@ -1315,6 +1336,7 @@ def design_beam(
         "profile": _profile(mom, u),
         "profile_qp": _profile_qp(crack_sec, g, cage, qp_all, e_eff, conc, limits),
         "governing_sets": sets,
+        "ductility": duct,
     }
 
 

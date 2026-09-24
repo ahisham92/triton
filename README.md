@@ -317,6 +317,19 @@ bars, about 1 m wide (1050 mm for a 150 mm mesh, 1000 mm for 200 mm, as the offi
 faces' bars and the Slabs sheet's sets, the forces per metre multiplied by width / 1000 (x 1.05 for
 1050 mm). Where the other face has a different spacing its bar count is rounded to the strip.
 
+## Over-reinforced sections
+
+Every slab strip and zone section and every beam is checked at its moment capacity (εcu2 = 0.0035):
+x/d above 0.45 (EN 1992-1-1 5.5(4), no redistribution), tension bars that would not yield, or more
+than 4% steel (9.2.1.1(3)) put a warning at the top of the slab or beam card, a ⚠ with x/d beside the
+bars in the slab table, and a line in the report. Slabs count the other face's bars in the same
+direction as compression steel; beams take the whole cage under the largest ULS compression.
+
+Slab bars are listed and drawn layer by layer: L1 is the mesh at the cover with the bars between its
+bars, then L2, L3… inside it, each with its own bars and spacing. In the bar diagrams each layer of
+additional bars is its own line; clicking a group draws a 1 m wide section through that face with
+every layer at its depth.
+
 ## Method tab
 
 The project's Method tab says how each kind of element in the project is designed (the design
