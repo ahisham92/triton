@@ -5,9 +5,10 @@ point and combination (ULS and QP). A face is in tension when its stress is belo
 numerical noise around zero does not paint a face.
 
 Each element returns ``{"points", "combinations", "codes", "legend"}``: ``points`` match the
-utilisation bands (``[x, y, z]`` or ``[x, y, z, size]`` for slab cells) and ``codes`` holds one
-character per point for every combination and for the envelope (key ``""``). A character is
-``chr(48 + bits)``, or a space where the combination has no result at that point.
+utilisation bands (``[x, y, z]``, or ``[x, y, z, size]`` for slab cells and ``[x, y, z, size, why]``
+for a slab square that shows the squares round it) and ``codes`` holds one character per point for
+every combination and for the envelope (key ``""``). A character is ``chr(48 + bits)``, or a space
+where the combination has no result at that point.
 
 Bits: plates and beams, per direction (the Y direction of a slab shifted by 3 bits)
 ``1`` bottom face in tension, ``2`` top face, ``4`` whole section in tension (net axial tension);
@@ -150,11 +151,29 @@ def slab_tension(
     size: float,
     level: float,
     h_mm: float,
+    gaps: dict[tuple[int, int], tuple[list[tuple[int, int]], str]] | None = None,
 ) -> dict[str, Any]:
-    """Per zone cell, for bars along X (Mx, Nx) in the low 3 bits and along Y (My, Ny) in the next 3."""
+    """Per zone cell, for bars along X (Mx, Nx) in the low 3 bits and along Y (My, Ny) in the next 3.
+
+    ``gaps``: squares with no result of their own (over a pile head, or no Plaxis node) and the squares
+    they borrow from (``slabs.gap_cells``); they show the results of those squares together.
+    """
     f = pd.concat([x for x in frames if x is not None and len(x)], ignore_index=True) if frames else None
     if f is None or f.empty or not cells:
         return {}
+    why: dict[tuple[int, int], str] = {}
+    if gaps:
+        cells = list(cells)
+        key = pd.MultiIndex.from_arrays([f["i"].astype(int), f["j"].astype(int)])
+        extra = []
+        for cell, (donors, reason) in gaps.items():
+            rows = f[key.isin(donors)]
+            if len(rows):
+                extra.append(rows.assign(i=cell[0], j=cell[1]))
+                cells.append(cell)
+                why[cell] = reason
+        if extra:
+            f = pd.concat([f, *extra], ignore_index=True)
     h = h_mm / 1e3
     index = {c: i for i, c in enumerate(cells)}
     point = np.array([index.get((int(i), int(j)), -1) for i, j in zip(f["i"], f["j"], strict=True)], int)
@@ -165,6 +184,7 @@ def slab_tension(
         "kind": "slab",
         "points": [
             [round(x0 + (i + 0.5) * size, 2), round(y0 + (j + 0.5) * size, 2), round(level, 2), size]
+            + ([why[(i, j)]] if (i, j) in why else [])
             for i, j in cells
         ],
         "combinations": combos,

@@ -1,5 +1,5 @@
 // Triton front end: projects, schema-driven setup forms and the workbook check.
-import { View3D, directionArrows, heat } from "./view3d.js";
+import { GAP_WHY, View3D, directionArrows, heat } from "./view3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 import { spwCard } from "./spw.js";
 import { renderTrials } from "./trials.js";
@@ -3907,7 +3907,7 @@ function momentPlan(card, d) {
     const cells = mc.cells.map((v) => {
       const cx = mc.x0 + (v[0] + 0.5) * mc.size, cy = mc.y0 + (v[1] + 0.5) * mc.size;
       const raw = v[col];
-      return { s: ((alongX ? cx : cy) - sd.origin) * sd.sign, t: alongX ? cy : cx, raw, v: hog ? Math.max(-raw, 0) : Math.max(raw, 0) };
+      return { s: ((alongX ? cx : cy) - sd.origin) * sd.sign, t: alongX ? cy : cx, raw, v: hog ? Math.max(-raw, 0) : Math.max(raw, 0), why: v[6] };
     });
     const vmax = Math.max(1, ...cells.map((q) => q.v));
     const t0 = Math.min(...cells.map((q) => q.t)) - mc.size / 2, t1 = Math.max(...cells.map((q) => q.t)) + mc.size / 2;
@@ -3916,12 +3916,17 @@ function momentPlan(card, d) {
     const W = (s1 - s0) * sc + 2 * pad, H = (t1 - t0) * sc + 2 * pad;
     const X = (s) => pad + (s - s0) * sc, Y = (t) => H - pad - (t - t0) * sc;
     const hue = hog ? "31,95,160" : "200,52,40";
-    const rects = cells.map((q) => `<rect x="${X(q.s - mc.size / 2).toFixed(1)}" y="${Y(q.t + mc.size / 2).toFixed(1)}" width="${(mc.size * sc).toFixed(1)}" height="${(mc.size * sc).toFixed(1)}" fill="rgba(${hue},${(0.06 + 0.88 * q.v / vmax).toFixed(2)})"><title>${esc(mc.names[k])} ${hog ? "smallest" : "largest"} ${fmt(q.raw)} kNm/m at station ${fmt(q.s, 1)} m, ${alongX ? "Y" : "X"} ${fmt(q.t, 1)}</title></rect>`).join("");
+    const rects = cells.map((q) => `<rect x="${X(q.s - mc.size / 2).toFixed(1)}" y="${Y(q.t + mc.size / 2).toFixed(1)}" width="${(mc.size * sc).toFixed(1)}" height="${(mc.size * sc).toFixed(1)}" fill="rgba(${hue},${(0.06 + 0.88 * q.v / vmax).toFixed(2)})"><title>${esc(mc.names[k])} ${hog ? "smallest" : "largest"} ${fmt(q.raw)} kNm/m at station ${fmt(q.s, 1)} m, ${alongX ? "Y" : "X"} ${fmt(q.t, 1)}${q.why ? `. ${GAP_WHY[q.why] || ""}` : ""}</title></rect>`).join("");
+    // Pile heads under the deck (those not under a beam), so a square over a pile reads as one.
+    const heads = (d.punching || []).map((p) => {
+      const ps = ((alongX ? p.x : p.y) - sd.origin) * sd.sign, pt = alongX ? p.y : p.x;
+      return `<circle cx="${X(ps).toFixed(1)}" cy="${Y(pt).toFixed(1)}" r="${((p.D_mm / 2000) * sc).toFixed(1)}" fill="none" stroke="var(--text)" stroke-width="1.2"><title>${esc(p.pile)}: ${GAP_WHY.pile}</title></circle>`;
+    }).join("");
     const strips = sd.lines.map((L) => `<rect x="${X(s0)}" y="${Y(L + sd.column_width_m / 2)}" width="${(s1 - s0) * sc}" height="${sd.column_width_m * sc}" fill="none" stroke="var(--text)" stroke-dasharray="6 4" stroke-width="1"><title>Column strip on the pile line at ${fmt(L, 1)}</title></rect>`).join("");
     const stations = sd.stations.map((s) => `<line x1="${X(s)}" x2="${X(s)}" y1="${pad - 6}" y2="${H - pad}" stroke="var(--text)" stroke-width="1.2"/><text class="tick" x="${X(s)}" y="${pad - 10}" text-anchor="middle">${fmt(s, 2)}</text>`).join("");
     el.innerHTML = `<div class="chart-title">${esc(mc.names[k])}, ULS ${hog ? "hogging (top face in tension)" : "sagging (bottom face in tension)"}: largest ${fmt(vmax)} kNm/m. Sea side on the left.</div>
-      <div class="legend"><span>0</span><i class="ramp" style="background:linear-gradient(90deg,rgba(${hue},.06),rgba(${hue},.94))"></i><span>${fmt(vmax)} kNm/m</span><span>dashed: column strips</span><span>lines: stations (m from the sea side)</span></div>
-      <svg viewBox="0 0 ${W} ${H}" style="max-width:${Math.round(W)}px" role="img" aria-label="Moment plan"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${rects}${strips}${stations}
+      <div class="legend"><span>0</span><i class="ramp" style="background:linear-gradient(90deg,rgba(${hue},.06),rgba(${hue},.94))"></i><span>${fmt(vmax)} kNm/m</span><span>dashed: column strips</span><span>lines: stations (m from the sea side)</span>${(d.punching || []).length ? "<span>circles: pile heads (the squares over them show the pile faces)</span>" : ""}</div>
+      <svg viewBox="0 0 ${W} ${H}" style="max-width:${Math.round(W)}px" role="img" aria-label="Moment plan"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${rects}${heads}${strips}${stations}
       <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text></svg>`;
   };
   pick.querySelectorAll("[data-mp]").forEach((b) => (b.onclick = () => {
