@@ -9,6 +9,10 @@ const FIELDS = {
   piles: [["diameter", "Diameter"]],
   beams: [["width", "Width"], ["depth", "Depth"]],
 };
+const VOIDS = [["thickness", "Thickness"], ["void_diameter", "Voids Ø"], ["void_spacing", "at"]];
+const MAIN = { slabs: "thickness", piles: "diameter", beams: "depth" };
+const fieldsOf = (el) => (el.kind === "slabs" && el.voided ? VOIDS : FIELDS[el.kind]);
+const ALL = "*all*"; // the "All elements" choice: a change on every element of the section
 
 export async function renderTrials(host, h) {
   const { api, again, esc, fmt, secUrl, ROOT } = h;
@@ -36,17 +40,36 @@ export async function renderTrials(host, h) {
   } catch {
     /* no storage */
   }
-  if (!data.elements.some((e) => e.element === picked)) picked = (data.elements.find((e) => e.kind === "slabs") || data.elements[0]).element;
+  if (picked !== ALL && !data.elements.some((e) => e.element === picked)) picked = (data.elements.find((e) => e.kind === "slabs") || data.elements[0]).element;
   let sizes = null; // the list being edited, for the picked element
   let running = null;
 
   const cur = data.currency || "";
   const money = (v) => (v == null ? "–" : fmt(v));
 
+  // Which element (or all of them) the tab is on.
+  const picker = () => `<div class="row"><label>Element <select id="tr-el">
+      <option value="${ALL}" ${picked === ALL ? "selected" : ""}>All elements (the whole section, a change on every element)</option>${data.elements
+        .map((e) => `<option value="${esc(e.element)}" ${e.element === picked ? "selected" : ""}>${esc(e.element)} (${KIND[e.kind]}, now ${esc(e.current_label)})</option>`)
+        .join("")}</select></label></div>`;
+  const wirePicker = () => {
+    out.querySelector("#tr-el").onchange = (e) => {
+      picked = e.target.value;
+      sizes = null;
+      try {
+        localStorage.setItem(pickKey, picked);
+      } catch {
+        /* no storage */
+      }
+      draw();
+    };
+  };
+
   const draw = () => {
+    if (picked === ALL) return drawAll();
     const el = data.elements.find((e) => e.element === picked);
     sizes ??= el.sizes.map((s) => ({ ...s }));
-    const fields = FIELDS[el.kind];
+    const fields = fieldsOf(el);
     const slab = el.kind === "slabs";
     const pile = el.kind === "piles";
     const done = el.rows.filter((r) => r.state === "done");
@@ -88,14 +111,12 @@ export async function renderTrials(host, h) {
       .map(
         (s, i) => `<span class="chip trial-size">${fields
           .map(([k, t]) => `<label title="${t} (mm)">${fields.length > 1 ? `${t} ` : ""}<input type="number" min="50" step="any" data-i="${i}" data-k="${k}" value="${s[k] ?? ""}" style="width:5.5em"></label>`)
-          .join(" × ")}<button class="small" data-drop="${i}" title="Take this size off">×</button></span>`,
+          .join(el.kind === "beams" ? " × " : " ")}<button class="small" data-drop="${i}" title="Take this size off">×</button></span>`,
       )
       .join(" ");
     out.innerHTML = `<div class="panel">
-        <div class="row"><label>Element <select id="tr-el">${data.elements
-          .map((e) => `<option value="${esc(e.element)}" ${e.element === picked ? "selected" : ""}>${esc(e.element)} (${KIND[e.kind]}, now ${esc(e.current_label)})</option>`)
-          .join("")}</select></label></div>
-        <p class="status" style="margin-bottom:4px">Sizes to try (mm)${el.kind === "beams" ? ", width × depth" : ""}:</p>
+        ${picker()}
+        <p class="status" style="margin-bottom:4px">Sizes to try (mm)${el.kind === "beams" ? ", width × depth" : el.voided ? ", slab thickness with the voids' diameter and spacing" : ""}:</p>
         <div class="row" style="flex-wrap:wrap;gap:6px">${editor}
           <button class="small" id="tr-add">Add a size</button><button class="small" id="tr-reset">Around the current size</button></div>
         <div class="row" style="margin-top:10px"><button id="tr-run">${running ? "Running…" : "Run the trials"}</button>
@@ -109,16 +130,7 @@ export async function renderTrials(host, h) {
       ${done.some((r) => !r.passed) ? `<ul class="status trial-why">${done.filter((r) => !r.passed).map((r) => `<li><strong>${esc(r.label)}</strong> is not safe: ${esc(r.why || "see the Design tab.")}</li>`).join("")}</ul>` : ""}
       ${done.length && !done.some((r) => r.passed) ? '<p class="status flag-bad">None of the trials run is safe.</p>' : ""}`;
 
-    out.querySelector("#tr-el").onchange = (e) => {
-      picked = e.target.value;
-      sizes = null;
-      try {
-        localStorage.setItem(pickKey, picked);
-      } catch {
-        /* no storage */
-      }
-      draw();
-    };
+    wirePicker();
     out.querySelectorAll("[data-i]").forEach((inp) => {
       inp.onchange = () => {
         sizes[+inp.dataset.i][inp.dataset.k] = inp.value === "" ? null : Number(inp.value);
@@ -152,6 +164,116 @@ export async function renderTrials(host, h) {
     });
   };
 
+  // ---- All elements: the whole section designed with a change on every element (the crack width
+  // limit), against the section as set.
+  let scen = null; // GET scenarios
+  let limits = null; // the crack width limits being edited
+  const drawAll = async () => {
+    if (!scen) {
+      out.innerHTML = `<div class="panel">${picker()}<p class="status">Loading…</p></div>`;
+      wirePicker();
+      try {
+        scen = await api(`${secUrl()}/scenarios`);
+      } catch (e) {
+        out.querySelector(".panel").insertAdjacentHTML("beforeend", `<p class="status">${esc(e.message)}</p>`);
+        return;
+      }
+      if (picked !== ALL) return;
+    }
+    limits ??= scen.variants.filter((v) => !v.base).map((v) => v.variant.crack_width_limit);
+    const cols = scen.variants;
+    const base = cols[0];
+    const saving = (v, c) => (v == null ? "–" : c.base ? "–" : v === 0 ? "0" : `<span class="${v > 0 ? "flag-ok" : "flag-bad"}">${v > 0 ? "saves " : "costs "}${fmt(Math.abs(v))}</span>`);
+    const cell = (c, f) => (c.complete ? f(c) : `<span class="status">${c.missing} element${c.missing === 1 ? "" : "s"} not designed yet</span>`);
+    const line = (label, f, strong) => `<tr><th>${label}</th>${cols.map((c) => `<td>${strong ? "<strong>" : ""}${cell(c, f)}${strong ? "</strong>" : ""}</td>`).join("")}</tr>`;
+    const elRow = (n) =>
+      `<tr><td>${esc(n)}</td>${cols
+        .map((c) => {
+          const e = c.elements[n] || {};
+          if (e.state !== "done") return `<td class="status">${esc(e.state || "–")}</td>`;
+          return `<td><span class="${e.passed ? "flag-ok" : "flag-bad"}">${fmt(e.utilisation, 2)}</span>${e.cost_per_m != null ? ` · ${fmt(e.cost_per_m)}/m` : ""}${e.kg_per_m3 != null ? `<div class="hint">${fmt(e.kg_per_m3)} kg/m³</div>` : ""}</td>`;
+        })
+        .join("")}</tr>`;
+    out.innerHTML = `<div class="panel">
+        ${picker()}
+        <p class="status" style="margin-bottom:4px">Crack width limits to try (mm), each on every element and both faces, against the section as set:</p>
+        <div class="row" style="flex-wrap:wrap;gap:6px">${limits
+          .map((v, i) => `<span class="chip trial-size"><input type="number" min="0.05" max="0.5" step="0.05" data-w="${i}" value="${v ?? ""}" style="width:5em"><button class="small" data-wdrop="${i}" title="Take this off">×</button></span>`)
+          .join(" ")}<button class="small" id="sc-add">Add a limit</button></div>
+        <div class="row" style="margin-top:10px"><button id="sc-run">${running ? "Running…" : "Design the whole section"}</button>
+          ${running ? '<button id="tr-stop" class="quiet">Stop</button>' : ""}<span class="status" id="tr-status">${running ? esc(running.text) : ""}</span></div>
+        <p class="status">Every element is designed again for the section as set and for each limit, without the bars you set by hand, so the
+          columns differ only by the limit. Elements with nothing to change (steel) are designed once. This takes a while: about as long as
+          designing the section once per column. Nothing here changes your design; set the limit on the Elements tab to use it.</p>
+      </div>
+      <div class="panel scroll"><table class="cost trials">
+        <tr><th></th>${cols.map((c) => `<th>${esc(c.label)}</th>`).join("")}</tr>
+        ${line(`Cost per m (${esc(cur)}/m)`, (c) => money(c.cost_per_m), true)}
+        ${line("Against as set, per m", (c) => saving(c.saving_per_m, c))}
+        ${scen.berth_length_m ? line(`Whole ${fmt(scen.berth_length_m)} m berth`, (c) => saving(c.saving, c)) : ""}
+        ${line("Concrete m³/m", (c) => fmt(c.concrete_m3_per_m, 2))}
+        ${line("Reinforcement t/m", (c) => fmt(c.rebar_t_per_m, 3))}
+        ${line("Structural steel t/m", (c) => fmt(c.steel_t_per_m, 3))}
+        ${line("Safe elements", (c) => `${c.safe_count} of ${c.safe_count + c.unsafe.length}${c.unsafe.length ? `<div class="hint flag-bad">Not safe: ${esc(c.unsafe.join(", "))}</div>` : ""}`)}
+        <tr><th colspan="${cols.length + 1}" style="padding-top:14px">Each element: utilisation · cost per m</th></tr>
+        ${scen.elements.map(elRow).join("")}
+      </table></div>
+      ${cols.some((c) => c.missing_prices?.length) ? `<p class="status flag-bad">Prices missing, so totals leave them out: ${esc([...new Set(cols.flatMap((c) => c.missing_prices || []))].join(", "))}.</p>` : ""}
+      ${base.complete && !scen.berth_length_m ? '<p class="status">No berth length on the Costing tab: costs are per metre over the length the model covers.</p>' : ""}`;
+    wirePicker();
+    out.querySelectorAll("[data-w]").forEach((inp) => {
+      inp.onchange = () => (limits[+inp.dataset.w] = inp.value === "" ? null : Number(inp.value));
+    });
+    out.querySelectorAll("[data-wdrop]").forEach((b) => {
+      b.onclick = () => {
+        limits.splice(+b.dataset.wdrop, 1);
+        drawAll();
+      };
+    });
+    out.querySelector("#sc-add").onclick = () => {
+      limits.push(Math.min(0.5, Math.round(((limits[limits.length - 1] ?? 0.2) + 0.05) * 100) / 100));
+      drawAll();
+    };
+    out.querySelector("#sc-run").onclick = () => !running && runAll();
+    const stop = out.querySelector("#tr-stop");
+    if (stop) stop.onclick = () => (running.stopped = true);
+  };
+
+  const runAll = async () => {
+    const variants = limits.filter((v) => v).map((v) => ({ crack_width_limit: v }));
+    running = { text: "Starting…", stopped: false };
+    drawAll();
+    const key = `trials-${pid}-${h.sectionId()}`;
+    const poll = setInterval(async () => {
+      try {
+        const p = await api(`${ROOT}/api/progress/${key}`);
+        if (p.step) say(`${p.step}…`);
+      } catch {
+        /* between requests */
+      }
+    }, 1500);
+    let total = null;
+    try {
+      for (;;) {
+        const res = await again(() => api(`${secUrl()}/scenarios`, { method: "POST", body: JSON.stringify({ variants, budget_s: 3 }) }));
+        scen = res;
+        total ??= res.left + res.done;
+        if (!res.left || running.stopped) break;
+        running.text = `${total - res.left} of ${total} element designs done…`;
+        drawAll();
+      }
+      running = null;
+      limits = null;
+      drawAll();
+    } catch (e) {
+      running = null;
+      drawAll();
+      say(e.message);
+    } finally {
+      clearInterval(poll);
+    }
+  };
+
   const say = (text) => {
     if (running) running.text = text;
     const s = out.querySelector("#tr-status");
@@ -159,7 +281,7 @@ export async function renderTrials(host, h) {
   };
 
   const run = async (el) => {
-    const asked = sizes.filter((s) => FIELDS[el.kind].every(([k]) => k === "width" || s[k]));
+    const asked = sizes.filter((s) => s[MAIN[el.kind]]);
     if (!asked.length) return say("List at least one size.");
     running = { text: "Starting…", stopped: false };
     draw();

@@ -1226,6 +1226,50 @@ def use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
     return {"project": saved, "affected": affected}
 
 
+class ScenarioRequest(BaseModel):
+    variants: list[dict[str, float | None]] = Field(
+        default_factory=list, description="Changes to try on every element, e.g. {crack_width_limit: 0.3}."
+    )
+    budget_s: float | None = Field(
+        None, gt=0, description="Start no element after this long; what is left comes back in 'left'."
+    )
+
+
+@app.get(SECTION + "/scenarios")
+def section_scenarios(project_id: str, section_id: str) -> dict:
+    """The whole section designed with a change on every element, against the section as set."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    d = store()._dir(project_id, section_id)
+    summary = store().workbook_summary(project_id, section_id)
+    return trials.scenarios_view(project, section, summary, store().load_results(project_id, section_id), d)
+
+
+@app.post(SECTION + "/scenarios")
+def run_scenarios(project_id: str, section_id: str, body: ScenarioRequest) -> dict:
+    """Design every element for the section as set and for each variant, in steps. The section and its
+    results do not change."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    try:
+        variants = [trials.clean_variant(v) for v in body.variants]
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    variants = list({trials.variant_key(v): v for v in variants if v}.values())
+    if len(variants) > 6:
+        raise HTTPException(422, "Try at most 6 changes at a time.")
+    workbook = _workbook(project_id, section)
+    if workbook is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    deadline = time.monotonic() + body.budget_s if body.budget_s else None
+    d = store()._dir(project_id, section_id)
+    summary = store().workbook_summary(project_id, section_id)
+    with _Progress(f"trials-{project_id}-{section_id}") as tell:
+        done = trials.run_scenarios(project, section, workbook, summary, d, variants, deadline, tell)
+    view = trials.scenarios_view(project, section, summary, store().load_results(project_id, section_id), d)
+    return {**view, **done}
+
+
 @app.get(SECTION + "/design/report.{fmt}")
 def design_report(project_id: str, section_id: str, fmt: str, detail: str = "summary") -> Response:
     """The calculation report of a designed section: summary or detailed, as Word, PDF or Excel."""
