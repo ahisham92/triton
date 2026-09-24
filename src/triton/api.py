@@ -1141,7 +1141,6 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
             deadline=deadline,
             approach=project.approach,
             furniture_at=furniture_mod.positions_for(project, section),
-            approach=project.approach,
         )
         every = fresh.names(project, section)
         summary = store().workbook_summary(project_id, section_id)
