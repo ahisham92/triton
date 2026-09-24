@@ -41,6 +41,7 @@ from .project import (
 from .reader import UnsupportedWorkbook
 from .report import RENDERERS, build_report
 from .review import choices
+from .stepped import assemble, is_read, read_step
 from .store import ProjectNotFound, ProjectStore
 from .suggest import suggest
 from .validation import (
@@ -415,13 +416,34 @@ async def upload_piece(upload_id: str, request: Request, offset: int = 0) -> dic
     return {"id": upload_id, "received": received}
 
 
+# How long one reading step runs before it answers (a host ends requests that run too long).
+READ_STEP_S = float(os.environ.get("TRITON_READ_STEP_S", "8"))
+
+
+@app.post("/api/uploads/{upload_id}/read")
+def read_upload(upload_id: str) -> dict:
+    """Read the next few sheets of a joined upload; the page asks again until ``done``."""
+    d = _upload_dir(upload_id)
+    try:
+        return read_step(d, _upload_file(d), READ_STEP_S)
+    except UnsupportedWorkbook as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # corrupt or password-protected files
+        raise HTTPException(400, f"Could not read the workbook: {e}") from e
+
+
 def _take_upload(upload_id: str, keep: Callable[[str, ImportResult], dict] | None = None) -> dict:
-    """Read the joined upload (progress under its id), hand it to ``keep``, then delete it."""
+    """Read the joined upload (progress under its id), or put together the sheets its reading steps
+    kept, hand it to ``keep``, then delete it."""
     d = _upload_dir(upload_id)
     try:
         with _Progress(upload_id) as tell:
             filename = (d / "name").read_text("utf-8")
-            result = _import_path(_upload_file(d), tell)
+            if is_read(d):
+                tell(0.9, "Checking the sheets")
+                result = assemble(d)
+            else:
+                result = _import_path(_upload_file(d), tell)
             if keep is None:
                 return {"file": filename, **result.summary()}
             tell(0.95, "Saving")

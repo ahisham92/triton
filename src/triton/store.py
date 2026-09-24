@@ -76,8 +76,14 @@ class ProjectStore:
         raw, result.raw = result.raw, None
         if replace:
             shutil.rmtree(d / "raw", ignore_errors=True)
-        for name, rows in (raw or {}).items():
-            self._save_raw(d, name, rows)
+        kept = getattr(raw, "path", None)  # rows already in files (read in steps): copy the files
+        for name in raw or {}:
+            if kept:
+                target = self._raw_path(d, name)
+                target.parent.mkdir(exist_ok=True)
+                shutil.copyfile(kept(name), target)
+            else:
+                self._save_raw(d, name, raw[name])
         # Only this app writes these pickles, from workbooks the user uploaded.
         with (d / "workbook.pkl.tmp").open("wb") as f:
             pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)

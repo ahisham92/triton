@@ -158,3 +158,59 @@ def test_an_upload_can_be_dropped(data_dir):
     upload_id = client.post("/api/uploads", json={"filename": "w.xlsx"}).json()["id"]
     assert client.delete(f"/api/uploads/{upload_id}").status_code == 204
     assert not (data_dir / "uploads" / upload_id).exists()
+
+
+def test_read_a_few_sheets_per_request(data_dir, monkeypatch):
+    """A host cuts off a long request, so the page asks for the reading in steps."""
+    from triton import api
+
+    monkeypatch.setattr(api, "READ_STEP_S", 0)  # one sheet per step
+    data = workbook_bytes()
+    whole = client.post(f"/api/workbooks/check/{send(data)}").json()
+
+    upload_id = send(data)
+    steps = []
+    while not (steps and steps[-1]["done"]):
+        r = client.post(f"/api/uploads/{upload_id}/read")
+        assert r.status_code == 200, r.text
+        steps.append(r.json())
+    assert [(s["sheets"], s["of"]) for s in steps] == [(1, 2), (2, 2)]
+    assert 0 < steps[0]["fraction"] < 1 and steps[-1]["fraction"] == 1
+
+    # Asked again after it finished (a retried request): nothing more to read.
+    assert client.post(f"/api/uploads/{upload_id}/read").json()["done"]
+
+    project = client.post("/api/projects", json={"info": {"name": "Steps"}}).json()
+    url = f"/api/projects/{project['id']}/sections/{project['sections'][0]['id']}/workbook"
+    kept = client.post(f"{url}/{upload_id}")
+    assert kept.status_code == 200, kept.text
+    for key in ("coverage", "sheets", "issues"):
+        assert kept.json()[key] == whole[key], key
+    assert not any((data_dir / "uploads").iterdir())
+
+    # The rows as read were kept with the section, for the warnings review.
+    sheet = client.get(f"{url}/sheet", params={"name": "SPW-QP"})
+    assert sheet.status_code == 200, sheet.text
+    assert sheet.json()["rows"] and sheet.json()["editable"]
+
+
+def test_a_second_upload_read_in_steps_merges(data_dir, monkeypatch):
+    from triton import api
+
+    monkeypatch.setattr(api, "READ_STEP_S", 0)
+    project = client.post("/api/projects", json={"info": {"name": "Steps"}}).json()
+    url = f"/api/projects/{project['id']}/sections/{project['sections'][0]['id']}/workbook"
+    for mode in ("replace", "update"):
+        upload_id = send(workbook_bytes())
+        while not client.post(f"/api/uploads/{upload_id}/read").json()["done"]:
+            pass
+        r = client.post(f"{url}/{upload_id}", params={"mode": mode})
+        assert r.status_code == 200, r.text
+    assert sorted(r.json()["merged"]["replaced"]) == ["SPW-PT-B-Apron", "SPW-QP"]
+    assert client.get(f"{url}/sheet", params={"name": "SPW-PT-B-Apron"}).status_code == 200
+
+
+def test_a_bad_workbook_read_in_steps_is_reported():
+    upload_id = send(b"not a workbook at all")
+    r = client.post(f"/api/uploads/{upload_id}/read")
+    assert r.status_code == 400 and "Could not read" in r.json()["detail"]

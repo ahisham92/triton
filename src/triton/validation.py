@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
@@ -27,7 +27,7 @@ class ImportResult:
     issues: list[Issue] = field(default_factory=list)
     axes: list[dict[str, Any]] = field(default_factory=list)
     # The sheets' rows as read, for showing a warning where it is; kept beside the workbook, not in it.
-    raw: dict[str, list[Row]] | None = field(default=None, repr=False)
+    raw: Mapping[str, list[Row]] | None = field(default=None, repr=False)
 
     @property
     def usable(self) -> list[SheetData]:
@@ -143,7 +143,12 @@ CHECKER_SHEET = "Triton checker"  # the list sheet of a Checker workbook uploade
 
 def import_sheets(raw: dict[str, list[Row]]) -> ImportResult:
     raw = {k: v for k, v in raw.items() if k != CHECKER_SHEET}
-    result = _checked(ImportResult([clean_sheet(name, rows) for name, rows in raw.items()]))
+    return collect([clean_sheet(name, rows) for name, rows in raw.items()], raw)
+
+
+def collect(sheets: list[SheetData], raw: Mapping[str, list[Row]] | None = None) -> ImportResult:
+    """The workbook from its cleaned sheets, checked as a whole."""
+    result = _checked(ImportResult(sheets))
     result.raw = raw
     return result
 
@@ -409,7 +414,9 @@ def merge_workbooks(
     fresh = [replace(s, issues=[i for i in s.issues if i.code not in _SHEET_CHECKS]) for s in sheets.values()]
     merged = _checked(ImportResult(fresh))
     taken = set(added) | {r.split(" → ")[-1] for r in replaced}
-    merged.raw = {k: v for k, v in (new.raw or {}).items() if k in taken}
+    raw = new.raw or {}
+    subset = getattr(raw, "subset", None)  # rows kept in files: pass the files on, not the rows
+    merged.raw = subset(taken) if subset else {k: v for k, v in raw.items() if k in taken}
     return merged, {"mode": mode, "replaced": replaced, "added": added, "skipped": skipped}
 
 

@@ -16,11 +16,33 @@ async function api(path, opts = {}) {
   if (res.status === 204) return null;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(typeof data.detail === "string" ? data.detail : res.statusText);
+    const busy = GATEWAY.includes(res.status) && typeof data.detail !== "string";
+    const err = new Error(
+      busy
+        ? `The server did not answer (${res.status} ${res.statusText}). It may have been restarting; try again.`
+        : typeof data.detail === "string" ? data.detail : res.statusText,
+    );
     err.detail = data.detail;
+    err.status = res.status;
     throw err;
   }
   return data;
+}
+
+// A host answers these when a request was cut off or the site was restarting (a Reload).
+const GATEWAY = [502, 503, 504];
+
+// Asks again, a few times, when a request was cut off rather than refused.
+async function again(fn, tries = 4) {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const cutOff = GATEWAY.includes(e.status) || e instanceof TypeError; // TypeError: no answer at all
+      if (!cutOff || i >= tries) throw e;
+      await new Promise((r) => setTimeout(r, 2000 * i));
+    }
+  }
 }
 
 let SCHEMA = null;
@@ -664,19 +686,13 @@ async function sendInPieces(f, progress, run = {}) {
       throw new Error("Stopped.");
     }
     const piece = f.slice(at, at + PIECE);
-    for (let tries = 1; ; tries++) {
-      try {
-        await api(`${ROOT}/api/uploads/${id}?offset=${at}`, {
-          method: "PUT",
-          body: piece,
-          headers: { "Content-Type": "application/octet-stream" },
-        });
-        break;
-      } catch (e) {
-        if (tries >= 3) throw e;
-        await new Promise((r) => setTimeout(r, 1000 * tries));
-      }
-    }
+    await again(() =>
+      api(`${ROOT}/api/uploads/${id}?offset=${at}`, {
+        method: "PUT",
+        body: piece,
+        headers: { "Content-Type": "application/octet-stream" },
+      }),
+    );
     at += piece.size;
     progress(at);
   } while (at < f.size);
@@ -708,14 +724,29 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
         await api(`${ROOT}/api/uploads/${id}`, { method: "DELETE" }).catch(() => {});
         throw new Error("Stopped.");
       }
+      // Read a few sheets per request: a host cuts off a request that runs too long.
       status.textContent = `Reading ${f.name}…`;
+      const began = Date.now();
+      for (;;) {
+        if (job.stopped) {
+          await api(`${ROOT}/api/uploads/${id}`, { method: "DELETE" }).catch(() => {});
+          throw new Error("Stopped.");
+        }
+        const r = await again(() => api(`${ROOT}/api/uploads/${id}/read`, { method: "POST" }));
+        if (r.done) break;
+        const spent = (Date.now() - began) / 1000;
+        const left = r.fraction >= 0.03 ? (spent * (1 - r.fraction)) / r.fraction : null;
+        if (!job.stopped)
+          status.textContent = `Reading ${f.name}: ${Math.round(r.fraction * 100)}% (${r.sheets} of ${r.of} sheets)${leftText(left)}`;
+      }
       job.key = id;
       const stop = watchProgress(id, (text) => (job.stopped ? null : (status.textContent = text)));
       let data;
       try {
         const mode = document.getElementById("upload-mode");
         const how = mode && !mode.hidden ? `?mode=${mode.value}` : "";
-        data = await api(`${url}/${id}${how}`, { method: "POST" });
+        status.textContent = `Checking ${f.name}…`;
+        data = await again(() => api(`${url}/${id}${how}`, { method: "POST" }));
       } finally {
         stop();
         hideStop();
