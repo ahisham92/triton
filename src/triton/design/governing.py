@@ -103,10 +103,12 @@ def placeholder_sets() -> list[dict[str, Any]]:
     ]
 
 
-def cased(pile: PileInput, top: float, bottom: float) -> bool:
+def cased(pile: PileInput, top: float, bottom: float, settings: DesignSettings) -> bool:
     """Whether a station lies wholly inside the pile's steel casing (no crack width check)."""
-    c = pile.casing
-    return c is not None and c.bottom_level <= bottom + 1e-9 and top <= c.top_level + 1e-9
+    from .piles import casing_band
+
+    band = casing_band(pile, settings)
+    return band is not None and band[0] <= bottom + 1e-9 and top <= band[1] + 1e-9
 
 
 def station_sets(
@@ -117,17 +119,17 @@ def station_sets(
     stations: list[tuple[float, float, dict]],
 ) -> list[dict[str, Any]]:
     """Seven ULS and seven QP sets for each (top, bottom, cage dict) station."""
-    from .piles import _utilisation
+    from .piles import _utilisation, casing_band
 
     out = []
     for top, bottom, cage in stations:
         arrangement = SimpleNamespace(rings=[SimpleNamespace(**r) for r in cage["rings"]])
         u_rows = uls[(uls["Z"] <= top + 1e-9) & (uls["Z"] >= bottom - 1e-9)]
         q_rows = qp[(qp["Z"] <= top + 1e-9) & (qp["Z"] >= bottom - 1e-9)] if not qp.empty else qp
-        if pile.casing is not None and not q_rows.empty:
-            c = pile.casing
-            q_rows = q_rows[(q_rows["Z"] > c.top_level + 1e-9) | (q_rows["Z"] < c.bottom_level - 1e-9)]
-        no_crack = cased(pile, top, bottom) or (pile.casing is not None and q_rows.empty)
+        band = casing_band(pile, settings)
+        if band is not None and not q_rows.empty:
+            q_rows = q_rows[(q_rows["Z"] > band[1] + 1e-9) | (q_rows["Z"] < band[0] - 1e-9)]
+        no_crack = cased(pile, top, bottom, settings) or (band is not None and q_rows.empty)
         util = _utilisation(pile, arrangement, settings, u_rows) if len(u_rows) else None
         qp_sets = placeholder_sets()
         if not no_crack:

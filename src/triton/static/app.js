@@ -3760,6 +3760,7 @@ function pileCard(p) {
     ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
     ${casingBlock(p.casing)}
     ${connectionBlock(p.connection)}
+    ${levelSketch(p)}
     ${pileCrackBlock(p.cracks)}
     ${crackPicturesHtml(pileCrackItems(p))}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
@@ -3830,6 +3831,44 @@ function slabCrackItems(d) {
       forces: `${q.combination}: M = ${fmt(q.M_kNm_per_m)} kNm/m, N = ${fmt(q.N_kN_per_m)} kN/m (compression +), strip averaged, with ${r.bars}`,
     }))
   );
+}
+
+// The levels at the pile head, not to scale: slab soffit (pile top), design top, casing, worst crack.
+function levelSketch(p) {
+  const s = p.section || {};
+  if (s.soffit_m == null && !s.casing_m) return "";
+  const z = (v) => Math.round(v * 100) / 100;
+  const marks = [];
+  const add = (v, text) => v != null && marks.push({ v: z(v), text });
+  if (s.head_level_m != null && s.soffit_m != null && s.head_level_m > s.soffit_m + 1e-6)
+    add(s.head_level_m, `Design top (soffit + ${fmt((s.head_level_m - s.soffit_m) * 100)} cm)`);
+  add(s.soffit_m, "Slab soffit = pile top");
+  if (s.casing_m) {
+    add(s.casing_m[1], "Casing top");
+    add(s.casing_m[0], "Casing bottom");
+    if (s.no_crack_m && s.no_crack_m[1] > s.casing_m[1] + 1e-6) add(s.no_crack_m[1], "No crack check up to");
+  }
+  const g = p.cracks?.governing;
+  if (g) add(g.z, `Worst QP crack (${fmt(p.cracks.wk_mm, 2)} mm)`);
+  const levels = [...new Set(marks.map((m) => m.v))].sort((a, b) => b - a);
+  const rows = levels.map((v) => ({ v, text: marks.filter((m) => m.v === v).map((m) => m.text).join(", ") }));
+  const top = 30, gap = 38, h = top + gap * (rows.length - 1) + 40;
+  const y = (v) => top + gap * levels.indexOf(z(v));
+  const soffitY = s.soffit_m != null ? y(s.soffit_m) : top;
+  const pileY = levels.includes(z(s.head_level_m ?? NaN)) ? y(s.head_level_m) : soffitY;
+  const band = s.no_crack_m || s.casing_m;
+  const cas = s.casing_m ? `<rect x="58" y="${y(s.casing_m[1])}" width="4" height="${y(s.casing_m[0]) - y(s.casing_m[1])}" fill="var(--accent)"/><rect x="118" y="${y(s.casing_m[1])}" width="4" height="${y(s.casing_m[0]) - y(s.casing_m[1])}" fill="var(--accent)"/>` : "";
+  const nc = band ? `<rect x="62" y="${y(band[1])}" width="56" height="${y(band[0]) - y(band[1])}" fill="var(--accent-bg)"/>` : "";
+  const lines = rows.map((r) => `<line x1="40" x2="150" y1="${y(r.v)}" y2="${y(r.v)}" stroke="var(--muted)" stroke-dasharray="3 3"/>
+    <text x="158" y="${y(r.v) + 4}" font-size="12" fill="var(--text)">${fmt(r.v, 2)} m  ${esc(r.text)}</text>`).join("");
+  return `<h3>Levels at the pile head</h3>
+    <svg class="level-sketch" viewBox="0 0 560 ${h}" width="100%" style="max-width:560px" role="img" aria-label="Pile head levels">
+      <rect x="20" y="4" width="140" height="${soffitY - 4}" fill="var(--miss-bg)" stroke="var(--line)"/>
+      <text x="26" y="18" font-size="11" fill="var(--muted)">slab</text>
+      <rect x="62" y="${pileY}" width="56" height="${h - pileY}" fill="var(--panel)" stroke="var(--muted)"/>
+      ${nc}${cas}${lines}
+    </svg>
+    <p class="status">Not to scale. Shaded: no crack width check${s.casing_m ? " (inside the casing)" : ""}. The pile is designed up to the design top; results above it are inside the slab and ignored.</p>`;
 }
 
 function pileCrackBlock(c) {

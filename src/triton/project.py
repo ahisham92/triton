@@ -417,7 +417,12 @@ class Casing(_Model):
         "concrete carries all forces. Yes: the casing works with the concrete; between its levels the "
         "forces are shared by E·I, as in the combi wall, and the casing itself is checked.",
     )
-    top_level: float = _m("Casing top level", 2.7)
+    top_level: float = _m(
+        "Casing top level",
+        2.7,
+        description="At or above the pile's top level (slab soffit): the casing runs into the slab and "
+        "covers the design top too (soffit + 10 cm), so no crack check there either.",
+    )
     bottom_level: float = _m("Casing bottom level", -1.3)
     thickness: float = _mm("Casing wall thickness", 16.0, gt=0)
     corrosion_loss: float | None = _mm(
@@ -479,8 +484,8 @@ class PileInput(_ConcreteSection):
     head_level: float | None = _m(
         "Top level of the pile (slab soffit)",
         None,
-        description="Results more than the distance set in Design settings (default 10 cm) above it are "
-        "inside the slab and ignored. Empty: every result is used.",
+        description="The pile is designed up to the design top, 10 cm above this (the distance is in "
+        "Design settings); results higher up are inside the slab and ignored. Empty: every result is used.",
     )
     casing: Casing | None = Field(
         None,

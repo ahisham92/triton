@@ -399,12 +399,25 @@ def _utilisation(
     return util
 
 
-def crack_loads(pile: PileInput, qp: pd.DataFrame) -> pd.DataFrame:
-    """The QP rows whose crack width is checked: none inside a steel casing."""
+def casing_band(pile: PileInput, settings: DesignSettings) -> tuple[float, float] | None:
+    """(bottom, top) of the length with no crack width check. A casing whose top is at or above the
+    pile's top level (the slab soffit) runs into the slab, so it also covers the results kept above the
+    soffit (up to ``results_into_connection``)."""
     c = pile.casing
-    if c is None or qp.empty:
+    if c is None:
+        return None
+    top = c.top_level
+    if pile.head_level is not None and top >= pile.head_level - 1e-9:
+        top = max(top, pile.head_level + settings.results_into_connection / 1e3)
+    return c.bottom_level, top
+
+
+def crack_loads(pile: PileInput, qp: pd.DataFrame, settings: DesignSettings) -> pd.DataFrame:
+    """The QP rows whose crack width is checked: none inside a steel casing (``casing_band``)."""
+    band = casing_band(pile, settings)
+    if band is None or qp.empty:
         return qp
-    inside = (qp["Z"] >= c.bottom_level - 1e-9) & (qp["Z"] <= c.top_level + 1e-9)
+    inside = (qp["Z"] >= band[0] - 1e-9) & (qp["Z"] <= band[1] + 1e-9)
     return qp[~inside]
 
 
@@ -494,6 +507,12 @@ def design_pile(
             "head_level_m": round(head, 2),
             "toe_level_m": round(float(loads["Z"].min()), 2),
             "head_level_set": pile.head_level is not None,
+            "soffit_m": pile.head_level,
+        }
+    if pile.casing is not None:
+        geom |= {
+            "casing_m": [pile.casing.bottom_level, pile.casing.top_level],
+            "no_crack_m": [round(v, 3) for v in casing_band(pile, settings)],
         }
     notes: list[str] = []
     if casing_check is not None:
@@ -564,7 +583,7 @@ def design_pile(
             name, None, math.inf, False, {}, area_min, area_max, 0.0, 0.0, limits, geom, notes=notes
         )
 
-    qp = crack_loads(pile, qp_loads(sheets, pile.head_level, above))
+    qp = crack_loads(pile, qp_loads(sheets, pile.head_level, above), settings)
     check = _Checker(pile, settings, loads, qp)
     strength = _Checker(pile, settings, loads)
     passing = [a for fam in families if (a := _fewest(fam, check))]
@@ -852,9 +871,15 @@ def _fewest(fam: list[Arrangement], check) -> Arrangement | None:
 def crack_summary(pile: PileInput, settings: DesignSettings, qp: pd.DataFrame, stations: list[tuple]) -> dict:
     """The worst QP crack width down the pile with the cage of each station, and a profile per 0.5 m."""
     out: dict = {"limit_mm": pile.crack_width_limit, "wk_mm": None, "passed": True, "profile": []}
-    c = pile.casing
+    c, band = pile.casing, casing_band(pile, settings)
     if c is not None:
         out["casing"] = f"No crack check inside the steel casing, {c.bottom_level:g} to {c.top_level:g} m."
+        if band[1] > c.top_level + 1e-9:
+            out["casing"] = (
+                f"No crack check inside the steel casing, {c.bottom_level:g} to {band[1]:g} m: the casing "
+                f"reaches the slab soffit ({pile.head_level:g} m), so it also covers the results kept up to "
+                f"{band[1]:g} m in the connection."
+            )
     if qp.empty:
         out["note"] = "No QP results outside a casing: no crack check."
         return out

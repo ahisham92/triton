@@ -51,3 +51,16 @@ def test_a_crack_only_casing_carries_nothing():
     pile = PileInput(head_level=0.0, casing=Casing(top_level=0.0, bottom_level=-10.0))
     d = design_pile("Pile(1)", pile, DesignSettings(), pile_sheets(LOADS)).to_dict()
     assert d["casing"] is None
+
+
+def test_a_casing_up_to_the_soffit_also_covers_the_connection_band():
+    """A casing whose top is the slab soffit runs into the slab: no crack check up to the design top."""
+    from triton.design.piles import casing_band
+
+    s = DesignSettings()
+    at_soffit = PileInput(head_level=2.1, casing=Casing(top_level=2.1, bottom_level=-1.9))
+    assert casing_band(at_soffit, s) == (-1.9, 2.2)
+    below = PileInput(head_level=2.1, casing=Casing(top_level=1.5, bottom_level=-1.9))
+    assert casing_band(below, s) == (-1.9, 1.5)
+    d = design_pile("Pile(1)", at_soffit, s, pile_sheets(LOADS)).to_dict()
+    assert d["section"]["no_crack_m"] == [-1.9, 2.2] and d["section"]["soffit_m"] == 2.1
