@@ -12,6 +12,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -629,9 +630,22 @@ def _cell(v):
 
 
 @app.get(SECTION + "/workbook/sheet")
-def workbook_sheet(project_id: str, section_id: str, name: str, start: int | None = None) -> dict:
+def workbook_sheet(
+    project_id: str,
+    section_id: str,
+    name: str,
+    start: int | None = None,
+    show: Literal["all", "flagged"] = "all",
+    code: str | None = None,
+    sort: int | None = None,
+    desc: bool = False,
+) -> dict:
     """A page of a sheet's rows as read, with the rows each warning points at; ``start`` is the
-    0-based row to begin at (default: a little above the first flagged row)."""
+    0-based row to begin at (default: a little above the first flagged row).
+
+    A view (``show`` flagged rows, only those of a warning ``code``, ``sort`` by a 0-based column)
+    lists the data rows under the header in that order; ``start`` is then a place in that list.
+    It only changes what is shown: every row keeps its Excel number."""
     section = _section(_get(project_id), section_id)
     wb, raw = _raw_sheet(project_id, section, name)
     sheet = next(s for s in wb.sheets if s.name == name)
@@ -642,6 +656,7 @@ def workbook_sheet(project_id: str, section_id: str, name: str, start: int | Non
             flags.setdefault(r, []).append(
                 {
                     "id": i.id,
+                    "code": i.code,
                     "severity": i.severity.value,
                     "message": " ".join(filter(None, [i.message, (getattr(i, "notes", None) or {}).get(r)])),
                     "decision": section.review.get(i.id),
@@ -658,18 +673,46 @@ def workbook_sheet(project_id: str, section_id: str, name: str, start: int | Non
         editable = False
     else:
         rows, editable = raw, True
-    first = min(flags, default=1) - 1
-    if start is None:
-        start = max(0, first - 5)
-    start = max(0, min(start, max(len(rows) - 1, 0)))
-    page = [[_cell(v) for v in r] for r in rows[start : start + SHEET_PAGE]]
     header = next((n for n, r in enumerate(rows[:200]) if is_header(r)), None) if editable else 0
+    view = show == "flagged" or code is not None or sort is not None
+    if view:
+        numbers = [n + 1 for n in range((header or -1) + 1, len(rows)) if not is_header(rows[n])]
+        if show == "flagged" or code:
+            numbers = [n for n in numbers if any(code in (None, f["code"]) for f in flags.get(n, []))]
+        if sort is not None:
+            # Numbers in order, then text, then empty cells (still in Excel order), either way round.
+            nums, texts, empties = [], [], []
+            for n in numbers:
+                v = rows[n - 1][sort] if sort < len(rows[n - 1]) else None
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    empties.append(n)
+                elif isinstance(v, (int, float)) and not isinstance(v, bool):
+                    nums.append((v, n))
+                else:
+                    try:
+                        nums.append((float(str(v).strip()), n))
+                    except ValueError:
+                        texts.append((str(v).strip().lower(), n))
+            nums.sort(key=lambda x: x[0], reverse=desc)  # stable: equal values stay in Excel order
+            texts.sort(key=lambda x: x[0], reverse=desc)
+            numbers = [n for _, n in nums] + [n for _, n in texts] + empties
+        start = max(0, min(start or 0, max(len(numbers) - 1, 0)))
+    else:
+        first = min(flags, default=1) - 1
+        if start is None:
+            start = max(0, first - 5)
+        start = max(0, min(start, max(len(rows) - 1, 0)))
+        numbers = list(range(1, len(rows) + 1))
+    shown = numbers[start : start + SHEET_PAGE]
+    page = [[_cell(v) for v in rows[n - 1]] for n in shown]
     head_cells = [_cell(v) for v in rows[header]] if header is not None and rows else []
     width = max([len(r) for r in page] + [len(head_cells)], default=0)
     return {
         "name": name,
         "start": start,
-        "total": len(rows),
+        "numbers": shown,
+        "view": view,
+        "total": len(numbers),
         "width": width,
         "rows": page,
         "header_row": header + 1 if header is not None else None,

@@ -228,12 +228,14 @@ def clean_sheet(name: str, rows: list[Row]) -> SheetData:
     if unnamed_rows:
         # Values beside the table, under no header (notes, a helper column): not Plaxis results.
         found = sorted(unnamed.items())[:4]
-        cols = ", ".join(f"{get_column_letter(c + 1)} (e.g. {str(v).strip()[:20]!r})" for c, v in found)
+        letters = ", ".join(get_column_letter(c + 1) for c, _ in found)
+        samples = ", ".join(repr(str(v).strip()[:20]) for _, v in found)
         issue(
             Severity.INFO,
             "unnamed_columns",
-            f"Column(s) {cols} have no header, so their values in {len(set(unnamed_rows))} row(s) are not "
-            "Plaxis results and were not read.",
+            f"Extra column{'s' if len(found) > 1 else ''} {letters} beside the Plaxis table (no header above "
+            f"{'them' if len(found) > 1 else 'it'}): not read. {len(set(unnamed_rows))} row(s) have values "
+            f"there, e.g. {samples}.",
             unnamed_rows,
         )
 

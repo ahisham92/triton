@@ -1541,6 +1541,8 @@ function renderReview(data, refresh, url) {
 
 // A sheet as read, in a grid: flagged rows highlighted with their reasons, cells editable. Saving
 // sends the changed cells; the sheet is read again and the workbook checked again.
+// The view can show only the flagged rows (or one kind of warning) and sort by a column; that only
+// changes what is shown, rows keep their Excel numbers, and the sheet opens in Excel order each time.
 async function openSheet(url, name, refresh, start = null) {
   document.getElementById("sheet-view")?.remove();
   const box = document.createElement("div");
@@ -1548,48 +1550,97 @@ async function openSheet(url, name, refresh, start = null) {
   box.className = "sheet-view";
   document.body.append(box);
   const edits = new Map();
+  const view = { show: "all", code: null, sort: null, desc: false };
   const colName = (i) => { let s = ""; for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s; return s; };
   const load = async (from) => {
-    box.innerHTML = `<div class="sheet-card"><p class="status">Opening ${esc(name)}…</p></div>`;
     const q = new URLSearchParams({ name });
     if (from != null) q.set("start", from);
+    if (view.show !== "all") q.set("show", view.show);
+    if (view.code) q.set("code", view.code);
+    if (view.sort != null) {
+      q.set("sort", view.sort);
+      if (view.desc) q.set("desc", "true");
+    }
+    if (!box.firstChild) box.innerHTML = `<div class="sheet-card"><p class="status">Opening ${esc(name)}…</p></div>`;
     const d = await api(`${url}/workbook/sheet?${q}`);
     const locked = state?.project.locked && d.editable;
     if (locked) d.editable = false; // read only while the model is locked
     const flagged = d.flagged_rows;
     const body = d.rows
       .map((r, k) => {
-        const n = d.start + k + 1;
+        const n = d.numbers[k];
         const f = d.flags[n];
         const sev = f ? (f.some((x) => x.severity === "error") ? "error" : f.some((x) => x.severity === "warning") ? "warning" : "info") : "";
         const cells = Array.from({ length: d.width }, (_, c) => `<td ${d.editable ? 'contenteditable="true"' : ""} data-r="${n}" data-c="${c}">${esc(r[c] ?? "")}</td>`).join("");
         return `<tr class="${sev ? `flag ${sev}` : ""}" ${f ? `title="${esc(f.map((x) => x.message).join("\n"))}"` : ""}><th>${n}</th>${cells}</tr>`;
       })
       .join("");
-    const next = flagged.find((r) => r > d.start + d.rows.length);
-    const prev = [...flagged].reverse().find((r) => r <= d.start);
+    const last = d.numbers.at(-1) ?? 0;
+    const next = d.view ? null : flagged.find((r) => r > last);
+    const prev = d.view ? null : [...flagged].reverse().find((r) => r <= d.start);
+    const kinds = [...new Map(d.issues.filter((i) => i.rows.length).map((i) => [i.code, i])).values()];
+    const arrow = (c) => (view.sort === c ? (view.desc ? " ▼" : " ▲") : "");
+    const shown = d.rows.length ? `${d.view ? "" : "rows "}${d.start + 1}–${d.start + d.rows.length} of ${d.total}${d.view ? " shown" : ""}` : "no rows";
     box.innerHTML = `<div class="sheet-card">
-      <div class="row"><h3 style="margin:0">${esc(name)}</h3><span class="status">rows ${d.start + 1}–${d.start + d.rows.length} of ${d.total}</span>
+      <div class="row"><h3 style="margin:0">${esc(name)}</h3><span class="status">${shown}</span>
         <span style="flex:1"></span>
         ${prev ? `<button class="quiet" data-go="${Math.max(0, prev - 6)}">Previous flagged</button>` : ""}
         ${next ? `<button class="quiet" data-go="${Math.max(0, next - 6)}">Next flagged</button>` : ""}
         ${d.start > 0 ? `<button class="quiet" data-go="${Math.max(0, d.start - 200)}">Up</button>` : ""}
         ${d.start + d.rows.length < d.total ? `<button class="quiet" data-go="${d.start + 200}">Down</button>` : ""}
-        ${d.editable ? '<button id="sheet-save" disabled>Save edits</button>' : ""}
+        ${d.editable ? `<button id="sheet-save" ${edits.size ? "" : "disabled"}>Save edits</button>` : ""}
         <button class="quiet" id="sheet-close">Close</button></div>
+      <div class="row sheet-tools"><label for="sheet-show">Show</label>
+        <select id="sheet-show">
+          <option value="all">All rows</option>
+          <option value="flagged">Only rows with warnings (${flagged.length})</option>
+          ${kinds.map((i) => `<option value="code:${esc(i.code)}">Only: ${esc(issueTitle(i.code))} (${i.rows.length})</option>`).join("")}
+        </select>
+        <span class="status">Click a column letter to sort. This only changes the view: rows keep their Excel numbers, and the sheet opens in Excel order next time.</span>
+        ${view.sort != null || view.show !== "all" ? '<button class="quiet small" id="sheet-reset">Excel order</button>' : ""}</div>
       ${d.issues.length ? `<ul class="sheet-issues">${d.issues.map((i) => `<li><span class="sev ${i.severity}">${i.severity}</span> ${esc(i.message)}${i.rows.length ? ` <span class="rows">rows ${esc(rowRanges(i.rows))}</span>` : ""}</li>`).join("")}</ul>` : ""}
       ${d.editable ? "" : locked ? '<p class="status">Read only while the model is locked. Press Unlock to edit to change cells.</p>' : '<p class="status">This workbook was uploaded before its rows were kept, so this shows the rows as cleaned and cannot be edited. Upload it again to edit here.</p>'}
-      <p class="status" id="sheet-status">${d.editable ? "Click a cell to change it. Highlighted rows are the flagged ones; hover for the reason." : ""}</p>
-      <div class="sheet-grid"><table><tr><th></th>${Array.from({ length: d.width }, (_, c) => `<th>${colName(c)}${d.header?.[c] != null && d.header[c] !== "" ? `<div class="head-text">${esc(d.header[c])}</div>` : ""}</th>`).join("")}</tr>${body}</table></div></div>`;
-    box.querySelector("#sheet-close").onclick = () => box.remove();
+      <p class="status" id="sheet-status">${edits.size ? `${edits.size} cell(s) changed: Save edits to read the sheet again.` : d.editable ? "Click a cell to change it. Highlighted rows are the flagged ones; hover for the reason." : ""}</p>
+      <div class="sheet-grid"><table><tr><th></th>${Array.from({ length: d.width }, (_, c) => `<th class="sortable" data-sort="${c}" title="Sort by this column">${colName(c)}${arrow(c)}${d.header?.[c] != null && d.header[c] !== "" ? `<div class="head-text">${esc(d.header[c])}</div>` : ""}</th>`).join("")}</tr>${body || `<tr><td colspan="${d.width + 1}" class="status">No rows to show.</td></tr>`}</table></div></div>`;
+    const pick = box.querySelector("#sheet-show");
+    pick.value = view.code ? `code:${view.code}` : view.show;
+    pick.onchange = () => {
+      const v = pick.value;
+      view.show = v === "all" ? "all" : "flagged";
+      view.code = v.startsWith("code:") ? v.slice(5) : null;
+      load(null);
+    };
+    box.querySelector("#sheet-reset")?.addEventListener("click", () => {
+      Object.assign(view, { show: "all", code: null, sort: null, desc: false });
+      load(null);
+    });
+    box.querySelectorAll("th[data-sort]").forEach((th) => (th.onclick = () => {
+      const c = Number(th.dataset.sort);
+      // Each click: ascending, descending, then back to Excel order.
+      if (view.sort !== c) Object.assign(view, { sort: c, desc: false });
+      else if (!view.desc) view.desc = true;
+      else Object.assign(view, { sort: null, desc: false });
+      load(null);
+    }));
+    box.querySelector("#sheet-close").onclick = () => {
+      if (edits.size && !confirm("Close without saving your cell edits?")) return;
+      box.remove();
+    };
     box.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => load(Number(b.dataset.go))));
     const saveBtn = box.querySelector("#sheet-save");
-    box.querySelectorAll("td[contenteditable]").forEach((td) => (td.oninput = () => {
-      edits.set(`${td.dataset.r}|${td.dataset.c}`, { row: Number(td.dataset.r), col: Number(td.dataset.c), value: td.textContent });
-      td.classList.add("edited");
-      saveBtn.disabled = false;
-      box.querySelector("#sheet-status").textContent = `${edits.size} cell(s) changed: Save edits to read the sheet again.`;
-    }));
+    box.querySelectorAll("td[contenteditable]").forEach((td) => {
+      const kept = edits.get(`${td.dataset.r}|${td.dataset.c}`); // an edit made before the view changed
+      if (kept) {
+        td.textContent = kept.value;
+        td.classList.add("edited");
+      }
+      td.oninput = () => {
+        edits.set(`${td.dataset.r}|${td.dataset.c}`, { row: Number(td.dataset.r), col: Number(td.dataset.c), value: td.textContent });
+        td.classList.add("edited");
+        saveBtn.disabled = false;
+        box.querySelector("#sheet-status").textContent = `${edits.size} cell(s) changed: Save edits to read the sheet again.`;
+      };
+    });
     if (saveBtn)
       saveBtn.onclick = async () => {
         saveBtn.disabled = true;
@@ -1605,8 +1656,7 @@ async function openSheet(url, name, refresh, start = null) {
           saveBtn.disabled = false;
         }
       };
-    const first = box.querySelector("tr.flag");
-    first?.scrollIntoView({ block: "center" });
+    if (!d.view) box.querySelector("tr.flag")?.scrollIntoView({ block: "center" });
   };
   await load(start);
 }

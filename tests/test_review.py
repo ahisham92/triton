@@ -133,3 +133,30 @@ def test_see_edit_and_download_a_sheet(client):
         f"{url}/workbook?mode=update", files={"file": ("checker.xlsx", buf.getvalue())}
     ).json()
     assert "Triton checker" not in [s["name"] for s in again["sheets"]]
+
+
+def test_sheet_view_filters_and_sorts_without_touching_row_numbers(client):
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)"]}).json()
+    url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
+    rows = pile_sheet()
+    rows[3] = [rows[3][0], "n/a", *rows[3][2:]]  # Excel row 4: text in the node column
+    rows.append(rows[1])  # Excel row 7 repeats row 2
+    data = xlsx({"Pile(1)-QP": rows, "Pile(1)-PT-B-Apron": pile_sheet(scale=2)})
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
+    get = lambda **q: client.get(f"{url}/workbook/sheet", params={"name": "Pile(1)-QP", **q}).json()  # noqa: E731
+
+    whole = get()
+    assert not whole["view"] and whole["numbers"][0] == whole["start"] + 1
+    flagged = get(show="flagged")
+    assert flagged["view"] and flagged["numbers"] == [4, 7] and flagged["total"] == 2
+    assert flagged["rows"][1] == [c if c is not None else None for c in rows[6]][: len(flagged["rows"][1])]
+    assert get(code="duplicate_rows_removed")["numbers"] == [7]
+
+    # Sorted by the node column: numbers ascending, the text last; descending reverses the numbers.
+    up = get(sort=1)["numbers"]
+    assert up[-1] == 4 and 1 not in up  # the header stays out of a sorted view
+    nodes = [whole["rows"][n - 1 - whole["start"]][1] for n in up[:-1]]
+    assert nodes == sorted(nodes)
+    down = get(sort=1, desc=True)["numbers"]
+    assert down[-1] == 4 and down[:-1] == sorted(up[:-1], key=lambda n: nodes[up.index(n)], reverse=True)
+    assert down.index(2) < down.index(7)  # equal nodes keep Excel order

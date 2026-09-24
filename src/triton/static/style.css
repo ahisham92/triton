@@ -264,3 +264,9 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .pick-row { margin-bottom: 12px; }
 .chip.stale-chip { border-color: var(--warn); background: var(--warn-bg); }
 .tabs-list { margin: 12px 0; max-height: 240px; overflow-y: auto; }
+
+/* Sheet view: filter and sort (view only). */
+.sheet-tools { margin: 8px 0; font-size: 14px; }
+.sheet-tools .status { font-size: 12px; flex: 1; min-width: 240px; }
+.sheet-grid th.sortable { cursor: pointer; user-select: none; }
+.sheet-grid th.sortable:hover { color: var(--accent); }

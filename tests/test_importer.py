@@ -132,7 +132,11 @@ def test_values_in_columns_without_a_header_are_a_quiet_note_naming_the_column()
     assert i.severity.value == "info" and i.rows == [3]
     from openpyxl.utils import get_column_letter
 
-    assert f"Column(s) {get_column_letter(len(PLATE_HEADER) + 2)} (e.g. 'max')" in i.message
+    col = get_column_letter(len(PLATE_HEADER) + 2)
+    assert (
+        i.message == f"Extra column {col} beside the Plaxis table (no header above it): not read. "
+        "1 row(s) have values there, e.g. 'max'."
+    )
     assert len(s.frame) == 3
 
 
