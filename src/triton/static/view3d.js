@@ -30,7 +30,8 @@ export function legendHtml(title = "Utilisation", extra = "") {
     <div class="bar" style="background:linear-gradient(90deg, ${stops}, rgb(${UNSAFE}) 91%, rgb(${UNSAFE}))"></div>
     <div class="ticks"><span>0</span><span style="left:45%">0.5</span><span style="left:67.5%">0.75</span><span style="left:90%">1.0</span></div>
     <div class="grey"><i style="background:rgb(${UNSAFE})"></i> above 1.0: unsafe</div>
-    <div class="grey"><i style="background:rgb(${GREY})"></i> ${extra ? "no crack check here (inside a steel casing) or not designed yet" : "not designed yet"}</div>${extra}</div>`;
+    <div class="grey"><i style="background:rgb(${GREY})"></i> ${extra ? "no crack check here (inside a steel casing) or not designed yet" : "not designed yet"}</div>
+    <div class="grey"><i style="background:rgba(150,158,168,0.22);border:1px solid rgba(150,158,168,0.6)"></i> no colour on a slab or beam: over a pile head or king pile, where the results are FE peaks in the connection and are left out (bending is taken at its face)</div>${extra}</div>`;
 }
 
 export function crackLegendHtml() {
@@ -248,7 +249,16 @@ export class View3D {
           // Beams: 0.5 m bands along the beam, across its full width.
           const along = Y[1] - Y[0] >= X[1] - X[0] ? "Y" : "X";
           const across = along === "Y" ? "X" : "Y";
-          for (const [x, y, z, u, size] of b) {
+          for (const [x, y, z, u, size, why] of b) {
+            if (size && u == null) {
+              // Slabs: a cell with no result, drawn outlined so it reads as left out, not as a gap.
+              if (this.view !== "util") continue;
+              const h = size / 2 - 0.04;
+              items.push({ kind: "quad", pts: [[x - h, y - h, z], [x + h, y - h, z], [x + h, y + h, z], [x - h, y + h, z]],
+                faded, element: e.element, fill: "rgba(150,158,168,0.35)", stroke: "rgba(110,118,128,0.8)",
+                tip: `${e.element} at X ${x}, Y ${y}: ${why === "pile" ? "over a pile head: the results inside the pile are FE peaks in the connection and are left out; bending is taken at the pile face" : "no Plaxis node in this cell: nothing to design here; the basic mesh runs through it"}` });
+              continue;
+            }
             if (size) {
               // Slabs: square cells of the zone grid.
               const h = size / 2 + 0.01;

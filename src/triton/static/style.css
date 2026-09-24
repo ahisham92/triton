@@ -334,3 +334,5 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .cage-over p { margin: 4px 0; }
 b.bad, td.bad, .bad { color: var(--err); }
 tr.gov-row td { font-weight: 600; }
+.support-band { fill: var(--miss-bg); stroke: none; }
+.support-key { display: inline-block; width: 14px; height: 10px; background: var(--miss-bg); border: 1px solid var(--line); vertical-align: middle; }

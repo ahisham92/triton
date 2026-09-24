@@ -49,7 +49,7 @@ import pandas as pd
 from ..elements import CombinationType, ElementType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
-from ..project import BeamInput, CombiWallInput, DesignSettings, PileInput, with_project_grades
+from ..project import BeamCage, BeamInput, CombiWallInput, DesignSettings, PileInput, with_project_grades
 from .bollard import check_bollard
 from .circular import ConcreteLaw, SteelLaw
 from .crack import autogenous_shrinkage, crack_width, restraint_crack, restraint_factor
@@ -867,7 +867,9 @@ def design_beam(
     geometry: list[dict],
     elements: dict[str, Any],
     axes: dict[str, str] | None,
+    user_cage: BeamCage | None = None,
 ) -> dict[str, Any]:
+    """Choose the beam's longitudinal bars, or check the ones the user set (``user_cage``)."""
     beam = with_project_grades(beam, settings.materials, settings.durability)
     lay = layout(sheets, axes)
     sag = 1.0 if settings.plate_positive_moment == "sagging" else -1.0
@@ -1003,10 +1005,14 @@ def design_beam(
                     need = max(c["As_req_mm2"] for c in tr["cases"])
                     jump = next((i for i in range(bi + 1, len(tops)) if tops[i].area >= need), None)
             if grow is None:
-                cracks = crack_check(full, g, cage, qp_m, e_eff, conc)
-                for face in ("top", "bottom"):
-                    if face in cracks and cracks[face]["wk"] > limits[face] + 1e-9:
-                        grow = face
+                # The likeliest QP rows first (fast), then every QP row, so no row is missed.
+                for rows in (qp_m, qp_all):
+                    cracks = crack_check(full, g, cage, rows, e_eff, conc)
+                    grow = next(
+                        (f for f in ("top", "bottom") if f in cracks and cracks[f]["wk"] > limits[f] + 1e-9),
+                        None,
+                    )
+                    if grow is not None or len(rows) == len(qp_all):
                         break
             if grow is None:
                 break
@@ -1029,9 +1035,25 @@ def design_beam(
                 bi = jump if jump is not None else bi + 1
                 sides = side_candidates(g, settings, tops[ti], tops[bi])
                 si = min(si, len(sides) - 1)
-        if cracks is None:
-            cracks = crack_check(full, g, cage, qp_m, e_eff, conc)
+        if cracks is None or status != "ok":
+            cracks = crack_check(full, g, cage, qp_all, e_eff, conc)
         return cage, sec, u, cracks, restr, status
+
+    def fixed_cage(asl: float):
+        """The user's bars, checked as they are."""
+        uc = user_cage
+        cage = Cage(
+            Face(uc.top.count, uc.top.diameter, uc.top.layers),
+            Face(uc.bottom.count, uc.bottom.diameter, uc.bottom.layers),
+            Face(uc.side.count, uc.side.diameter),
+        )
+        sec = section(cage, asl)
+        u = sec.utilisation(n, mv, mh)
+        cracks = crack_check(section(cage), g, cage, qp_all, e_eff, conc)
+        restr = restraint_check(beam, settings, g, cage, conc)
+        return cage, sec, u, cracks, restr, "ok"
+
+    design_cage = grow_cage if user_cage is None else lambda asl, use_truss=True: fixed_cage(asl)
 
     def section(cage: Cage, asl: float = 0.0) -> RectSection:
         bars = cage_bars(g, cage, dg, asl)
@@ -1043,7 +1065,8 @@ def design_beam(
         checks = {
             "bending": lambda c, f: float(section(c, asl).utilisation(n, mv, mh).max()) <= 1 + 1e-9,
             "crack": lambda c, f: (
-                crack_check(section(c), g, c, qp_m, e_eff, conc).get(f, {"wk": 0.0})["wk"] <= limits[f] + 1e-9
+                crack_check(section(c), g, c, qp_all, e_eff, conc).get(f, {"wk": 0.0})["wk"]
+                <= limits[f] + 1e-9
             ),
             "restraint": lambda c, f: (
                 restraint_check(beam, settings, g, c, conc)["faces"][f]["wk"] <= limits[f] + 1e-9
@@ -1103,7 +1126,7 @@ def design_beam(
     n = mom["N"].to_numpy(float)
     mv = mom["Mv"].to_numpy(float)
     mh = mom["Mh"].to_numpy(float)
-    cage, sec, u, cracks, restr, status = grow_cage(0.0)
+    cage, sec, u, cracks, restr, status = design_cage(0.0)
 
     # Torsion (6.3.2(3)): its longitudinal steel is shared round the perimeter and comes out of the
     # bars that bending uses, so the cage is grown again with it taken out of each face.
@@ -1115,11 +1138,27 @@ def design_beam(
         link_design(beam, settings, g, cage, shr, t_shear, trans).get("torsion_long_steel_mm2") or 0.0
     )
     if asl > 0:
-        cage, sec, u, cracks, restr, status = grow_cage(asl)
+        cage, sec, u, cracks, restr, status = design_cage(asl)
     # The same cage from the Plaxis actions alone, to show what the truss adds.
     plaxis_cage = grow_cage(asl, use_truss=False)[0] if beam.truss is not None else cage
+    if user_cage is not None:
+        notes.append(f"Bars set by you: {cage.label}. Triton checks them; it does not choose them.")
+        for f in ("top", "bottom"):
+            face = getattr(cage, f)
+            span = g.b - 2 * (g.cover + g.link) - face.phi
+            clear = span / max(face.count - 1, 1) - face.phi
+            least = max(settings.reinforcement.min_clear_spacing, face.phi, dg + 5, 20)
+            if face.count < 2 or clear < least - 1e-9:
+                status = f"{f} bars: clear spacing {clear:.0f} mm is below the {least:.0f} mm minimum"
+            elif clear + face.phi > settings.reinforcement.max_spacing + 1e-9:
+                status = (
+                    f"{f} bars: spacing {clear + face.phi:.0f} mm is over the "
+                    f"{settings.reinforcement.max_spacing:g} mm maximum"
+                )
     needs = face_needs(cage, asl)
-    if status != "ok":
+    if status != "ok" and user_cage is not None:
+        notes.append(f"Your bars break a spacing rule: {status}.")
+    elif status != "ok":
         notes.append(f"No cage within the bar sizes and spacing limits passes every check ({status}).")
     u_max = float(u.max())
     j = int(np.argmax(u))
@@ -1225,12 +1264,15 @@ def design_beam(
     ]
     return {
         **base,
+        "user_set": user_cage is not None,
         "faces": faces,
         "cage": {
             **cage.to_dict(g.b, g.h),
+            # Every bar at its real size (the bending section takes the torsion steel out of the bar
+            # areas, which would draw them smaller than they are).
             "bars": [
                 [round(float(u), 1), round(float(v), 1), round(math.sqrt(4 * a / math.pi))]
-                for u, v, a in zip(sec.bars.u, sec.bars.v, sec.bars.area, strict=True)
+                for u, v, a in zip(crack_sec.bars.u, crack_sec.bars.v, crack_sec.bars.area, strict=True)
             ],
             "link_diameter_mm": g.link,
             "lines": adsec_lines(g, cage, dg),
@@ -1279,11 +1321,10 @@ def beam_crack_bands(sec, g, cage, qp: pd.DataFrame, e_eff, conc, limits, lay: L
     if qp is None or qp.empty:
         return []
     k = np.floor((qp["s"].to_numpy(float) - lay.start) / BAND).astype(int)
-    z = (g.h - g.inner(25)) * 0.9 / 1000
     out = []
     for i, rows in qp.assign(k=k).groupby("k"):
         worst = 0.0
-        for _, r in crack_candidates(rows, z, 2).iterrows():
+        for _, r in rows.iterrows():
             face = "bottom" if r["Mv"] >= 0 else "top"
             c = face_crack(sec, g, getattr(cage, face), float(r["N"]), float(r["Mv"]), e_eff, conc)
             worst = max(worst, c["wk"] / limits[face])

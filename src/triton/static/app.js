@@ -2993,7 +2993,10 @@ function slabPlan(el, d, key) {
       ${zones}${piles}
       <text class="tick" x="${pad}" y="${H - 8}">X ${fmt(flip ? x1 : x0, 1)}${flip ? " (sea side)" : ""}</text><text class="tick" x="${W - pad}" y="${H - 8}" text-anchor="end">X ${fmt(flip ? x0 : x1, 1)}</text>
       <text class="tick" x="${pad - 4}" y="${Y(y1) + 4}" text-anchor="end">Y ${fmt(y1, 0)}</text><text class="tick" x="${pad - 4}" y="${Y(y0)}" text-anchor="end">${fmt(y0, 0)}</text>
-    </svg>`;
+    </svg>
+    ${(d.punching || []).length ? `<p class="status plan-key"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="4" fill="none" stroke="var(--text)" stroke-width="1.5"/></svg> pile head
+      <svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="pp-u1"/></svg> punching control perimeter u1, 2d from the pile face: no links needed
+      <svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="pp-out"/></svg> the same, where the pile needs punching links (see Punching at the piles)</p>` : ""}`;
 }
 
 // ---------------------------------------------------------------- Beams
@@ -3037,6 +3040,7 @@ function beamCard(b) {
       ${exRow("N", "N (compression +)", "kN")}${exRow("Mv", "M vertical (sagging +)", "kNm")}${exRow("Mh", "M horizontal", "kNm")}
       ${exRow("V", "V vertical", "kN")}${exRow("Vh", "V horizontal", "kN")}${exRow("T", "Torsion", "kNm")}
     </table></div></div>
+    ${beamCageHtml(b)}
     ${faceNeeds(b)}
     ${g.combination ? `<p>Governing bending: ${esc(g.combination)} at ${fmt(g.s, 2)} m along the beam. N = ${fmt(g.N_kN)} kN, M<sub>v</sub> = ${fmt(g.Mv_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_v_kNm)}), M<sub>h</sub> = ${fmt(g.Mh_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_h_kNm)}), exponent a = ${fmt(g.a, 2)}. ${esc(bend.method || "")}.</p>` : ""}
     <div class="charts"><div class="chart" data-kind="moments"></div><div class="chart" data-kind="profile"></div></div>` : ""}
@@ -3068,13 +3072,79 @@ function beamCard(b) {
     <p class="status">${esc(b.truss.method)}</p>` : b.truss?.note ? `<p class="status">${esc(b.truss.note)}</p>` : ""}
     ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}`;
   mountCrackPictures(card, beamCrackItems(b));
+  wireBeamCage(card, b);
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
   if (b.profile?.length) {
-    beamMoments(card.querySelector('[data-kind="moments"]'), b.profile);
+    beamMoments(card.querySelector('[data-kind="moments"]'), b.profile, b.supports);
     const prof = { profile: b.profile.map((q) => ({ z: q.s, util: q.u })) };
-    alongChart(card.querySelector('[data-kind="profile"]'), prof.profile, "Utilisation along the beam", "Utilisation", (q) => q.util, 1);
+    alongChart(card.querySelector('[data-kind="profile"]'), prof.profile, "Utilisation along the beam", "Utilisation", (q) => q.util, 1, b.supports);
   }
   return card;
+}
+
+// A beam's longitudinal bars set by hand, face by face; Check designs just that beam with them.
+function beamCageHtml(b) {
+  if (!b.cage) return "";
+  const own = sec().beam_cages?.[b.element];
+  const c = b.cage;
+  const v = own || {
+    top: { count: c.top.count, diameter: c.top.phi, layers: c.top.layers },
+    bottom: { count: c.bottom.count, diameter: c.bottom.phi, layers: c.bottom.layers },
+    side: { count: c.side.count, diameter: c.side.phi || 20, layers: 1 },
+  };
+  const bars = (state.project.design?.reinforcement?.bar_diameters || [16, 20, 25, 32]).filter((d) => d >= 12);
+  const opt = (cur) => bars.map((d) => `<option value="${d}" ${Number(cur) === d ? "selected" : ""}>Ø${d}</option>`).join("");
+  const row = (f, name, layers) => `<div class="row" style="gap:10px;align-items:end;margin-top:6px" data-beam-face="${f}">
+      <span class="status" style="min-width:80px">${name}</span>
+      <label>Bars${layers ? " per layer" : ""} <input type="number" min="0" step="1" data-k="count" value="${v[f].count}" style="width:70px"></label>
+      <label>Bar <select data-k="diameter">${opt(v[f].diameter)}</select></label>
+      ${layers ? `<label>Layers <input type="number" min="1" max="4" step="1" data-k="layers" value="${v[f].layers}" style="width:60px"></label>` : ""}</div>`;
+  return `<details class="panel cage-set" data-beam-cage ${own ? "open" : ""}><summary>${own ? "Bars set by you (checked, not chosen by Triton)" : "Change bars and re-check"}</summary>
+    ${row("top", "Top", true)}${row("bottom", "Bottom", true)}${row("side", "Each side", false)}
+    <div class="row" style="margin-top:8px;gap:10px;flex-wrap:wrap;align-items:center"><span data-beam-sum></span></div>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:10px">
+      <button data-beam-check>Re-check</button>
+      ${own ? `<button class="quiet" data-beam-auto>Let Triton choose again</button>` : ""}
+      <span class="status" data-beam-status>${own ? "" : "Re-check designs only this beam with your bars: bending, cracks, restraint, links and the truss are worked out again."}</span>
+    </div></details>`;
+}
+
+function wireBeamCage(card, b) {
+  const box = card.querySelector("[data-beam-cage]");
+  if (!box) return;
+  const status = box.querySelector("[data-beam-status]");
+  const read = () => Object.fromEntries(["top", "bottom", "side"].map((f) => {
+    const r = box.querySelector(`[data-beam-face="${f}"]`);
+    const get = (k) => r.querySelector(`[data-k="${k}"]`)?.value;
+    return [f, { count: Math.round(Number(get("count"))), diameter: Number(get("diameter")), layers: Math.round(Number(get("layers") ?? 1)) }];
+  }));
+  const sum = () => {
+    const v = read();
+    const a = (x, n = 1) => (x.count * x.layers * Math.PI * x.diameter ** 2) / 4 * n;
+    const tot = a(v.top) + a(v.bottom) + a(v.side, 2);
+    box.querySelector("[data-beam-sum]").innerHTML = `Top ${fmt(a(v.top))} mm², bottom ${fmt(a(v.bottom))} mm², sides 2 × ${fmt(a(v.side))} mm²: <b>${fmt(tot)} mm², ${fmt((100 * tot) / (b.width_mm * b.depth_mm), 2)}%</b>`;
+  };
+  box.querySelectorAll("input,select").forEach((el) => (el.oninput = sum));
+  sum();
+  const run = async (cage) => {
+    const s = sec();
+    s.beam_cages ??= {};
+    if (cage) s.beam_cages[b.element] = cage;
+    else delete s.beam_cages[b.element];
+    status.textContent = "Saving…";
+    markDirty();
+    await save();
+    if (state.errors?.length) return (status.textContent = state.errors.map((e) => e.msg).join(" "));
+    status.textContent = `Checking ${b.element}…`;
+    state.runDesign?.([b.element]);
+  };
+  box.querySelector("[data-beam-check]").onclick = () => {
+    const v = read();
+    if (!(v.top.count >= 2 && v.bottom.count >= 2)) return (status.textContent = "At least 2 bars on the top and on the bottom.");
+    run(v);
+  };
+  const auto = box.querySelector("[data-beam-auto]");
+  if (auto) auto.onclick = () => run(null);
 }
 
 function faceNeeds(b) {
@@ -3110,7 +3180,19 @@ function beamSection(el, b) {
       ${bars}</svg>`;
 }
 
-function beamMoments(el, prof) {
+// The supports inside a beam (king piles, piles) as shaded bands: the results inside them are FE
+// peaks in the connection and are not designed; bending is taken at their faces. A line is broken
+// only where a support lies between two results.
+function supportBands(c, supports, lo, hi) {
+  return (supports || []).filter((q) => q.s + q.r > lo && q.s - q.r < hi).map((q) => {
+    const a = c.x(Math.max(lo, q.s - q.r)), b = c.x(Math.min(hi, q.s + q.r));
+    return `<rect class="support-band" x="${a}" y="${c.m.t}" width="${b - a}" height="${c.h - c.m.t - c.m.b}"><title>${esc(q.element)} at ${fmt(q.s, 2)} m, Ø${fmt(2000 * q.r)} mm: no design inside it, bending at its faces</title></rect>`;
+  }).join("");
+}
+const acrossSupport = (supports, a, b) => (supports || []).some((q) => q.s > Math.min(a, b) && q.s < Math.max(a, b));
+const supportLegend = (supports) => (supports?.length ? `<p class="status" style="margin:4px 0 0"><span class="support-key"></span> ${esc(supports[0].element)}${new Set(supports.map((q) => q.element)).size > 1 ? " and other supports" : ""}: nothing is designed inside them (FE peaks in the connection); bending is taken at their faces.</p>` : "");
+
+function beamMoments(el, prof, supports = []) {
   // Vertical bending envelope along the beam (ULS), sagging +.
   const xs = prof.map((q) => q.s);
   const lo = Math.min(0, ...prof.map((q) => q.Mv_min)), hi = Math.max(0, ...prof.map((q) => q.Mv_max));
@@ -3118,9 +3200,10 @@ function beamMoments(el, prof) {
   const c = frame(el, { xDomain: [Math.min(...xs), Math.max(...xs)], yDomain: [lo - padm, hi + padm],
     xLabel: "Position along the beam (m)", yLabel: "M vertical (kNm)", title: "Vertical bending, ULS envelope (sagging +)" });
   // Break the line over the supports, where there are no results.
-  const line = (k) => prof.map((q, i) => `${i && q.s - prof[i - 1].s < 0.6 ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
-  c.g.innerHTML = `<line class="grid" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(0)}" y2="${c.y(0)}"/>
+  const line = (k) => prof.map((q, i) => `${i && !acrossSupport(supports, q.s, prof[i - 1].s) ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
+  c.g.innerHTML = supportBands(c, supports, Math.min(...xs), Math.max(...xs)) + `<line class="grid" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(0)}" y2="${c.y(0)}"/>
     <path class="series" d="${line("Mv_max")}"/><path class="series" d="${line("Mv_min")}" stroke-dasharray="5 3"/>`;
+  el.insertAdjacentHTML("beforeend", supportLegend(supports));
   c.svg.onmousemove = (evt) => {
     const r = c.svg.getBoundingClientRect();
     const sx = ((evt.clientX - r.left) / r.width) * c.w;
@@ -3132,13 +3215,15 @@ function beamMoments(el, prof) {
   c.svg.onmouseleave = () => { c.tip.hidden = true; };
 }
 
-function alongChart(el, rows, title, yLabel, val, limit = null) {
+function alongChart(el, rows, title, yLabel, val, limit = null, supports = null) {
   // A value along the beam (x = position), with an optional limit line.
   const xs = rows.map((q) => q.z);
   const hi = Math.max(limit ?? 0, ...rows.map(val)) * 1.08 || 1;
   const c = frame(el, { xDomain: [Math.min(...xs), Math.max(...xs)], yDomain: [0, hi], xLabel: "Position along the beam (m)", yLabel, title });
-  const path = rows.map((q, i) => `${i && q.z - rows[i - 1].z < 0.6 ? "L" : "M"}${c.x(q.z).toFixed(1)},${c.y(val(q)).toFixed(1)}`).join("");
-  c.g.innerHTML = (limit != null ? `<line class="limit" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(limit)}" y2="${c.y(limit)}"/>` : "") + `<path class="series" d="${path}"/>`;
+  const gap = (a, b) => (supports ? acrossSupport(supports, a, b) : Math.abs(a - b) >= 0.6);
+  const path = rows.map((q, i) => `${i && !gap(q.z, rows[i - 1].z) ? "L" : "M"}${c.x(q.z).toFixed(1)},${c.y(val(q)).toFixed(1)}`).join("");
+  c.g.innerHTML = (supports ? supportBands(c, supports, Math.min(...xs), Math.max(...xs)) : "") + (limit != null ? `<line class="limit" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(limit)}" y2="${c.y(limit)}"/>` : "") + `<path class="series" d="${path}"/>`;
+  if (supports) el.insertAdjacentHTML("beforeend", supportLegend(supports));
   c.svg.onmousemove = (evt) => {
     const r = c.svg.getBoundingClientRect();
     const sx = ((evt.clientX - r.left) / r.width) * c.w;

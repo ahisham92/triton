@@ -196,6 +196,7 @@ def _model(p: Project) -> dict:
     for s in d["sections"]:
         s.pop("costing", None)
         s.pop("user_cages", None)  # set on the Design tab, then checked
+        s.pop("beam_cages", None)
         s.pop("slab_strips", None)
     return d
 
@@ -294,6 +295,7 @@ WORKBOOK_OWN = {
     "review",
     "excluded_peaks",
     "user_cages",
+    "beam_cages",
     "slab_strips",
 }
 

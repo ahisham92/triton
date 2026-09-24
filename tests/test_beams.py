@@ -300,3 +300,30 @@ def test_beam_reports_what_sets_each_face():
     assert set(faces) == {"top", "bottom", "side"}
     assert faces["top"]["needs_mm2"]["minimum"] > 0 and faces["top"]["governed_by"]
     assert any("peak nodal" in n for n in d["notes"])
+
+
+def test_bars_set_by_the_user_are_checked_as_they_are():
+    from triton.project import BeamCage
+
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=400.0, q23=30.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=300.0)),
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    beam = BeamInput(kind="front_beam", width=2000, depth=1600)
+    auto = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None)
+    light = BeamCage(
+        top={"count": 10, "diameter": 16},
+        bottom={"count": 10, "diameter": 16},
+        side={"count": 4, "diameter": 16},
+    )
+    d = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None, light)
+    assert d["user_set"] and not auto["user_set"]
+    assert d["cage"]["bottom"]["count"] == 10 and d["cage"]["bottom"]["phi"] == 16
+    assert d["cracks"]["bottom"]["wk"] > auto["cracks"]["bottom"]["wk"]
+    assert any("set by you" in n for n in d["notes"])
+    # The drawing shows the bars at their real size.
+    assert {bar[2] for bar in d["cage"]["bars"]} == {16}
+    tight = BeamCage(**{**light.model_dump(), "bottom": {"count": 60, "diameter": 32}})
+    t = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None, tight)
+    assert not t["passed"] and any("clear spacing" in n for n in t["notes"])

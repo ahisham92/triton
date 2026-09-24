@@ -1240,6 +1240,24 @@ class UserCage(_Model):
         return out + [(self.count // 2, inner)] if half else out
 
 
+class BeamFace(_Model):
+    """Bars along one face of a beam set by the user."""
+
+    count: int = Field(10, title="Bars per layer", ge=0)
+    diameter: int = Field(25, title="Bar", json_schema_extra={"unit": "mm"})
+    layers: int = Field(1, title="Layers", ge=1, le=4)
+
+
+class BeamCage(_Model):
+    """A beam's longitudinal bars set by the user instead of the ones Triton chooses."""
+
+    top: BeamFace = Field(default_factory=BeamFace, title="Top")
+    bottom: BeamFace = Field(default_factory=BeamFace, title="Bottom")
+    side: BeamFace = Field(
+        default_factory=lambda: BeamFace(count=4, diameter=20), title="Each side", description="One layer."
+    )
+
+
 class SlabStrips(_Model):
     """Stations and bars for a slab's column and field strips, set on the Design tab."""
 
@@ -1337,6 +1355,12 @@ class Section(_Model):
         title="Cages set by the user",
         description="Pile or combi wall infill cages set on the Design tab, by element; Check designs "
         "the element with its cage.",
+    )
+    beam_cages: dict[str, BeamCage] = Field(
+        default_factory=dict,
+        title="Beam bars set by the user",
+        description="By beam: top, bottom and side bars set on the Design tab; Check designs the beam with "
+        "them.",
     )
     slab_strips: dict[str, SlabStrips] = Field(
         default_factory=dict,

@@ -1502,6 +1502,21 @@ def design_slab(
         ]
         for (i, j), u in used.items()
     ]
+    # Cells of the slab's grid without a result: over a pile head (left out) or with no Plaxis node.
+    ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
+    nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
+    have = set(used.index)
+    for i in range(ni):
+        for j in range(nj):
+            if (i, j) in have:
+                continue
+            cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
+            if cx > box["X"][1] + 1e-6 or cy > box["Y"][1] + 1e-6:
+                continue
+            over_pile = any(math.hypot(cx - px, cy - py) <= pr + size * 0.75 for px, py, pr in piles)
+            bands.append(
+                [round(cx, 2), round(cy, 2), round(level, 2), None, size, "pile" if over_pile else "no node"]
+            )
     crack_cells = pd.concat(per_cell.values()).groupby(["i", "j"])["crack"].max().dropna()
     crack_bands = [
         [

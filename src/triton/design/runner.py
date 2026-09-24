@@ -230,7 +230,16 @@ def run_section(
             geometry = section_geometry(workbook)
         own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
         tick(name)
-        b = design_beam(name, element, settings, own, geometry, section.elements, axes.get(name))
+        b = design_beam(
+            name,
+            element,
+            settings,
+            own,
+            geometry,
+            section.elements,
+            axes.get(name),
+            section.beam_cages.get(name),
+        )
         b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
         beams.append(b)
     slabs = []
