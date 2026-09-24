@@ -103,8 +103,8 @@ the whole project. Add sections on the **Sections** tab.
 
 Each vertical element has its own **top level**: the slab soffit for a pile, the front beam soffit
 for a combi wall. Results up to 100 mm above it (Design settings, *Results taken into the slab or
-beam above*) are used and taken at the top level; higher results are FE peaks inside the
-connection and are ignored.
+beam above*) are used at their own level, and the pile is designed up to the highest of them (the
+face inside the slab); higher results are FE peaks inside the connection and are ignored.
 
 Open the web app, create a project, pick a section, then either upload its workbook on the
 **Workbook** tab and add every element it contains, or add elements by name (`Pile(5)`, `Deck`, …).

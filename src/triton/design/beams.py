@@ -1211,6 +1211,7 @@ def design_beam(
     for st in sets:
         for r in st["qp"]:
             r["crack"] = beam_crack_terms(crack_sec, g, cage, r["N_kN"], r["M3_kNm"], e_eff, conc, limits)
+            r["utilisation"] = r["crack"]["util"]  # SLS: crack width over its limit
     faces = [
         {
             "face": f,

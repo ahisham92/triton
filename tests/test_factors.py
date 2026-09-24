@@ -62,10 +62,12 @@ def test_results_10_cm_into_the_slab_are_used():
     section.add_elements(["Pile(1)"])
     section.elements["Pile(1)"].head_level = 1.7
     (pile,) = run_section(DesignSettings(), section, sheets)["piles"]
-    # 1.85 m is 15 cm into the slab (ignored); 1.78 m is kept and taken at the top level.
+    # 1.85 m is 15 cm into the slab (ignored); 1.78 m is kept at its own level, the top of the design.
     assert pile["governing"]["M_kNm"] == pytest.approx(2000.0)
-    assert pile["governing"]["z"] == 1.7
-    assert any("10 cm into the slab" in n for n in pile["notes"])
+    assert pile["governing"]["z"] == 1.78
+    assert pile["section"]["head_level_m"] == 1.78
+    assert pile["curtailment"]["runs"][0]["top"] == 1.78
+    assert any("Designed up to 1.78 m, 8 cm into the slab" in n for n in pile["notes"])
     settings = DesignSettings(results_into_connection=0)
     (pile,) = run_section(settings, section, sheets)["piles"]
     assert pile["governing"]["M_kNm"] == pytest.approx(500.0)

@@ -367,8 +367,9 @@ class DesignSettings(_Model):
         100.0,
         ge=0,
         le=1000,
-        description="Piles and king piles use Plaxis results up to this far above their top level, "
-        "taken at the top level. Results higher up are FE peaks inside the connection and are ignored.",
+        description="Piles and king piles are designed up to this far above their top level, at the face "
+        "inside the slab or beam, with the results there at their own level. Results higher up are FE "
+        "peaks inside the connection and are ignored.",
     )
 
 
@@ -1161,10 +1162,22 @@ class LoadFactor(_Model):
     )
 
 
-class UserCage(_Model):
-    """A pile (or combi wall infill) cage set by the user instead of the one Triton chooses."""
+class CageRow(_Model):
+    """One row of bars of a cage set by the user."""
 
-    rows: Literal[1, 1.5, 2, 2.5, 3] = Field(1, title="Rows")
+    count: int = Field(26, title="Bars", ge=1)
+    diameter: int = Field(32, title="Bar", json_schema_extra={"unit": "mm"})
+
+
+class UserCage(_Model):
+    """A pile (or combi wall infill) cage set by the user instead of the one Triton chooses.
+
+    ``row_bars`` sets every row from the outside in, each with its own bar count and size (e.g.
+    26Ø32 + 26Ø25 + 13Ø20). Without it the cage is ``rows`` of ``count`` bars (a half row has half
+    as many), the outer row ``diameter`` and the inner rows ``inner_diameter``.
+    """
+
+    rows: float = Field(1, title="Rows", ge=1, le=4)
     count: int = Field(26, title="Bars in the outer row", ge=6)
     diameter: int = Field(32, title="Outer row bar", json_schema_extra={"unit": "mm"})
     inner_diameter: int | None = Field(
@@ -1173,12 +1186,58 @@ class UserCage(_Model):
         description="Empty: the outer row's bar.",
         json_schema_extra={"unit": "mm"},
     )
+    row_bars: list[CageRow] | None = Field(
+        None, title="Rows, outer row first", description="Each row with its own bar count and size."
+    )
+    over_limit_with_couplers: bool = Field(
+        False,
+        title="Proceed over the steel limit with couplers",
+        description="Steel over the limit (4%) is accepted for this cage, spliced with couplers at its "
+        "joint (EN 1992-1-1 9.5.2(3)), up to 8%. The zones below are designed as usual.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_rows(cls, data: Any) -> Any:
+        # The summary fields follow the rows: a row with fewer bars than the outer row counts as that
+        # fraction of a row (26 + 26 + 13 bars is 2.5 rows).
+        rows = data.get("row_bars") if isinstance(data, dict) else None
+        if not rows:
+            return data
+        rows = [r.model_dump() if isinstance(r, CageRow) else dict(r) for r in rows]
+        try:
+            n0 = int(rows[0]["count"])
+            share = sum(min(1.0, int(r["count"]) / n0) for r in rows) if n0 > 0 else 1
+        except (KeyError, TypeError, ValueError):
+            return data  # the field checks say what is wrong
+        return {
+            **data,
+            "count": n0,
+            "diameter": rows[0]["diameter"],
+            "inner_diameter": rows[1]["diameter"] if len(rows) > 1 else None,
+            "rows": max(1.0, min(4.0, round(2 * share) / 2)),
+        }
 
     @model_validator(mode="after")
-    def _half_rows(self) -> UserCage:
+    def _rows(self) -> UserCage:
+        if self.row_bars:
+            if len(self.row_bars) > 4:
+                raise ValueError("At most 4 rows of bars.")
+            return self
+        if self.rows not in (1, 1.5, 2, 2.5, 3):
+            raise ValueError("Rows: 1, 1.5, 2, 2.5 or 3.")
         if self.rows in (1.5, 2.5) and self.count % 2:
             raise ValueError("A half row sits behind every second bar: use an even number of bars.")
         return self
+
+    def row_list(self) -> list[tuple[int, int]]:
+        """(bars, bar size) of each row from the outside in."""
+        if self.row_bars:
+            return [(r.count, r.diameter) for r in self.row_bars]
+        inner = self.inner_diameter or self.diameter
+        full, half = int(self.rows), self.rows % 1 > 0
+        out = [(self.count, self.diameter)] + [(self.count, inner)] * (full - 1)
+        return out + [(self.count // 2, inner)] if half else out
 
 
 class SlabStrips(_Model):

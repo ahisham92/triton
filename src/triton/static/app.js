@@ -2286,11 +2286,11 @@ function drawResults(res, full = res) {
       const sh = p.shear;
       const kg = p.steel?.kg_per_m3 ?? p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3;
       return `<tr><td>${esc(p.element)}</td><td>${a ? esc(a.label) : "–"}${p.user_set ? ' <span class="chip small-chip">set by you</span>' : ""}</td>
-        <td class="cell ${p.passed ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
+        <td class="cell ${p.utilisation <= 1 ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
         <td>${sh ? esc(sh.zones[0].link) : "–"}</td>
         <td class="cell ${sh ? (sh.passed ? "ok" : "error") : ""}">${sh ? fmt(sh.utilisation, 2) : "–"}</td>
-        <td class="cell ${p.cracks?.wk_mm == null ? "" : p.cracks.passed ? "ok" : "error"}">${p.cracks?.wk_mm == null ? "–" : `${fmt(p.cracks.wk_mm, 2)} / ${fmt(p.cracks.limit_mm, 2)}`}</td>
-        <td>${fmt(overallRatio(p.steel), 2)}%</td><td class="muted">${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(kg)}</td></tr>`;
+        <td class="cell ${p.cracks?.wk_mm == null ? "" : p.cracks.passed ? "ok" : "error"}">${p.cracks?.wk_mm == null ? "–" : `${fmt(p.cracks.wk_mm, 2)} / ${fmt(p.cracks.limit_mm, 2)} = ${fmt(p.cracks.wk_mm / p.cracks.limit_mm, 2)}`}</td>
+        <td>${fmt(overallRatio(p.steel), 2)}%</td><td class="${p.reinforcement_ratio_pct > (p.spacing_limits?.max_ratio_pct ?? 4) + 1e-9 ? "bad" : "muted"}">${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(kg)}</td></tr>`;
     })
     .join("");
   out.innerHTML = `${staleHtml(full)}<p class="status">Designed ${esc(when(res.run_at))} (Cairo time).</p>
@@ -2299,7 +2299,7 @@ function drawResults(res, full = res) {
       const list = alerts(res).filter((a) => a.level !== "safe");
       return list.length ? `<div class="panel"><h3 style="margin-top:0">To look at</h3>${alertsHtml(list)}</div>` : "";
     })()}
-    ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>Crack mm</th><th title="Main bars over the whole pile, laps included">ρ overall</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
+    ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>ULS N–M</th><th>Links at head</th><th>Shear</th><th title="Crack width over its limit">SLS (QP) crack mm</th><th title="Main bars over the whole pile, laps included">ρ overall</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
     <div id="pile-cards"></div><div id="combi-cards"></div>
     ${beams.length ? `<h2>Beams</h2><div class="panel scroll"><table><tr><th>Element</th><th>b × h</th><th>Longitudinal bars</th><th>Links</th><th>Transverse bars (top / bottom)</th><th>Max util.</th><th>ρ overall</th><th>kg/m³</th></tr>
       ${beams.map((b) => `<tr><td>${esc(b.element)}</td><td>${fmt(b.width_mm)} × ${fmt(b.depth_mm)}</td><td>${b.cage ? esc(b.cage.label) : "–"}</td>
@@ -3192,30 +3192,47 @@ function combiCard(w) {
   return card;
 }
 
-// A pile (or combi wall infill) cage set by hand: rows, bars in the outer row, bar sizes. Check
-// designs just that element with it; "Let Triton choose" goes back to the automatic cage.
+// A pile (or combi wall infill) cage set by hand, row by row from the outside in, each row with its own
+// bar count and size. Check designs just that element with it; "Let Triton choose" goes back to the
+// automatic cage.
 const cageKey = (p) => p.element.replace(/ infill$/, "");
+function cageRows(own, a) {
+  if (own?.row_bars?.length) return own.row_bars.map((r) => ({ count: r.count, diameter: r.diameter }));
+  if (own) {
+    const inner = own.inner_diameter || own.diameter;
+    const full = Math.floor(own.rows), half = own.rows % 1 > 0;
+    return [{ count: own.count, diameter: own.diameter }, ...Array.from({ length: full - 1 }, () => ({ count: own.count, diameter: inner })), ...(half ? [{ count: own.count / 2, diameter: inner }] : [])];
+  }
+  if (a?.rings?.length) return a.rings.map((r) => ({ count: r.count, diameter: r.diameter }));
+  return [{ count: 26, diameter: 32 }];
+}
+
 function cageSetHtml(p) {
   const key = cageKey(p);
   const own = sec().user_cages?.[key];
-  const a = p.arrangement;
-  const v = own || {
-    rows: a?.rows ?? 1,
-    count: a?.rings?.[0]?.count ?? 26,
-    diameter: a?.rings?.[0]?.diameter ?? 32,
-    inner_diameter: a?.rings?.[1]?.diameter ?? null,
-  };
   const bars = (state.project.design?.reinforcement?.bar_diameters || [16, 20, 25, 32]).filter((d) => d >= 16);
-  const opt = (list, cur) => list.map((d) => `<option value="${d}" ${Number(cur) === d ? "selected" : ""}>Ø${d}</option>`).join("");
+  const opt = (cur) => bars.map((d) => `<option value="${d}" ${Number(cur) === d ? "selected" : ""}>Ø${d}</option>`).join("");
+  const rowHtml = (r, i) => `<div class="row cage-row" data-cage-row style="gap:10px;align-items:end;margin-top:6px">
+      <span class="status" style="min-width:110px">${i ? `Row ${i + 1}` : "Row 1 (outer)"}</span>
+      <label>Bars <input type="number" min="1" step="1" data-cage-count value="${r.count}" style="width:80px"></label>
+      <label>Bar <select data-cage-dia>${opt(r.diameter)}</select></label>
+      ${i ? `<button class="quiet" data-cage-remove title="Remove this row">Remove</button>` : ""}</div>`;
+  const rows = cageRows(own, p.arrangement);
   return `<details class="panel cage-set" data-free ${own ? "open" : ""}><summary>${own ? "Cage set by you (checked, not chosen by Triton)" : "Set the cage yourself and check it"}</summary>
+    <p class="status" style="margin:8px 0 0">Rows from the outside in. A row with half the outer row's bars sits behind every second bar (a half row).</p>
+    <div data-cage-rows data-bars="${bars.join(",")}">${rows.map(rowHtml).join("")}</div>
+    <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:10px;align-items:center">
+      <button class="quiet" data-cage-add>Add a row</button>
+      <span data-cage-sum></span>
+    </div>
+    <div data-cage-over class="cage-over" hidden>
+      <p><b>Over the steel limit.</b> <span data-cage-over-text></span> EN 1992-1-1 9.5.2(3) allows more than 4% only with couplers (no laps), and at most 8%.</p>
+      <label class="check"><input type="checkbox" data-cage-proceed ${own?.over_limit_with_couplers ? "checked" : ""}> Proceed: splice this cage with couplers at its joint. The zones below are designed as usual.</label>
+    </div>
     <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:10px">
-      <label>Rows <select data-cage="rows">${[1, 1.5, 2, 2.5, 3].map((r) => `<option value="${r}" ${Number(v.rows) === r ? "selected" : ""}>${r}</option>`).join("")}</select></label>
-      <label>Bars in the outer row <input type="number" min="6" step="1" data-cage="count" value="${v.count}" style="width:80px"></label>
-      <label>Outer bar <select data-cage="diameter">${opt(bars, v.diameter)}</select></label>
-      <label>Inner rows bar <select data-cage="inner_diameter"><option value="">Same as outer</option>${opt(bars, v.inner_diameter)}</select></label>
       <button data-cage-check>Check</button>
       ${own ? `<button class="quiet" data-cage-auto>Let Triton choose again</button>` : ""}
-      <span class="status" data-cage-status>${own ? "" : "Check designs only this element with your cage: utilisation, cracks, links and steel are worked out again."}</span>
+      <span class="status" data-cage-status>${own ? "" : "Check designs only this element with your cage: utilisation, cracks, links and steel are worked out again, and the zones below it are curtailed."}</span>
     </div></details>`;
 }
 
@@ -3224,14 +3241,53 @@ function wireCageSet(card, p) {
   if (!box) return;
   const key = cageKey(p);
   const status = box.querySelector("[data-cage-status]");
-  const read = () => {
-    const get = (k) => box.querySelector(`[data-cage="${k}"]`).value;
-    return { rows: Number(get("rows")), count: Math.round(Number(get("count"))), diameter: Number(get("diameter")), inner_diameter: get("inner_diameter") ? Number(get("inner_diameter")) : null };
+  const list = box.querySelector("[data-cage-rows]");
+  const D = p.section?.diameter_mm;
+  const limit = p.spacing_limits?.max_ratio_pct ?? 4;
+  const read = () => [...list.querySelectorAll("[data-cage-row]")].map((row) => ({
+    count: Math.round(Number(row.querySelector("[data-cage-count]").value)),
+    diameter: Number(row.querySelector("[data-cage-dia]").value),
+  }));
+  // Total bars, area and steel ratio as you type, and the coupler choice when it is over the limit.
+  const sum = () => {
+    const rows = read();
+    const area = rows.reduce((t, r) => t + (r.count * Math.PI * r.diameter ** 2) / 4, 0);
+    const pct = D ? (100 * area) / ((Math.PI * D ** 2) / 4) : null;
+    const over = pct != null && pct > limit + 1e-9;
+    box.querySelector("[data-cage-sum]").innerHTML = `<b>${rows.map((r) => `${r.count}Ø${r.diameter}`).join(" + ")}</b>: ${rows.reduce((t, r) => t + r.count, 0)} bars, ${fmt(area)} mm², <b class="${over ? "bad" : ""}">${pct == null ? "–" : fmt(pct, 2)}% steel</b> (limit ${fmt(limit)}%)`;
+    const warn = box.querySelector("[data-cage-over]");
+    warn.hidden = !over;
+    if (over) box.querySelector("[data-cage-over-text]").textContent = pct > 8 ? `${fmt(pct, 2)}% is over 8%, the limit even with couplers: use fewer or smaller bars.` : `${fmt(pct, 2)}% steel is over the ${fmt(limit)}% limit.`;
+    return { rows, pct, over };
   };
+  const wireRow = (row) => {
+    row.querySelectorAll("input,select").forEach((el) => (el.oninput = sum));
+    const rm = row.querySelector("[data-cage-remove]");
+    if (rm) rm.onclick = () => { row.remove(); relabel(); sum(); };
+  };
+  const relabel = () => list.querySelectorAll("[data-cage-row]").forEach((row, i) => (row.querySelector(".status").textContent = i ? `Row ${i + 1}` : "Row 1 (outer)"));
+  list.querySelectorAll("[data-cage-row]").forEach(wireRow);
+  box.querySelector("[data-cage-add]").onclick = () => {
+    const rows = read();
+    if (rows.length >= 4) return (status.textContent = "At most 4 rows.");
+    const last = rows[rows.length - 1];
+    const row = list.querySelector("[data-cage-row]:last-child").cloneNode(true);
+    row.querySelector("[data-cage-count]").value = last.count;
+    row.querySelector("[data-cage-dia]").value = last.diameter;
+    if (!row.querySelector("[data-cage-remove]")) row.insertAdjacentHTML("beforeend", `<button class="quiet" data-cage-remove title="Remove this row">Remove</button>`);
+    list.append(row);
+    wireRow(row);
+    relabel();
+    sum();
+  };
+  sum();
   const run = async (cage) => {
     const s = sec();
-    if (cage && [1.5, 2.5].includes(cage.rows) && cage.count % 2) return (status.textContent = "A half row sits behind every second bar: use an even number of bars.");
-    if (cage && !(cage.count >= 6)) return (status.textContent = "At least 6 bars in the outer row (EN 1992-1-1 9.8.5).");
+    if (cage) {
+      const bad = cage.row_bars.find((r) => !(r.count >= 1));
+      if (bad) return (status.textContent = "Each row needs at least one bar.");
+      if (!(cage.row_bars[0].count >= 6)) return (status.textContent = "At least 6 bars in the outer row (EN 1992-1-1 9.8.5).");
+    }
     s.user_cages ??= {};
     if (cage) s.user_cages[key] = cage;
     else delete s.user_cages[key];
@@ -3242,9 +3298,40 @@ function wireCageSet(card, p) {
     status.textContent = `Checking ${key}…`;
     state.runDesign?.([key]);
   };
-  box.querySelector("[data-cage-check]").onclick = () => run(read());
+  box.querySelector("[data-cage-check]").onclick = () => {
+    const { rows, over } = sum();
+    run({ row_bars: rows, over_limit_with_couplers: over && box.querySelector("[data-cage-proceed]").checked });
+  };
   const auto = box.querySelector("[data-cage-auto]");
   if (auto) auto.onclick = () => run(null);
+}
+
+// Why a pile fails, plainly, first on its card; with couplers when the steel limit is what stops it.
+function failureHtml(p) {
+  if (p.passed || !p.failure?.length) return "";
+  const c = p.with_couplers;
+  const own = p.user_set;
+  const offer = c?.passes && !own && c.allow_pct > (p.spacing_limits?.max_ratio_pct ?? 4);
+  return `<div class="fail-why"><b>Fails because:</b><ul>${p.failure.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
+    ${c ? `<p>${esc(c.note)}</p>` : ""}
+    ${c?.passes && own ? `<p>Tick <i>Proceed</i> under the cage and press Check to accept it with couplers.</p>` : ""}
+    ${offer ? `<p><button data-use-couplers="${c.allow_pct}" data-couplers="${c.couplers ? 1 : ""}">${c.couplers ? "Use couplers and allow" : "Allow"} ${fmt(c.allow_pct, 1)}% steel</button> <span class="status">Changes Design settings for every pile in the project, then designs again.</span></p>` : ""}</div>`;
+}
+
+function wireFailure(card) {
+  const b = card.querySelector("[data-use-couplers]");
+  if (!b) return;
+  b.onclick = async () => {
+    const piles = (state.project.design.piles ??= {});
+    if (b.dataset.couplers) piles.splice = "coupler";
+    piles.max_steel_ratio = Number(b.dataset.useCouplers);
+    b.disabled = true;
+    b.textContent = "Saving…";
+    markDirty();
+    await save();
+    if (state.errors?.length) return (b.textContent = state.errors.map((e) => e.msg).join(" "));
+    state.runDesign?.(null);
+  };
 }
 
 function pileCard(p) {
@@ -3257,8 +3344,10 @@ function pileCard(p) {
   const rowsText = (r) => (r === 1 ? "1 row" : `${r} rows`);
   card.innerHTML = `<div class="element-head"><h3>${esc(p.element)}<span class="type">${a ? `${esc(a.label)}, ${rowsText(a.rows)}, ${fmt(a.area_mm2)} mm²` : "no arrangement"}</span></h3>
       <span class="sev ${p.passed ? "ok" : "error"}">${p.passed ? "passes" : "fails"}</span></div>
+    ${failureHtml(p)}
     <div class="counts" style="margin-top:0">
-      <div class="count"><b>${fmt(p.utilisation, 2)}</b>max utilisation</div>
+      ${utilCounts(p)}
+      <div class="count"><b class="${p.reinforcement_ratio_pct > (lim.max_ratio_pct ?? 4) + 1e-9 ? "bad" : ""}">${fmt(p.reinforcement_ratio_pct, 2)}%</b>steel at the head (limit ${fmt(lim.max_ratio_pct ?? 4)}%${p.reinforcement_ratio_pct > 4 + 1e-9 ? ", over 4% only with couplers" : ""})</div>
       <div class="count"><b>${fmt(p.steel?.kg_per_m3 ?? p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3)}</b>${p.steel ? `kg/m³ over the pile (${fmt(p.steel.longitudinal_kg)} kg bars with laps + ${fmt(p.steel.links_kg)} kg links)` : "kg/m³ longitudinal"}</div>
       <div class="count"><b>${a ? fmt(a.clear_spacing_mm) : "–"} mm</b>clear spacing, outer row (allowed ${fmt(lim.min_clear_mm)} to ${fmt(lim.max_clear_mm)} mm)</div>
       ${p.steel?.element_total_t != null ? `<div class="count"><b>${fmt(p.steel.element_total_t, 1)} t</b>steel for ${p.count} pile${p.count === 1 ? "" : "s"} of this type</div>` : ""}
@@ -3288,6 +3377,7 @@ function pileCard(p) {
       ${p.alternatives.map((x) => `<tr${x.chosen ? ' style="font-weight:600"' : ""}><td>${esc(x.label)}${x.chosen ? " (chosen)" : ""}</td><td>${x.rows}</td><td>${fmt(x.area_mm2)}</td><td>${fmt(x.utilisation, 3)}</td><td>${fmt(x.steel_ratio_kg_m3)}</td><td>${fmt(x.clear_spacing_mm)}</td></tr>`).join("")}
     </table></div></details>`;
   wireCageSet(card, p);
+  wireFailure(card);
   mountCrackPictures(card, pileCrackItems(p));
   if (a?.rings) sectionDrawing(card.querySelector('[data-kind="section"]'), p);
   if (p.curtailment?.runs?.length) elevationDrawing(card.querySelector('[data-kind="elevation"]'), p.curtailment);
@@ -3300,6 +3390,16 @@ function pileCard(p) {
     peaksBlock(card.querySelector('[data-kind="peaks"]'), p.peaks || []);
   }
   return card;
+}
+
+// ULS (N–M) and SLS (QP crack width over its limit) side by side, the governing one marked.
+function utilCounts(p) {
+  const uls = p.utilisation;
+  const sls = p.cracks?.wk_mm != null && p.cracks?.limit_mm ? p.cracks.wk_mm / p.cracks.limit_mm : null;
+  const gov = sls != null && sls > (uls ?? 0) ? "sls" : "uls";
+  const tag = (k) => (gov === k && sls != null ? ' <span class="chip small-chip">governs</span>' : "");
+  return `<div class="count"><b class="${uls > 1 ? "bad" : ""}">${fmt(uls, 2)}</b>ULS: N–M utilisation${p.curtailment?.runs?.length > 1 ? ", each zone with its own cage" : ""}${tag("uls")}</div>
+    ${sls != null ? `<div class="count"><b class="${sls > 1 ? "bad" : ""}">${fmt(sls, 2)}</b>SLS (QP): crack width ${fmt(p.cracks.wk_mm, 3)} / ${fmt(p.cracks.limit_mm, 2)} mm${tag("sls")}</div>` : ""}`;
 }
 
 // The QP sets of each station as crack pictures (see cracks.js).
@@ -3418,26 +3518,29 @@ function steelSetsBlock(sets, unit, open = false) {
     <div class="scroll"><table class="sets"><tr><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th>${head.map((h) => `<th>${h}</th>`).join("")}</tr>${rows}</table></div></details>`;
 }
 
+// The station's governing set: the highest utilisation over ULS (N–M) and SLS (crack width / limit).
+const govRow = (st) => [...(st.qp || []), ...(st.uls || [])].reduce((best, r) => (r.utilisation != null && (best == null || r.utilisation > best.utilisation) ? r : best), null);
+
 function setsBlock(stations, note = null) {
   // The seven governing ULS and QP sets per station, as entered in AdSec.
   if (!stations?.length) return "";
   const rows = stations
     .map((st) =>
-      [["QP", st.qp], ["ULS", st.uls]]
+      [["SLS (QP)", st.qp], ["ULS", st.uls]]
         .map(([ls, list], k) =>
           list
-            .map((r, i) => `<tr${i === 0 && k === 0 ? ' class="group"' : ""}>
+            .map((r, i) => `<tr class="${i === 0 && k === 0 ? "group" : ""} ${r === govRow(st) ? "gov-row" : ""}">
               <td>${i === 0 && k === 0 ? `${fmt(st.top, 2)} to ${fmt(st.bottom, 2)}<br><span class="status">${esc(st.cage)}</span>` : ""}</td>
               <td>${i === 0 ? ls : ""}</td><td>${esc(r.case)}</td><td>${esc(r.combination)}</td><td>${r.node ?? "–"}</td>
-              <td>${fmt(r.z, 2)}</td><td>${fmt(r.N_kN)}</td><td>${fmt(r.M2_kNm)}</td><td>${fmt(r.M3_kNm)}</td><td>${r.utilisation == null ? "–" : fmt(r.utilisation, 3)}</td></tr>`)
+              <td>${fmt(r.z, 2)}</td><td>${fmt(r.N_kN)}</td><td>${fmt(r.M2_kNm)}</td><td>${fmt(r.M3_kNm)}</td><td>${r.utilisation == null ? "–" : fmt(r.utilisation, 3)}${r === govRow(st) ? ' <span class="chip small-chip">governs</span>' : ""}</td></tr>`)
             .join("")
         )
         .join("")
     )
     .join("");
   return `<details style="margin-top:12px"><summary>Governing sets per station for AdSec (${stations.length} station${stations.length === 1 ? "" : "s"}, 7 QP + 7 ULS each)</summary>
-    <p class="status">${esc(note || "N in the concrete sign convention (Plaxis N × −1, compression +). M2 and M3 as in Plaxis.")} For QP the 7th set is the largest resultant moment.</p>
-    <div class="scroll"><table class="sets"><tr><th>Station (m)</th><th>Limit state</th><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th><th>N kN</th><th>M2 kNm</th><th>M3 kNm</th><th>N–M util.</th></tr>${rows}</table></div></details>`;
+    <p class="status">${esc(note || "N in the concrete sign convention (Plaxis N × −1, compression +). M2 and M3 as in Plaxis.")} For QP the 7th set is the largest resultant moment. Utilisation: ULS is N–M, SLS (QP) is the crack width over its limit; the highest of each station governs.</p>
+    <div class="scroll"><table class="sets"><tr><th>Station (m)</th><th>Limit state</th><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th><th>N kN</th><th>M2 kNm</th><th>M3 kNm</th><th>Utilisation</th></tr>${rows}</table></div></details>`;
 }
 
 // A structural casing: its E·I share of the actions between its levels, checked as a filled tube.
@@ -3490,12 +3593,12 @@ function curtailmentBlock(c) {
   return `<h3 style="margin:20px 0 4px;font-size:15px">Reinforcement down the pile</h3>
     <p class="status" style="margin:0 0 8px">Zones chosen for ${mode}. Main bars: ${fmt(c.weight_kg)} kg per pile, ${fmt(c.steel_ratio_kg_m3)} kg/m³${saving != null ? `, against ${fmt(c.unified_steel_ratio_kg_m3)} kg/m³ with the head cage all the way down (${saving}% less)` : ""}.${c.couplers ? ` ${c.couplers} couplers.` : ""}</p>
     <div class="cage"><div class="chart" data-kind="elevation"></div><div class="scroll"><table>
-      <tr><th>From</th><th>To</th><th>Cage</th><th>Bar lengths</th><th>Above head</th><th>Below</th><th>Utilisation</th></tr>
+      <tr><th>From</th><th>To</th><th>Cage</th><th>Bar lengths</th><th>Above head</th><th>Below</th><th>ULS N–M</th><th>SLS crack</th></tr>
       ${c.runs.map((r) => `<tr><td>${fmt(r.top, 2)}</td><td>${fmt(r.bottom, 2)}</td><td>${esc(r.cage.label)}</td>
         <td>${r.bar_lengths_m.map((x) => fmt(x, 2)).join(" / ")} m</td>
         <td>${r.above_head_m?.length ? `${r.above_head_m.map((x) => fmt(x, 2)).join(" / ")} m` : "–"}</td>
         <td>${r.joint === "toe" ? "toe" : r.joint === "coupler" ? "couplers" : `lap ${r.lap_below_m.map((x) => fmt(x, 2)).join(" / ")} m`}</td>
-        <td>${fmt(r.utilisation, 2)}</td></tr>`).join("")}
+        <td class="${r.utilisation > 1 ? "bad" : ""}">${fmt(r.utilisation, 2)}</td><td class="${r.crack_utilisation > 1 ? "bad" : ""}">${r.crack_utilisation == null ? "–" : fmt(r.crack_utilisation, 2)}</td></tr>`).join("")}
     </table>
     ${c.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}</div></div>`;
 }
@@ -3622,7 +3725,7 @@ function nmChart(el, p, whole = false) {
   const c = frame(el, {
     xDomain: [-X, X], yDomain,
     xLabel: "M (kNm), side set by the sign of the larger of M2 and M3", yLabel: "N (kN, compression +)",
-    title: whole ? "N–M interaction, all ULS results (whole diagram)" : "N–M interaction, all ULS results (zoomed to the loads)",
+    title: `N–M interaction${p.curtailment?.runs?.length > 1 ? " of the head cage" : ""}, all ULS results (${whole ? "whole diagram" : "zoomed to the loads"})`,
   });
   const clip = `nmclip${Math.random().toString(36).slice(2, 8)}`;
   const path = curve.map((q, i) => `${i ? "L" : "M"}${c.x(q[1]).toFixed(1)},${c.y(q[0]).toFixed(1)}`).join("") + "Z";
@@ -3643,7 +3746,7 @@ function nmChart(el, p, whole = false) {
     <path class="cap" d="${path}"/>
     ${zoomBox}
     ${gp ? `<circle class="gov" cx="${c.x(gp[2])}" cy="${c.y(gp[1])}" r="5"/>
-      <text class="label" x="${c.x(gp[2]) + (gp[2] >= 0 ? -8 : 8)}" y="${c.y(gp[1]) - 8}" text-anchor="${gp[2] >= 0 ? "end" : "start"}">governing, ${fmt(p.utilisation, 2)}</text>` : ""}
+      <text class="label" x="${c.x(gp[2]) + (gp[2] >= 0 ? -8 : 8)}" y="${c.y(gp[1]) - 8}" text-anchor="${gp[2] >= 0 ? "end" : "start"}">governing, ${fmt(gp[3], 2)}</text>` : ""}
     </g>`;
   const pick = document.createElement("div");
   pick.className = "row nm-view";

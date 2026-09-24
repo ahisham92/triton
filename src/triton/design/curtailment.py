@@ -28,7 +28,7 @@ import pandas as pd
 
 from ..materials import STEEL_DENSITY
 from ..project import DesignSettings, PileInput
-from .piles import MAX_RATIO_AT_LAPS, Arrangement, _families, _utilisation, crack_utilisation
+from .piles import MAX_RATIO_AT_LAPS, Arrangement, _families, _utilisation, crack_utilisation, design_top
 
 STEP = 0.05  # m, level grid
 LENGTH_STEP = 0.25  # m, run lengths tried for least steel
@@ -110,9 +110,20 @@ def curtail(
     top_cage: Arrangement,
     area_min: float,
     qp: pd.DataFrame | None = None,
+    head_may_fail: bool = False,
+    head_couplers: bool = False,
 ) -> dict:
+    """Runs from the head down, the head one with ``top_cage``.
+
+    ``head_may_fail``: the head cage is taken as it is where it does not carry the loads (a cage set
+    by the user, or the strongest there is), and the zones below are still designed.
+    ``head_couplers``: the head cage is spliced with couplers, whatever the project's splices.
+    """
     pr = settings.piles
-    head = float(pile.head_level if pile.head_level is not None else loads["Z"].max())
+    # The design may run up to a face inside the slab (see ``design_top``); the bars run on into the
+    # slab from the pile's top level.
+    head = design_top(pile, loads)
+    into_slab = 0.0 if pile.head_level is None else head - pile.head_level
     toe = float(loads["Z"].min())
     n_bands = max(1, math.ceil((head - toe) / STEP - 1e-9))
     band = np.clip(((head - loads["Z"].to_numpy()) / STEP).astype(int), 0, n_bands - 1)
@@ -125,19 +136,23 @@ def curtail(
     ok, band_util = {}, {}
     for c in cages:
         u = _utilisation(pile, c, settings, loads)
-        worst = np.zeros(n_bands)
-        np.maximum.at(worst, band, u)
+        strength, crack = np.zeros(n_bands), np.zeros(n_bands)
+        np.maximum.at(strength, band, u)
         if qp is not None and len(qp):
-            np.maximum.at(worst, qp_band, crack_utilisation(pile, c, settings, qp))
-        band_util[c] = worst
+            np.maximum.at(crack, qp_band, crack_utilisation(pile, c, settings, qp))
+        worst = np.maximum(strength, crack)
+        band_util[c] = (strength, crack)
         ok[c] = np.concatenate([[0], np.cumsum(worst > 1.0 + 1e-9)])  # failing bands before each index
     cages = _prune(cages, ok)
 
     def fits(c: Arrangement, p: int, e: int) -> bool:
-        return ok[c][e] - ok[c][p] == 0
+        return (head_may_fail and p == 0 and c == top_cage) or ok[c][e] - ok[c][p] == 0
 
-    runs = _search(pr, settings, cages, fits, n_bands, head, ac)
-    unified = _search(pr, settings, [top_cage], fits, n_bands, head, ac, least=True)
+    coupled = {top_cage} if head_couplers else set()
+    runs = _search(pr, settings, cages, fits, n_bands, head, ac, coupled=coupled, into_slab=into_slab)
+    unified = _search(
+        pr, settings, [top_cage], fits, n_bands, head, ac, least=True, coupled=coupled, into_slab=into_slab
+    )
     if runs is None:
         runs = unified
     notes = []
@@ -153,8 +168,9 @@ def curtail(
             notes.append(f"{r.top:.2f} to {r.bottom:.2f} m: bars are not a standard cut length.")
     if runs and runs[0].above and max(runs[0].above) > 0:
         notes.append(
-            f"The top bars run on {' / '.join(f'{x:g}' for x in runs[0].above)} m above the pile head into "
-            f"the element over it ({pr.head_anchorage_factor:g}φ), counted in their lengths and weight."
+            f"The top bars run on {' / '.join(f'{x:g}' for x in runs[0].above)} m above "
+            f"{'the design face' if into_slab else 'the pile head'} into the element over it "
+            f"({pr.head_anchorage_factor:g}φ from the pile's top level), counted in their lengths and weight."
         )
     return {
         "element": name,
@@ -168,7 +184,7 @@ def curtail(
         "steel_ratio_kg_m3": round(weight / volume, 1),
         "unified_weight_kg": None if unified_weight is None else round(unified_weight, 1),
         "unified_steel_ratio_kg_m3": None if unified_weight is None else round(unified_weight / volume, 1),
-        "couplers": sum(r.cage.bar_count for r in runs[:-1]) if pr.splice == "coupler" else 0,
+        "couplers": sum(r.cage.bar_count for r in runs if r.joint == "coupler"),
         "notes": notes,
     }
 
@@ -192,7 +208,9 @@ def _prune(cages: list[Arrangement], ok: dict) -> list[Arrangement]:
     return keep
 
 
-def _search(pr, settings, cages, fits, n_bands, head, ac, least=False) -> list[Run] | None:
+def _search(
+    pr, settings, cages, fits, n_bands, head, ac, least=False, coupled=frozenset(), into_slab=0.0
+) -> list[Run] | None:
     """Best sequence of runs from the head (index 0) to the toe (index n_bands)."""
     standard_mode = pr.curtailment == "standard_lengths" and not least
     min_q = max(1, round(pr.min_zone_length / STEP))
@@ -211,8 +229,12 @@ def _search(pr, settings, cages, fits, n_bands, head, ac, least=False) -> list[R
             for c in cages:
                 if prev is not None and not _fits_below(c, prev):
                     continue
-                laps = _laps(settings, c, c)  # lap lengths below a run ending above the toe
-                above = anchorage(settings, c) if p == 0 else ()
+                # Lap lengths below a run ending above the toe (none with couplers).
+                laps = tuple(0.0 for _ in c.rings) if c in coupled else _laps(settings, c, c)
+                # Anchorage from the pile's top level, less the part of the run inside the slab.
+                above = (
+                    tuple(max(0.0, round(x - into_slab, 3)) for x in anchorage(settings, c)) if p == 0 else ()
+                )
                 ext = max(laps) + max(above, default=0.0)
                 lengths = set()
                 remaining = n_bands - p
@@ -233,10 +255,11 @@ def _search(pr, settings, cages, fits, n_bands, head, ac, least=False) -> list[R
                         continue
                     if not fits(c, p, e):
                         continue
-                    if prev is not None and pr.splice == "lap" and prev.area + c.area > lap_limit:
+                    lapped = pr.splice == "lap" and prev not in coupled
+                    if prev is not None and lapped and prev.area + c.area > lap_limit:
                         continue
                     run_ext = tuple(0.0 for _ in c.rings) if at_toe else laps
-                    joint = "toe" if at_toe else pr.splice
+                    joint = "toe" if at_toe else "coupler" if c in coupled else pr.splice
                     run = Run(round(head - p * STEP, 3), round(head - e * STEP, 3), c, run_ext, joint, above)
                     if max(run.bar_lengths()) > max_len + 1e-9:
                         continue
@@ -266,7 +289,9 @@ def _search(pr, settings, cages, fits, n_bands, head, ac, least=False) -> list[R
 def _run_dict(r: Run, band_util: dict, head: float) -> dict:
     p = round((head - r.top) / STEP)
     e = round((head - r.bottom) / STEP)
-    util = float(band_util[r.cage][p:e].max()) if e > p else 0.0
+    strength, crack = band_util[r.cage]
+    util = float(strength[p:e].max()) if e > p else 0.0
+    crack_util = float(crack[p:e].max()) if e > p else 0.0
     return {
         "top": r.top,
         "bottom": r.bottom,
@@ -276,6 +301,7 @@ def _run_dict(r: Run, band_util: dict, head: float) -> dict:
         "lap_below_m": [round(x, 2) for x in r.extension],
         "above_head_m": [round(x, 2) for x in r.above],
         "joint": r.joint,
-        "utilisation": round(util, 3),
+        "utilisation": round(util, 3),  # ULS N–M
+        "crack_utilisation": round(crack_util, 3),  # SLS (QP): crack width over its limit
         "weight_kg": round(r.weight, 1),
     }

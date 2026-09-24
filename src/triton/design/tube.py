@@ -194,7 +194,7 @@ def tube_loads(
 ):
     """ULS points with the tube's share of the actions (Plaxis sign, kN and kNm).
 
-    Results up to ``above`` (m) over the top level are kept and taken at the top level.
+    Results up to ``above`` (m) over the top level are kept at their own level.
     """
     parts = []
     for combo, sheet in sheets.items():
@@ -206,7 +206,6 @@ def tube_loads(
         f = f[cols].copy()
         if top is not None:
             f = f[f["Z"] <= top + above + 1e-9]
-            f = f.assign(Z=f["Z"].clip(upper=top))
         filled = f["Z"] >= filled_from - 1e-9
         share = np.where(filled, steel_share, 1.0)
         f = f.assign(

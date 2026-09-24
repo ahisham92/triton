@@ -117,7 +117,8 @@ class PileLoads:
     ) -> PileLoads:
         """ULS results (or the QP ones with ``qp``) in the design sign convention.
 
-        Results up to ``above`` (m) over the head level are kept and taken at the head level.
+        Results up to ``above`` (m) over the head level are kept at their own level: that face, inside
+        the slab or beam over the pile, is the top of the pile's design.
         """
         parts = []
         for combo, sheet in sheets.items():
@@ -127,7 +128,6 @@ class PileLoads:
             f = design_forces(sheet.frame, sheet.parsed.spec, ["N", "Q_12", "Q_13", "M_2", "M_3"])
             if head_level is not None:
                 f = f[f["Z"] <= head_level + above + 1e-9]
-                f = f.assign(Z=f["Z"].clip(upper=head_level))
             f = f.assign(combination=combo, category=ctype.value, M=np.hypot(f["M_2"], f["M_3"]))
             parts.append(f)
         if not parts:
@@ -165,6 +165,9 @@ class PileDesign:
     profile: list[dict] = field(default_factory=list)
     points: list[list] = field(default_factory=list)
     user_set: bool = False  # the cage was set by the user and checked, not chosen
+    head_utilisation: float | None = None  # the head cage over every result (the N–M diagram)
+    failure: list[str] = field(default_factory=list)  # why it fails, plainly
+    with_couplers: dict | None = None  # what passes with couplers when the 4% limit stops it
 
     def to_dict(self) -> dict:
         a = self.arrangement
@@ -197,6 +200,11 @@ class PileDesign:
             "profile": self.profile,
             "points": self.points,
             "user_set": self.user_set,
+            "head_utilisation": None
+            if self.head_utilisation is None or not math.isfinite(self.head_utilisation)
+            else round(self.head_utilisation, 3),
+            "failure": self.failure,
+            "with_couplers": self.with_couplers,
         }
 
 
@@ -222,6 +230,13 @@ def ec2_min_clear(settings: DesignSettings, phi: float) -> float:
     return max(phi, settings.piles.aggregate_size + 5, 20.0)
 
 
+def design_top(pile: PileInput, loads: pd.DataFrame) -> float:
+    """The top of the pile's design: the highest result kept (results up to ``results_into_connection``
+    over the top level are kept at their own level), and never below the pile's top level."""
+    top = float(loads["Z"].max())
+    return top if pile.head_level is None else max(pile.head_level, top)
+
+
 def max_ratio(settings: DesignSettings) -> float:
     return settings.piles.max_steel_ratio / 100
 
@@ -242,18 +257,29 @@ def make_arrangement(
 ) -> Arrangement | None:
     """The cage with n bars of phi1 in the outer row, or None if it breaks a spacing rule (with
     ``strict=False`` only if it does not fit in the pile at all; see ``cage_breaches``)."""
-    pr, r = settings.piles, settings.reinforcement
     layout = ROW_LAYOUTS[rows]
     if any(f == 0.5 for f, _ in layout) and n % 2:
         return None  # a half row sits behind every second bar
-    radius = pile.diameter / 2 - pile_cover(pile, settings) - pile.link_diameter - phi1 / 2
+    specs = [(int(n * factor), phi1 if which == 1 else phi2) for factor, which in layout]
+    return _build(pile, settings, specs, rows, strict)
+
+
+def user_arrangement(pile: PileInput, settings: DesignSettings, cage: UserCage) -> Arrangement | None:
+    """The cage the user set, row by row, or None if it does not fit in the pile (see ``cage_breaches``)."""
+    return _build(pile, settings, cage.row_list(), cage.rows, strict=False)
+
+
+def _build(
+    pile: PileInput, settings: DesignSettings, specs: list[tuple[int, int]], rows: float, strict: bool
+) -> Arrangement | None:
+    """Rows of (bars, bar size) from the outside in, each at the row gap inside the one before."""
+    pr, r = settings.piles, settings.reinforcement
+    radius = pile.diameter / 2 - pile_cover(pile, settings) - pile.link_diameter - specs[0][1] / 2
     rings: list[RingSpec] = []
     prev_phi = None
-    for i, (factor, which) in enumerate(layout):
-        phi = phi1 if which == 1 else phi2
+    for i, (count, phi) in enumerate(specs):
         if prev_phi is not None:
             radius -= prev_phi / 2 + _row_gap(settings, prev_phi, phi) + phi / 2
-        count = int(n * factor)
         if radius <= 0 or count < 1:
             return None
         clear = 2 * math.pi * radius / count - phi
@@ -463,7 +489,7 @@ def design_pile(
     }
     geom = {"diameter_mm": pile.diameter, "cover_mm": pile.cover, "link_diameter_mm": pile.link_diameter}
     if not loads.empty:
-        head = pile.head_level if pile.head_level is not None else float(loads["Z"].max())
+        head = design_top(pile, loads)
         geom |= {
             "head_level_m": round(head, 2),
             "toe_level_m": round(float(loads["Z"].min()), 2),
@@ -475,23 +501,29 @@ def design_pile(
     if pile.head_level is None:
         notes.append("No pile top level is set, so results inside the slab are included.")
     elif above > 0:
+        top = design_top(pile, loads) if not loads.empty else pile.head_level
+        into = (
+            f", {100 * (top - pile.head_level):.0f} cm into the slab or beam,"
+            if top > pile.head_level
+            else ""
+        )
         notes.append(
-            f"Results up to {pile.head_level + above:g} m ({above * 100:g} cm into the slab) are included, "
-            f"taken at the top level {pile.head_level:g} m."
+            f"Designed up to {top:g} m{into} at the results' own levels: results up to "
+            f"{pile.head_level + above:g} m ({above * 100:g} cm above the pile top level "
+            f"{pile.head_level:g} m) are included, higher ones are FE peaks inside the connection and are "
+            "ignored."
         )
     if loads.empty:
         notes.append("No ULS results.")
         return PileDesign(name, None, 0.0, False, {}, area_min, area_max, 0.0, 0.0, limits, geom, notes=notes)
 
     breaches: list[str] = []
+    head_couplers = False  # the user's cage over the steel limit is spliced with couplers
     if cage is not None:
-        own = make_arrangement(
-            pile, settings, cage.rows, cage.count, cage.diameter, cage.inner_diameter or cage.diameter, False
-        )
+        own = user_arrangement(pile, settings, cage)
         if own is None:
-            notes.append(
-                f"Your cage ({cage.count}Ø{cage.diameter}, {cage.rows:g} rows) does not fit in the pile."
-            )
+            label = " + ".join(f"{n}Ø{d}" for n, d in cage.row_list())
+            notes.append(f"Your cage ({label}) does not fit in the pile.")
             return PileDesign(
                 name,
                 None,
@@ -508,6 +540,17 @@ def design_pile(
                 user_set=True,
             )
         breaches = cage_breaches(pile, settings, own)
+        ratio = own.area / (math.pi * pile.diameter**2 / 4)
+        if cage.over_limit_with_couplers and ratio <= MAX_RATIO_AT_LAPS + 1e-9:
+            over = [b for b in breaches if "% limit" in b]
+            breaches = [b for b in breaches if b not in over]
+            if over:
+                head_couplers = True
+                notes.append(
+                    f"Steel {100 * ratio:.2f}% is over the {pr.max_steel_ratio:g}% limit: you chose to "
+                    "proceed, so this cage is spliced with couplers at its joint (EN 1992-1-1 9.5.2(3), "
+                    "at most 8%)."
+                )
         if own.area < area_min - 1e-9:
             breaches.append(f"Steel {own.area:.0f} mm² is below the {area_min:.0f} mm² minimum (Table 9.6N).")
         families = [[own]]
@@ -528,12 +571,19 @@ def design_pile(
 
     key = _sort_key(settings)
     passed = bool(passing) and not breaches
+    failure: list[str] = []  # why it fails, plainly, shown first on the card
+    with_couplers = None
     if cage is not None:
         chosen = families[0][0]
         notes.append(f"Cage set by you: {chosen.label}. Triton checks it; it does not choose one.")
-        notes += breaches
+        failure += breaches
         if not passing:
-            notes.append("Your cage does not carry the loads or keep the QP crack widths within the limit.")
+            u = strength(chosen)
+            failure.append(
+                f"It does not carry the loads: N–M utilisation {u:.2f}."
+                if u > 1.0
+                else "It carries the loads, but the QP crack width is over the limit."
+            )
     elif passed:
         pool = passing
         if pr.extra_rows_only_when_needed and any(a.rows == 1 for a in passing):
@@ -549,18 +599,43 @@ def design_pile(
                 "No cage within the allowed rows and steel limit keeps the QP crack widths within the "
                 "limit; the cage shown carries the loads, with the smallest crack width of those that do."
             )
+            failure.append(
+                f"No cage within the {pr.max_steel_ratio:g}% steel limit and the allowed rows keeps the QP "
+                "crack width within the limit."
+            )
         else:
             chosen = min((fam[-1] for fam in families), key=lambda a: (strength(a), key(a)))
             notes.append(
                 f"No cage within the {pr.max_steel_ratio:g}% limit and the allowed rows carries the loads; "
                 "the strongest one is shown."
             )
+            failure.append(
+                f"No cage within the {pr.max_steel_ratio:g}% steel limit and the allowed rows carries the "
+                f"loads: the strongest one ({chosen.label}) reaches utilisation {strength(chosen):.2f}."
+            )
+        if pr.max_steel_ratio < 8:
+            with_couplers = _with_couplers(pile, settings, loads, qp, area_min)
+
+    if breaches and any("% limit" in b for b in breaches):
+        with_couplers = _coupler_offer(chosen, ac, settings)
 
     curtailment = None
-    if pr.curtail and passed:
+    if pr.curtail:
+        # Below a cage that fails (set by the user, or the strongest Triton has), the zones under the
+        # head are still designed: the head cage covers the length no lighter cage can carry.
         from .curtailment import curtail  # imports this module
 
-        curtailment = curtail(name, pile, settings, loads, chosen, area_min, qp)
+        curtailment = curtail(
+            name,
+            pile,
+            settings,
+            loads,
+            chosen,
+            area_min,
+            qp,
+            head_may_fail=not passed,
+            head_couplers=head_couplers,
+        )
     shear, steel = _shear_and_steel(pile, settings, loads, chosen, curtailment, geom)
     positions = (
         loads[["X", "Y"]].round(2).drop_duplicates().sort_values(["Y", "X"]).to_numpy().tolist()
@@ -569,7 +644,11 @@ def design_pile(
     )
 
     chosen_util = _utilisation(pile, chosen, settings, loads)
-    i = int(np.argmax(chosen_util))
+    # Each result against the cage of its own zone (the head cage without zones).
+    zoned_util, zone_cage = chosen_util, [chosen] * len(loads)
+    if runs := (curtailment or {}).get("runs"):
+        zoned_util, zone_cage = _zoned_utilisation(pile, settings, loads, runs)
+    i = int(np.argmax(zoned_util))
     g = loads.iloc[i]
     sec = _section(pile, chosen, settings, False)
     governing = {
@@ -579,9 +658,11 @@ def design_pile(
         "z": round(float(g["Z"]), 2),
         "N_kN": round(float(g["N"]), 1),
         "M_kNm": round(float(g["M"]), 1),
-        "M_Rd_kNm": round(sec.moment_capacity(float(g["N"])), 1),
+        "M_Rd_kNm": round(_section(pile, zone_cage[i], settings, False).moment_capacity(float(g["N"])), 1),
     }
-    loads = loads.assign(util=chosen_util)
+    if zone_cage[i] is not chosen:
+        governing["cage"] = zone_cage[i].label
+    loads = loads.assign(util=zoned_util)
     profile = (
         loads.groupby(loads["Z"].round(1))["util"].max().sort_index(ascending=False).reset_index().round(3)
     )
@@ -594,11 +675,15 @@ def design_pile(
     if casing_check is not None and not casing_check["tube"]["passed"]:
         passed = False
         notes.append("The steel casing fails its check.")
+        failure.append("The steel casing fails its check.")
     if not cracks["passed"]:
         passed = False
         notes.append(
             f"QP crack width {cracks['wk_mm']:g} mm is over the {pile.crack_width_limit:g} mm limit."
         )
+        failure = [f for f in failure if not f.startswith("It carries the loads")] + [
+            f"QP crack width {cracks['wk_mm']:g} mm is over the {pile.crack_width_limit:g} mm limit."
+        ]
     alternatives = [
         {
             **a.to_dict(),
@@ -611,7 +696,7 @@ def design_pile(
     return PileDesign(
         name,
         chosen,
-        float(chosen_util.max()),
+        float(zoned_util.max()),
         passed,
         governing,
         area_min,
@@ -641,8 +726,9 @@ def design_pile(
         notes=notes,
         curve=np.round(sec.interaction(), 1).tolist(),
         profile=[{"z": float(r.Z), "util": float(r.util)} for r in profile.itertuples()],
-        # [combination, N, M, utilisation, M signed as its larger component], the last for the
-        # closed N–M diagram, where each point sits on the side of the moment that dominates it.
+        # [combination, N, M, utilisation with the head cage, M signed as its larger component], the
+        # last for the closed N–M diagram, where each point sits on the side of the moment that
+        # dominates it.
         points=[
             [
                 c,
@@ -651,12 +737,102 @@ def design_pile(
                 round(u, 3),
                 round(math.copysign(m, a3 if abs(a3) >= abs(a2) else a2), 1),
             ]
-            for c, n, m, u, a2, a3 in loads[["combination", "N", "M", "util", "M_2", "M_3"]].itertuples(
-                index=False
-            )
+            for c, n, m, u, a2, a3 in loads[["combination", "N", "M", "M_2", "M_3"]]
+            .assign(head=chosen_util)[["combination", "N", "M", "head", "M_2", "M_3"]]
+            .itertuples(index=False)
         ],
         user_set=cage is not None,
+        head_utilisation=float(chosen_util.max()),
+        failure=[] if passed else failure,
+        with_couplers=None if passed else with_couplers,
     )
+
+
+def _zoned_utilisation(
+    pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, runs: list[dict]
+) -> tuple[np.ndarray, list[Arrangement]]:
+    """Each result's utilisation with the cage of the zone it is in, and that cage."""
+    z = loads["Z"].to_numpy()
+    util = np.zeros(len(loads))
+    cages: list[Arrangement | None] = [None] * len(loads)
+    for k, r in enumerate(runs):
+        last = k == len(runs) - 1
+        rings = tuple(RingSpec(g["count"], g["diameter"], g["radius"], 0.0) for g in r["cage"]["rings"])
+        a = Arrangement(rings, r["cage"]["rows"], 0.0, 0.0)
+        mask = (z <= r["top"] + 1e-9) & ((z > r["bottom"] + 1e-9) | last)
+        if k == 0:
+            mask |= z > r["top"]  # nothing is above the head run; kept for safety
+        if mask.any():
+            util[mask] = _utilisation(pile, a, settings, loads[mask])
+            for j in np.flatnonzero(mask):
+                cages[j] = a
+    return util, cages
+
+
+def _with_couplers(
+    pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, qp: pd.DataFrame, area_min: float
+) -> dict:
+    """The lightest cage that would pass with couplers and the steel limit up to 8% (9.5.2(3))."""
+    pr = settings.piles
+    relaxed = settings.model_copy(
+        update={"piles": pr.model_copy(update={"splice": "coupler", "max_steel_ratio": 8.0})}
+    )
+    families = [[a for a in fam if a.area >= area_min] for fam in _families(pile, relaxed)]
+    families = [f for f in families if f]
+    ac = math.pi * pile.diameter**2 / 4
+    check = _Checker(pile, relaxed, loads, qp)
+    passing = [a for fam in families if (a := _fewest(fam, check))]
+    if not passing:
+        return {
+            "passes": False,
+            "note": "Even with couplers and 8% steel, no cage with the allowed bars and rows carries the "
+            "loads and keeps the crack widths: the pile needs a larger diameter or stronger concrete.",
+        }
+    best = min(passing, key=_sort_key(settings))
+    ratio = best.area / ac
+    couplers = ratio > MAX_RATIO + 1e-9
+    allow = _allow(ratio)
+    how = f"With couplers and a {allow:g}% steel limit" if couplers else f"With a {allow:g}% steel limit"
+    return {
+        "passes": True,
+        "label": best.label,
+        "rows": best.rows,
+        "ratio_pct": round(100 * ratio, 2),
+        "utilisation": round(check(best), 3),
+        "allow_pct": allow,
+        "couplers": couplers,
+        "note": f"{how}, {best.label} ({best.rows:g} rows, {100 * ratio:.2f}% steel) passes at utilisation "
+        f"{check(best):.2f}." + ("" if couplers else " Up to 4% needs no couplers."),
+    }
+
+
+def _coupler_offer(a: Arrangement, ac: float, settings: DesignSettings) -> dict:
+    """Couplers let the steel of a cage over the limit go up to 8% (EN 1992-1-1 9.5.2(3))."""
+    ratio = a.area / ac
+    if ratio > MAX_RATIO_AT_LAPS + 1e-9:
+        return {
+            "passes": False,
+            "ratio_pct": round(100 * ratio, 2),
+            "note": f"{100 * ratio:.2f}% steel is over 8%, the limit even with couplers: use fewer or "
+            "smaller bars.",
+        }
+    allow = _allow(ratio)
+    splice = "" if settings.piles.splice == "coupler" else "couplers and "
+    return {
+        "passes": True,
+        "label": a.label,
+        "rows": a.rows,
+        "ratio_pct": round(100 * ratio, 2),
+        "allow_pct": allow,
+        "couplers": ratio > MAX_RATIO + 1e-9,
+        "note": f"EN 1992-1-1 9.5.2(3) allows more than 4% only with couplers (no laps). With {splice}"
+        f"a {allow:g}% steel limit this cage meets the steel rule.",
+    }
+
+
+def _allow(ratio: float) -> float:
+    """The steel limit (%) to allow ``ratio``: rounded up to 0.5% and at most 8%."""
+    return min(8.0, math.ceil(100 * ratio * 2 - 1e-6) / 2)
 
 
 def _fewest(fam: list[Arrangement], check) -> Arrangement | None:

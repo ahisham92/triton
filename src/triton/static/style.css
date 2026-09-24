@@ -325,3 +325,12 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .nm-view { gap: 6px; margin-top: 4px; }
 .chart .cap-area { fill: var(--ok-bg); fill-opacity: .55; stroke: none; }
 .chart .zoom-box { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+
+/* Why an element fails, first on its card; the cage editor's steel limit warning. */
+.fail-why { border: 1px solid var(--err); background: var(--err-bg); border-radius: 8px; padding: 8px 12px; margin: 8px 0 12px; }
+.fail-why ul { margin: 4px 0; padding-left: 20px; }
+.fail-why p { margin: 6px 0 0; }
+.cage-over { border: 1px solid var(--warn); background: var(--warn-bg); border-radius: 8px; padding: 6px 12px; margin-top: 8px; }
+.cage-over p { margin: 4px 0; }
+b.bad, td.bad, .bad { color: var(--err); }
+tr.gov-row td { font-weight: 600; }

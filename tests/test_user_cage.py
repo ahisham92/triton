@@ -33,7 +33,7 @@ def test_a_cage_set_by_the_user_is_checked_as_it_is():
 def test_a_user_cage_breaking_the_spacing_rules_fails_and_says_why():
     tight = check(UserCage(rows=1, count=60, diameter=32))
     assert not tight.passed
-    assert any("clear spacing" in n and "below" in n for n in tight.notes)
+    assert any("clear spacing" in n and "below" in n for n in tight.failure)
     with pytest.raises(ValidationError, match="even number"):
         UserCage(rows=1.5, count=25, diameter=32)
 
@@ -92,3 +92,52 @@ def test_inner_link_rings_count_in_the_steel_not_the_shear_check():
     )
     assert check(UserCage(rows=1.5, count=26, diameter=32)).shear["inner_rings"] == 1
     assert check(UserCage(rows=2.5, count=26, diameter=32, inner_diameter=25)).shear["inner_rings"] == 2
+
+
+def test_every_row_can_have_its_own_bars():
+    cage = UserCage(
+        row_bars=[{"count": 26, "diameter": 32}, {"count": 26, "diameter": 25}, {"count": 13, "diameter": 20}]
+    )
+    assert cage.rows == 2.5 and cage.count == 26 and cage.row_list() == [(26, 32), (26, 25), (13, 20)]
+    d = check(cage)
+    assert d.arrangement.label == "26Ø32 + 26Ø25 + 13Ø20"
+    radii = [r.radius for r in d.arrangement.rings]
+    assert radii == sorted(radii, reverse=True)
+    # The older form still reads as before.
+    assert UserCage(rows=2.5, count=26, diameter=32, inner_diameter=25).row_list() == [
+        (26, 32),
+        (26, 25),
+        (13, 25),
+    ]
+
+
+def test_zones_below_a_failing_user_cage_are_still_designed():
+    # Over the 4% limit: it fails on that alone, says so, and offers couplers; the pile is still curtailed.
+    heavy = UserCage(row_bars=[{"count": 26, "diameter": 32}] * 2 + [{"count": 13, "diameter": 32}])
+    d = check(heavy, diameter=1100)
+    assert not d.passed and any("over the 4% limit" in f for f in d.failure)
+    assert d.with_couplers["passes"] and d.with_couplers["allow_pct"] > 4
+    runs = d.curtailment["runs"]
+    assert runs[0]["cage"]["label"] == "26Ø32 + 26Ø32 + 13Ø32" and len(runs) >= 2
+    assert all(r["cage"]["rings"][0]["count"] == 26 for r in runs)
+    assert all(r["utilisation"] <= 1.0 for r in runs[1:])
+    assert runs[-1]["cage"]["area_mm2"] < runs[0]["cage"]["area_mm2"]
+    # Proceeding with couplers: the steel rule no longer fails it, and its joint is a coupler.
+    ok = check(heavy.model_copy(update={"over_limit_with_couplers": True}), diameter=1100)
+    assert not any("% limit" in f for f in ok.failure)
+    assert (
+        ok.curtailment["runs"][0]["joint"] == "coupler" and ok.curtailment["runs"][0]["lap_below_m"][0] == 0
+    )
+    assert any("couplers" in n for n in ok.notes)
+
+
+def test_a_failure_from_the_steel_limit_says_what_passes_with_couplers():
+    settings = DesignSettings()
+    settings.piles.max_steel_ratio = 1.0
+    d = design_pile("Pile(1)", PileInput(head_level=0.0), settings, pile_sheets(LOADS))
+    assert not d.passed and d.failure and d.failure[0].startswith("No cage within the 1% steel limit")
+    c = d.with_couplers
+    assert c["passes"] and c["ratio_pct"] > 1 and c["allow_pct"] >= c["ratio_pct"]
+    assert c["couplers"] == (c["ratio_pct"] > 4) and "steel limit" in c["note"]
+    # Below the strongest cage, the rest of the pile is still curtailed.
+    assert d.curtailment and len(d.curtailment["runs"]) >= 2

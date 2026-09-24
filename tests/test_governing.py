@@ -54,7 +54,8 @@ def test_sets_per_station_of_a_curtailed_pile():
     assert top["qp"][0]["N_kN"] == pytest.approx(1500.0)
     # The head station's most utilised point is the pile's governing point.
     assert top["uls"][-1]["utilisation"] == pytest.approx(d["utilisation"], abs=1e-3)
-    assert top["qp"][-1]["utilisation"] is None
+    # QP sets: SLS, the crack width over its limit.
+    assert top["qp"][-1]["utilisation"] == top["qp"][-1]["crack"]["util"]
     # Each QP set carries its crack width and the terms the crack picture draws.
     for r in (r for st in sets for r in st["qp"]):
         c = r["crack"]

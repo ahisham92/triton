@@ -163,6 +163,7 @@ def pile_set_cracks(pile: PileInput, settings: DesignSettings, arrangement, rows
         r["crack"] = crack_terms(t.wk, limit, t.sigma_s, t.sr_max, t.x, pile.diameter)
         # The direction of the moment vector, from the M3 axis towards M2 (degrees).
         r["crack"]["angle_deg"] = round(math.degrees(math.atan2(a2, a3)), 1)
+        r["utilisation"] = r["crack"]["util"]  # SLS: crack width over its limit
     return rows
 
 
