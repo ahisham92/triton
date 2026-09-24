@@ -2,6 +2,12 @@
 
 The reader does no interpretation: each sheet becomes a list of rows, each row
 a list of cell values (``None`` for empty cells). Row index 0 is Excel row 1.
+
+.xlsb sheets are read with calamine (compiled, about ten times faster than pyxlsb) when it is
+installed, giving the same rows as pyxlsb: numbers as floats, rows ending at their last value and
+the sheet as many rows long as its recorded size. A sheet with anything calamine reads differently
+from pyxlsb (an error cell such as #N/A, a date) is read with pyxlsb instead, so results never
+depend on which reader ran.
 """
 
 from __future__ import annotations
@@ -62,15 +68,68 @@ class _Tracker:
 
 
 def _read_xlsb(path: Path, progress: Progress | None = None) -> dict[str, list[Row]]:
+    names = sheet_names(path)
+    tick = _Tracker(path, names, progress)
+    sheets: dict[str, list[Row]] = {}
+    for name, rows in _xlsb_sheets(path, names):
+        sheets[name] = rows
+        tick(name)
+    return sheets
+
+
+def _xlsb_sheets(path: Path, names: list[str]) -> Iterator[tuple[str, list[Row]]]:
     from pyxlsb import open_workbook
 
+    fast = _calamine(path)
     with open_workbook(str(path)) as wb:
-        tick = _Tracker(path, list(wb.sheets), progress)
-        sheets: dict[str, list[Row]] = {}
-        for name in wb.sheets:
-            sheets[name] = _xlsb_rows(wb, name)
-            tick(name)
-    return sheets
+        for name in names:
+            rows = _calamine_rows(fast, wb, name) if fast is not None else None
+            yield name, rows if rows is not None else _xlsb_rows(wb, name)
+
+
+def _calamine(path: Path) -> Any:
+    try:
+        from python_calamine import CalamineWorkbook
+    except ImportError:  # not installed: pyxlsb reads everything
+        return None
+    try:
+        return CalamineWorkbook.from_path(str(path))
+    except Exception:  # noqa: BLE001 - anything calamine cannot open, pyxlsb reads as before
+        return None
+
+
+def _calamine_rows(fast: Any, wb: Any, name: str) -> list[Row] | None:
+    """A sheet's rows as pyxlsb gives them, or None where calamine would read it differently."""
+    try:
+        data = fast.get_sheet_by_name(name).to_python(skip_empty_area=False)
+    except Exception:  # noqa: BLE001
+        return None
+    rows: list[Row] = []
+    for raw in data:
+        row: Row = []
+        for v in raw:
+            if v == "":
+                v = None
+            elif type(v) is int:
+                v = float(v)  # pyxlsb reads every number as a float
+            elif type(v) is str:
+                if v.startswith("#"):
+                    return None  # possibly an error cell, which pyxlsb reads as a code
+            elif type(v) not in (float, bool):
+                return None  # a date or time: pyxlsb gives the number
+            row.append(v)
+        while row and row[-1] is None:
+            row.pop()
+        rows.append(row)
+    while rows and not rows[-1]:
+        rows.pop()
+    if rows:
+        # pyxlsb also gives the empty rows after the data, up to the size recorded for the sheet.
+        with wb.get_sheet(name) as sheet:
+            dim = sheet.dimension
+        if dim is not None:
+            rows.extend([] for _ in range(dim.r + dim.h - len(rows)))
+    return rows
 
 
 def _xlsb_rows(wb: Any, name: str) -> list[Row]:
@@ -153,11 +212,7 @@ def read_sheets(path: str | Path, names: list[str]) -> Iterator[tuple[str, list[
     """The given sheets' rows, one sheet at a time, in the order given."""
     path = Path(path)
     if _kind(path) == "xlsb":
-        from pyxlsb import open_workbook
-
-        with open_workbook(str(path)) as wb:
-            for name in names:
-                yield name, _xlsb_rows(wb, name)
+        yield from _xlsb_sheets(path, names)
         return
     from openpyxl import load_workbook
 
