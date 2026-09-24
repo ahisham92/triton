@@ -36,6 +36,9 @@ from . import (
     revit,
     trials,
 )
+from . import (
+    moved as moved_piles,
+)
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
@@ -1599,6 +1602,88 @@ def run_value_engineering(project_id: str, section_id: str, body: ScenarioReques
     """Design the whole section for each idea or mix of ideas, in steps, and cost it against the
     section as set. The section and its results do not change."""
     return _run_scenarios(project_id, section_id, body, "ve")
+
+
+class MovedRun(BaseModel):
+    budget_s: float | None = Field(
+        None, gt=0, description="Start no step after this long; what is left comes back in 'left'."
+    )
+
+
+def _moved_view(project_id: str, section_id: str, workbook: ImportResult | None = None) -> dict:
+    project = _get(project_id)
+    section = _section(project, section_id)
+    d = store()._dir(project_id, section_id)
+    summary = store().workbook_summary(project_id, section_id)
+    results = store().load_results(project_id, section_id)
+    if workbook is None:
+        workbook = _moved_workbook_positions(project_id, section, summary)
+    return moved_piles.view(project, section, workbook, summary, results, d)
+
+
+def _moved_workbook_positions(project_id: str, section: Section, summary: dict | None) -> ImportResult | None:
+    """The workbook, read once per upload for the pile positions the tab picks from."""
+    key = (project_id, section.id, (summary or {}).get("version"), (summary or {}).get("uploaded_at"))
+    if _MOVED_WB.get("key") != key:
+        _MOVED_WB.clear()
+        _MOVED_WB.update(key=key, workbook=_workbook(project_id, section))
+    return _MOVED_WB.get("workbook")
+
+
+_MOVED_WB: dict = {}
+
+
+@app.get(SECTION + "/moved-piles")
+def moved_piles_view(project_id: str, section_id: str) -> dict:
+    """The Moved piles tab: each scenario, the change it makes in the pile loads and the deck, and every
+    pile, combi wall, beam and slab checked with the bars as designed."""
+    return _moved_view(project_id, section_id)
+
+
+@app.put(SECTION + "/moved-piles/{scenario_id}")
+def save_moved_scenario(
+    project_id: str, section_id: str, scenario_id: str, body: moved_piles.Scenario
+) -> dict:
+    """Keep a scenario (its piles, how far they move, the pile head stiffness). It never changes the
+    section or its results, so it can be edited while the model is locked."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    if body.id != scenario_id:
+        raise HTTPException(400, "Scenario id in the body does not match the URL.")
+    for m in body.moves:
+        if not isinstance(section.elements.get(m.element), PileInput):
+            raise HTTPException(422, f"{m.element} is not a pile element of this section.")
+    moved_piles.put_scenario(store()._dir(project_id, section_id), body)
+    return _moved_view(project_id, section_id)
+
+
+@app.delete(SECTION + "/moved-piles/{scenario_id}")
+def delete_moved_scenario(project_id: str, section_id: str, scenario_id: str) -> dict:
+    project = _get(project_id)
+    _section(project, section_id)
+    moved_piles.delete_scenario(store()._dir(project_id, section_id), scenario_id)
+    return _moved_view(project_id, section_id)
+
+
+@app.post(SECTION + "/moved-piles/{scenario_id}/run")
+def run_moved_scenario(project_id: str, section_id: str, scenario_id: str, body: MovedRun) -> dict:
+    """Check the section with the scenario's piles moved, in steps: every element with the bars as
+    designed, then the ones that fail designed afresh. The section and its results do not change."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    d = store()._dir(project_id, section_id)
+    scenario = next((s for s in moved_piles.scenarios(d) if s.id == scenario_id), None)
+    if scenario is None:
+        raise HTTPException(404, "Scenario not found.")
+    summary = store().workbook_summary(project_id, section_id)
+    workbook = _moved_workbook_positions(project_id, section, summary)
+    if workbook is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    results = store().load_results(project_id, section_id)
+    deadline = time.monotonic() + body.budget_s if body.budget_s else None
+    with _Progress(f"moved-{project_id}-{section_id}") as tell:
+        done = moved_piles.run(project, section, workbook, summary, results, d, scenario, deadline, tell)
+    return {**_moved_view(project_id, section_id, workbook), **done}
 
 
 @app.get(SECTION + "/design/report.{fmt}")

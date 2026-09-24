@@ -5,6 +5,7 @@ import { spwCard } from "./spw.js";
 import { renderTrials } from "./trials.js";
 import { renderValueEngineering } from "./ve.js";
 import { renderClashes } from "./clashes.js";
+import { renderMovedPiles } from "./moved.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -360,7 +361,7 @@ function displacementsPanel(box) {
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d", "clashes", "compare", "ve"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d", "clashes", "moved", "compare", "ve"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -388,6 +389,7 @@ async function projectPage(id, tab, sectionId) {
     ["design", "Design"],
     ["view3d", "3D view"],
     ["clashes", "Clashes"],
+    ["moved", "Moved piles"],
     ["costing", "Costing"],
     ["compare", "Comparisons"],
     ["ve", "Value engineering"],
@@ -467,6 +469,12 @@ async function projectPage(id, tab, sectionId) {
       costingHash: tabHash("costing"),
     });
   else if (tab === "clashes") renderClashes(host, { api, again, esc, fmt, secUrl });
+  else if (tab === "moved")
+    renderMovedPiles(host, {
+      api, again, esc, fmt, secUrl, ROOT,
+      project: () => state.project,
+      sectionId: () => sec().id,
+    });
   else if (tab === "compare")
     renderTrials(host, {
       api, again, esc, fmt, secUrl, ROOT,

@@ -299,14 +299,19 @@ def auto_stations(
 
 
 def strip_frame(
-    slab: SlabInput, box: dict, piles: list[tuple], beams: list[dict], stations: list[float] | None = None
+    slab: SlabInput,
+    box: dict,
+    piles: list[tuple],
+    beams: list[dict],
+    stations: list[float] | None = None,
+    lines: list[float] | None = None,
 ) -> dict | None:
     """Where the column and field strips lie: the lines of piles along the strips, the distance along
     them from the sea side (the front wall line, the front beam's centre, as the office's stations),
     and the station boundaries."""
     along = slab.strip_direction
     ai, ci = (0, 1) if along == "X" else (1, 0)
-    lines = sorted({round(p[ci], 1) for p in piles})
+    lines = sorted(lines) if lines else sorted({round(p[ci], 1) for p in piles})
     if not lines:
         return None
     lo, hi = box[along]
@@ -1665,7 +1670,9 @@ def design_slab(
         else None
     )
     frame = (
-        strip_frame(slab, box, piles, beams, choices.stations) if slab.strips == "column_and_field" else None
+        strip_frame(slab, box, piles, beams, choices.stations, choices.lines)
+        if slab.strips == "column_and_field"
+        else None
     )
     strips = frame is not None
     if slab.strips == "column_and_field" and not strips:

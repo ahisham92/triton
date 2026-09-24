@@ -33,9 +33,9 @@ from .validation import CHECKER_SHEET, collect
 
 FORMAT = "triton.project/1"
 SUFFIX = ".trt"
-# Section files carried besides the workbook: results and trials, all JSON.
+# Section files carried besides the workbook: results, trials and moved-pile checks, all JSON.
 _SECTION_JSON = re.compile(r"[A-Za-z0-9_-]+\.json")
-_TRIAL = re.compile(r"trials/[0-9a-f]{6,64}\.json\.gz")
+_TRIAL = re.compile(r"(trials|moved)/[0-9a-f]{6,64}\.json\.gz")
 _SKIP = {"workbook.json", "workbook_view.json"}
 # An opened file may not grow past this when unpacked (a zip bomb stops here).
 MAX_UNPACKED = 4 * 1024**3
@@ -166,10 +166,11 @@ def write(store: ProjectStore, project: Project, out: IO[bytes]) -> dict[str, An
             for p in sorted(d.iterdir()):
                 if p.is_file() and _SECTION_JSON.fullmatch(p.name) and p.name not in _SKIP:
                     z.write(p, base + p.name)
-            if (d / "trials").is_dir():
-                for p in sorted((d / "trials").glob("*.json.gz")):
-                    if _TRIAL.fullmatch("trials/" + p.name):
-                        z.write(p, base + "trials/" + p.name, compress_type=zipfile.ZIP_STORED)
+            for folder in ("trials", "moved"):
+                if (d / folder).is_dir():
+                    for p in sorted((d / folder).glob("*.json.gz")):
+                        if _TRIAL.fullmatch(f"{folder}/{p.name}"):
+                            z.write(p, f"{base}{folder}/{p.name}", compress_type=zipfile.ZIP_STORED)
             manifest["sections"][section.id] = info
         z.writestr("triton.json", json.dumps(manifest, indent=1))
     return manifest
@@ -292,7 +293,7 @@ def open_package(
                         store._write_json(d / rel, data)
                     elif _TRIAL.fullmatch(rel):
                         data = json.loads(gzip.decompress(z.read(member)))
-                        (d / "trials").mkdir(exist_ok=True)
+                        (d / rel.split("/")[0]).mkdir(exist_ok=True)
                         (d / rel).write_bytes(gzip.compress(json.dumps(data).encode(), 5))
         except BaseException:
             store.delete(project.id)
