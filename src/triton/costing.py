@@ -141,7 +141,7 @@ def slab_links(slab: dict[str, Any]) -> dict[str, float]:
         phi, asw = z.get("phi"), z.get("asw_mm2_per_m2")
         if not phi or not asw or not z.get("x") or not z.get("y"):
             continue
-        area = abs(z["x"][1] - z["x"][0]) * abs(z["y"][1] - z["y"][0])
+        area = z.get("area_m2") or abs(z["x"][1] - z["x"][0]) * abs(z["y"][1] - z["y"][0])
         shear += asw * area * (inside + 20 * phi) / 1e3 * STEEL_DENSITY / 1e6
     punching = 0.0
     for q in slab.get("punching") or []:

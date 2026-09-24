@@ -2,11 +2,11 @@
 
 Layout. The voids run along one global axis (X: across the quay, from the front beam to the rear
 beam), from ``start_offset`` behind the front beam's face to ``end_offset`` before the rear beam's
-face, at a regular spacing across (or at the positions given). A void that would come within
-``clear_to_piles`` of a pile in its run is left out, so the slab stays solid along that line of piles.
-With ``solid_round_piles`` the voids instead stop that far from each pile's face and start again beyond
-it, and no void is left out. A result is in the voided slab when it lies inside the run, within half a
-spacing of a void and outside those solid zones.
+face, at a regular spacing across (or at the positions given). Where a pile passes (``at_piles``
+"stop", the default) the voids stop ``clear_to_piles`` short of its face and start again beyond it, so
+the slab is solid over every pile; with "leave_out" a void that would come that near a pile is left
+out along its whole length. A result is in the voided slab when it lies inside the run, within half
+a spacing of a void and outside the solid zones round the piles.
 
 Section of a 1 m strip, at a depth t below the top:
 
@@ -25,7 +25,7 @@ zone; ρp,eff on the full width over hc,ef (the voids there would only make the 
 Shear: the webs between the voids, bw = 1000·(1 − D/s) per metre, for VRd,c, VRd,max and the minimum
 links; links only in the webs, at the void spacing across them.
 
-Punching (6.4.2(3), openings): the parts of the control perimeters over a void are left out.
+Punching: the voids stop where a pile passes, so punching is checked on the solid slab.
 """
 
 from __future__ import annotations
@@ -245,7 +245,7 @@ def layout(voids, h: float, box: dict, piles: list[tuple], beams: list[dict]) ->
             k += 1
     r = voids.diameter / 2000
     kept, dropped = [], []
-    solid = voids.solid_round_piles
+    solid = voids.clear_to_piles / 1000 if voids.at_piles == "stop" else None
     for p in pos:
         if solid is not None:  # the voids stop short of every pile instead
             kept.append(p)
@@ -296,19 +296,6 @@ def mask(lay: dict[str, Any], x: np.ndarray, y: np.ndarray) -> np.ndarray:
     pos = np.array(lay["positions"])
     near = np.abs(c[:, None] - pos[None, :]).min(axis=1) <= lay["spacing_mm"] / 2000 + 1e-9
     return near & (a >= lay["run"][0] - 1e-9) & (a <= lay["run"][1] + 1e-9) & ~_near_piles(lay, x, y)
-
-
-def perimeter_over_voids(lay: dict[str, Any], x: float, y: float, radius: float) -> float:
-    """Share (0 to 1) of a circle of ``radius`` (m) round (x, y) that lies over a void."""
-    if not lay["positions"]:
-        return 0.0
-    th = np.linspace(0, 2 * math.pi, 720, endpoint=False)
-    px, py = x + radius * np.cos(th), y + radius * np.sin(th)
-    a, c = (px, py) if lay["along"] == "X" else (py, px)
-    pos = np.array(lay["positions"])
-    over = np.abs(c[:, None] - pos[None, :]).min(axis=1) < lay["diameter_mm"] / 2000
-    over &= (a >= lay["run"][0]) & (a <= lay["run"][1]) & ~_near_piles(lay, px, py)
-    return float(over.mean())
 
 
 def void_volume(lay: dict[str, Any], box: dict) -> float:

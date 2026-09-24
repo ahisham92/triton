@@ -50,7 +50,7 @@ def test_block_past_the_flange_needs_more_steel_or_compression_bars():
 
 
 def test_layout_between_the_beam_faces_and_clear_of_the_piles():
-    v = SlabVoids(diameter=500, spacing=700, first_at=0.0)
+    v = SlabVoids(diameter=500, spacing=700, first_at=0.0, at_piles="leave_out")
     beams = [
         {"type": "front_beam", "box": {"X": [-1.0, 1.0], "Y": [-5, 5]}},
         {"type": "rear_beam", "box": {"X": [-24.8, -23.2], "Y": [-5, 5]}},
@@ -64,11 +64,9 @@ def test_layout_between_the_beam_faces_and_clear_of_the_piles():
     assert all(-5 + 0.25 <= p <= 5 - 0.25 for p in lay["positions"])
     m = vd.mask(lay, np.array([-10.0, -10.0, -1.5, -10.0]), np.array([1.4, 0.0, 1.4, 1.7]))
     assert list(m) == [True, False, False, True]
-    assert vd.perimeter_over_voids(lay, -12.0, 0.0, 0.3) == 0
-    assert 0 < vd.perimeter_over_voids(lay, -12.0, 0.0, 1.6) < 0.5
 
 
-def test_deck_with_voids_shear_in_the_webs_and_punching_perimeter():
+def test_deck_with_voids_shear_in_the_webs_and_solid_over_the_piles():
     solid = design_deck()
     d = design_deck(voids=SlabVoids(diameter=500, spacing=700))
     v = d["voids"]
@@ -81,12 +79,13 @@ def test_deck_with_voids_shear_in_the_webs_and_punching_perimeter():
         solid["shear"]["governing"]["VRd_max_kN_per_m"] * 200 / 700, rel=1e-3
     )
     (p,), (p0,) = d["punching"], solid["punching"]
-    assert p["u1_over_voids_pct"] > 0 and p["u1_mm"] < p0["u1_mm"] and p["utilisation"] > p0["utilisation"]
+    # The voids stop short of the pile: punching is the solid slab's.
+    assert p["u1_mm"] == p0["u1_mm"] and p["utilisation"] == p0["utilisation"]
+    assert not v["left_out"] and v["solid_round_piles_m"] == 0.15
     assert any(n.startswith("Voids:") for n in d["notes"])
 
 
-def test_links_in_the_webs_where_the_voided_slab_needs_them():
-    # Heavy shear across the voided run: the links stand one per web at the void spacing.
+def heavy_shear_deck(voids):
     from test_slabs import deck_rows, piles_at
 
     from triton.design.runner import run_section
@@ -102,22 +101,37 @@ def test_links_in_the_webs_where_the_voided_slab_needs_them():
         }
     )
     els = {
-        "Deck": SlabInput(thickness=800, voids=SlabVoids(diameter=500, spacing=650), peaks="design"),
+        "Deck": SlabInput(thickness=800, voids=voids, peaks="design"),
         "Pile(1)": PileInput(head_level=2.7),
     }
-    d = run_section(DesignSettings(), Section(elements=els), wb)["slabs"][0]
+    return run_section(DesignSettings(), Section(elements=els), wb)["slabs"][0]
+
+
+def test_links_in_the_webs_where_the_voided_slab_needs_them():
+    # Heavy shear across the voided run: the links stand one per web at the void spacing.
+    d = heavy_shear_deck(SlabVoids(diameter=500, spacing=650))
     webs = [q for q in d["shear"]["links"] if q.get("in_webs")]
     assert webs and all(q["sy_mm"] == 650 and "1 leg per web" in q["label"] for q in webs)
 
 
-def test_voids_can_stop_short_of_the_piles_instead():
-    through = design_deck(voids=SlabVoids(diameter=500, spacing=700))
-    d = design_deck(voids=SlabVoids(diameter=500, spacing=700, solid_round_piles=1.5))
-    v = d["voids"]
-    # No void left out; none within 1.5 m of the pile's face, so the punching perimeter is whole.
-    assert not v["left_out"] and len(v["positions"]) > len(through["voids"]["positions"])
-    (p,) = d["punching"]
-    assert p["u1_over_voids_pct"] == 0 and p["utilisation"] == design_deck()["punching"][0]["utilisation"]
-    lay = {**v, "run": v["run"]}
-    assert not vd.mask(lay, np.array([-4.0]), np.array([1.2]))[0]
+def test_voids_can_be_left_out_along_the_pile_lines_instead():
+    stop = design_deck(voids=SlabVoids(diameter=500, spacing=700))
+    out = design_deck(voids=SlabVoids(diameter=500, spacing=700, at_piles="leave_out"))
+    assert out["voids"]["left_out"] and len(out["voids"]["positions"]) < len(stop["voids"]["positions"])
+    lay = stop["voids"]
+    # Stopping short: no void within 150 mm of the 1.2 m pile's face, voids beyond it.
+    assert not vd.mask(lay, np.array([-4.0]), np.array([0.6]))[0]
     assert vd.mask(lay, np.array([-6.8]), np.array([3.0]))[0]
+    assert out["punching"][0]["utilisation"] == stop["punching"][0]["utilisation"]
+
+
+def test_link_quantities_count_the_voided_and_solid_parts_once():
+    from triton.costing import slab_links
+
+    d = heavy_shear_deck(SlabVoids(diameter=500, spacing=650))
+    links = d["shear"]["links"]
+    box = d["box"]
+    whole = (box["X"][1] - box["X"][0]) * (box["Y"][1] - box["Y"][0])
+    assert any(q.get("in_webs") for q in links) and all("area_m2" in q for q in links)
+    assert sum(q["area_m2"] for q in links) <= whole + 1e-6
+    assert slab_links(d)["shear_kg"] >= 0

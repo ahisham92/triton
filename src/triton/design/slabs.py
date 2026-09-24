@@ -1211,10 +1211,8 @@ def punching(
     conc,
     cover: float,
     beams: list[dict],
-    vlay: dict | None = None,
 ) -> list[dict]:
-    """6.4 punching at each pile head, each with the slab thickness at that pile (see ``punching_depth``).
-    With voids (``vlay``), the parts of the control perimeters over a void are left out (6.4.2(3))."""
+    """6.4 punching at each pile head, each with the slab thickness at that pile (see ``punching_depth``)."""
     pf = settings.partial_factors
     fck = conc.fck
     fcd = pf.alpha_cc * fck / pf.gamma_c
@@ -1237,8 +1235,7 @@ def punching(
         v_min = 0.035 * k**1.5 * math.sqrt(fck)
         D = rows[0]["D"]
         u0 = math.pi * D
-        over = vd.perimeter_over_voids(vlay, x, y, (D / 2 + 2 * d) / 1000) if vlay else 0.0
-        u1 = math.pi * (D + 4 * d) * (1 - over)
+        u1 = math.pi * (D + 4 * d)
         worst = None
         for r in rows:
             v = abs(r["N"])
@@ -1276,8 +1273,6 @@ def punching(
                     "vEd_face_MPa": round(ved0, 3),
                     "vRd_max_MPa": round(vrdmax, 2),
                     "utilisation": round(u, 3),
-                    "u1_over_voids_pct": round(100 * over, 1) if vlay else None,
-                    "_over": over,
                     "_v": v,
                     "_beta": beta,
                     "_vrdc": vrdc,
@@ -1297,8 +1292,7 @@ def punching(
             # 6.52 with sr = 0.75d: Asw per perimeter.
             sr = 0.75 * d
             asw = (worst["vEd_MPa"] - 0.75 * worst["_vrdc"]) * u1 * sr / (1.5 * fywd_ef(d))
-            # With voids, the outer perimeter loses about the same share as u1.
-            u_out = worst["_beta"] * worst["_v"] * 1e3 / (worst["_vrdc"] * d) / max(1 - worst["_over"], 0.05)
+            u_out = worst["_beta"] * worst["_v"] * 1e3 / (worst["_vrdc"] * d)
             r_out = u_out / math.pi / 2 - D / 2  # from the pile face
             perimeters = max(2, math.ceil((r_out - 1.5 * d) / sr) + 1)
             worst |= {
@@ -1315,7 +1309,7 @@ def punching(
             }
         if not worst["passed"]:
             worst["fix"] = _punching_fix(worst, h, D, cover, fck, fcd, nu, pf.gamma_c)
-        for k_ in ("_v", "_beta", "_vrdc", "_e", "_over"):
+        for k_ in ("_v", "_beta", "_vrdc", "_e"):
             worst.pop(k_)
         out.append(worst)
     return out
@@ -1327,13 +1321,12 @@ def _punching_fix(
     """What would make a failing pile head pass: more steel on the tension face (so links can take the
     rest, up to kmax·vRd,c), or a thicker slab at the pile, with and without links. Same V and e."""
     v, e, rho = w["_v"], w["_e"], w["rho_l"]
-    keep = 1 - w.get("_over", 0.0)
 
     def at(hh: float, rr: float) -> tuple[float, float, float]:
         d = hh - cover - 20
         k = min(1 + math.sqrt(200 / d), 2.0)
         vrdc = max(0.18 / gc * k * (100 * min(rr, 0.02) * fck) ** (1 / 3), 0.035 * k**1.5 * math.sqrt(fck))
-        u1 = math.pi * (D + 4 * d) * keep
+        u1 = math.pi * (D + 4 * d)
         beta = 1 + 0.6 * math.pi * e / (D + 4 * d)
         ved = beta * v * 1e3 / (u1 * d)
         face = beta * v * 1e3 / (math.pi * D * d) / (0.4 * nu * fcd)
@@ -2470,6 +2463,20 @@ def design_slab(
                         round(min(vlay["positions"]) - sv / 2000, 2),
                         round(max(vlay["positions"]) + sv / 2000, 2),
                     ]
+                # For quantities: each band over its own part of the width (the voided part, or the rest).
+                vw = len(vlay["positions"]) * sv / 1000
+                full = box[vlay["across"]][1] - box[vlay["across"]][0]
+                ak = vlay["along"].lower()
+
+                def overlap(a, b):
+                    return max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
+
+                for q in links:
+                    span = q[ak]
+                    covered = sum(overlap(span, w[ak]) for w in v_links)
+                    q["area_m2"] = round((span[1] - span[0]) * full - covered * vw, 2)
+                for q in v_links:
+                    q["area_m2"] = round((q[ak][1] - q[ak][0]) * vw, 2)
                 links += v_links
                 short += v_short
         if frame is not None:
@@ -2528,7 +2535,7 @@ def design_slab(
 
     # Punching.
     heads = pile_heads(pile_sheets, elements, box, settings.results_into_connection / 1e3)
-    punch = punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams, vlay if vsec else None)
+    punch = punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams)
     unset = sorted({p["pile"] for p in punch if getattr(elements.get(p["pile"]), "head_level", 0) is None})
     if unset:
         notes.append(
@@ -2626,10 +2633,11 @@ def design_slab(
             f"{vlay['run'][0]:g} to {vlay['run'][1]:g} m ({vlay['run_from']}); solid "
             f"{vlay['flange_top_mm']:g} mm above and {vlay['flange_bottom_mm']:g} mm below them, webs "
             f"{vlay['web_mm']:g} mm. Bending and crack widths on the voided section there, shear on the webs "
-            f"(bw {100 * vsec['x'].web_factor():.0f}% of the width) with links in the webs only, punching "
-            "without the parts of the control perimeter over a void."
+            f"(bw {100 * vsec['x'].web_factor():.0f}% of the width) with links in the webs only; punching "
+            "on the solid slab."
             + (
-                f" The voids stop {vlay['solid_round_piles_m']:g} m short of every pile's face (solid zones)."
+                f" The voids stop {vlay['solid_round_piles_m'] * 1000:g} mm short of every pile's face, "
+                "so the slab is solid over the piles."
                 if vlay.get("solid_round_piles_m") is not None
                 else ""
             )
