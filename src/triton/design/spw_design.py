@@ -219,7 +219,7 @@ def design_spw(
     if f.empty:
         return None
     z = f["Z"].to_numpy(float)
-    top = float(z.max())
+    top = wall.top_level if wall.top_level is not None else float(z.max())
     firm = wall.firm_soil_level if wall.firm_soil_level is not None else float(z.min())
     length = max(top - firm, 0.1)
     opts, sec_name = _options(wall, fy, length)
