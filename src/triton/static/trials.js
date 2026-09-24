@@ -107,7 +107,7 @@ export async function renderTrials(host, h) {
       ${data.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
       <div class="panel scroll"><table class="cost trials">${head}${rows}</table></div>
       ${done.some((r) => !r.passed) ? `<ul class="status trial-why">${done.filter((r) => !r.passed).map((r) => `<li><strong>${esc(r.label)}</strong> is not safe: ${esc(r.why || "see the Design tab.")}</li>`).join("")}</ul>` : ""}
-      ${done.length && !done.some((r) => r.best) ? '<p class="status flag-bad">None of the trials run is safe.</p>' : ""}`;
+      ${done.length && !done.some((r) => r.passed) ? '<p class="status flag-bad">None of the trials run is safe.</p>' : ""}`;
 
     out.querySelector("#tr-el").onchange = (e) => {
       picked = e.target.value;
