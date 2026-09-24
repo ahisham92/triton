@@ -61,6 +61,8 @@ from .tension import slab_tension
 
 E_S = 200_000.0
 PREMIUM = 0.10  # extra weight per zoned cell when picking the basic mesh
+MESH_SLACK = 0.05  # a lighter basic mesh is kept if the whole slab's steel is at most this much more
+LAYER_PREMIUM = 0.25  # extra weight per layer of bars under the first: fewer layers where the steel allows
 LAYERS = ("bottom_x", "bottom_y", "top_x", "top_y")
 LAYER_TEXT = {
     "bottom_x": "bottom bars along X",
@@ -152,18 +154,19 @@ def bar_options(settings: DesignSettings) -> list[tuple[float, int, float, int]]
     for phi in r.bar_diameters:
         if phi < 10:
             continue
+        clear = max(r.slab_min_clear_spacing, phi)
         if r.slab_spacings:
-            spacings = sorted({float(s) for s in r.slab_spacings if s >= phi + r.min_clear_spacing - 1e-9})
+            spacings = sorted({float(s) for s in r.slab_spacings if s >= phi + clear - 1e-9})
         else:
             spacings, s = [], r.max_spacing
-            while s >= max(100.0, phi + r.min_clear_spacing) - 1e-9:
+            while s >= max(100.0, phi + clear) - 1e-9:
                 spacings.append(s)
                 s -= r.spacing_step
         for s in spacings:
-            for layers in range(1, (r.max_layers if phi >= 25 else 1) + 1):
+            for layers in range(1, r.max_layers + 1):
                 out.append((layers * 1000 * math.pi * phi * phi / 4 / s, phi, s, layers))
-    # Cheapest first; a second layer costs 10% more to place.
-    return sorted(out, key=lambda o: (o[0] * (1 + 0.1 * (o[3] - 1)), -o[1]))
+    # Cheapest first; every layer under the first costs more to place.
+    return sorted(out, key=lambda o: (o[0] * (1 + LAYER_PREMIUM * (o[3] - 1)), -o[1]))
 
 
 def label(o: tuple) -> str:
@@ -386,9 +389,90 @@ def strip_table(rows: list[dict], frame: dict) -> list[dict]:
                     "layers": {f: mine[g[0]][f]["layer"] for f in ("bottom", "top") if f in mine[g[0]]},
                     "keys": {f: [mine[k][f]["key"] for k in g if f in mine[k]] for f in ("bottom", "top")},
                     "user_set": any(r["user_set"] for r in faces),
+                    "edit": [f for f in ("bottom", "top") if f in mine[g[0]]],
+                    **{
+                        field: {f: mine[g[0]][f].get(field) for f in ("bottom", "top") if f in mine[g[0]]}
+                        for field in ("set_by", "bar_layers", "spec", "mesh")
+                    },
                 }
             )
     return out
+
+
+def overall_table(entries: list[dict]) -> list[dict]:
+    """Rows for the bars designed over the whole deck (across the strips): the basic mesh of both faces,
+    then each zone of additional bars with the other face's mesh."""
+
+    def score(r: dict) -> float:
+        return max(r["ratio"] or 0, (r["wk_mm"] or 0) / r["wk_limit_mm"])
+
+    out = []
+    for moment in sorted({e["moment"] for e in entries}):
+        es = [e for e in entries if e["moment"] == moment]
+        mesh = {e["face"]: e for e in es if e["zone"] is None}
+        groups = [("Whole deck, basic mesh", list(mesh.values()))]
+        groups += [(e["label"], [e]) for e in es if e["zone"] is not None]
+        for text, main in groups:
+            if not main:
+                continue
+            faces = {e["face"]: e for e in main}
+            for f, m in mesh.items():
+                faces.setdefault(f, m)
+            worst = max(main, key=score)
+            wk = max(main, key=lambda r: (r["wk_mm"] or 0) / r["wk_limit_mm"])
+            fs = [f for f in ("bottom", "top") if f in faces]
+            out.append(
+                {
+                    "moment": moment,
+                    "along_strips": False,
+                    "strip": "all",
+                    "stations": [],
+                    "label": text,
+                    "zone": main[0]["zone"],
+                    "wk_mm": wk["wk_mm"],
+                    "wk_limit_mm": wk["wk_limit_mm"],
+                    "ratio": worst["ratio"],
+                    "M_kNm_per_m": worst["M_kNm_per_m"],
+                    "MRd_kNm_per_m": worst["MRd_kNm_per_m"],
+                    "combination": worst["combination"],
+                    "face": worst["face"],
+                    "bars": {f: faces[f]["bars"] for f in fs},
+                    "additional": {f: faces[f]["additional"] for f in fs},
+                    "layers": {f: faces[f]["layer"] for f in fs},
+                    "keys": {f: [faces[f]["key"]] for f in fs},
+                    "user_set": any(e["user_set"] for e in main),
+                    "edit": [e["face"] for e in main],
+                    **{
+                        field: {f: faces[f][field] for f in fs}
+                        for field in ("set_by", "bar_layers", "spec", "mesh")
+                    },
+                }
+            )
+    return out
+
+
+def across_profile(f: pd.DataFrame, frame: dict, size: float, axes: dict[str, str] | None) -> dict:
+    """ULS envelope of the moment across the strips (M22 when the strips run along X), largest and
+    smallest over the whole deck at every cut along the quay, with the lines of piles."""
+    cx = frame["across"]
+    mcol = "My" if cx == "Y" else "Mx"
+    lo = float(f[cx].min())
+    cut = np.floor((f[cx].to_numpy() - lo) / size + 1e-9).astype(int)
+    g = pd.DataFrame({"cut": cut, "m": f[mcol].to_numpy()}).groupby("cut")["m"].agg(["max", "min"])
+    return {
+        "moment": _map(axes)[mcol].replace("_", ""),
+        "axis": cx,
+        "points": [
+            {
+                "s": round(lo + (c + 0.5) * size, 2),
+                "max": round(float(r["max"]), 1),
+                "min": round(float(r["min"]), 1),
+            }
+            for c, r in g.iterrows()
+        ],
+        "lines": frame["lines"],
+        "range": [round(lo, 2), round(float(f[cx].max()), 2)],
+    }
 
 
 def strip_profile(f: pd.DataFrame, loc: dict, size: float, axes: dict[str, str] | None) -> dict[str, list]:
@@ -502,36 +586,132 @@ def average_peaks(f: pd.DataFrame, piles: list[tuple]) -> pd.DataFrame:
     return f
 
 
-def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, list, list]:
+def fits_between(phi_a: float, mesh_phi: float, mesh_spacing: float, settings: DesignSettings) -> bool:
+    """Whether bars of Ø ``phi_a`` fit halfway between mesh bars with the clear spacing of EC2 8.2(2)."""
+    clear = max(settings.reinforcement.slab_min_clear_spacing, phi_a, mesh_phi)
+    return mesh_spacing / 2 - (phi_a + mesh_phi) / 2 >= clear - 1e-9
+
+
+def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, list, list, list]:
     """The mesh alone, then the mesh with additional bars, least steel first.
 
     Additional bars go between the mesh bars: in every second gap, in every gap, in every gap in two
     layers, or also under the mesh bars (three per gap, two layers). For crack widths the mix has
     the equivalent Ø of 7.12 and the largest gap between tension bars. Returns (options as
-    (mm²/m, Ø, spacing, layers), Ø setting the depth, labels).
+    (mm²/m, Ø, spacing, layers), Ø setting the depth, labels, bar layers): the bar layers are the
+    additional bars as [(Ø, spacing)] per layer, the first between the mesh bars.
     """
     area, phi_b, s_b, layers_b = mesh
     n_b = layers_b * 1000 / s_b
-    out = [(mesh, phi_b, label(mesh))]
+    out = [(mesh, phi_b, label(mesh), [])]
     for phi_a in settings.reinforcement.bar_diameters:
-        if phi_a < 10 or s_b / 2 - max(phi_a, phi_b) < settings.reinforcement.min_clear_spacing:
+        if phi_a < 10 or not fits_between(phi_a, phi_b, s_b, settings):
             continue
-        for n_a, spacing, lay, text in (
-            (1000 / s_b, s_b / 2, layers_b, f"Ø{phi_a} @ {s_b:g}"),
-            (1000 / (2 * s_b), s_b, layers_b, f"Ø{phi_a} @ {2 * s_b:g}"),
-            (2000 / s_b, s_b / 2, max(layers_b, 2), f"Ø{phi_a} @ {s_b:g} in 2 layers"),
+        for n_a, spacing, lay, text, spec in (
+            (1000 / s_b, s_b / 2, layers_b, f"Ø{phi_a} @ {s_b:g}", [(phi_a, s_b)]),
+            (1000 / (2 * s_b), s_b, layers_b, f"Ø{phi_a} @ {2 * s_b:g}", [(phi_a, 2 * s_b)]),
+            (
+                2000 / s_b,
+                s_b / 2,
+                max(layers_b, 2),
+                f"Ø{phi_a} @ {s_b:g} in 2 layers",
+                [(phi_a, s_b), (phi_a, s_b)],
+            ),
             (
                 3000 / s_b,
                 s_b / 2,
                 max(layers_b, 2),
                 f"Ø{phi_a} @ {s_b:g} in 2 layers + Ø{phi_a} under the mesh",
+                [(phi_a, s_b), (phi_a, s_b / 2)],
             ),
         ):
             phi_eq = (n_b * phi_b**2 + n_a * phi_a**2) / (n_b * phi_b + n_a * phi_a)
             o = (area + n_a * math.pi * phi_a**2 / 4, phi_eq, spacing, lay)
-            out.append((o, max(phi_a, phi_b), text))
-    out = out[:1] + sorted(out[1:], key=lambda t: t[0][0] * (1 + 0.1 * (t[0][3] - 1)))
-    return [t[0] for t in out], [t[1] for t in out], [t[2] for t in out]
+            out.append((o, max(phi_a, phi_b), text, spec))
+    out = out[:1] + sorted(out[1:], key=lambda t: t[0][0] * (1 + LAYER_PREMIUM * (t[0][3] - 1)))
+    return [t[0] for t in out], [t[1] for t in out], [t[2] for t in out], [t[3] for t in out]
+
+
+def parse_layers(text: str) -> list[tuple[float, float] | None] | None:
+    """Bar layers set by the user: 'layers: Ø32@150 | Ø25@75', the first between the mesh bars ('–' for
+    none), the next ones in layers 2, 3, ... under the mesh. None when the text is not in this form."""
+    if not text.startswith("layers:"):
+        return None
+    out: list[tuple[float, float] | None] = []
+    for part in text[len("layers:") :].split("|"):
+        part = part.strip().replace(" ", "")
+        if part in ("", "-", "–"):
+            out.append(None)
+            continue
+        try:
+            phi, spacing = part.lstrip("Ø").split("@")
+            out.append((float(phi), float(spacing)))
+        except ValueError:
+            return None
+    return out
+
+
+def layers_text(spec: list) -> str:
+    parts = []
+    for k, p in enumerate(spec):
+        if p is None:
+            continue
+        where = "between the mesh bars" if k == 0 else f"layer {k + 1}"
+        parts.append(f"Ø{p[0]:g} @ {p[1]:g} {where}")
+    return " + ".join(parts) if parts else "mesh only"
+
+
+def bar_layers(mesh: tuple, spec: list, cover: float, shift: float = 0.0) -> list[dict]:
+    """Every layer of bars of one face and direction, outermost first: its bars, how far its centre is
+    from the face (mm), and its steel. The mesh is layer 1 (and 2 for a mesh in two layers); ``shift``
+    is how much deeper these bars sit because the other direction's bars are outside them."""
+    _, phi_m, s_m, layers_m = mesh
+    rows: list[dict] = []
+    n = max(layers_m, len(spec))
+    for k in range(n):
+        bars = []
+        if k < layers_m:
+            bars.append((phi_m, s_m, "mesh"))
+        if k < len(spec) and spec[k] is not None:
+            bars.append((spec[k][0], spec[k][1], "between the mesh bars" if k == 0 else "added"))
+        if bars:
+            rows.append({"layer": k + 1, "bars": bars})
+    at = cover + shift
+    out = []
+    for i, r in enumerate(rows):
+        big = max(b[0] for b in r["bars"])
+        if i:
+            prev = max(b[0] for b in rows[i - 1]["bars"])
+            at += prev / 2 + max(25.0, prev, big) + big / 2
+        else:
+            at += big / 2
+        area = sum(1000 * math.pi * b[0] ** 2 / 4 / b[1] for b in r["bars"])
+        out.append(
+            {
+                "layer": r["layer"],
+                "text": " + ".join(
+                    f"Ø{b[0]:g} @ {b[1]:g}" + ("" if b[2] == "mesh" else f" ({b[2]})") for b in r["bars"]
+                ),
+                "from_face_mm": round(at),
+                "as_mm2_per_m": round(area),
+                "_area": area,
+            }
+        )
+    return out
+
+
+def spec_option(mesh: tuple, spec: list, cover: float, shift: float) -> tuple[tuple, float]:
+    """(mm²/m, equivalent Ø, largest gap, layers, centroid from the face) of the mesh with the user's bar
+    layers, and the Ø setting the depth."""
+    lay = bar_layers(mesh, spec, cover, shift)
+    area = sum(r["_area"] for r in lay)
+    centroid = sum(r["_area"] * r["from_face_mm"] for r in lay) / area
+    _, phi_m, s_m, layers_m = mesh
+    counts = [(layers_m * 1000 / s_m, phi_m)] + [(1000 / p[1], p[0]) for p in spec if p is not None]
+    phi_eq = sum(c * f * f for c, f in counts) / sum(c * f for c, f in counts)
+    gap = s_m / 2 if spec and spec[0] is not None and spec[0][1] <= s_m + 1e-9 else s_m
+    big = max(f for _, f in counts)
+    return (area, phi_eq, gap, len(lay), centroid - shift), big
 
 
 def _touch(pieces: list[list], k: int, n: int) -> bool:
@@ -558,7 +738,7 @@ def zones_for(
     that cannot take it getting their own option at a premium.
     """
     idx = need["idx"].to_numpy(int)
-    areas = np.array([o[0] * (1 + 0.1 * (o[3] - 1)) for o in options])
+    areas = np.array([o[0] * (1 + LAYER_PREMIUM * (o[3] - 1)) for o in options])
     best, best_cost = int(idx.max()), math.inf
     for b in range(len(options)):
         if not ok[:, b].any():
@@ -651,9 +831,9 @@ def zones_for(
     }
 
 
-def _rects(cells: set, grow: int) -> list[list[int]]:
+def _rects(cells: set, grow: int, gap: int = 0) -> list[list[int]]:
     """Rectangles [i0, i1, j0, j1] round each group of touching cells, each side at least ``grow`` + 1
-    cells long, overlapping ones merged."""
+    cells long, overlapping ones (or ones at most ``gap`` cells apart) merged."""
     boxes = []
     seen: set = set()
     for c0 in sorted(cells):
@@ -690,7 +870,8 @@ def _rects(cells: set, grow: int) -> list[list[int]]:
         for m in range(len(boxes)):
             for n in range(m + 1, len(boxes)):
                 p, q = boxes[m], boxes[n]
-                if p[0] <= q[1] + 1 and q[0] <= p[1] + 1 and p[2] <= q[3] + 1 and q[2] <= p[3] + 1:
+                g = 1 + gap
+                if p[0] <= q[1] + g and q[0] <= p[1] + g and p[2] <= q[3] + g and q[2] <= p[3] + g:
                     boxes[m] = [min(p[0], q[0]), max(p[1], q[1]), min(p[2], q[2]), max(p[3], q[3])]
                     del boxes[n]
                     merged = True
@@ -700,55 +881,151 @@ def _rects(cells: set, grow: int) -> list[list[int]]:
     return boxes
 
 
-def link_zones(cells, req, opts, labels, size, x0, y0, box, min_zone) -> tuple[list[dict], int]:
-    """Shear link zones, independent of the bending zones: the lightest links that are needed over the
-    widest area, then heavier links in the zones inside it that need them, as the bars are zoned.
+def zone_key(layer: str, zone: dict) -> str:
+    """'layer|zone|x0|x1|y0|y1' naming a zone of additional bars, for bars the user sets there."""
+    return f"{layer}|zone|{zone['x'][0]:g}|{zone['x'][1]:g}|{zone['y'][0]:g}|{zone['y'][1]:g}"
+
+
+def area_zones(
+    cell: pd.DataFrame, ok: np.ndarray, options: list, labels: list, size: float, x0, y0, box, min_zone
+) -> dict:
+    """The basic mesh (option 0) over the whole slab, and a rectangle of additional bars round each
+    group of cells that needs more, at least min_zone each way; each zone takes the lightest bars
+    every cell in it can take, so an area of higher moments is one design section."""
+    first_ok = np.where(ok.any(axis=1), ok.argmax(axis=1), ok.shape[1] - 1)
+    ci, cj = cell["i"].to_numpy(), cell["j"].to_numpy()
+    need = {(int(i), int(j)) for i, j, f in zip(ci, cj, first_ok, strict=True) if f > 0}
+    grow = max(0, math.ceil(min_zone / size - 1e-9) - 1)
+    chosen = np.zeros(len(cell), int)
+    zones = []
+    # Zones closer than the shortest bars merge: no gap of plain mesh shorter than a zone.
+    for i0, i1, j0, j1 in sorted(_rects(need, grow, grow + 1), key=lambda r: (r[0], r[2])):
+        idxs = np.flatnonzero((ci >= i0) & (ci <= i1) & (cj >= j0) & (cj <= j1))
+        both = ok[idxs].all(axis=0)
+        lvl = int(np.argmax(both)) if both.any() else int(first_ok[idxs].max())
+        chosen[idxs] = lvl
+        o = options[lvl]
+        zones.append(
+            {
+                "x": [
+                    round(max(box["X"][0], x0 + i0 * size), 2),
+                    round(min(box["X"][1], x0 + (i1 + 1) * size), 2),
+                ],
+                "y": [
+                    round(max(box["Y"][0], y0 + j0 * size), 2),
+                    round(min(box["Y"][1], y0 + (j1 + 1) * size), 2),
+                ],
+                "label": labels[lvl],
+                "as_mm2_per_m": round(o[0]),
+                "cells": int(len(idxs)),
+            }
+        )
+    o = options[0]
+    return {
+        "cell_index": chosen,
+        "basic": {
+            "phi": o[1],
+            "spacing_mm": o[2],
+            "layers": o[3],
+            "as_mm2_per_m": round(o[0]),
+            "label": label(o),
+        },
+        "basic_index": 0,
+        "zones": zones,
+    }
+
+
+def link_bands(cells, req, opts, labels, size, x0, y0, box, min_zone, along) -> tuple[list[dict], int]:
+    """Shear links in bands across the deck, as the office's slab sheets (e.g. T16 from 0 to 6 m, T10
+    from 6 to 9.8 m): along ``along`` each 1 m cut takes the links its worst cell needs; runs of equal
+    links shorter than ``min_zone`` take the heavier neighbour's, and each band runs the full width.
     ``req`` is each cell's need (mm²/m²); ``opts`` (mm²/m², Ø, sx, sy) lightest first, 0 = none."""
+    if not len(cells):
+        return [], 0
     level = np.array(
         [next((m for m, o in enumerate(opts) if m and o[0] >= r - 1e-6), len(opts)) for r in req]
     )
     short = int((level >= len(opts)).sum())
     level = np.minimum(level, len(opts) - 1)
-    at = list(zip(cells["i"].tolist(), cells["j"].tolist(), strict=True))
-    grow = max(0, math.ceil(min_zone / size - 1e-9) - 1)
+    key = cells["i" if along == "X" else "j"].to_numpy()
+    by_cut = pd.Series(level).groupby(key).max()
+    worst = pd.Series(req).groupby(key).max()
+    lo, hi = int(by_cut.index.min()), int(by_cut.index.max())
+    pieces = []  # [start, end, level]
+    for c in range(lo, hi + 1):
+        lv = int(by_cut.get(c, 0))
+        if pieces and pieces[-1][2] == lv and pieces[-1][1] == c - 1:
+            pieces[-1][1] = c
+        else:
+            pieces.append([c, c, lv])
+    min_cells = max(1, math.ceil(min_zone / size - 1e-9))
+    while len(pieces) > 1:
+        shorts = [k for k, pc in enumerate(pieces) if pc[1] - pc[0] + 1 < min_cells]
+        if not shorts:
+            break
+        k = min(shorts, key=lambda k: (pieces[k][1] - pieces[k][0], -pieces[k][2], k))
+        nbrs = [n for n in (k - 1, k + 1) if 0 <= n < len(pieces)]
+        n = max(nbrs, key=lambda n: pieces[n][2])
+        a, b = min(k, n), max(k, n)
+        pieces[a : b + 1] = [[pieces[a][0], pieces[b][1], max(pieces[a][2], pieces[b][2])]]
+        joined: list[list] = []
+        for pc in pieces:
+            if joined and joined[-1][2] == pc[2]:
+                joined[-1][1] = pc[1]
+            else:
+                joined.append(pc)
+        pieces = joined
+    ax, cx = ("X", "Y") if along == "X" else ("Y", "X")
+    a0 = x0 if along == "X" else y0
     out = []
-    covered: dict = {}  # cell -> level its zone already gives
-    for lv in sorted(set(level.tolist())):
-        # Cells the zones so far do not cover with enough links.
-        todo = {c for c, v in zip(at, level, strict=True) if v >= lv and covered.get(c, 0) < v}
-        if not todo:
+    for c0, c1, lv in pieces:
+        if lv == 0:
             continue
-        for i0, i1, j0, j1 in _rects(todo, grow):
-            inside = [
-                (c, v, r)
-                for c, v, r in zip(at, level, req, strict=True)
-                if i0 <= c[0] <= i1 and j0 <= c[1] <= j1
-            ]
-            # This level's links over the zone; its cells that need more get a heavier zone inside it.
-            give = lv
-            for c, _, _ in inside:
-                covered[c] = max(covered.get(c, 0), give)
-            o = opts[give]
-            out.append(
-                {
-                    "x": [
-                        round(max(x0, x0 + i0 * size), 2),
-                        round(min(box["X"][1], x0 + (i1 + 1) * size), 2),
-                    ],
-                    "y": [
-                        round(max(y0, y0 + j0 * size), 2),
-                        round(min(box["Y"][1], y0 + (j1 + 1) * size), 2),
-                    ],
-                    "phi": o[1],
-                    "sx_mm": o[2],
-                    "sy_mm": o[3],
-                    "asw_mm2_per_m2": round(o[0]),
-                    "needs_mm2_per_m2": round(float(max(r for c, _, r in inside if c in todo))),
-                    "cells": sum(1 for c, _, _ in inside if c in todo),
-                    "label": labels[give],
-                }
-            )
+        o = opts[lv]
+        span = [round(max(box[ax][0], a0 + c0 * size), 2), round(min(box[ax][1], a0 + (c1 + 1) * size), 2)]
+        inside = (key >= c0) & (key <= c1)
+        out.append(
+            {
+                ax.lower(): span,
+                cx.lower(): [round(box[cx][0], 2), round(box[cx][1], 2)],
+                "phi": o[1],
+                "sx_mm": o[2],
+                "sy_mm": o[3],
+                "asw_mm2_per_m2": round(o[0]),
+                "needs_mm2_per_m2": round(float(worst.loc[c0:c1].max())),
+                "cells": int(inside.sum()),
+                "label": labels[lv],
+            }
+        )
     return out, short
+
+
+def missing_piles(rows_of: dict[str, list[tuple[float, float]]]) -> list[str]:
+    """Rows of piles with a gap where the other rows have a pile: the workbook has no results for a pile
+    there, so the slab over it is designed as if it were not there."""
+    lines: dict[str, tuple[int, float, set]] = {}
+    for name, pts in rows_of.items():
+        if len(pts) < 3:
+            continue
+        xs, ys = {p[0] for p in pts}, {p[1] for p in pts}
+        # A row along Y has one X and many Y, and the other way round.
+        axis = 1 if len(ys) >= len(xs) else 0
+        lines[name] = (axis, float(np.median([p[1 - axis] for p in pts])), {p[axis] for p in pts})
+    out = []
+    for name, (axis, at, have) in sorted(lines.items()):
+        others = set().union(*(v[2] for n, v in lines.items() if n != name and v[0] == axis))
+        gaps = sorted(v for v in others if min(abs(v - h_) for h_ in have) > 0.3)
+        gaps = [
+            v for v in gaps if sum(v in lines[n][2] for n in lines if n != name and lines[n][0] == axis) >= 2
+        ]
+        if gaps:
+            where = ", ".join(f"{'XY'[axis]} {v:g}" for v in gaps)
+            out.append(
+                f"{name} has no results at {where} ({'YX'[axis]} {at:g}), where the other rows of piles "
+                "have a pile: if there is one, its rows are missing from the workbook and the slab over it "
+                "is designed without it."
+            )
+    return out
 
 
 # --- Punching -------------------------------------------------------------------------------------
@@ -987,7 +1264,7 @@ def design_slab(
             if o not in options:
                 options.append(o)
             meshes[layer] = o
-    options.sort(key=lambda o: (o[0] * (1 + 0.1 * (o[3] - 1)), -o[1]))
+    options.sort(key=lambda o: (o[0] * (1 + LAYER_PREMIUM * (o[3] - 1)), -o[1]))
     notes = [
         "Bars along X take Mx = "
         + _map(axes)["Mx"].replace("_", "")
@@ -1014,6 +1291,7 @@ def design_slab(
     box = {a: [float(uls[a].min()), float(uls[a].max())] for a in ("X", "Y")}
     level = float(uls["Z"].median())
     piles = []
+    rows_of: dict[str, list[tuple[float, float]]] = {}
     for g in geometry:
         el = elements.get(g["element"])
         if g.get("kind") != "beam" or not isinstance(el, PileInput):
@@ -1025,6 +1303,8 @@ def design_slab(
             ):
                 if ztop >= level - 1.5:
                     piles.append((x, y, el.diameter / 2000))
+                    rows_of.setdefault(g["element"], []).append((round(x, 2), round(y, 2)))
+    notes_missing = missing_piles(rows_of)
     beams = [
         g
         for g in geometry
@@ -1041,6 +1321,7 @@ def design_slab(
     qp_m = qp[outside(qp, 0.0)].reset_index(drop=True) if len(qp) else qp
     if piles:
         notes.append(f"{len(piles)} pile heads inside the slab: results inside them are left out.")
+    notes.extend(notes_missing)
     if uls_m.empty:
         notes.append("No ULS results outside the pile heads.")
         return {**base, "utilisation": None, "passed": False}
@@ -1078,22 +1359,32 @@ def design_slab(
         ax, cx = frame["along"], frame["across"]
         uloc = locate(frame, uls_m[ax].to_numpy(), uls_m[cx].to_numpy())
         qloc = locate(frame, qp_m[ax].to_numpy(), qp_m[cx].to_numpy()) if len(qp_m) else None
-        fcd_s = settings.partial_factors.alpha_cc * conc.fck / settings.partial_factors.gamma_c
 
+    fcd_s = settings.partial_factors.alpha_cc * conc.fck / settings.partial_factors.gamma_c
     R = (
         slab.restraint_factor
         if slab.restraint_factor is not None
         else restraint_factor(slab.joint_spacing, h / 1000)
     )
+    # Restraint from the joints works along the quay: on the bars across the strips.
+    rest_dir = "y" if slab.strip_direction == "X" else "x"
+    design_rest = slab.restraint_check == "design"
     layers: dict[str, dict] = {}
     per_cell: dict[str, pd.DataFrame] = {}
+    overall_rows: list[dict] = []
     worst_k, worst_k_at = 0.0, None
-    areas = np.array([o[0] for o in options])
     phi_est = 20
 
     def depth(face: str, direction: str) -> float:
         return h - covers[face] - phi_est / 2 - (phi_est if direction == "y" else 0)
 
+    def opt_depth(o: tuple, f: float, face: str, direction: str) -> float:
+        """Effective depth of an option: bigger bars and more layers sit deeper in."""
+        if len(o) > 4:  # the user's layers: their centroid
+            return h - o[4] - (f if direction == "y" else 0)
+        return h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
+
+    mesh_labels = {label(o): o for o in options}
     # Steel per node for each layer; where K > K' the opposite face's bars work in compression.
     node_req = {layer: np.zeros(len(uls_m)) for layer in LAYERS}
     compression = {layer: np.zeros(len(uls_m)) for layer in LAYERS}
@@ -1111,11 +1402,20 @@ def design_slab(
             worst_k_at = (layer, float(uls_m["X"].iloc[w]), float(uls_m["Y"].iloc[w]))
     for layer in LAYERS:
         face, direction = layer.split("_")
+        # Column and field strips for the bars along the strips; the bars across them (M22) are one
+        # design over the whole deck, with zones only where it needs more.
+        lstrips = strips and direction == frame["along"].lower()
         d = depth(face, direction)
+        n_u = uls_m["Nx" if direction == "x" else "Ny"].to_numpy()
         a_req = np.maximum(node_req[layer], compression[layer])
         a_min = max(0.26 * conc.fctm / fyk, 0.0013) * 1000 * d
         need = pd.DataFrame({"i": uls_m["i"], "j": uls_m["j"], "req": np.maximum(a_req, a_min)})
+        gov_node = need.groupby(["i", "j"])["req"].idxmax()
         cell = need.groupby(["i", "j"])["req"].max().reset_index()
+        cell_node = gov_node.to_numpy()  # the node setting each cell's need, in the order of ``cell``
+        node_cell = pd.MultiIndex.from_arrays([cell["i"], cell["j"]]).get_indexer(
+            pd.MultiIndex.from_arrays([uls_m["i"], uls_m["j"]])
+        )
         nq = pos = None
         if wq is not None:
             nq = qp_m["Nx" if direction == "x" else "Ny"].to_numpy()
@@ -1125,11 +1425,10 @@ def design_slab(
         members: dict = {}
         qgroups: dict = {}
         sets: dict = {}  # per strip and station: the governing cut of every combination, for AdSec
-        if strips:
+        if lstrips:
             # Every column strip together and every field strip together, station by station: the need
             # is the worst cut across a strip's width, averaged over that width.
             other = "top" if face == "bottom" else "bottom"
-            n_u = uls_m["Nx" if direction == "x" else "Ny"].to_numpy()
             env = strip_average(uls_m, wa[layer], n_u, uloc, size)
             a_env, _, _ = required_as(
                 env["m"].to_numpy(), env["n"].to_numpy(), h, d, conc.fck, fyd, h - depth(other, direction)
@@ -1190,6 +1489,7 @@ def design_slab(
             pos=pos,
             qgroups=qgroups,
             members=members,
+            lstrips=lstrips,
         ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
             """Area worth at depth d, and ok[cell, option] for strength alone and for all checks.
 
@@ -1197,19 +1497,14 @@ def design_slab(
             (mm²/m, Ø for cracks, spacing for cracks, layers); ``dphi`` is the Ø setting the depth.
             """
             ar = np.array([o[0] for o in opts])
-            d_opt = np.array(
-                [
-                    h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
-                    for o, f in zip(opts, dphi, strict=True)
-                ]
-            )
+            d_opt = np.array([opt_depth(o, f, face, direction) for o, f in zip(opts, dphi, strict=True)])
             eff = ar * np.minimum(d_opt / d, 1.0)
             strength = eff[None, :] >= cell["req"].to_numpy()[:, None] - 1e-6
             ok = strength.copy()
             if wq is not None:
                 crack_ok = np.ones_like(ok)
                 for oi, o in enumerate(opts):
-                    if strips:
+                    if lstrips:
                         for k, (qm, qn, _) in qgroups.items():
                             if k not in members:
                                 continue
@@ -1222,13 +1517,16 @@ def design_slab(
                     w = crack_widths(wq[layer], nq, o[0], o[1], o[2], h, d_opt[oi], covers[face], conc, e_eff)
                     crack_ok[pos[(w > limits[face] + 1e-9) & (pos >= 0)], oi] = False
                 ok &= crack_ok
-            rest = np.array(
-                [
-                    slab_restraint(o, face, direction, covers, h, settings, conc, R)["wk"]
-                    <= limits[face] + 1e-9
-                    for o in opts
-                ]
-            )
+            if design_rest and direction == rest_dir:
+                rest = np.array(
+                    [
+                        slab_restraint(o, face, direction, covers, h, settings, conc, R)["wk"]
+                        <= limits[face] + 1e-9
+                        for o in opts
+                    ]
+                )
+            else:
+                rest = np.ones(len(opts), bool)
             return eff, strength, ok & rest[None, :], rest
 
         eff, strength_ok, ok, mesh_rest = assess(options, [o[1] for o in options])
@@ -1237,6 +1535,14 @@ def design_slab(
         cell["uidx"] = first(strength_ok)
         req_eff = cell["req"].to_numpy()
         forced = options.index(meshes[layer]) if layer in meshes else None
+        user_mesh = choices.bars.get(f"{layer}|mesh")
+        if user_mesh is not None:
+            if user_mesh in mesh_labels:
+                forced = options.index(mesh_labels[user_mesh])
+            else:
+                notes.append(
+                    f"Mesh set for {LAYER_TEXT[layer]} ({user_mesh}) is not among the options: left out."
+                )
         along = "X" if direction == "x" else "Y"
         mode = getattr(slab, f"layout_{layer}")
         if mode == "mesh_only":
@@ -1247,58 +1553,143 @@ def design_slab(
             z["zones"], z["cell_index"] = [], np.full(len(cell), b)
             opts, eff_all, labels = options, eff, [label(o) for o in options]
             dphis = [o[1] for o in options]
+            specs = [[] for _ in options]
+            ok_all = ok
         else:
             # A mesh everywhere, and additional bars between its bars where it is not enough. The mesh
             # is the one with the least steel overall, its additional bars included.
             target = req_eff
-            min_clear = settings.reinforcement.min_clear_spacing
+            # A basic mesh is one layer that gives the minimum steel, with room for additional bars.
             cands = (
                 [forced]
                 if forced is not None
                 else [
-                    k for k, o in enumerate(options) if o[2] / 2 - max(o[1], 10) >= min_clear and mesh_rest[k]
+                    k
+                    for k, o in enumerate(options)
+                    if o[3] == 1
+                    and eff[k] >= a_min - 1e-6
+                    and fits_between(10, o[1], o[2], settings)
+                    and mesh_rest[k]
                 ]
                 or [int(np.argmax(mesh_rest))]
             )
-            best = None
+            tried = []
             for k in cands:
-                combos, dphi, labels = additional_options(options[k], settings)
+                combos, dphi, labels, specs = additional_options(options[k], settings)
                 eff2, _, ok2, _ = assess(combos, dphi)
                 ok2 = (eff2[None, :] >= target[:, None] - 1e-6) & ok2
+                tried.append((k, combos, labels, eff2, ok2, dphi, specs))
+            # Cells no mesh fits with its additional bars (a thicker slab or a haunch there) do not choose
+            # the mesh; they are reported. Cells this mesh cannot take but another can are priced at
+            # twice the heaviest bars.
+            somewhere = np.logical_or.reduce([t[4].any(axis=1) for t in tried])
+            costed = []
+            for k, combos, labels, eff2, ok2, dphi, specs in tried:
                 idx = first(ok2)
-                ar = np.array([o[0] for o in combos])
-                # A cell nothing fits is priced at twice the heaviest bars, so that a few cells a thicker
-                # slab must solve do not drive the mesh everywhere.
+                if not lstrips:  # bars across the strips: zones as they will be laid out
+                    idx = area_zones(cell, ok2, combos, labels, size, x0, y0, box, slab.min_zone_length)[
+                        "cell_index"
+                    ]
+                ar = np.array([o[0] * (1 + LAYER_PREMIUM * (o[3] - 1)) for o in combos])
                 short = np.where(ok2.any(axis=1), 1.0, 2.0)
-                cost = float((ar[idx] * np.where(idx > 0, 1 + PREMIUM, 1.0) * short).sum())
-                if best is None or cost < best[0] - 1e-6:
-                    best = (cost, k, combos, labels, eff2, ok2, dphi)
-            _, b, opts, labels, eff_all, ok2, dphis = best
-            z = zones_for(
-                cell.assign(idx=first(ok2)), ok2, opts, size, x0, y0, along, slab.min_zone_length, 0, labels
+                cost = float((ar[idx] * np.where(idx > 0, 1 + PREMIUM, 1.0) * short)[somewhere].sum())
+                costed.append((cost, k, combos, labels, eff2, ok2, dphi, specs))
+            # The lightest mesh within MESH_SLACK of the least steel: a light mesh with additional bars
+            # where needed, as the office's slabs, rather than a heavier mesh for a percent of steel.
+            least = min(c[0] for c in costed)
+            best = min(
+                (c for c in costed if c[0] <= least * (1 + MESH_SLACK) + 1e-6),
+                key=lambda c: (options[c[1]][0], c[0]),
             )
+            _, b, opts, labels, eff_all, ok_all, dphis, specs = best
+            opts, labels, dphis, specs = list(opts), list(labels), list(dphis), list(specs)
+            if lstrips:
+                z = zones_for(
+                    cell.assign(idx=first(ok_all)),
+                    ok_all,
+                    opts,
+                    size,
+                    x0,
+                    y0,
+                    along,
+                    slab.min_zone_length,
+                    0,
+                    labels,
+                )
+            else:
+                z = area_zones(cell, ok_all, opts, labels, size, x0, y0, box, slab.min_zone_length)
             for zz in z["zones"]:
                 zz["additional_mm2_per_m"] = round(zz["as_mm2_per_m"] - options[b][0])
+        n_std = len(opts)
+        # The user's own bar layers on this mesh.
+        if mode != "mesh_only":
+            mesh_o = options[b]
+            for text in sorted({v for kk, v in choices.bars.items() if kk.startswith(f"{layer}|")}):
+                spec = parse_layers(text)
+                if spec is None or text in labels:
+                    continue
+                bad = [
+                    p
+                    for k_, p in enumerate(spec)
+                    if p is not None
+                    and (
+                        not fits_between(p[0], mesh_o[1], mesh_o[2], settings)
+                        if k_ == 0
+                        else p[1] - p[0] < max(settings.reinforcement.slab_min_clear_spacing, p[0]) - 1e-9
+                    )
+                ]
+                if bad:
+                    notes.append(
+                        f"{LAYER_TEXT[layer].capitalize()}: {layers_text(spec)} leaves less than the clear "
+                        "spacing between bars: left out."
+                    )
+                    continue
+                o, big = spec_option(mesh_o, spec, covers[face], 0.0)
+                opts.append(o)
+                labels.append(text)
+                dphis.append(big)
+                specs.append(spec)
+            if len(opts) > n_std:
+                e2, _, k2, _ = assess(opts[n_std:], dphis[n_std:])
+                k2 = (e2[None, :] >= req_eff[:, None] - 1e-6) & k2
+                eff_all = np.concatenate([eff_all, e2])
+                ok_all = np.hstack([ok_all, k2])
         z["basic"]["set_by"] = "user" if forced is not None else "least steel"
         z["mode"] = mode
-        chosen = np.array(
-            z.pop("cell_index")
-        )  # the bars each cell gets: the mesh, or the mesh with additional bars
-        # Bars the user set for a station and strip: every cell of that strip at that station gets them.
+        chosen = np.array(z.pop("cell_index"))  # the bars each cell gets: the mesh, or with additional bars
+        # Bars the user set for a station and strip (or a zone): every cell of it gets them.
         user_keys: set = set()
-        if strips:
+        user_cells = np.zeros(len(cell), bool)
+
+        def pick(want: str, where: str) -> int | None:
+            if mode == "mesh_only" or want not in labels and want != "mesh only":
+                notes.append(f"Bars set for {where} ({want}) are not among the options: left out.")
+                return None
+            return 0 if want == "mesh only" else labels.index(want)
+
+        if lstrips:
             for k, idxs in members.items():
                 key = strip_key(layer, frame["bounds"], k)
                 want = choices.bars.get(key)
-                if want is None:
+                if want is None or (oi := pick(want, key.replace("|", " "))) is None:
                     continue
-                if mode == "mesh_only" or want not in labels and want != "mesh only":
-                    notes.append(
-                        f"Bars set for {key.replace('|', ' ')} ({want}) are not among the options: left out."
-                    )
-                    continue
-                chosen[idxs] = 0 if want == "mesh only" else labels.index(want)
+                chosen[idxs] = oi
                 user_keys.add(k)
+                user_cells[idxs] = True
+        else:
+            ci, cj = cell["i"].to_numpy(), cell["j"].to_numpy()
+            ccx, ccy = x0 + (ci + 0.5) * size, y0 + (cj + 0.5) * size
+            for key, want in choices.bars.items():
+                parts = key.split("|")
+                if parts[0] != layer or len(parts) != 6 or parts[1] != "zone":
+                    continue
+                zx0, zx1, zy0, zy1 = (float(v) for v in parts[2:])
+                inside = (ccx >= zx0) & (ccx <= zx1) & (ccy >= zy0) & (ccy <= zy1)
+                if not inside.any() or (oi := pick(want, f"zone {key}")) is None:
+                    continue
+                chosen[inside] = oi
+                user_keys.add(key)
+                user_cells |= inside
         prov = np.array([o[0] for o in opts])[chosen]
         ratio = req_eff / eff_all[chosen]
         util = ratio.max()
@@ -1306,19 +1697,19 @@ def design_slab(
             w = int(np.argmax(ratio))
             wx, wy = x0 + (cell["i"].iloc[w] + 0.5) * size, y0 + (cell["j"].iloc[w] + 0.5) * size
             notes.append(
-                f"{LAYER_TEXT[layer].capitalize()}: the heaviest bars ({labels[-1]}) are not enough "
+                f"{LAYER_TEXT[layer].capitalize()}: the heaviest bars ({labels[n_std - 1]}) are not enough "
                 f"at X {wx:.1f}, Y {wy:.1f} ({util:.2f}): a thicker slab or a haunch is needed there."
+                if not user_cells[w]
+                else f"{LAYER_TEXT[layer].capitalize()}: the bars you set are not enough at X {wx:.1f}, "
+                f"Y {wy:.1f} ({util:.2f})."
             )
+        d_all = [opt_depth(o, f, face, direction) for o, f in zip(opts, dphis, strict=True)]
         # wk / limit per cell with the bars it gets, for the 3D view's "Crack width" mode.
         crack_u = np.full(len(cell), np.nan)
         if wq is not None:
-            d_all = [
-                h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
-                for o, f in zip(opts, dphis, strict=True)
-            ]
             for oi in np.unique(chosen):
                 o, d_o = opts[int(oi)], d_all[int(oi)]
-                if strips:
+                if lstrips:
                     for k, (qm, qn, _) in qgroups.items():
                         idxs = [c for c in members.get(k, []) if chosen[c] == oi]
                         if idxs:
@@ -1336,17 +1727,51 @@ def design_slab(
                     hit = np.zeros(len(cell), bool)
                     hit[at] = True
                     crack_u[hit] = np.fmax(crack_u[hit], vals[hit])
-        if strips:
+        # What sets the bars of a group of cells: the lightest bars for strength alone and with the
+        # crack widths, against the bars given.
+        s_first = first(eff_all[None, :n_std] >= req_eff[:, None] - 1e-6)
+        a_first = first(ok_all[:, :n_std])
+        min_only = req_eff <= a_min + 1e-6
+
+        def set_by(idxs, oi: int) -> str:
+            idxs = np.asarray(idxs, int)
+            if user_cells[idxs].any():
+                return "your bars"
+            s_i, a_i = int(s_first[idxs].max()), int(a_first[idxs].max())
+            if oi == 0:
+                if a_i == 0 and s_i == 0:
+                    return "basic mesh (spare)" if not min_only[idxs].all() else "basic mesh (minimum steel)"
+                return "basic mesh"
+            if a_i > s_i:
+                return "crack width (QP)"
+            if oi > a_i:
+                return "zone (the heaviest cell in it)"
+            if min_only[idxs].all():
+                return "minimum steel"
+            return "bending (ULS)"
+
+        name_m = _map(axes)["Mx" if direction == "x" else "My"].replace("_", "")
+
+        def layer_rows(oi: int) -> list[dict]:
+            """The layers of bars of an option, outermost first, with their distance from the face."""
+            mesh_o = opts[oi] if mode == "mesh_only" else options[b]
+            spec = [] if mode == "mesh_only" else specs[oi]
+            shift = dphis[oi] if direction == "y" else 0
+            return [
+                {k: v for k, v in r.items() if k != "_area"}
+                for r in bar_layers(mesh_o, spec, covers[face], shift)
+            ]
+
+        if lstrips:
             eff_c = eff_all[chosen]
-            name_m = _map(axes)["Mx" if direction == "x" else "My"].replace("_", "")
             for k, g in sorted(groups.items()):
                 idxs = members.get(k)
                 if not idxs:
                     continue
                 c = idxs[int(np.argmin(eff_c[idxs]))]
                 oi = int(chosen[c])
-                o, f = opts[oi], dphis[oi]
-                d_o = h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
+                o = opts[oi]
+                d_o = d_all[oi]
                 mrd = strip_mrd(o[0], d_o, h, float(g.n), fcd_s, fyd)
                 wk = qcomb = None
                 if k in qgroups:
@@ -1376,7 +1801,8 @@ def design_slab(
                         "phi_mm": o[1],
                         "spacing_mm": o[2],
                     }
-                bars = labels[oi] if mode == "mesh_only" or oi == 0 else f"{label(options[b])} + {labels[oi]}"
+                add_text = labels[oi] if oi < n_std else layers_text(specs[oi])
+                bars = add_text if mode == "mesh_only" or oi == 0 else f"{label(options[b])} + {add_text}"
                 mesh_o = opts[oi] if mode == "mesh_only" else options[b]
                 strip_rows.append(
                     {
@@ -1400,19 +1826,161 @@ def design_slab(
                         "wk_limit_mm": limits[face],
                         "qp_combination": qcomb,
                         "mesh": {"phi": mesh_o[1], "spacing_mm": mesh_o[2], "layers": mesh_o[3]},
-                        "additional_bars": None if mode == "mesh_only" or oi == 0 else labels[oi],
+                        "additional_bars": None if mode == "mesh_only" or oi == 0 else add_text,
+                        "set_by": set_by(idxs, oi),
+                        "bar_layers": layer_rows(oi),
+                        "spec": [list(p) if p else None for p in specs[oi]],
                         "sets": strip_sets,
                     }
                 )
-        crack_gov = int((areas[cell["idx"].to_numpy()] > areas[cell["uidx"].to_numpy()] + 1e-6).sum())
+        else:
+            # One row for the whole deck on the mesh, one for each zone of additional bars.
+            ci, cj = cell["i"].to_numpy(), cell["j"].to_numpy()
+            ccx, ccy = x0 + (ci + 0.5) * size, y0 + (cj + 0.5) * size
+            base_oi = 0 if mode != "mesh_only" else int(b)
+            groups_o: list[tuple[str, str, np.ndarray, list | None]] = [
+                ("Whole deck, basic mesh", f"{layer}|mesh", np.flatnonzero(chosen == base_oi), None)
+            ]
+            for zz in z["zones"]:
+                inside = np.flatnonzero(
+                    (ccx >= zz["x"][0]) & (ccx <= zz["x"][1]) & (ccy >= zz["y"][0]) & (ccy <= zz["y"][1])
+                )
+                groups_o.append(("Zone", zone_key(layer, zz), inside, [zz["x"], zz["y"]]))
+            for key in choices.bars:
+                if key in user_keys and not any(g_[1] == key for g_ in groups_o):
+                    parts = key.split("|")
+                    xr, yr = [float(parts[2]), float(parts[3])], [float(parts[4]), float(parts[5])]
+                    inside = np.flatnonzero((ccx >= xr[0]) & (ccx <= xr[1]) & (ccy >= yr[0]) & (ccy <= yr[1]))
+                    groups_o.append(("Zone", key, inside, [xr, yr]))
+            for text, key, idxs, rect in groups_o:
+                if not len(idxs):
+                    continue
+                oi = int(np.bincount(chosen[idxs]).argmax()) if rect is not None else base_oi
+                o, d_o = opts[oi], d_all[oi]
+                w = int(idxs[np.argmax(ratio[idxs])])
+                node = int(cell_node[w])
+                m_ = float(wa[layer][node])
+                n_ = float(n_u[node])
+                mrd = strip_mrd(o[0], d_o, h, n_, fcd_s, fyd)
+                wk = None
+                cu = crack_u[idxs]
+                if np.isfinite(cu).any():
+                    wk = round(float(np.nanmax(cu)) * limits[face], 3)
+                if rect is not None:
+                    if frame is not None and frame["along"] == "X":
+                        s_a = sorted(round((v - frame["origin"]) * frame["sign"], 2) for v in rect[0])
+                        text = f"Zone at station {s_a[0]:g} to {s_a[1]:g}, Y {rect[1][0]:g} to {rect[1][1]:g}"
+                    else:
+                        text = (
+                            f"Zone at X {rect[0][0]:g} to {rect[0][1]:g}, Y {rect[1][0]:g} to {rect[1][1]:g}"
+                        )
+                add_text = labels[oi] if oi < n_std else layers_text(specs[oi])
+                bars = add_text if mode == "mesh_only" or oi == 0 else f"{label(options[b])} + {add_text}"
+                # The governing result of every combination in these cells, for AdSec: ULS by the steel
+                # it needs, QP by its moment.
+                in_u = np.isin(node_cell, idxs)
+                g_sets: dict[str, list] = {"uls": [], "qp": []}
+                uu = pd.DataFrame(
+                    {
+                        "c": uls_m["combination"].to_numpy()[in_u],
+                        "r": need["req"].to_numpy()[in_u],
+                        "m": wa[layer][in_u],
+                        "n": n_u[in_u],
+                    }
+                )
+                for r_ in uu.loc[uu.groupby("c")["r"].idxmax()].itertuples(index=False):
+                    if abs(r_.m) >= 0.5:
+                        g_sets["uls"].append(
+                            {
+                                "combination": str(r_.c),
+                                "N_kN_per_m": round(float(r_.n), 1),
+                                "M_kNm_per_m": round(float(r_.m), 1),
+                            }
+                        )
+                if wq is not None:
+                    in_q = (pos >= 0) & np.isin(pos, idxs)
+                    qq = pd.DataFrame(
+                        {"c": qp_m["combination"].to_numpy()[in_q], "m": wq[layer][in_q], "n": nq[in_q]}
+                    )
+                    for r_ in qq.loc[qq.assign(a=qq["m"].abs()).groupby("c")["a"].idxmax()].itertuples(
+                        index=False
+                    ):
+                        if abs(r_.m) >= 0.5:
+                            t = crack_widths(
+                                np.array([r_.m]),
+                                np.array([r_.n]),
+                                o[0],
+                                o[1],
+                                o[2],
+                                h,
+                                d_o,
+                                covers[face],
+                                conc,
+                                e_eff,
+                                terms=True,
+                            )
+                            g_sets["qp"].append(
+                                {
+                                    "combination": str(r_.c),
+                                    "N_kN_per_m": round(float(r_.n), 1),
+                                    "M_kNm_per_m": round(float(r_.m), 1),
+                                    "crack": {
+                                        **crack_terms(t[0][0], limits[face], t[1][0], t[2], t[3], h),
+                                        "face": face,
+                                        "d_mm": round(d_o),
+                                        "phi_mm": o[1],
+                                        "spacing_mm": o[2],
+                                    },
+                                }
+                            )
+                mesh_o = opts[oi] if mode == "mesh_only" else options[b]
+                overall_rows.append(
+                    {
+                        "key": key,
+                        "moment": name_m,
+                        "layer": layer,
+                        "face": face,
+                        "label": text,
+                        "zone": rect,
+                        "station": [frame["start"], frame["end"]] if frame is not None else [0, 0],
+                        "strip": "all",
+                        "user_set": key in user_keys or (rect is None and user_mesh is not None),
+                        "additional": "mesh only" if oi == 0 else labels[oi],
+                        "M_kNm_per_m": round(abs(m_), 1),
+                        "N_kN_per_m": round(n_, 1),
+                        "combination": str(uls_m["combination"].iloc[node]),
+                        "as_req_mm2_per_m": round(float(req_eff[w])),
+                        "bars": bars,
+                        "as_mm2_per_m": round(o[0]),
+                        "MRd_kNm_per_m": round(mrd, 1),
+                        "ratio": round(abs(m_) / mrd, 3) if mrd > 0 else None,
+                        "wk_mm": wk,
+                        "wk_limit_mm": limits[face],
+                        "mesh": {"phi": mesh_o[1], "spacing_mm": mesh_o[2], "layers": mesh_o[3]},
+                        "additional_bars": None if mode == "mesh_only" or oi == 0 else add_text,
+                        "set_by": "your mesh" if rect is None and forced is not None else set_by(idxs, oi),
+                        "bar_layers": layer_rows(oi),
+                        "spec": [list(p) if p else None for p in specs[oi]],
+                        "sets": g_sets,
+                    }
+                )
+        crack_gov = int((a_first > s_first).sum())
         z.pop("basic_index")
+        mesh_o = options[b] if mode != "mesh_only" else opts[int(chosen[0])]
         layers[layer] = {
             **z,
-            "additional_labels": ["mesh only", *labels[1:]] if mode != "mesh_only" else [],
+            "additional_labels": ["mesh only", *labels[1:n_std]] if mode != "mesh_only" else [],
+            "mesh_labels": list(mesh_labels),
             "d_mm": round(d),
             "as_min_mm2_per_m": round(a_min),
             "utilisation": round(float(util), 3),
             "cells_set_by_cracks": crack_gov,
+            "strips": bool(lstrips),
+            "cover_mm": covers[face],
+            "mesh_bar_layers": [
+                {k: v for k, v in r.items() if k != "_area"}
+                for r in bar_layers(mesh_o, [], covers[face], mesh_o[1] if direction == "y" else 0)
+            ],
         }
         per_cell[layer] = pd.DataFrame(
             {
@@ -1452,8 +2020,12 @@ def design_slab(
     shear = {"cells_needing_links": 0, "utilisation": 0.0, "passed": True, "links": []}
     if len(sh):
         d_s = h - max(covers.values()) - 20
-        v = np.hypot(sh["Vx"].to_numpy(), sh["Vy"].to_numpy())
-        ncp = np.minimum(sh["Nx"].to_numpy(), sh["Ny"].to_numpy())
+        vx, vy = sh["Vx"].to_numpy(), sh["Vy"].to_numpy()
+        v = np.hypot(vx, vy)
+        # Each shear with the axial force in its own direction (Q13 with N1, Q23 with N2): the axial
+        # force per metre in the direction the shear flows.
+        c2 = np.where(v > 0, (vx / np.where(v > 0, v, 1.0)) ** 2, 1.0)
+        ncp = sh["Nx"].to_numpy() * c2 + sh["Ny"].to_numpy() * (1 - c2)
         fcd = pf.alpha_cc * conc.fck / pf.gamma_c
         sigma = np.minimum(ncp * 1e3 / (1000 * h), 0.2 * fcd)
         k = min(1 + math.sqrt(200 / d_s), 2.0)
@@ -1471,8 +2043,11 @@ def design_slab(
             )
             + 0.15 * sigma
         )
-        # Project rule: no concrete contribution where the slab is in tension.
-        vrdc = np.where(ncp < 0, 0.0, np.maximum(vrdc, 0) * d_s)  # kN/m
+        if slab.shear_in_tension == "ec2":
+            vrdc = np.maximum(vrdc, 0) * d_s  # kN/m; 6.2.2(1) with the tension as a negative σcp
+        else:
+            # Office rule: no concrete contribution where the slab is in tension in the shear's direction.
+            vrdc = np.where(ncp < 0, 0.0, np.maximum(vrdc, 0) * d_s)
         fyw = REINFORCEMENT_GRADES[settings.reinforcement.grade] / pf.gamma_s
         z_s = 0.9 * d_s
         nu1 = 0.6 * (1 - conc.fck / 250)
@@ -1503,7 +2078,14 @@ def design_slab(
         )  # mm²/m²
         link_label = ["no links"] + [f"Ø{o[1]} @ {o[2]:g} × {o[3]:g}" for o in link_opts[1:]]
         req = np.where(cells["asw"].to_numpy() > 0, np.maximum(cells["asw"].to_numpy(), rho_min), 0.0)
-        links, short = link_zones(cells, req, link_opts, link_label, size, x0, y0, box, slab.min_zone_length)
+        links, short = link_bands(
+            cells, req, link_opts, link_label, size, x0, y0, box, slab.min_zone_length, slab.strip_direction
+        )
+        if frame is not None:
+            for q in links:
+                q["stations"] = sorted(
+                    round((v_ - frame["origin"]) * frame["sign"], 2) for v_ in q[frame["along"].lower()]
+                )
         if short:
             notes.append(
                 f"{short} cells need more shear links than Ø20 at the mesh spacing: a thicker slab there."
@@ -1514,9 +2096,15 @@ def design_slab(
         shear = {
             "zones": len(links),
             "link_spacing_mm": {"x": sx_mesh, "y": sy_mesh},
-            "method": "EN 1992-1-1 6.2 per metre, v = √(Vx² + Vy²), at "
+            "method": "EN 1992-1-1 6.2 per metre, v = √(Vx² + Vy²) with the axial force in its direction, at "
             + settings.shear_check_distance
-            + " from the pile faces; no concrete contribution in tension; links "
+            + " from the pile faces; "
+            + (
+                "VRd,c reduced by 0.15σcp in tension"
+                if slab.shear_in_tension == "ec2"
+                else "no concrete contribution in tension"
+            )
+            + "; links "
             + ("V = Asw/s · 0.8d · 0.8fyk" if slab.shear_links == "office" else "6.2.3, cot θ = 2.5"),
             "cells_needing_links": int(len(cells)),
             "links": links,
@@ -1535,7 +2123,15 @@ def design_slab(
         if links:
             notes.append(
                 f"{len(cells)} cells need shear links (the slab is in tension there, or v > VRd,c), in "
-                f"{len(links)} zones at the mesh spacing; heaviest {heaviest['label']}."
+                f"{len(links)} bands across the deck at the mesh spacing; heaviest {heaviest['label']}."
+            )
+        crush = v > vrd_max
+        if crush.any():
+            w = int(np.argmax(v))
+            notes.append(
+                f"Shear above VRd,max ({vrd_max:.0f} kN/m) at {int(crush.sum())} results, the largest "
+                f"{v[w]:.0f} kN/m at X {sh['X'].iloc[w]:.1f}, Y {sh['Y'].iloc[w]:.1f}: a thicker slab, or a "
+                "pile missing from the workbook there."
             )
 
     # Punching.
@@ -1546,10 +2142,12 @@ def design_slab(
             f"Punching uses a depth of {slab.punching_thickness:g} mm (sloped slab); bending uses {h:g} mm."
         )
 
-    # Restraint (basic meshes).
+    # Restraint (basic meshes of the bars along the quay).
     rest = {}
     for layer in LAYERS:
         face, direction = layer.split("_")
+        if direction != rest_dir or slab.restraint_check == "off":
+            continue
         b = layers[layer]["basic"]
         res = slab_restraint(
             (b["as_mm2_per_m"], b["phi"], b["spacing_mm"], b["layers"]),
@@ -1568,18 +2166,44 @@ def design_slab(
         "length_m": slab.joint_spacing,
         "R": round(R, 3),
         "R_from": "input" if slab.restraint_factor is not None else "length / thickness, ACI 207.2R",
+        "check": slab.restraint_check,
         "layers": rest,
     }
-    if not all(r["passed"] for r in rest.values()):
+    if slab.restraint_check == "off":
+        notes.append(
+            "No restraint cracking check (slab setting): temperature and shrinkage are taken as axial "
+            "tension in the combinations, as the office's slab design."
+        )
+    elif slab.restraint_check == "report":
+        notes.append(
+            f"Restraint cracking of the bars along the quay (R = {R:.2f}) is reported, not designed for: "
+            "temperature and shrinkage are taken as axial tension in the combinations (slab setting)."
+        )
+    elif not all(r["passed"] for r in rest.values()):
         notes.append(
             "The basic mesh does not control restraint cracking at every face: heavier basic bars are needed."
         )
+    rest_counts = slab.restraint_check == "design"
 
     # Steel quantities over the slab's cells with results, and how much of each cell's steel is used.
     cell_area = size * size
     kg = sum(float(per_cell[layer]["a"].sum()) for layer in LAYERS) * cell_area / 1e6 * STEEL_DENSITY
     used = pd.concat(per_cell.values()).groupby(["i", "j"])["used"].max()
     area_m2 = len(used) * cell_area
+    allc = pd.concat([pc.assign(layer=k) for k, pc in per_cell.items()])
+    rho_dir = []
+    for direction in ("x", "y"):
+        both = allc[allc["layer"].str.endswith(direction)].groupby(["i", "j"])["a"].sum()
+        rho_dir.append(both / (1000 * h))
+    rho_cell = pd.concat(rho_dir, axis=1).max(axis=1)
+    over = rho_cell[rho_cell > 0.04 + 1e-9]
+    if len(over):
+        (wi, wj), wr = over.idxmax(), float(over.max())
+        notes.append(
+            f"Steel over 4% of the slab section at {len(over)} cells, up to {100 * wr:.1f}% at X "
+            f"{x0 + (wi + 0.5) * size:.1f}, Y {y0 + (wj + 0.5) * size:.1f}: couplers, or a thicker slab "
+            "there."
+        )
     steel = {
         "kg_per_m2": round(kg / area_m2, 1) if area_m2 else None,
         "kg_per_m3": round(kg / area_m2 / (h / 1000)) if area_m2 else None,
@@ -1636,8 +2260,9 @@ def design_slab(
             if key not in summary or score > summary[key][0]:
                 summary[key] = (score, r)
         strip_design = {
-            "table": strip_table(strip_rows, frame),
+            "table": strip_table(strip_rows, frame) + overall_table(overall_rows),
             "profile": strip_profile(uls_m, uloc, size, axes),
+            "across_profile": across_profile(uls_m, frame, size, axes),
             "start": frame["start"],
             "end": frame["end"],
             "origin": frame["origin"],
@@ -1649,25 +2274,26 @@ def design_slab(
             "lines": frame["lines"],
             "pile_rows_m": frame["rows"],
             "stations": frame["bounds"],
-            "rows": strip_rows,
+            "rows": strip_rows + overall_rows,
             "summary": sorted(
                 (v[1] for v in summary.values()), key=lambda r: (r["moment"], r["station"][0], r["strip"])
             ),
         }
-        worst = max((r["ratio"] or 0 for r in strip_rows), default=0.0)
-        cracks = [r["wk_mm"] / r["wk_limit_mm"] for r in strip_rows if r["wk_mm"] is not None]
+        worst = max((r["ratio"] or 0 for r in strip_rows + overall_rows), default=0.0)
+        cracks = [r["wk_mm"] / r["wk_limit_mm"] for r in strip_rows + overall_rows if r["wk_mm"] is not None]
         lay_u = max(lay_u, worst, max(cracks, default=0.0))
         notes.append(
             f"Column strips {frame['column']:g} m wide on the {len(frame['lines'])} lines of piles "
             f"along {frame['along']}, field strips {frame['field']:g} m between them; each strip's "
             "moments are averaged across its width and all column (field) strips are designed together "
-            f"at {len(frame['bounds']) - 1} stations measured from the {frame['from']}."
+            f"at {len(frame['bounds']) - 1} stations measured from the {frame['from']}. The bars along "
+            f"{frame['across']} are one design over the whole deck, with zones only where it needs more."
         )
     passed = (
         shear["passed"]
         and all(p["passed"] for p in punch)
         and lay_u <= 1 + 1e-6
-        and all(r["passed"] for r in rest.values())
+        and (not rest_counts or all(r["passed"] for r in rest.values()))
     )
     mc = uls_m.groupby(["i", "j"]).agg(
         mx_max=("Mx", "max"), mx_min=("Mx", "min"), my_max=("My", "max"), my_min=("My", "min")
@@ -1698,7 +2324,12 @@ def design_slab(
         "restraint": restraint,
         "steel": steel,
         "utilisation": round(
-            max(lay_u, max((r["wk"] / r["limit"] for r in rest.values()), default=0), punch_u), 3
+            max(
+                lay_u,
+                max((r["wk"] / r["limit"] for r in rest.values() if rest_counts), default=0),
+                punch_u,
+            ),
+            3,
         ),
         "passed": bool(passed),
         "bands": bands,

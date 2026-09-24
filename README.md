@@ -428,14 +428,20 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
 - **Mesh and additional bars:** four meshes, bottom and top, along X and along Y, each laid over
   the whole slab. The slab is split into a grid of cells (1 m by default) only to find where a mesh
   is not enough: there, additional bars go between the mesh bars (at the mesh spacing or every
-  second gap), sized for strength, the QP crack width at that face (Ø and spacing of the mix,
-  7.12) and restraint cracking. Each mesh is the one with the least steel overall, or the mesh you
-  enter (value engineering). For each layer you choose a mesh with additional bars (default) or a
+  second gap, in a second layer, or under the mesh bars), sized for strength and the QP crack width
+  at that face (Ø and spacing of the mix, 7.12). A basic mesh is one layer giving at least the
+  minimum steel; Triton takes the lightest one within 5% of the least steel overall (a light mesh
+  with additional bars where needed, as the office's slabs), or the mesh you enter. Cells no mesh
+  can take (a thicker slab or a haunch there) are reported and do not choose the mesh. For each layer you choose a mesh with additional bars (default) or a
   mesh only, strong enough everywhere. Additional bars run in zones at least 2.5 m long (setting):
   shorter pieces take their heavier neighbour's bars, and matching runs merge into rectangles.
-  Bars are Ø10 to Ø32; a second mesh layer only for Ø25 and up.
-- **Moments at the pile faces:** designed as they are, or averaged over a ring one pile diameter
-  wide round each pile, per combination (slab setting).
+  Bars are Ø10 to Ø32. Bars fit between the mesh bars with EC2 8.2(2)'s clear spacing (the larger
+  Ø, and 32 mm by default in slabs). On the Design tab each row's bars can be built layer by layer:
+  layer 1 is the mesh at the cover with bars between its bars, then layers 2, 3… each with its own
+  Ø and spacing, and the depth of each layer is shown. Diagrams along X and along Y show the mesh of
+  each face and where additional bars are added.
+- **Moments at the pile faces:** averaged over a ring one pile diameter wide round each pile, per
+  combination (default for new slabs), or designed as they are (slab setting).
 - **Mobile crane:** areas with the extra factored actions from the SAP model (factored crane minus
   factored live load, M, V, N per metre) are added to every ULS combination over each area, so
   the governing combination carries them. Pile reactions for punching stay as Plaxis gives them.
@@ -446,12 +452,18 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   stations measured from the front beam edge (2 m each side of each pile row and the spans between,
   or your own boundaries). Each station and strip gets its bars from the worst cut and its QP crack
   width, and the table gives, as the office report's slab summary: crack width, M/MRd, acting M,
-  MRd (tension bars, rectangular block) and the governing combination, per M11/M22, station and
-  strip. The uniform layout (per 1 m cell) stays as an option.
+  MRd (tension bars, rectangular block), the governing combination and what sets each face's bars,
+  per station and strip. The bars across the strips (M22) are not split into strips: one basic mesh
+  over the whole deck, with rectangular zones of additional bars only where an area needs more
+  (zones closer than the shortest bars merge). Their moments are drawn along the quay with the lines
+  of piles. The uniform layout (per 1 m cell) stays as an option.
 - **Shear per metre:** v = √(Vx² + Vy²) from d (or 2d) off the pile faces, and at least 2d where
-  punching governs. No concrete contribution where the slab is in tension; links are given per
-  cell as Ø @ s × s, sized as the office slab sheets, V = Asw/s · 0.8d · 0.8fyk (or, as a slab
-  setting, 6.2.3 with cot θ = 2.5).
+  punching governs, with the axial force in the direction of the shear (Q13 with N1, Q23 with N2).
+  No concrete contribution where the slab is in tension (office rule; EC2's 0.15σcp reduction is a
+  slab setting). Links sit at the bottom mesh spacing (or twice it) and are given in bands across the
+  deck, each band with the links its worst cell needs, as the office slab sheets; sized as
+  V = Asw/s · 0.8d · 0.8fyk (or, as a slab setting, 6.2.3 with cot θ = 2.5). Shear above VRd,max is
+  flagged, as are rows of piles with a pile missing from the workbook.
 - **Punching (6.4):** at every pile head not under a beam, from the pile face (vRd,max = 0.4·ν·fcd)
   out to u1 = π(D + 4d) at 2d, nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) at u1 and at the
   pile face (6.4.5(3)); as a slab setting, the office punching sheets' β0 = 1 + 0.6π·e/D at the face.
@@ -459,8 +471,9 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   kmax·vRd,c with kmax = 1.5 (6.4.5(1), A1).
   The thickness is the slab's, a slab-wide punching thickness, or one entered per pile (slopes).
   Each pile has a plan and a section drawing of its perimeters and links.
-- **Restraint:** the basic mesh at each face against temperature and shrinkage cracking, as for the
-  beams, with R from the joint spacing (58 m by default, the office's) over the thickness.
+- **Restraint:** off by default for slabs, as the office's slab design, where temperature and
+  shrinkage come in as axial tension in the combinations. As a slab setting it can be reported, or
+  designed for, on the bars along the quay, with R as an input (0.5 by default).
 - The utilisation heat map in 3D shows, per cell, the bending steel needed over the bars given.
 
 ## Workbook format

@@ -106,7 +106,13 @@ def test_slab_design_with_zones_punching_and_restraint():
     }
     wb = import_sheets(raw)
     els = {
-        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3),
+        "Deck": SlabInput(
+            thickness=800,
+            crack_width_limit=0.3,
+            crack_width_limit_bottom=0.3,
+            peaks="design",
+            restraint_check="design",
+        ),
         "Pile(1)": PileInput(head_level=2.7),
     }
     res = run_section(DesignSettings(), Section(elements=els), wb)
@@ -125,7 +131,8 @@ def test_slab_design_with_zones_punching_and_restraint():
     # At the pile face the β of u1 (EC2 6.4.5(3)); the kmax = 1.5 limit on links.
     assert p["vEd_face_MPa"] == pytest.approx(p["beta"] * 1500e3 / (math.pi * 1200 * p["d_mm"]), rel=2e-3)
     assert p["kmax_ratio"] == pytest.approx(p["vEd_MPa"] / (1.5 * p["vRd_c_MPa"]), abs=2e-3)
-    assert set(d["restraint"]["layers"]) == {"bottom_x", "bottom_y", "top_x", "top_y"}
+    # Restraint from the joints works along the quay: on the bars along Y when the strips run along X.
+    assert set(d["restraint"]["layers"]) == {"bottom_y", "top_y"}
     assert d["steel"]["kg_per_m3"] > 0 and d["bands"] and len(d["bands"][0]) == 5
 
 
@@ -162,7 +169,7 @@ def deck_workbook():
 
 
 def design_deck(**slab):
-    limits = {"crack_width_limit": 0.3, "crack_width_limit_bottom": 0.3} | slab
+    limits = {"crack_width_limit": 0.3, "crack_width_limit_bottom": 0.3, "peaks": "design"} | slab
     els = {"Deck": SlabInput(thickness=800, **limits), "Pile(1)": PileInput(head_level=2.7)}
     return run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
 
@@ -233,9 +240,15 @@ def test_column_and_field_strips_by_station():
     assert col["MRd_kNm_per_m"] >= 600 and col["ratio"] <= 1 and col["wk_mm"] <= 0.3
     field = rows[("top_x", (2.0, 6.0), "field")]
     assert field["M_kNm_per_m"] < 600 and field["as_mm2_per_m"] <= col["as_mm2_per_m"]
-    assert {(r["moment"], r["strip"]) for r in sd["summary"]} == {
-        (m, s) for m in ("M11", "M22") for s in ("column", "field")
-    }
+    assert {(r["moment"], r["strip"]) for r in sd["summary"]} == {("M11", "column"), ("M11", "field")}
+    # M22 is not split into strips: one mesh over the whole deck, zones only where it needs more.
+    m22 = [r for r in sd["table"] if r["moment"] == "M22"]
+    assert m22[0]["label"] == "Whole deck, basic mesh" and m22[0]["strip"] == "all"
+    assert all(r["zone"] for r in m22[1:]) and set(m22[0]["bars"]) == {"bottom", "top"}
+    assert not d["layers"]["bottom_y"]["strips"] and d["layers"]["bottom_x"]["strips"]
+    assert all(r["set_by"] and r["bar_layers"] for r in sd["table"])
+    across = sd["across_profile"]
+    assert across["moment"] == "M22" and across["axis"] == "Y" and across["lines"] == [0.0]
     # Each strip's QP sets carry the crack terms of the bars the strip gets, as its crack check.
     sag = rows[("bottom_x", (2.0, 6.0), "column")]
     q = sag["sets"]["qp"][0]["crack"]
@@ -291,7 +304,7 @@ def test_report_table_and_bars_set_by_the_user():
     labels = d["layers"]["top_x"]["additional_labels"]
     heavy = labels[-1]
     els = {
-        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3),
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3, peaks="design"),
         "Pile(1)": PileInput(head_level=2.7),
     }
     sec = Section(elements=els)
@@ -317,3 +330,36 @@ def test_report_table_and_bars_set_by_the_user():
 def test_twisting_moment_is_left_out_unless_asked():
     assert any("without the twisting moment" in n for n in design_deck()["notes"])
     assert any("Wood–Armer" in n for n in design_deck(twisting="wood_armer")["notes"])
+
+
+def test_bar_layers_set_by_the_user_and_the_mesh_across():
+    d = design_deck()
+    row = next(
+        r
+        for r in d["strip_design"]["table"]
+        if r["moment"] == "M11" and r["strip"] == "column" and r["stations"] == [[2.0, 6.0]]
+    )
+    els = {
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3, peaks="design"),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
+    sec = Section(elements=els)
+    spec = "layers: Ø32@150 | Ø25@150"
+    bars = {k: spec for k in row["keys"]["top"]} | {"top_y|mesh": "Ø20 @ 150"}
+    sec.slab_strips["Deck"] = SlabStrips(bars=bars)
+    mine = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
+    got = next(
+        r
+        for r in mine["strip_design"]["table"]
+        if r["moment"] == "M11" and r["strip"] == "column" and r["stations"] == [[2.0, 6.0]]
+    )
+    assert got["user_set"] and got["additional"]["top"] == spec and got["set_by"]["top"] == "your bars"
+    lay = got["bar_layers"]["top"]
+    # Layer 1: the mesh with Ø32 between its bars, at the cover; layer 2 under it, deeper in.
+    assert [x["layer"] for x in lay] == [1, 2] and "Ø32 @ 150" in lay[0]["text"]
+    assert lay[0]["from_face_mm"] == 50 + 16 and lay[1]["from_face_mm"] > lay[0]["from_face_mm"] + 32
+    assert got["bars"]["top"].endswith("Ø32 @ 150 between the mesh bars + Ø25 @ 150 layer 2")
+    assert got["ratio"] < row["ratio"]
+    assert mine["layers"]["top_y"]["basic"]["label"] == "Ø20 @ 150"
+    whole = next(r for r in mine["strip_design"]["table"] if r["label"] == "Whole deck, basic mesh")
+    assert whole["set_by"]["top"] == "your mesh" and whole["user_set"]

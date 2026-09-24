@@ -96,6 +96,13 @@ class ReinforcementSettings(_Model):
         json_schema_extra={"unit": "mm"},
     )
     min_clear_spacing: float = _mm("Minimum clear spacing (slabs and beams)", 50.0, gt=0)
+    slab_min_clear_spacing: float = _mm(
+        "Minimum clear spacing in slabs",
+        32.0,
+        gt=0,
+        description="EC2 8.2(2): the larger bar's Ø, aggregate + 5 mm and 20 mm, at least; 32 mm lets Ø32 "
+        "additional bars sit between Ø20 @ 150 mesh bars, as on the issued drawings.",
+    )
     max_spacing: float = _mm("Maximum bar spacing (slabs and beams)", 250.0, gt=0)
     spacing_step: float = _mm("Spacing increment (slabs and beams)", 25.0, gt=0)
     slab_spacings: list[float] = Field(
@@ -816,7 +823,7 @@ class SlabInput(_ConcreteSection):
         description="Cells of this size carry either the basic mesh or heavier bars in a zone.",
     )
     peaks: Literal["design", "average"] = Field(
-        "design",
+        "average",
         title="Moments at the pile faces",
         description="Design the peaks at the pile faces as they are, or average them over a ring one "
         "pile diameter wide round each pile.",
@@ -880,11 +887,19 @@ class SlabInput(_ConcreteSection):
         ),
     )
     restraint_factor: float | None = Field(
-        None,
+        0.5,
         title="Restraint factor R",
         ge=0,
         le=1,
-        description="Empty: from the length between joints and the thickness (ACI 207.2R).",
+        description="Empty: from the length between joints and the thickness (ACI 207.2R, a wall on its "
+        "base), which gives about 1 for a slab.",
+    )
+    restraint_check: Literal["off", "report", "design"] = Field(
+        "off",
+        title="Restraint cracking (temperature and shrinkage)",
+        description="Off: no check; temperature and shrinkage come in as axial tension in the combinations, "
+        "as the office's slab design. Report only: the restraint crack width of the bars along the quay is "
+        "shown but does not choose the bars. Design: every mesh along the quay must also control it.",
     )
     crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.2, gt=0, le=0.5)
     crack_width_limit_bottom: float = _mm(
@@ -893,6 +908,12 @@ class SlabInput(_ConcreteSection):
         gt=0,
         le=0.5,
         description="e.g. tighter where the soffit is in the splash zone",
+    )
+    shear_in_tension: Literal["none", "ec2"] = Field(
+        "none",
+        title="Concrete shear resistance in tension",
+        description="None: where the slab is in tension in the direction of the shear, the links carry it "
+        "all, as the office's slab sheets. EC2 6.2.2(1): VRd,c reduced by 0.15·σcp for the tension.",
     )
 
 

@@ -2464,7 +2464,7 @@ function alerts(res) {
       add("limit", d.element, `punching links needed at ${links.length} piles (${Object.entries(by).map(([k, n]) => `${n} × ${k}`).join(", ")}), up to ${most} perimeters: see the punching table`);
     }
     if (d.shear && d.shear.passed === false) add("unsafe", d.element, `shear per metre ${fmt(d.shear.utilisation, 2)}`);
-    for (const [k, r] of Object.entries(d.restraint?.layers || {})) {
+    for (const [k, r] of Object.entries(d.restraint?.check && d.restraint.check !== "design" ? {} : d.restraint?.layers || {})) {
       if (!r.passed) add("unsafe", d.element, `restraint crack ${k.replace("_", " ")} ${fmt(r.wk, 2)} mm of ${fmt(r.limit, 2)}`);
     }
   }
@@ -2644,20 +2644,26 @@ async function renderView3dTab(host) {
 // ---------------------------------------------------------------- Slabs
 const LAYER_NAME = { bottom_x: "Bottom, bars along X", bottom_y: "Bottom, bars along Y", top_x: "Top, bars along X", top_y: "Top, bars along Y" };
 
+function stripRowName(r) {
+  return r.strip === "all" ? `${r.moment} – ${r.label}` : `${r.moment} – ${r.label} – ${r.strip === "column" ? "Column Strip" : "Field Strip"}`;
+}
+
 function stripTable(d) {
-  // The calc report's slab table (Table 5-4): bars along the strips per station, bars along the berth
-  // grouped where they are the same; each row can take the user's bars and be checked again.
+  // The calc report's slab table (Table 5-4): bars along the strips per station and strip; bars across
+  // them (M22) as one mesh over the whole deck and zones where it needs more. Each row says what sets
+  // its bars and can take the user's layers of bars.
   const sd = d.strip_design;
   const rows = sd.table || [];
-  const strip = (r) => (r.strip === "column" ? "Column Strip" : "Field Strip");
-  const line = (r, i) => `<tr data-row="${i}"><td>${esc(r.moment)} – ${esc(r.label)} – ${strip(r)}${r.user_set ? '<span class="user-chip">your bars</span>' : ""}</td>
+  const faceName = (f) => (f === "bottom" ? "Bottom" : "Top");
+  const setBy = (r) => (r.edit || Object.keys(r.set_by || {})).map((f) => `${faceName(f)}: ${esc(r.set_by?.[f] || "–")}`).join("<br>");
+  const line = (r, i) => `<tr data-row="${i}"><td>${esc(stripRowName(r))}${r.user_set ? '<span class="user-chip">your bars</span>' : ""}</td>
     <td class="cell ${r.wk_mm == null || r.wk_mm <= r.wk_limit_mm ? "ok" : "error"}">${r.wk_mm == null ? "–" : fmt(r.wk_mm, 3)}</td>
     <td class="cell ${r.ratio != null && r.ratio <= 1 ? "ok" : "error"}" title="${esc(r.face)} face">${fmt(r.ratio, 2)}</td><td>${fmt(r.M_kNm_per_m)}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
-    <td>${esc(r.combination)}</td><td>${esc(r.bars.bottom || "–")}</td><td>${esc(r.bars.top || "–")}</td>
+    <td>${esc(r.combination)}</td><td>${esc(r.bars.bottom || "–")}</td><td>${esc(r.bars.top || "–")}</td><td class="set-by">${setBy(r)}</td>
     <td><button class="quiet" data-bars="${i}">Change bars</button></td></tr>`;
   return `<h3 style="margin-top:18px">Slab design results</h3>
-    <p class="status">As the calc report's slab table. Stations are metres from the ${esc(sd.from)}, on the sea side, increasing towards the rear. Column strips ${fmt(sd.column_width_m, 1)} m on the pile lines, field strips ${fmt(sd.field_width_m, 1)} m between them: every point of the deck is in one station and one strip, all column strips along the berth are designed together, and all field strips. Bars along the strips are given per station; bars along the berth are grouped where they are the same. Each row shows its worst face.</p>
-    <div class="scroll"><table><tr><th>Slab</th><th>Crack width (mm)</th><th>Ultimate M / M<sub>Rd</sub></th><th>Acting M (kNm/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bottom bars</th><th>Top bars</th><th></th></tr>
+    <p class="status">As the calc report's slab table. Stations are metres from the ${esc(sd.from)}, on the sea side, increasing towards the rear. Bars along the strips (${esc(sd.along)}) are designed per station in column strips ${fmt(sd.column_width_m, 1)} m wide on the pile lines and field strips ${fmt(sd.field_width_m, 1)} m between them, all column strips together and all field strips together. Bars along the quay are one basic mesh over the whole deck, with zones of additional bars only where the deck needs more. "Set by" says which check chose each face's bars.</p>
+    <div class="scroll"><table><tr><th>Slab</th><th>Crack width (mm)</th><th>Ultimate M / M<sub>Rd</sub></th><th>Acting M (kNm/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bottom bars</th><th>Top bars</th><th>Set by</th><th></th></tr>
       ${rows.map(line).join("")}</table></div>`;
 }
 
@@ -2677,6 +2683,84 @@ async function saveSlabStrips(name, change, status) {
   state.runDesign?.([name]);
 }
 
+function layerBuilder(d, r, f) {
+  // One face of a row: layer 1 is the mesh at the cover (with bars between its bars), then layers 2, 3…
+  // under it, each with its own bar and spacing. Returns the editor's element and a reader of its state.
+  const layer = r.layers[f];
+  const lay = d.layers[layer] || {};
+  const whole = (r.keys[f] || []).every((k) => k.endsWith("|mesh"));
+  const bars = (state.project.design?.reinforcement?.bar_diameters || [10, 12, 16, 20, 25, 32]).filter((x) => x >= 10);
+  const meshes = (lay.mesh_labels || []).filter((t) => !t.includes(" in "));
+  const mesh0 = r.mesh?.[f] || { phi: lay.basic?.phi, spacing_mm: lay.basic?.spacing_mm };
+  let mesh = { phi: mesh0.phi, s: mesh0.spacing_mm };
+  let spec = (r.spec?.[f] || []).map((p) => (p ? [Number(p[0]), Number(p[1])] : null));
+  if (!spec.length) spec = [null];
+  const along = layer.endsWith("_y");
+  const cover = lay.cover_mm ?? (f === "top" ? d.cover_top_mm : d.cover_bottom_mm);
+  const box = document.createElement("div");
+  box.className = "layer-builder";
+  const opt = (v, cur, text = v) => `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${esc(text)}</option>`;
+  const depths = () => {
+    // As Triton places them: layer 1 at the cover, each next layer below with a clear gap of max(25, Ø).
+    const rows = [];
+    const n = Math.max(1, spec.length);
+    for (let k = 0; k < n; k++) {
+      const items = [];
+      if (k === 0) items.push(mesh.phi);
+      if (spec[k]) items.push(spec[k][0]);
+      if (items.length) rows.push({ k, big: Math.max(...items) });
+    }
+    const shift = along ? Math.max(...rows.map((x) => x.big)) : 0;
+    let at = cover + shift, prev = null;
+    return rows.map((x) => {
+      at += prev == null ? x.big / 2 : prev / 2 + Math.max(25, prev, x.big) + x.big / 2;
+      prev = x.big;
+      return { k: x.k, at };
+    });
+  };
+  const draw = () => {
+    const dep = Object.fromEntries(depths().map((x) => [x.k, x.at]));
+    const s = mesh.s;
+    const between = spec[0];
+    box.innerHTML = `<div class="lb-head"><b>${f === "bottom" ? "Bottom" : "Top"} face</b>, bars along ${along ? "Y" : "X"}, cover ${fmt(cover)} mm</div>
+      <div class="lb-row"><span class="lb-name">Layer 1</span>
+        <label>Mesh <select data-mesh>${meshes.map((t) => opt(t, `Ø${mesh.phi} @ ${fmt(mesh.s)}`)).join("")}</select></label>
+        ${whole ? "" : `<label>between its bars <select data-between><option value="">none</option>${bars.flatMap((b) => [opt(`${b}@${s}`, between ? `${between[0]}@${between[1]}` : "", `Ø${b} @ ${fmt(s)} (every gap)`), opt(`${b}@${2 * s}`, between ? `${between[0]}@${between[1]}` : "", `Ø${b} @ ${fmt(2 * s)} (every second gap)`)]).join("")}</select></label>`}
+        <span class="status">centre ${fmt(dep[0])} mm from the face</span></div>
+      ${whole ? "" : spec.slice(1).map((p, i) => `<div class="lb-row"><span class="lb-name">Layer ${i + 2}</span>
+        <label>Ø <select data-lphi="${i + 1}">${bars.map((b) => opt(b, p ? p[0] : 25)).join("")}</select></label>
+        <label>@ <select data-ls="${i + 1}">${[s / 2, s, 2 * s].map((v) => opt(v, p ? p[1] : s, `${fmt(v)} mm${v < s ? " (under every bar and gap)" : v > s ? " (every second gap)" : " (under every gap)"}`)).join("")}</select></label>
+        <span class="status">centre ${fmt(dep[i + 1])} mm from the face</span> <button class="quiet" data-ldel="${i + 1}">Remove</button></div>`).join("")}
+      ${whole ? '<div class="status">The mesh runs over the whole deck: changing it here changes it everywhere, and the zones are worked out again on it.</div>' : `<button class="quiet" data-ladd>Add layer ${spec.length + 1}</button> <span class="status">A new mesh here changes it over the whole deck.</span>`}`;
+    box.querySelector("[data-mesh]").onchange = (e) => {
+      const m = /Ø(\d+) @ ([\d.]+)/.exec(e.target.value);
+      if (m) mesh = { phi: Number(m[1]), s: Number(m[2]) };
+      spec = spec.map((p) => p && [p[0], Math.max(mesh.s / 2, Math.min(2 * mesh.s, p[1]))]);
+      draw();
+    };
+    const bt = box.querySelector("[data-between]");
+    if (bt) bt.onchange = () => { spec[0] = bt.value ? bt.value.split("@").map(Number) : null; draw(); };
+    box.querySelectorAll("[data-lphi]").forEach((sel) => (sel.onchange = () => { const i = Number(sel.dataset.lphi); spec[i] = [Number(sel.value), spec[i]?.[1] ?? mesh.s]; draw(); }));
+    box.querySelectorAll("[data-ls]").forEach((sel) => (sel.onchange = () => { const i = Number(sel.dataset.ls); spec[i] = [spec[i]?.[0] ?? 25, Number(sel.value)]; draw(); }));
+    box.querySelectorAll("[data-ldel]").forEach((b) => (b.onclick = () => { spec.splice(Number(b.dataset.ldel), 1); draw(); }));
+    const add = box.querySelector("[data-ladd]");
+    if (add) add.onclick = () => { spec.push([25, mesh.s]); draw(); };
+  };
+  draw();
+  const read = () => {
+    const meshLabel = `Ø${mesh.phi} @ ${fmt(mesh.s)}`.replace(/,/g, "");
+    const changedMesh = mesh.phi !== mesh0.phi || mesh.s !== mesh0.spacing_mm;
+    let bars_ = null;
+    if (!whole) {
+      const used = spec.map((p) => (p ? `Ø${p[0]}@${p[1]}` : "–"));
+      while (used.length && used[used.length - 1] === "–") used.pop();
+      bars_ = used.length ? `layers: ${used.join(" | ")}` : "mesh only";
+    }
+    return { layer, meshLabel, changedMesh, bars: bars_ };
+  };
+  return { el: box, read };
+}
+
 function wireStripTable(card, d) {
   const sd = d.strip_design;
   card.querySelectorAll("[data-bars]").forEach((btn) => (btn.onclick = () => {
@@ -2686,28 +2770,38 @@ function wireStripTable(card, d) {
     const open = tr.nextElementSibling?.classList.contains("bars-edit");
     card.querySelectorAll("tr.bars-edit").forEach((x) => x.remove());
     if (open) return;
-    const faces = Object.keys(r.layers);
+    const faces = r.edit || Object.keys(r.layers);
     const mine = sec().slab_strips?.[d.element]?.bars || {};
-    const hasOwn = faces.some((f) => (r.keys[f] || []).some((k) => k in mine));
+    const hasOwn = faces.some((f) => (r.keys[f] || []).some((k) => k in mine) || `${r.layers[f]}|mesh` in mine);
     const edit = document.createElement("tr");
     edit.className = "bars-edit";
-    edit.innerHTML = `<td colspan="9"><b>${esc(r.moment)} – ${esc(r.label)} – ${r.strip === "column" ? "column" : "field"} strip.</b> Additional bars on the mesh:
-      ${faces.map((f) => `<label>${f === "bottom" ? "Bottom" : "Top"} <select data-face="${f}">${(d.layers[r.layers[f]]?.additional_labels || []).map((o) => `<option ${o === r.additional[f] ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>`).join("")}
+    edit.innerHTML = `<td colspan="10"><b>${esc(stripRowName(r))}.</b> Layer 1 is the mesh at the cover; add layers under it, each with its own bar and spacing.
+      <div class="layer-builders"></div>
       <button data-recheck>Re-check</button>${hasOwn ? ' <button class="quiet" data-auto>Use Triton\'s bars</button>' : ""} <span class="status" data-bars-status></span>
-      <div class="status">Re-check keeps these bars for this row and checks bending and crack widths with them; nothing else changes.</div></td>`;
+      <div class="status">Re-check keeps these bars for this row and checks bending and crack widths with them.</div></td>`;
     tr.after(edit);
+    const builders = faces.map((f) => layerBuilder(d, r, f));
+    const host = edit.querySelector(".layer-builders");
+    builders.forEach((b) => host.appendChild(b.el));
     const status = edit.querySelector("[data-bars-status]");
     edit.querySelector("[data-recheck]").onclick = () =>
       saveSlabStrips(d.element, (cur) => {
         const bars = { ...(cur.bars || {}) };
-        edit.querySelectorAll("select[data-face]").forEach((sel) => (r.keys[sel.dataset.face] || []).forEach((k) => (bars[k] = sel.value)));
+        builders.forEach((b, j) => {
+          const st = b.read();
+          if (st.changedMesh) bars[`${st.layer}|mesh`] = st.meshLabel;
+          if (st.bars != null) (r.keys[faces[j]] || []).forEach((k) => (bars[k] = st.bars));
+        });
         return { ...cur, bars };
       }, status);
     const auto = edit.querySelector("[data-auto]");
     if (auto) auto.onclick = () =>
       saveSlabStrips(d.element, (cur) => {
         const bars = { ...(cur.bars || {}) };
-        faces.forEach((f) => (r.keys[f] || []).forEach((k) => delete bars[k]));
+        faces.forEach((f) => {
+          (r.keys[f] || []).forEach((k) => delete bars[k]);
+          if (r.strip === "all" && r.label.startsWith("Whole deck")) delete bars[`${r.layers[f]}|mesh`];
+        });
         return { ...cur, bars };
       }, status);
   }));
@@ -2727,13 +2821,48 @@ function stationEditor(card, d) {
   const own = sec().slab_strips?.[d.element]?.stations;
   ctl.innerHTML = `<div class="legend"><span><i></i>Column strip, largest</span><span><i class="low"></i>Column strip, smallest</span><span><i class="field"></i>Field strip, largest</span><span><i class="field low"></i>Field strip, smallest</span><span>▲ row of piles</span></div>
     <div class="row">${names.map((n) => `<button class="quiet${n === which ? " on" : ""}" data-m="${esc(n)}">${esc(n)}</button>`).join("")}</div>
-    <p class="status">Drag a station's circle to move it, press × to delete it, or Add station. You can also type the stations. Then Design with these stations. ${own ? "These are your stations." : "These are Triton's stations: 2 m each side of every row of piles."}</p>
-    <div class="row"><input data-st-text style="flex:1;min-width:200px" aria-label="Stations (m from the sea side)"><button class="quiet" data-st-add>Add station</button><button data-st-design>Design with these stations</button>${own ? '<button class="quiet" data-st-auto>Triton\'s stations</button>' : ""}<span class="status" data-st-status></span></div>`;
+    <div data-st-tools><p class="status">Drag a station's circle to move it, press × to delete it, or Add station. You can also type the stations. Then Design with these stations. ${own ? "These are your stations." : "These are Triton's stations: 2 m each side of every row of piles."}</p>
+    <div class="row"><input data-st-text style="flex:1;min-width:200px" aria-label="Stations (m from the sea side)"><button class="quiet" data-st-add>Add station</button><button data-st-design>Design with these stations</button>${own ? '<button class="quiet" data-st-auto>Triton\'s stations</button>' : ""}<span class="status" data-st-status></span></div></div>
+    <p class="status" data-st-across hidden></p>`;
   const text = ctl.querySelector("[data-st-text]");
   const status = ctl.querySelector("[data-st-status]");
   const round = (v) => Math.round(v * 20) / 20;
   let c = null;
+  const ap = sd.across_profile;
+  const tools = ctl.querySelector("[data-st-tools]"), acrossNote = ctl.querySelector("[data-st-across]");
+  const legend = ctl.querySelector(".legend");
+  const drawAcross = () => {
+    // M22 along the quay: one design over the whole deck, so the largest and smallest over all of it at
+    // every cut along the quay, with the lines of piles.
+    const pts = ap.points;
+    const vals = pts.flatMap((q) => [q.max, q.min]);
+    const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals), pad = (hi - lo) * 0.1 || 1;
+    c = frame(el, { w: 820, h: 360, xDomain: ap.range, yDomain: [lo - pad, hi + pad],
+      xLabel: `${ap.axis} along the quay (m)`, yLabel: `${ap.moment} (kNm/m), sagging +`,
+      title: `${ap.moment} along the quay, ULS envelope over the whole deck` });
+    c.svg.classList.remove("editing");
+    const path = (k) => pts.map((q, i) => `${i ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
+    const bot = c.h - c.m.b;
+    const rows = ap.lines.map((L) => `<path class="pile-row" d="M${c.x(L).toFixed(1)},${bot - 10} l-6,10 h12 z"><title>Line of piles at ${ap.axis} ${fmt(L, 2)} m</title></path><line class="station" x1="${c.x(L).toFixed(1)}" x2="${c.x(L).toFixed(1)}" y1="${c.m.t}" y2="${bot}" stroke-dasharray="3 4"/>`).join("");
+    c.g.innerHTML = `<line class="zero" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(0)}" y2="${c.y(0)}"/>
+      <path class="series" d="${path("max")}"/><path class="series low" d="${path("min")}"/>${rows}`;
+    const gaps = ap.lines.slice(1).map((L, i) => L - ap.lines[i]);
+    const gap = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : null;
+    acrossNote.textContent = `${ap.moment} is designed over the whole deck, not in strips: one basic mesh, and zones of additional bars only where it needs more (see the table). ▲ lines of piles${gap ? `, ${fmt(gap, 1)} m apart` : ""}.`;
+    c.svg.onmousemove = (evt) => {
+      const r = c.svg.getBoundingClientRect();
+      const x = ((evt.clientX - r.left) / r.width) * c.w;
+      const q = pts.reduce((b, p) => (Math.abs(c.x(p.s) - x) < Math.abs(c.x(b.s) - x) ? p : b), pts[0]);
+      if (q) showTip(c, evt, `<b>${ap.axis} ${fmt(q.s, 1)} m</b><br>Largest ${fmt(q.max)} kNm/m<br>Smallest ${fmt(q.min)} kNm/m`);
+    };
+    c.svg.onmouseleave = () => (c.tip.hidden = true);
+  };
   const draw = () => {
+    const across = ap && which === ap.moment;
+    tools.hidden = across;
+    acrossNote.hidden = !across;
+    if (legend) legend.innerHTML = across ? '<span><i></i>Largest over the deck</span><span><i class="low"></i>Smallest over the deck</span><span>▲ line of piles</span>' : '<span><i></i>Column strip, largest</span><span><i class="low"></i>Column strip, smallest</span><span><i class="field"></i>Field strip, largest</span><span><i class="field low"></i>Field strip, smallest</span><span>▲ row of piles</span>';
+    if (across) return drawAcross();
     const prof = sd.profile[which] || [];
     const vals = prof.flatMap((q) => [q.column_max, q.column_min, q.field_max, q.field_min]).filter((v) => v != null);
     const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals), pad = (hi - lo) * 0.1 || 1;
@@ -2807,6 +2936,104 @@ function stationEditor(card, d) {
   draw();
 }
 
+function shortBars(t) {
+  return String(t || "").replace(" in 2 layers", " ×2 layers").replace(/ \+ Ø\d+ under the mesh/, " + under").replace(/ between the mesh bars/g, " between").replace(/ layer (\d)/g, " (L$1)");
+}
+
+function barDiagrams(card, d) {
+  // Elevations of the bars along X and along Y: the basic mesh of each face over the whole length and
+  // the additional bars where they are added (per station and strip along the strips, per zone across).
+  const sd = d.strip_design;
+  const el = card.querySelector('[data-kind="bardiag"]'), pick = card.querySelector('[data-kind="bardiag-pick"]');
+  if (!sd || !el || !pick) return;
+  const al = sd.along.toLowerCase(), cl = al === "x" ? "y" : "x";
+  const acrossAxis = sd.along === "X" ? "Y" : "X";
+  const across = sd.across_profile;
+  const mAlong = (sd.table || []).find((r) => r.along_strips)?.moment || (al === "x" ? "M11" : "M22");
+  const views = [
+    { key: "along", dir: al, title: `Bars along ${sd.along} (${mAlong})` },
+    { key: "across", dir: cl, title: `Bars along ${acrossAxis} (${across?.moment || ""})` },
+  ];
+  let view = 0;
+  pick.innerHTML = views.map((v, i) => `<button class="quiet${i ? "" : " on"}" data-bd="${i}">${esc(v.title)}</button>`).join("");
+  const draw = () => {
+    const v = views[view];
+    const isAlong = v.key === "along";
+    const lo = isAlong ? sd.start : across?.range?.[0] ?? d.box[acrossAxis][0];
+    const hi = isAlong ? sd.end : across?.range?.[1] ?? d.box[acrossAxis][1];
+    const segs = { top: [], bottom: [] };
+    for (const f of ["top", "bottom"]) {
+      const rows = (sd.rows || []).filter((r) => r.layer === `${f}_${v.dir}` && r.additional_bars);
+      if (isAlong) {
+        for (const strip of ["column", "field"]) {
+          const mine = rows.filter((r) => r.strip === strip).sort((a, b) => a.station[0] - b.station[0]);
+          const merged = [];
+          for (const r of mine) {
+            const last = merged[merged.length - 1];
+            if (last && last.text === r.additional_bars && Math.abs(last.b - r.station[0]) < 1e-6) last.b = r.station[1];
+            else merged.push({ a: r.station[0], b: r.station[1], text: r.additional_bars, lane: strip === "column" ? 0 : 1, what: `${strip} strip`, layers: r.bar_layers });
+          }
+          segs[f].push(...merged);
+        }
+      } else {
+        const ax = acrossAxis === "Y" ? 1 : 0, sx = 1 - ax;
+        rows.filter((r) => r.zone).forEach((r) => {
+          const st = r.zone[sx].map((x) => (x - sd.origin) * sd.sign).sort((a, b) => a - b);
+          segs[f].push({ a: r.zone[ax][0], b: r.zone[ax][1], text: r.additional_bars, what: `zone at station ${fmt(st[0], 1)} to ${fmt(st[1], 1)}`, layers: r.bar_layers });
+        });
+        // Stack zones that overlap along this axis.
+        const lanes = [];
+        segs[f].sort((p, q) => p.a - q.a).forEach((s) => {
+          let k = lanes.findIndex((end) => end <= s.a + 1e-6);
+          if (k < 0) { k = lanes.length; lanes.push(0); }
+          lanes[k] = s.b;
+          s.lane = k;
+        });
+      }
+    }
+    const nT = Math.max(1, ...segs.top.map((s) => s.lane + 1)), nB = Math.max(1, ...segs.bottom.map((s) => s.lane + 1));
+    const W = 860, L = 136, R = 16, lane = 20;
+    const X = (s) => L + ((s - lo) / (hi - lo || 1)) * (W - L - R);
+    const yMeshT = 16 + nT * lane + 8, slabTop = yMeshT - 7, slabBot = slabTop + 58, yMeshB = slabBot - 7;
+    const laneY = (f, k) => (f === "top" ? yMeshT - 8 - (k + 0.5) * lane : yMeshB + 8 + (k + 0.5) * lane);
+    const H = yMeshB + 8 + nB * lane + 44;
+    const mesh = (f) => d.layers[`${f}_${v.dir}`]?.basic?.label || "–";
+    const depth = (f) => (d.layers[`${f}_${v.dir}`]?.mesh_bar_layers || [])[0]?.from_face_mm;
+    const segSvg = (f) => segs[f].map((s) => {
+      const y = laneY(f, s.lane), x0 = X(s.a), x1 = X(s.b), w = Math.max(2, x1 - x0);
+      const lay = (s.layers || []).map((q) => `Layer ${q.layer}: ${q.text}, centre ${fmt(q.from_face_mm)} mm from the face`).join("\n");
+      const full = shortBars(s.text), room = Math.floor((w - 6) / 5.6);
+      const label = full.length <= room ? full : room > 4 ? `${full.slice(0, room - 1)}…` : "";
+      const fits = !!label;
+      return `<g class="bd-seg"><line x1="${x0.toFixed(1)}" x2="${x1.toFixed(1)}" y1="${y}" y2="${y}"/><line x1="${x0.toFixed(1)}" x2="${x0.toFixed(1)}" y1="${y - 4}" y2="${y + 4}"/><line x1="${x1.toFixed(1)}" x2="${x1.toFixed(1)}" y1="${y - 4}" y2="${y + 4}"/>
+        ${fits ? `<text class="tick" x="${((x0 + x1) / 2).toFixed(1)}" y="${y - 4}" text-anchor="middle">${esc(label)}</text>` : ""}
+        <rect x="${x0.toFixed(1)}" y="${y - lane / 2}" width="${w.toFixed(1)}" height="${lane}" fill="transparent"><title>${esc(`${f === "top" ? "Top" : "Bottom"}, ${s.what}, ${fmt(s.a, 2)} to ${fmt(s.b, 2)} m: ${s.text}\n${lay}`)}</title></rect></g>`;
+    }).join("");
+    const marks = isAlong ? (sd.pile_rows_m || []) : (sd.lines || []);
+    const ticks = isAlong ? sd.stations : marks;
+    const axisY = H - 18;
+    const piles = marks.map((m) => `<path class="pile-row" d="M${X(m).toFixed(1)},${axisY - 11} l-6,10 h12 z"><title>${isAlong ? "Row" : "Line"} of piles at ${fmt(m, 2)} m</title></path>`).join("");
+    el.innerHTML = `<div class="chart-title">${esc(v.title)}: basic mesh of each face over the whole ${isAlong ? "deck" : "length"}, additional bars where they are added. ${isAlong ? "Sea side on the left; stations in m from the " + esc(sd.from) + "." : `${acrossAxis} in m along the quay.`}</div>
+      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (layer 1, at the cover)</span><span><i class="bd-add"></i>additional bars${isAlong ? ": column strip next to the mesh, field strip beyond" : ", one line per zone"}</span><span>▲ piles</span><span>hover a line for its layers and depths</span></div>
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(v.title)}">
+        <rect x="${X(lo)}" y="${slabTop}" width="${X(hi) - X(lo)}" height="${slabBot - slabTop}" class="bd-slab"/>
+        <line class="bd-mesh" x1="${X(lo)}" x2="${X(hi)}" y1="${yMeshT}" y2="${yMeshT}"><title>Top mesh ${esc(mesh("top"))}, centre ${fmt(depth("top"))} mm from the top</title></line>
+        <line class="bd-mesh" x1="${X(lo)}" x2="${X(hi)}" y1="${yMeshB}" y2="${yMeshB}"><title>Bottom mesh ${esc(mesh("bottom"))}, centre ${fmt(depth("bottom"))} mm from the bottom</title></line>
+        <text class="tick" x="${L - 8}" y="${yMeshT + 4}" text-anchor="end">Top ${esc(mesh("top"))}</text>
+        <text class="tick" x="${L - 8}" y="${yMeshB + 4}" text-anchor="end">Bottom ${esc(mesh("bottom"))}</text>
+        ${segSvg("top")}${segSvg("bottom")}${piles}
+        <line class="axis" x1="${X(lo)}" x2="${X(hi)}" y1="${axisY}" y2="${axisY}"/>
+        ${[lo, ...ticks, hi].map((t) => `<line class="axis" x1="${X(t)}" x2="${X(t)}" y1="${axisY}" y2="${axisY + 4}"/><text class="tick" x="${X(t)}" y="${axisY + 14}" text-anchor="middle">${fmt(t, 1)}</text>`).join("")}
+      </svg>`;
+  };
+  pick.querySelectorAll("[data-bd]").forEach((b) => (b.onclick = () => {
+    view = Number(b.dataset.bd);
+    pick.querySelectorAll("[data-bd]").forEach((x) => x.classList.toggle("on", x === b));
+    draw();
+  }));
+  draw();
+}
+
 function momentPlan(card, d) {
   // Plan of the deck, sea side on the left: the ULS envelope of M11 or M22 per cell, sagging (bottom
   // face in tension) or hogging (top face in tension), with the strips and stations over it.
@@ -2872,6 +3099,8 @@ function slabCard(d) {
     ${d.strip_design ? `<h3 style="margin-top:18px">Moments across the deck and the stations</h3>
       <div class="chart wide" data-kind="stations"></div><div data-kind="station-ctl"></div>
       ${stripTable(d)}
+      <h3 style="margin-top:18px">Reinforcement along X and Y</h3>
+      <div class="row" data-kind="bardiag-pick"></div><div class="chart wide" data-kind="bardiag"></div>
       <h3 style="margin-top:18px">Moments in plan: where the deck is in tension</h3>
       <div class="row" data-kind="mplan-pick"></div><div class="chart wide" data-kind="mplan"></div>
       ${crackPicturesHtml(slabCrackItems(d), "Crack pictures (QP, per strip and station)")}` : ""}
@@ -2894,20 +3123,21 @@ function slabCard(d) {
     <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d); nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
     <h3 style="margin-top:18px">Shear per metre ${ok(sh.passed !== false)}</h3>
     <p>${sh.governing ? `Largest v − V<sub>Rd,c</sub>: ${esc(sh.governing.combination)} at X ${fmt(sh.governing.x, 1)}, Y ${fmt(sh.governing.y, 1)}: v = ${fmt(sh.governing.V_kN_per_m)} kN/m, V<sub>Rd,c</sub> = ${fmt(sh.governing.VRd_c_kN_per_m)} kN/m, V<sub>Rd,max</sub> = ${fmt(sh.governing.VRd_max_kN_per_m)} kN/m.` : ""}
-      ${sh.heaviest ? ` Links in ${sh.cells_needing_links} cells, in ${sh.links.length} zones at the mesh spacing (they hook round the bottom mesh: ${fmt(sh.link_spacing_mm?.x)} mm across X, ${fmt(sh.link_spacing_mm?.y)} mm across Y, or every second bar).` : " No shear links needed."}</p>
-    ${sh.links?.length ? `<div class="scroll"><table><tr><th>Zone</th><th>X (m)</th><th>Y (m)</th><th>Links</th><th>A<sub>sw</sub> given / needed (mm²/m²)</th><th>Cells needing links</th></tr>
-      ${sh.links.map((z, i) => `<tr><td>S${i + 1}</td><td>${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}</td><td>${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</td><td><b>${esc(z.label)}</b></td><td>${fmt(z.asw_mm2_per_m2)} / ${fmt(z.needs_mm2_per_m2)}</td><td>${fmt(z.cells)}</td></tr>`).join("")}</table></div>
-      <p class="status">The shear link zones are drawn on the plan above (Shear links). They follow the shear need, not the bending zones.</p>` : ""}
+      ${sh.heaviest ? ` Links in ${sh.cells_needing_links} cells, in ${sh.links.length} bands across the deck at the mesh spacing (they hook round the bottom mesh: ${fmt(sh.link_spacing_mm?.x)} mm across X, ${fmt(sh.link_spacing_mm?.y)} mm across Y, or every second bar).` : " No shear links needed."}</p>
+    ${sh.links?.length ? `<div class="scroll"><table><tr><th>Band</th>${sh.links[0].stations ? "<th>Stations (m)</th>" : ""}<th>X (m)</th><th>Y (m)</th><th>Links</th><th>A<sub>sw</sub> given / needed (mm²/m²)</th><th>Cells needing links</th></tr>
+      ${[...sh.links].sort((a, b) => (a.stations?.[0] ?? a.x[0]) - (b.stations?.[0] ?? b.x[0])).map((z, i) => `<tr><td>S${i + 1}</td>${z.stations ? `<td>${fmt(z.stations[0], 1)} to ${fmt(z.stations[1], 1)}</td>` : ""}<td>${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}</td><td>${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</td><td><b>${esc(z.label)}</b></td><td>${fmt(z.asw_mm2_per_m2)} / ${fmt(z.needs_mm2_per_m2)}</td><td>${fmt(z.cells)}</td></tr>`).join("")}</table></div>
+      <p class="status">Each band takes the links its worst cell needs, over the full width of the deck, as the office's slab sheets. The bands are drawn on the plan above (Shear links); they follow the shear, not the bending zones.</p>` : ""}
     ${sh.method ? `<p class="status">${esc(sh.method)}.</p>` : ""}
     <h3 style="margin-top:18px">Temperature and shrinkage restraint</h3>
-    <div class="scroll"><table><tr><th>Layer</th><th>w<sub>k</sub></th><th>Limit</th><th>Details</th><th></th></tr>
+    ${d.restraint?.check === "off" ? '<p class="status">Not checked (slab setting "Restraint cracking"): temperature and shrinkage come in as axial tension in the combinations, as the office\'s slab design.</p>' : `${d.restraint?.check === "report" ? '<p class="status">Reported only: it does not choose the bars.</p>' : ""}<div class="scroll"><table><tr><th>Layer</th><th>w<sub>k</sub></th><th>Limit</th><th>Details</th><th></th></tr>
       ${Object.entries(d.restraint?.layers || {}).map(([k, r]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td>${fmt(r.wk, 3)} mm</td><td>${fmt(r.limit, 2)} mm</td><td>ε<sub>r</sub> ${fmt(r.eps_r)} µε, s<sub>r,max</sub> ${fmt(r.sr_max)} mm</td><td>${ok(r.passed)}</td></tr>`).join("")}
     </table></div>
-    <p class="status">${fmt(d.restraint?.length_m)} m between joints, R = ${fmt(d.restraint?.R, 2)} (${esc(d.restraint?.R_from || "")}).</p>`;
+    <p class="status">${fmt(d.restraint?.length_m)} m between joints, R = ${fmt(d.restraint?.R, 2)} (${esc(d.restraint?.R_from || "")}), bars along the quay.</p>`}`;
   if (d.strip_design) {
     mountCrackPictures(card, slabCrackItems(d));
     stationEditor(card, d);
     wireStripTable(card, d);
+    barDiagrams(card, d);
     momentPlan(card, d);
   }
   const plan = card.querySelector('[data-kind="plan"]');
@@ -3552,7 +3782,7 @@ function slabCrackItems(d) {
   const rows = d.strip_design?.rows || [];
   return rows.flatMap((r) =>
     (r.sets?.qp || []).filter((q) => q.crack).map((q) => ({
-      label: `${r.moment} ${r.face} bars, ${r.strip} strip, ${fmt(r.station[0], 2)} to ${fmt(r.station[1], 2)} m, ${q.combination}`,
+      label: r.strip === "all" ? `${r.moment} ${r.face} bars, ${r.label}, ${q.combination}` : `${r.moment} ${r.face} bars, ${r.strip} strip, ${fmt(r.station[0], 2)} to ${fmt(r.station[1], 2)} m, ${q.combination}`,
       set: q,
       geom: { shape: "strip" },
       forces: `${q.combination}: M = ${fmt(q.M_kNm_per_m)} kNm/m, N = ${fmt(q.N_kN_per_m)} kN/m (compression +), strip averaged, with ${r.bars}`,
