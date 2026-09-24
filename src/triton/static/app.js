@@ -3156,6 +3156,7 @@ function slabCard(d) {
       <div class="count"><b>${sh.cells_needing_links ?? 0}</b>${fmt(d.zone_size_m, 1)} m cells need shear links</div>
     </div>
     ${(d.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${voidsBlock(d)}
     ${v3dSlot(d.element)}
     ${d.strip_design ? `<h3 style="margin-top:18px">Moments across the deck and the stations</h3>
       <div class="chart wide" data-kind="stations"></div><div data-kind="station-ctl"></div>
@@ -3178,15 +3179,16 @@ function slabCard(d) {
       <div class="scroll"><table class="punch"><tr><th>Pile</th><th>X, Y</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Links</th><th></th></tr>
       ${punch.map((q, i) => `<tr class="link" data-punch="${i}"><td>${esc(q.pile)}</td><td>${fmt(q.x, 1)}, ${fmt(q.y, 1)}</td>
         <td><input type="number" step="any" data-depth="${i}" value="${q.thickness_mm}" style="width:80px" title="${esc(q.thickness_from)}"> mm</td><td>${fmt(q.V_kN)} kN, ${esc(q.direction)}<br><span class="status">${esc(q.combination)}</span></td><td>${fmt(q.beta, 2)}</td>
-        <td>${fmt(q.vEd_MPa, 3)} / ${fmt(q.vRd_c_MPa, 3)}</td><td>${fmt(q.vEd_face_MPa, 2)} / ${fmt(q.vRd_max_MPa, 2)}</td>
+        <td>${fmt(q.vEd_MPa, 3)} / ${fmt(q.vRd_c_MPa, 3)}${q.u1_over_voids_pct ? `<br><span class="status">u1 less ${fmt(q.u1_over_voids_pct)}% over voids</span>` : ""}</td><td>${fmt(q.vEd_face_MPa, 2)} / ${fmt(q.vRd_max_MPa, 2)}</td>
         <td>${q.needs_reinforcement ? (q.perimeters ? `${q.perimeters} perimeters @ ${fmt(q.radial_spacing_mm)} mm, ${fmt(q.asw_mm2_per_perimeter)} mm² each, to ${fmt(q.reinforced_to_mm)} mm from the face` : q.fix ? `Links alone cannot: ${esc(punchFix(q))}` : "–") : "none"}</td><td>${ok(q.passed)}</td></tr>`).join("")}
     </table></div><div class="charts" data-kind="punch"></div>
-    <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d); nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
+    <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d)${d.voids?.positions?.length ? " less the parts over a void (6.4.2(3), as an opening)" : ""}; nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
     <h3 style="margin-top:18px">Shear per metre ${ok(sh.passed !== false)}</h3>
     <p>${sh.governing ? `Largest v − V<sub>Rd,c</sub>: ${esc(sh.governing.combination)} at X ${fmt(sh.governing.x, 1)}, Y ${fmt(sh.governing.y, 1)}: v = ${fmt(sh.governing.V_kN_per_m)} kN/m, V<sub>Rd,c</sub> = ${fmt(sh.governing.VRd_c_kN_per_m)} kN/m, V<sub>Rd,max</sub> = ${fmt(sh.governing.VRd_max_kN_per_m)} kN/m.` : ""}
       ${sh.heaviest ? ` Links in ${sh.cells_needing_links} cells, in ${sh.links.length} bands across the deck at the mesh spacing (they hook round the bottom mesh: ${fmt(sh.link_spacing_mm?.x)} mm across X, ${fmt(sh.link_spacing_mm?.y)} mm across Y, or every second bar).` : " No shear links needed."}</p>
     ${sh.links?.length ? `<div class="scroll"><table><tr><th>Band</th>${sh.links[0].stations ? "<th>Stations (m)</th>" : ""}<th>X (m)</th><th>Y (m)</th><th>Links</th><th>A<sub>sw</sub> given / needed (mm²/m²)</th><th>Cells needing links</th></tr>
       ${[...sh.links].sort((a, b) => (a.stations?.[0] ?? a.x[0]) - (b.stations?.[0] ?? b.x[0])).map((z, i) => `<tr><td>S${i + 1}</td>${z.stations ? `<td>${fmt(z.stations[0], 1)} to ${fmt(z.stations[1], 1)}</td>` : ""}<td>${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}</td><td>${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</td><td><b>${esc(z.label)}</b></td><td>${fmt(z.asw_mm2_per_m2)} / ${fmt(z.needs_mm2_per_m2)}</td><td>${fmt(z.cells)}</td></tr>`).join("")}</table></div>
+      ${sh.links.some((z) => z.in_webs) ? `<p class="status">Bands marked "per web" are in the voided slab: the links stand in the webs between the voids (${fmt(d.voids?.web_mm)} mm), at the void spacing across them; the other bands are in the solid slab.</p>` : ""}
       <p class="status">Each band takes the links its worst cell needs, over the full width of the deck, as the office's slab sheets. The bands are drawn on the plan above (Shear links); they follow the shear, not the bending zones.</p>` : ""}
     ${sh.method ? `<p class="status">${esc(sh.method)}.</p>` : ""}
     <h3 style="margin-top:18px">Temperature and shrinkage restraint</h3>
@@ -3300,13 +3302,51 @@ function slabPlan(el, d, key) {
   el.innerHTML = `<div class="chart-title">${key === "shear" ? `Shear links: ${esc(labels.join(", "))} in the shaded zones, none elsewhere` : `${esc(LAYER_NAME[key] || key)}: mesh ${esc(l.basic.label)} everywhere${labels.length ? `, plus additional ${esc(labels.join(", "))} in the shaded zones` : ""}`}</div>
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Slab plan of ${esc(key)}">
       <rect x="${L(x0, x1)}" y="${Y(y1)}" width="${(x1 - x0) * sc}" height="${(y1 - y0) * sc}" fill="var(--miss-bg)" stroke="var(--muted)"/>
-      ${zones}${piles}
+      ${voidLines(d, X, Y)}${zones}${piles}
       <text class="tick" x="${pad}" y="${H - 8}">X ${fmt(flip ? x1 : x0, 1)}${flip ? " (sea side)" : ""}</text><text class="tick" x="${W - pad}" y="${H - 8}" text-anchor="end">X ${fmt(flip ? x0 : x1, 1)}</text>
       <text class="tick" x="${pad - 4}" y="${Y(y1) + 4}" text-anchor="end">Y ${fmt(y1, 0)}</text><text class="tick" x="${pad - 4}" y="${Y(y0)}" text-anchor="end">${fmt(y0, 0)}</text>
     </svg>
     ${(d.punching || []).length ? `<p class="status plan-key"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="4" fill="none" stroke="var(--text)" stroke-width="1.5"/></svg> pile head
       <svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="pp-u1"/></svg> punching control perimeter u1, 2d from the pile face: no links needed
       <svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="pp-out"/></svg> the same, where the pile needs punching links (see Punching at the piles)</p>` : ""}`;
+}
+
+// The slab's voids in plan: a dashed band for each void over its run.
+function voidLines(d, X, Y) {
+  const v = d.voids;
+  if (!v?.positions?.length) return "";
+  const r = v.diameter_mm / 2000;
+  return v.positions.map((p) => {
+    const [xa, xb, ya, yb] = v.along === "X" ? [v.run[0], v.run[1], p - r, p + r] : [p - r, p + r, v.run[0], v.run[1]];
+    return `<rect x="${Math.min(X(xa), X(xb))}" y="${Y(yb)}" width="${Math.abs(X(xb) - X(xa))}" height="${Math.abs(Y(ya) - Y(yb))}" class="void-band"><title>Void Ø${fmt(v.diameter_mm)} at ${v.across} ${fmt(p, 2)}</title></rect>`;
+  }).join("") + (v.piles || []).map(([px, py, pr]) => `<circle cx="${X(px)}" cy="${Y(py)}" r="${Math.abs(X(px + pr + v.solid_round_piles_m) - X(px))}" class="void-solid"><title>Solid round the pile: no voids within ${fmt(v.solid_round_piles_m, 2)} m of its face</title></circle>`).join("");
+}
+
+// The voids: where they are and the voided sections the design uses.
+function voidsBlock(d) {
+  const v = d.voids;
+  if (!v) return "";
+  if (!v.positions?.length) return `<h3 style="margin-top:18px">Voids</h3><p class="status">No void fits between the piles with the clear distance set: the slab is designed solid.</p>`;
+  const h = d.thickness_mm, D = v.diameter_mm, s = v.spacing_mm, tc = v.centre_depth_mm;
+  const n = 3, W = 440, pad = 34, padR = 64, k = (W - pad - padR) / (n * s), Hs = h * k + 46;
+  const circles = Array.from({ length: n }, (_, i) => `<circle cx="${pad + (i + 0.5) * s * k}" cy="${14 + tc * k}" r="${(D / 2) * k}" class="void-hole"/>`).join("");
+  const dim = (x, y1, y2, t) => `<line x1="${x}" x2="${x}" y1="${y1}" y2="${y2}" class="void-dim"/><text class="tick" x="${x + 4}" y="${(y1 + y2) / 2 + 4}">${t}</text>`;
+  const across = `<svg viewBox="0 0 ${W} ${Hs}" role="img" aria-label="Section across the voids">
+      <rect x="${pad}" y="14" width="${n * s * k}" height="${h * k}" class="pp-slab"/>${circles}
+      ${dim(pad + n * s * k + 6, 14, 14 + v.flange_top_mm * k, fmt(v.flange_top_mm))}
+      ${dim(pad + n * s * k + 6, 14 + (h - v.flange_bottom_mm) * k, 14 + h * k, fmt(v.flange_bottom_mm))}
+      <text class="tick" x="${pad + s * k}" y="${14 + tc * k + 4}" text-anchor="middle">${fmt(v.web_mm)}</text>
+      <text class="tick" x="${pad + 0.5 * s * k}" y="${Hs - 8}" text-anchor="middle">Ø${fmt(D)} @ ${fmt(s)}</text>
+    </svg>`;
+  const along = `<svg viewBox="0 0 ${W} ${Hs}" role="img" aria-label="Section along a void">
+      <rect x="${pad}" y="14" width="${W - 2 * pad}" height="${h * k}" class="pp-slab"/>
+      <rect x="${pad + 30}" y="${14 + (tc - D / 2) * k}" width="${W - 2 * pad - 60}" height="${D * k}" class="void-hole"/>
+      <text class="tick" x="${W / 2}" y="${Hs - 8}" text-anchor="middle">along the void: ${fmt(v.flange_top_mm)} mm above, ${fmt(v.flange_bottom_mm)} mm below</text>
+    </svg>`;
+  return `<h3 style="margin-top:18px">Voids</h3>
+    <p>${v.positions.length} voids Ø${fmt(D)} at ${fmt(s)} mm along ${esc(v.along)}, from ${fmt(v.run[0], 2)} to ${fmt(v.run[1], 2)} m (${esc(v.run_from)}), centre ${fmt(tc)} mm below the top; ${fmt(v.void_share_pct, 1)}% of the slab's concrete (${fmt(v.void_m3, 1)} m³)${v.solid_round_piles_m != null ? `; solid ${fmt(v.solid_round_piles_m, 2)} m round every pile's face` : ""}${v.left_out?.length ? `; ${v.left_out.length} left out on the lines of piles (${esc(v.across)} ${v.left_out.map((p) => fmt(p, 2)).join(", ")})` : ""}.</p>
+    <div class="charts"><div><div class="chart-title">Across the voids (bars along ${esc(v.along)})</div>${across}</div><div><div class="chart-title">Along a void (bars across the voids)</div>${along}</div></div>
+    <p class="status">Bending: the compression block on the concrete left at each depth (the circles for the bars along the voids, only the solid top and bottom over a void for the bars across them); the solid slab's result wherever the block stays in the solid part. Crack widths with the voided compression zone. Shear: the webs between the voids (b<sub>w</sub> ${fmt(100 * (1 - D / s))}% of the width) with links in the webs only. Punching: the parts of the control perimeter over a void are left out. Outside the voided area (the ends, and ${fmt(s / 2)} mm beyond the outer voids) the slab is solid.</p>`;
 }
 
 // ---------------------------------------------------------------- Beams

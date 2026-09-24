@@ -321,7 +321,9 @@ def cost_section(project: Project, section: Section, results: dict[str, Any]) ->
             f"{width:.1f} m wide × {h * 1000:.0f} mm, {st.get('kg_per_m2') or 0:.0f} kg/m² "
             "(links not included)"
         )
-        row.concrete_m3 = area_m2 * h
+        row.concrete_m3 = area_m2 * h * (st.get("concrete_share") or 1.0)
+        if (st.get("concrete_share") or 1.0) < 1:
+            row.basis.append(f"voids take {100 * (1 - st['concrete_share']):.1f}% of the concrete")
         row.rebar_t = area_m2 * (st.get("kg_per_m2") or 0) / 1000
         row.add(_price(prices.concrete_slab, row.concrete_m3), "slab concrete price")
         row.add(_price(prices.rebar, row.rebar_t), "reinforcement price")
