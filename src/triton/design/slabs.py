@@ -721,10 +721,13 @@ def _centroid(bar_layers: list[dict]) -> tuple[float, float]:
     return area, (sum(q["as_mm2_per_m"] * q["from_face_mm"] for q in bar_layers) / area if area else 0.0)
 
 
-def row_ductility(rows: list[dict], layers: dict, h: float, fcd: float, fyd: float) -> None:
+def row_ductility(
+    rows: list[dict], layers: dict, h: float, fcd: float, fyd: float, vsec: dict | None = None
+) -> None:
     """Give every designed row its ``ductility`` (see ``ductility``): the tension face's bars at their
     capacity under the row's N, with the other face's bars in the same direction as compression steel
-    (the same strip and station where it has a row there, else that face's basic mesh)."""
+    (the same strip and station where it has a row there, else that face's basic mesh). Rows in the
+    voided slab take the compression block on the voided section (``vsec``)."""
     other = {"top": "bottom", "bottom": "top"}
     by_key = {(r["layer"], tuple(r["station"]), r["strip"]): r for r in rows if r.get("zone") is None}
     for r in rows:
@@ -738,7 +741,11 @@ def row_ductility(rows: list[dict], layers: dict, h: float, fcd: float, fyd: flo
         a_c, c_c = _centroid(opp_layers)
         a_t = a_t or float(r["as_mm2_per_m"])
         d = h - c_t if c_t else h - 60.0
-        dct = ductility.strip(a_t, d, float(r["N_kN_per_m"]), fcd, fyd, a_c, c_c)
+        block = None
+        if r.get("voided") and vsec and direction in vsec:
+            depth_, area_, _, _ = vsec[direction].cumulative(other[face])
+            block = lambda a, depth_=depth_, area_=area_: float(np.interp(a, depth_, area_))  # noqa: E731
+        dct = ductility.strip(a_t, d, float(r["N_kN_per_m"]), fcd, fyd, a_c, c_c, block=block)
         dct["ratio_pct"] = round(100 * a_t / (1000 * h), 2)
         dct["warnings"] = ductility.warnings(dct["x_d"], dct["eps_s"], dct["eps_yd"], dct["ratio_pct"])
         r["ductility"] = dct
@@ -2750,7 +2757,7 @@ def design_slab(
         [p.get("utilisation_with_links", p["utilisation"]) for p in punch if p.get("passed")], default=0.0
     )
     lay_u = max(layers[layer]["utilisation"] for layer in LAYERS)
-    row_ductility(strip_rows + overall_rows, layers, h, fcd_s, fyd)
+    row_ductility(strip_rows + overall_rows, layers, h, fcd_s, fyd, vsec)
     strip_design = None
     if strips:
         summary = {}

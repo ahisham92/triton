@@ -135,3 +135,17 @@ def test_link_quantities_count_the_voided_and_solid_parts_once():
     assert any(q.get("in_webs") for q in links) and all("area_m2" in q for q in links)
     assert sum(q["area_m2"] for q in links) <= whole + 1e-6
     assert slab_links(d)["shear_kg"] >= 0
+
+
+def test_ductility_uses_the_voided_compression_zone():
+    from triton.design import ductility
+
+    thr = vd.VoidSection(700, 500, 350, 700, "through")
+    a, area, _, _ = thr.cumulative("top")
+    solid = ductility.strip(9000, 620, 0.0, 26.7, 435)
+    voided = ductility.strip(9000, 620, 0.0, 26.7, 435, block=lambda b: float(np.interp(b, a, area)))
+    # Only 100 mm of concrete above the void: the neutral axis goes much deeper.
+    assert voided["x_d"] > solid["x_d"] * 1.5
+    d = design_deck(voids=SlabVoids(diameter=500, spacing=700))
+    rows = [r for r in d["strip_design"]["rows"] if r.get("voided")]
+    assert rows and all("ductility" in r for r in rows)

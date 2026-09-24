@@ -31,16 +31,19 @@ def strip(
     area_c: float = 0.0,
     d2: float = 0.0,
     es: float = 200_000.0,
+    block=None,
 ) -> dict:
     """x/d and the tension bars' strain of a 1 m slab strip at its capacity (mm², mm, kN/m comp. +).
 
     ``area_c`` at depth ``d2`` from the compression face is compression steel, at the stress its strain
-    gives (so it only counts in full where it yields)."""
+    gives (so it only counts in full where it yields). ``block(a)``, when given, is the concrete area
+    (mm² per metre) of a compression block a deep, for a section with voids."""
     lo, hi = 1e-3, max(d, 1.0) * 1.5
     for _ in range(60):  # force balance: concrete block + compression bars = tension bars + N
         x = 0.5 * (lo + hi)
         sc = min(es * ECU * max(x - d2, 0.0) / x, fyd) if area_c else 0.0
-        if 0.8 * x * 1000 * fcd + area_c * sc - area * fyd - n * 1e3 > 0:
+        conc = fcd * (block(0.8 * x) if block else 0.8 * x * 1000)
+        if conc + area_c * sc - area * fyd - n * 1e3 > 0:
             hi = x
         else:
             lo = x
