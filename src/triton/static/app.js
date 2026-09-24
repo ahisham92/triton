@@ -1434,14 +1434,42 @@ function renderFactors(data) {
   const combos = data.combinations.map((c) => c.name);
   const byCombo = (c) => sheets.filter((x) => x.combination === c).map((x) => x.name);
   const open = new Set();
+  // Changes are made on a copy and used only when Apply is pressed.
+  const copy = () => JSON.parse(JSON.stringify(p.load_factors));
+  let draft = copy();
+  let message = "";
+  const pending = () => JSON.stringify(draft) !== JSON.stringify(p.load_factors);
+  const showState = () => {
+    const button = box.querySelector("#factor-apply");
+    const st = box.querySelector("#factor-status");
+    if (!button) return;
+    button.disabled = !pending();
+    box.querySelector("#factor-undo").hidden = !pending();
+    st.className = `status${pending() ? " unsaved" : ""}`;
+    st.textContent = pending() ? "Not applied yet: press Apply multiplier to use it (leaving this tab drops the change)." : message;
+  };
+  const touched = () => {
+    message = "";
+    showState();
+  };
+  const describe = (rules) => {
+    const used = rules.filter((r) => r.sheets.length && Number(r.factor) !== 1);
+    if (!used.length) return "Applied: no load multiplier; the straining actions are used as uploaded.";
+    const comboOf = new Map(sheets.map((x) => [x.name, x.combination]));
+    const parts = used.map((r) => {
+      const cs = [...new Set(r.sheets.map((n) => comboOf.get(n)).filter(Boolean))];
+      const which = cs.length && cs.length <= 3 ? ` ${cs.join(", ")}` : "";
+      return `×${r.factor} on ${r.sheets.length}${which} sheet${r.sheets.length === 1 ? "" : "s"}${r.note ? ` (${r.note})` : ""}`;
+    });
+    return `Applied: ${parts.join("; ")}. Designed results that use these sheets now show as out of date until designed again.`;
+  };
   const draw = () => {
-    const taken = (i) => new Set(p.load_factors.flatMap((r, j) => (j === i ? [] : r.sheets)));
+    const taken = (i) => new Set(draft.flatMap((r, j) => (j === i ? [] : r.sheets)));
     box.innerHTML = `<h2>Load multipliers</h2>
       <p class="status" style="margin-top:0">Multiply the straining actions of chosen sheets, e.g. 1.35 on the Set B sheets. X, Y and Z are not changed.
-        Saved as you type, with no need to press Apply decisions (that button is only for the warnings). It is applied when you design
-        and in the sheet pile wall export; the stored workbook and the sheet view keep the uploaded values. Changing it marks designed
-        results out of date.</p>
-      ${p.load_factors
+        Press Apply multiplier to use your changes (Apply decisions is only for the warnings). It is used when you design and in the
+        sheet pile wall export; the stored workbook and the sheet view keep the uploaded values. Changing it marks designed results out of date.</p>
+      ${draft
         .map((r, i) => {
           const other = taken(i);
           const comboBoxes = combos
@@ -1463,41 +1491,67 @@ function renderFactors(data) {
           </div>`;
         })
         .join("")}
-      <button class="quiet" id="add-factor">Add multiplier</button>`;
+      <div class="row"><button class="quiet" id="add-factor">Add multiplier</button>
+        <button id="factor-apply">Apply multiplier</button><button class="quiet" id="factor-undo" hidden>Discard changes</button>
+        <span class="status" id="factor-status"></span></div>`;
     box.querySelectorAll("details[data-rule]").forEach((d) => (d.ontoggle = () => {
       const i = Number(d.dataset.rule);
       if (d.open) open.add(i);
       else open.delete(i);
     }));
     box.querySelector("#add-factor").onclick = () => {
-      p.load_factors.push({ factor: 1.35, sheets: [], note: "" });
-      markDirty();
+      draft.push({ factor: 1.35, sheets: [], note: "" });
       draw();
     };
     box.querySelectorAll("[data-remove]").forEach((b) => (b.onclick = () => {
-      p.load_factors.splice(Number(b.dataset.remove), 1);
-      markDirty();
+      draft.splice(Number(b.dataset.remove), 1);
       draw();
     }));
     box.querySelectorAll("input[data-key]").forEach((inp) => (inp.oninput = () => {
-      const r = p.load_factors[Number(inp.dataset.rule)];
+      const r = draft[Number(inp.dataset.rule)];
       r[inp.dataset.key] = inp.dataset.key === "factor" ? (inp.value === "" ? inp.value : Number(inp.value)) : inp.value;
-      markDirty();
+      touched();
     }));
     box.querySelectorAll("input[data-combo]").forEach((inp) => (inp.onchange = () => {
       const i = Number(inp.dataset.rule);
-      const r = p.load_factors[i];
+      const r = draft[i];
       const names = byCombo(inp.dataset.combo).filter((n) => !taken(i).has(n));
       r.sheets = inp.checked ? [...new Set([...r.sheets, ...names])] : r.sheets.filter((n) => !names.includes(n));
-      markDirty();
       draw();
     }));
     box.querySelectorAll("input[data-sheet]").forEach((inp) => (inp.onchange = () => {
-      const r = p.load_factors[Number(inp.dataset.rule)];
+      const r = draft[Number(inp.dataset.rule)];
       r.sheets = inp.checked ? [...r.sheets, inp.dataset.sheet] : r.sheets.filter((n) => n !== inp.dataset.sheet);
-      markDirty();
       draw();
     }));
+    box.querySelector("#factor-undo").onclick = () => {
+      draft = copy();
+      draw();
+    };
+    box.querySelector("#factor-apply").onclick = async (e) => {
+      const button = e.target;
+      const st = box.querySelector("#factor-status");
+      const bad = draft.find((r) => !(Number(r.factor) > 0));
+      if (bad) return (st.textContent = "Each multiplier needs a number above 0.");
+      button.disabled = true;
+      button.textContent = "Applying…";
+      st.className = "status";
+      st.textContent = "Saving the multipliers…";
+      const before = p.load_factors;
+      p.load_factors = JSON.parse(JSON.stringify(draft)).map((r) => ({ ...r, factor: Number(r.factor) }));
+      markDirty();
+      await save();
+      if (state.errors?.length) {
+        p.load_factors = before;
+        markDirty(); // back to what was applied before
+        message = `Not applied: ${state.errors.map((x) => x.msg).join(" ")}`;
+      } else {
+        message = describe(p.load_factors);
+        draft = copy();
+      }
+      draw();
+    };
+    showState();
   };
   draw();
 }
