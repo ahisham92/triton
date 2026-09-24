@@ -849,13 +849,17 @@ def _shear_and_steel(pile, settings, loads, chosen, curtailment, geom) -> tuple[
                 max(g["diameter"] for g in r["cage"]["rings"]),
                 min(g["diameter"] for g in r["cage"]["rings"]),
                 max(r["lap_below_m"]),
+                tuple((g["radius"], g["diameter"]) for g in r["cage"]["rings"][1:]),
             )
             for r in runs
         ]
         longitudinal = curtailment["weight_kg"]
     else:
         diameters = [g.diameter for g in chosen.rings]
-        zones = [CageZone(head, toe, chosen.area, chosen.outer.radius, max(diameters), min(diameters), 0.0)]
+        inner = tuple((g.radius, g.diameter) for g in chosen.rings[1:])
+        zones = [
+            CageZone(head, toe, chosen.area, chosen.outer.radius, max(diameters), min(diameters), 0.0, inner)
+        ]
         from .curtailment import anchorage  # imports this module
 
         above = anchorage(settings, chosen)

@@ -62,6 +62,7 @@ WINDOW = 0.8  # m, half-length of the fit along the beam (shorter fits pick up t
 MIN_BAR = 12
 MIN_LINK_SPACING = 75.0
 BAND = 0.5  # m, heat-map bands along the beam
+PEAK = 0.4  # m, half-length along the beam over which the peak nodal values are taken
 
 
 # --- Section forces ------------------------------------------------------------------------------
@@ -106,9 +107,18 @@ def _columns(lay: Layout) -> dict[str, str]:
 
 
 def station_forces(
-    frame: pd.DataFrame, lay: Layout, sag: float, stations: np.ndarray | None = None
+    frame: pd.DataFrame,
+    lay: Layout,
+    sag: float,
+    stations: np.ndarray | None = None,
+    peak_width: float | None = None,
 ) -> pd.DataFrame:
-    """Beam section forces at stations along the beam (kN, kNm; N compression +, Mv sagging +)."""
+    """Beam section forces at stations along the beam (kN, kNm; N compression +, Mv sagging +).
+
+    With ``peak_width`` (m), Mv and V are the peak nodal values per metre within ±PEAK of the
+    station times that width, as hand calculations take them: one row with the largest sagging
+    moment and one with the largest hogging moment. N, Mh, Vh and T stay integrated.
+    """
     cols = _columns(lay)
     f = frame.drop_duplicates(["X", "Y", "Z"])
     s = f[lay.along].to_numpy(float)
@@ -129,22 +139,37 @@ def station_forces(
         A = np.column_stack([np.ones(m.sum()), t[m]])  # no slope along: no extrapolation at faces
         pinv = np.linalg.pinv(A)
         fit = {k: pinv @ v[m] for k, v in values.items()}
-        rows.append(
-            {
-                "s": round(float(s0), 3),
-                "N": -fit["N"][0] * B,  # concrete sign
-                "Mv": sag * fit["M"][0] * B,
-                "Mh": -fit["N"][1] * B**3 / 12,
-                "V": fit["V"][0] * B,
-                "Vh": fit["Q12"][0] * B,
-                "T": fit["M12"][0] * B - fit["V"][1] * B**3 / 12,
-            }
-        )
+        row = {
+            "s": round(float(s0), 3),
+            "N": -fit["N"][0] * B,  # concrete sign
+            "Mv": sag * fit["M"][0] * B,
+            "Mh": -fit["N"][1] * B**3 / 12,
+            "V": fit["V"][0] * B,
+            "Vh": fit["Q12"][0] * B,
+            "T": fit["M12"][0] * B - fit["V"][1] * B**3 / 12,
+        }
+        if peak_width is None:
+            rows.append(row)
+            continue
+        near = np.abs(s - s0) <= PEAK + 1e-9
+        if not near.any():
+            near = m
+        mv = sag * values["M"][near]
+        vv = values["V"][near]
+        row["V"] = float(vv[np.argmax(np.abs(vv))]) * peak_width
+        rows.append({**row, "Mv": float(mv.max()) * peak_width})
+        if mv.min() < mv.max():
+            rows.append({**row, "Mv": float(mv.min()) * peak_width})
     return pd.DataFrame(rows, columns=["s", "N", "Mv", "Mh", "V", "Vh", "T"])
 
 
 def beam_loads(
-    sheets: dict[str, SheetData], lay: Layout, sag: float, qp: bool, supports: list[Support] = ()
+    sheets: dict[str, SheetData],
+    lay: Layout,
+    sag: float,
+    qp: bool,
+    supports: list[Support] = (),
+    peak_width: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(station forces, transverse node forces) of the ULS (or QP) combinations.
 
@@ -164,7 +189,7 @@ def beam_loads(
         f = f[outside]
         if f.empty:
             continue
-        st = station_forces(f, lay, sag)
+        st = station_forces(f, lay, sag, peak_width=peak_width)
         parts.append(st.assign(combination=combo, category=ctype.value))
         nodes.append(
             pd.DataFrame(
@@ -815,14 +840,27 @@ def design_beam(
     cl, sl = _laws(beam, settings)
     e_eff = conc.ecm / (1 + settings.cracking.creep_coefficient)
     supports = find_supports(lay, geometry, elements)
-    uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=supports)
-    qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=supports)
+    peak = g.b / 1000 if settings.beam_actions == "peak_width" else None
+    uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=supports, peak_width=peak)
+    qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=supports, peak_width=peak)
     notes = [
         f"Spans along global {lay.along} ({lay.start:.2f} to {lay.end:.2f} m, {lay.end - lay.start:.1f} m); "
         f"local {lay.span_local} is along the beam"
         + (" (from the directions check)." if axes else " (assumed: the directions check had no answer)."),
         f"Width in the model {lay.width * 1000:.0f} mm"
-        + (f", designed as {b:.0f} mm." if beam.width is not None else ", used as the beam width."),
+        + (
+            f", designed as {b:.0f} mm."
+            if beam.width is not None
+            else ", used as the beam width because the element has no width. Set the real width on "
+            "the element: it sets the bars, the minimum steel and the capacity."
+        ),
+        (
+            f"Vertical bending and shear: peak nodal M and Q per metre within ±{PEAK:g} m of each station "
+            f"× the beam width {b / 1000:g} m, as the calc report takes them. N, horizontal bending and "
+            f"torsion are integrated over the model's {lay.width:g} m width (Design settings)."
+            if peak is not None
+            else "Section forces integrated over the model's width (Design settings)."
+        ),
         "Positive plate moments taken as " + settings.plate_positive_moment + " (Design settings).",
     ]
     if supports:
@@ -878,9 +916,9 @@ def design_beam(
         z -= g.inner(cage.bottom.phi) + (cage.bottom.layers - 1) * g.layer_gap(cage.bottom.phi, dg) / 2
         return check_truss(beam.truss, g.b, g.h, z, cage.bottom.area, king_spacing)
 
-    def grow_cage(asl: float):
+    def grow_cage(asl: float, use_truss: bool = True):
         """Step the faces up until bending (with ``asl`` of torsion steel taken out of the faces),
-        cracking and restraint pass."""
+        cracking, restraint and (with ``use_truss``) the truss tie pass."""
         ti = bi = next((i for i, f in enumerate(tops) if f.area >= as_min), len(tops) - 1)
         sides = side_candidates(g, settings, tops[ti], tops[bi])
         si = 0
@@ -921,7 +959,7 @@ def design_beam(
                     if restr["faces"][face]["wk"] > limits[face] + 1e-9:
                         grow = face
                         break
-            if grow is None and ((truss_for(cage) or {}).get("utilisation") or 0.0) > 1:
+            if grow is None and use_truss and ((truss_for(cage) or {}).get("utilisation") or 0.0) > 1:
                 grow = "bottom"
             if grow is None:
                 break
@@ -946,6 +984,71 @@ def design_beam(
                 si = min(si, len(sides) - 1)
         return cage, sec, u, cracks, restr, status
 
+    def section(cage: Cage, asl: float = 0.0) -> RectSection:
+        bars = cage_bars(g, cage, dg, asl)
+        return RectSection(g.b, g.h, bars, cl, sl, deduct=settings.partial_factors.deduct_bar_area)
+
+    def face_needs(cage: Cage, asl: float) -> dict[str, dict]:
+        """Steel each check needs on each face with the other faces as designed (mm², by bisection
+        over the candidates), and the check that sets the face."""
+        checks = {
+            "bending": lambda c, f: float(section(c, asl).utilisation(n, mv, mh).max()) <= 1 + 1e-9,
+            "crack": lambda c, f: (
+                crack_check(section(c), g, c, qp_m, e_eff, conc).get(f, {"wk": 0.0})["wk"] <= limits[f] + 1e-9
+            ),
+            "restraint": lambda c, f: (
+                restraint_check(beam, settings, g, c, conc)["faces"][f]["wk"] <= limits[f] + 1e-9
+            ),
+            "truss": lambda c, f: ((truss_for(c) or {}).get("utilisation") or 0.0) <= 1 + 1e-9,
+        }
+        names = {
+            "minimum": "minimum steel",
+            "bending": "bending (Plaxis actions)",
+            "crack": "QP crack width (Plaxis actions)",
+            "restraint": "restraint cracking",
+            "truss": "truss tie",
+        }
+        out = {}
+        for f in ("top", "bottom", "side"):
+            if f == "side":
+                cands = side_candidates(g, settings, cage.top, cage.bottom)
+                lo, minimum = 0, cands[0].area
+            else:
+                cands = tops
+                lo = next((i for i, x in enumerate(tops) if x.area >= as_min), len(tops) - 1)
+                minimum = as_min
+            final = getattr(cage, f)
+            hi = cands.index(final) if final in cands else len(cands) - 1
+            hi = max(hi, lo)
+
+            def with_face(x, f=f):
+                return Cage(**{"top": cage.top, "bottom": cage.bottom, "side": cage.side, f: x})
+
+            needs = {"minimum": round(minimum)}
+            for name, ok in checks.items():
+                if (name == "truss" and (f != "bottom" or beam.truss is None)) or (
+                    name == "crack" and f == "side"
+                ):
+                    continue
+                if ok(with_face(cands[lo]), f):
+                    needs[name] = 0
+                    continue
+                if not ok(with_face(cands[hi]), f):
+                    needs[name] = None  # more than the bars given
+                    continue
+                a, b = lo, hi
+                while b - a > 1:
+                    m = (a + b) // 2
+                    a, b = (a, m) if ok(with_face(cands[m]), f) else (m, b)
+                needs[name] = round(cands[b].area)
+            real = {k: v for k, v in needs.items() if v}
+            most = max(real.values())
+            gov = [names[k] for k, v in real.items() if v >= most - 1]
+            if f == "side" and gov == ["minimum steel"]:
+                gov = ["maximum bar spacing"]
+            out[f] = {"needs_mm2": needs, "governed_by": " and ".join(gov)}
+        return out
+
     limits = {"top": beam.crack_width_limit, "bottom": beam.crack_width_limit_bottom}
     limits["side"] = min(limits.values())
     n = mom["N"].to_numpy(float)
@@ -964,6 +1067,9 @@ def design_beam(
     )
     if asl > 0:
         cage, sec, u, cracks, restr, status = grow_cage(asl)
+    # The same cage from the Plaxis actions alone, to show what the truss adds.
+    plaxis_cage = grow_cage(asl, use_truss=False)[0] if beam.truss is not None else cage
+    needs = face_needs(cage, asl)
     if status != "ok":
         notes.append(f"No cage within the bar sizes and spacing limits passes every check ({status}).")
     u_max = float(u.max())
@@ -1051,8 +1157,20 @@ def design_beam(
     uniform = max([c for c in checks[1:] if c is not None and math.isfinite(c)], default=0.0)
     bands = beam_bands(lay, mom.assign(u=np.maximum(u, uniform)))
     sets = beam_sets(cage.label, mom, u, qp_m)
+    faces = [
+        {
+            "face": f,
+            "final": getattr(cage, f).label,
+            "final_mm2": round(getattr(cage, f).area),
+            "plaxis": getattr(plaxis_cage, f).label,
+            "plaxis_mm2": round(getattr(plaxis_cage, f).area),
+            **needs[f],
+        }
+        for f in ("top", "bottom", "side")
+    ]
     return {
         **base,
+        "faces": faces,
         "cage": {
             **cage.to_dict(g.b, g.h),
             "bars": [

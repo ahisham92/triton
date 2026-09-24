@@ -77,3 +77,18 @@ def test_setting_a_cage_while_locked_then_checking_it(client):
         f"/api/projects/{p['id']}/sections", json={"name": "B", "copy_from": p["sections"][0]["id"]}
     )
     assert s2.status_code in (200, 201) and not s2.json().get("user_cages")
+
+
+def test_inner_link_rings_count_in_the_steel_not_the_shear_check():
+    one = check(UserCage(rows=1, count=26, diameter=32))
+    two = check(UserCage(rows=2, count=26, diameter=32))
+    three = check(UserCage(rows=3, count=22, diameter=32))
+    assert one.shear["inner_rings"] == 0 and one.shear["inner_links_kg"] == 0
+    assert two.shear["inner_rings"] == 1 and three.shear["inner_rings"] == 2
+    assert 0 < two.shear["inner_links_kg"] < three.shear["inner_links_kg"]
+    assert (
+        two.steel["links_kg"] == pytest.approx(two.shear["links_kg"])
+        and two.shear["links_kg"] > two.shear["inner_links_kg"]
+    )
+    assert check(UserCage(rows=1.5, count=26, diameter=32)).shear["inner_rings"] == 1
+    assert check(UserCage(rows=2.5, count=26, diameter=32, inner_diameter=25)).shear["inner_rings"] == 2

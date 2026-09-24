@@ -264,3 +264,33 @@ def test_torsion_steel_comes_out_of_the_cage():
     assert "torsion_steel" not in plain["bending"]
     assert twisted["steel"]["longitudinal_kg_per_m"] >= plain["steel"]["longitudinal_kg_per_m"]
     assert any("6.3.2(3)" in n for n in twisted["notes"])
+
+
+def test_peak_times_width_takes_the_largest_nodal_values():
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(
+            lambda x, y: [0.0, -50.0, 0.0, 30.0 + 10 * x, 0.0, 0.0, 100.0 + 50 * x, 0.0]
+        )
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    lay = layout(sheets, {"1": "X", "2": "Y"})
+    f = station_forces(sheets["PT-B-Apron"].frame, lay, 1.0, np.array([6.0]), peak_width=4.5)
+    assert sorted(f["Mv"]) == pytest.approx([50 * 4.5, 150 * 4.5])
+    assert np.allclose(f["V"], 40 * 4.5)
+    assert np.allclose(f["N"], 100.0)  # still integrated over the model's 2 m
+
+
+def test_beam_reports_what_sets_each_face():
+    settings = DesignSettings()
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=100.0, q23=30.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=60.0)),
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    d = design_beam(
+        "Front Beam", BeamInput(kind="front_beam", width=2000, depth=1600), settings, sheets, [], {}, None
+    )
+    faces = {f["face"]: f for f in d["faces"]}
+    assert set(faces) == {"top", "bottom", "side"}
+    assert faces["top"]["needs_mm2"]["minimum"] > 0 and faces["top"]["governed_by"]
+    assert any("peak nodal" in n for n in d["notes"])

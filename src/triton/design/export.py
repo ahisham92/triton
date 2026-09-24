@@ -28,6 +28,7 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
     cages += [(w["infill"], "infill") for w in results.get("combi_walls", [])]
     for p, part in cages:
         c = p.get("curtailment") or {}
+        link = (p.get("shear") or {}).get("link_diameter_mm") or p["section"]["link_diameter_mm"]
         a = p.get("arrangement")
         if a is None:
             continue
@@ -51,6 +52,11 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
                         "top_m": r["top"],
                         "bottom_m": r["bottom"],
                         "label": r["cage"]["label"],
+                        # Inner link rings (same size and pitch as the outer links), one per inner row.
+                        "inner_link_hoops_mm": [
+                            round(2 * (ring["radius"] + ring["diameter"] / 2 + link / 2), 1)
+                            for ring in r["cage"]["rings"][1:]
+                        ],
                         "rows": [
                             {
                                 "count": ring["count"],

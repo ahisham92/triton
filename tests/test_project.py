@@ -38,8 +38,8 @@ def test_default_elements_by_name():
 
 def test_new_elements_start_from_the_office_sizes_and_zones():
     # Front beam 2.0 x 1.6, rear 2.0 x 2.0, slab 0.7 m; the king pile zones of the office's steel sheets.
-    assert default_element("Front Beam").depth == 1600
-    assert default_element("Rear Beam").depth == 2000
+    assert (default_element("Front Beam").width, default_element("Front Beam").depth) == (2000, 1600)
+    assert (default_element("Rear Beam").width, default_element("Rear Beam").depth) == (2000, 2000)
     assert default_element("Deck").thickness == 700
     zones = [(z.bottom_level, z.outside, z.inside) for z in CombiWallInput().corrosion_zones]
     assert zones == [(-0.5, 4.5, 0), (-14.5, 2.5, 0), (-16.12, 2.5, 0), (-25, 1.75, 0), (-39, 1.75, 1.75)]

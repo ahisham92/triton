@@ -51,6 +51,14 @@ class CageZone:
     phi_max: float
     phi_min: float
     lap_below: float  # m, lap of this zone's bars below ``bottom``
+    inner_rows: tuple[tuple[float, float], ...] = ()  # (bar circle radius, bar Ø) mm of each inner row
+
+
+def inner_hoops(zone: CageZone, link: float) -> list[float]:
+    """Diameters (mm, to the link centre line) of the inner link rings: one around each inner row of
+    bars (2 rows: one ring, 3 rows: two; a half row gets its own ring too). Not counted in the shear
+    check, only in the steel."""
+    return [2 * (radius + phi / 2 + link / 2) for radius, phi in zone.inner_rows]
 
 
 def _factors(settings: DesignSettings, accidental: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -200,6 +208,16 @@ def _design_with(
     hoop_len = math.pi * (D - 2 * pile_cover(pile, settings) - link) / 1000  # m
     weight = sum((zz["top"] - zz["bottom"]) * 1000 / zz["spacing_mm"] * hoop_len for zz in out_zones)
     weight *= asw / 1e6 * STEEL_DENSITY
+    # Inner rings at the same size and pitch as the outer links, over each cage zone's length.
+    inner = 0.0
+    for zz in out_zones:
+        for cz in zones:
+            overlap = min(zz["top"], cz.top) - max(zz["bottom"], cz.bottom)
+            if overlap > 0 and cz.inner_rows:
+                length = sum(math.pi * dia / 1000 for dia in inner_hoops(cz, link))
+                inner += overlap * 1000 / zz["spacing_mm"] * length
+    inner *= asw / 1e6 * STEEL_DENSITY
+    rings = max((len(cz.inner_rows) for cz in zones), default=0)
     provided = np.array(
         [next(zz["spacing_mm"] for zz in out_zones if zz["bottom"] - 1e-9 <= lv) for lv in levels]
     )
@@ -226,7 +244,9 @@ def _design_with(
         "max_spacing_mm": s_max,
         "min_link_diameter_mm": link_min,
         "zones": out_zones,
-        "links_kg": round(weight, 1),
+        "links_kg": round(weight + inner, 1),
+        "inner_links_kg": round(inner, 1),
+        "inner_rings": rings,
         "profile": _profile(levels, band, v_ed, vrdc),
         "notes": notes,
     }

@@ -2733,6 +2733,7 @@ function beamCard(b) {
       ${exRow("N", "N (compression +)", "kN")}${exRow("Mv", "M vertical (sagging +)", "kNm")}${exRow("Mh", "M horizontal", "kNm")}
       ${exRow("V", "V vertical", "kN")}${exRow("Vh", "V horizontal", "kN")}${exRow("T", "Torsion", "kNm")}
     </table></div></div>
+    ${faceNeeds(b)}
     ${g.combination ? `<p>Governing bending: ${esc(g.combination)} at ${fmt(g.s, 2)} m along the beam. N = ${fmt(g.N_kN)} kN, M<sub>v</sub> = ${fmt(g.Mv_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_v_kNm)}), M<sub>h</sub> = ${fmt(g.Mh_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_h_kNm)}), exponent a = ${fmt(g.a, 2)}. ${esc(bend.method || "")}.</p>` : ""}
     <div class="charts"><div class="chart" data-kind="moments"></div><div class="chart" data-kind="profile"></div></div>` : ""}
     <h3 style="margin-top:18px">Crack widths</h3>
@@ -2768,6 +2769,27 @@ function beamCard(b) {
     alongChart(card.querySelector('[data-kind="profile"]'), prof.profile, "Utilisation along the beam", "Utilisation", (q) => q.util, 1);
   }
   return card;
+}
+
+function faceNeeds(b) {
+  // Steel each check needs per face (mm²), the Plaxis-only design beside the final one.
+  if (!b.faces?.length) return "";
+  const cols = [["minimum", "Minimum"], ["bending", "Bending (Plaxis)"], ["crack", "QP crack (Plaxis)"], ["restraint", "Restraint cracking"], ["truss", "Truss tie"]];
+  const hasTruss = b.faces.some((f) => f.needs_mm2 && "truss" in f.needs_mm2);
+  const shown = cols.filter(([k]) => k !== "truss" || hasTruss);
+  const cell = (f, k) => {
+    const v = f.needs_mm2?.[k];
+    if (!(k in (f.needs_mm2 || {}))) return "–";
+    if (v === 0) return "below minimum";
+    if (v == null) return "more than any bars";
+    return fmt(v);
+  };
+  const name = { top: "Top", bottom: "Bottom", side: "Each side" };
+  return `<h3 style="margin-top:18px">What sets each face</h3>
+    <div class="scroll"><table><tr><th>Face</th>${shown.map(([, l]) => `<th>${l} mm²</th>`).join("")}${hasTruss ? "<th>From Plaxis alone</th>" : ""}<th>Final</th><th>Governed by</th></tr>
+      ${b.faces.map((f) => `<tr><td>${name[f.face]}</td>${shown.map(([k]) => `<td>${cell(f, k)}</td>`).join("")}${hasTruss ? `<td>${esc(f.plaxis)} (${fmt(f.plaxis_mm2)})</td>` : ""}<td><b>${esc(f.final)}</b> (${fmt(f.final_mm2)})</td><td>${esc(f.governed_by)}</td></tr>`).join("")}
+    </table></div>
+    <p class="status">Each column is the steel that check alone needs on that face, the other faces as designed. The final bars are the largest of them.${hasTruss ? " From Plaxis alone is the cage without the truss check." : ""}</p>`;
 }
 
 function beamSection(el, b) {
@@ -3112,7 +3134,7 @@ function shearBlock(sh, above = "the slab") {
     <div class="scroll"><table><tr><th>From</th><th>To</th><th>Links</th><th>Set by</th></tr>
       ${sh.zones.map((z) => `<tr><td>${fmt(z.top, 2)}</td><td>${fmt(z.bottom, 2)}</td><td>${esc(z.link)}</td><td>${esc(why[z.reason] || z.reason)}</td></tr>`).join("")}
     </table></div>
-    <p class="status">${esc(sh.method)}. Largest spacing ${fmt(sh.max_spacing_mm)} mm, smallest link Ø${fmt(sh.min_link_diameter_mm)} (9.5.3). ${fmt(sh.links_kg)} kg of links per pile.</p>
+    <p class="status">${esc(sh.method)}. Largest spacing ${fmt(sh.max_spacing_mm)} mm, smallest link Ø${fmt(sh.min_link_diameter_mm)} (9.5.3). ${fmt(sh.links_kg)} kg of links per pile${sh.inner_rings ? `, of which ${fmt(sh.inner_links_kg)} kg in ${sh.inner_rings} inner ring${sh.inner_rings > 1 ? "s" : ""} around the inner row${sh.inner_rings > 1 ? "s" : ""}` : ""}.</p>
     ${sh.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
 }
 

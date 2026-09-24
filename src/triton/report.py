@@ -296,6 +296,10 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
             ("Concrete area", "net of the bars" if pf.deduct_bar_area else "gross (as AdSec)"),
             ("Plate moments", f"positive = {s.plate_positive_moment}"),
             ("Shear checked at", f"{s.shear_check_distance} from the support face"),
+            (
+                "Beam bending and shear",
+                "peak × beam width" if s.beam_actions == "peak_width" else "integrated over the model width",
+            ),
             ("Creep coefficient φ (QP stresses)", f"{cr.creep_coefficient:g}"),
             (
                 "Restraint: T1, T2, α, K1",
@@ -836,7 +840,15 @@ def _pile_body(r: Report, p: dict) -> None:
         r.kv(
             [
                 ("Longitudinal bars (with laps)", f"{st.get('longitudinal_kg', 0):,.0f} kg"),
-                ("Links", f"{st.get('links_kg', 0):,.0f} kg"),
+                (
+                    "Links",
+                    f"{st.get('links_kg', 0):,.0f} kg"
+                    + (
+                        f" (incl. {sh_['inner_links_kg']:,.0f} kg in {sh_['inner_rings']} inner ring(s))"
+                        if (sh_ := p.get("shear") or {}).get("inner_rings")
+                        else ""
+                    ),
+                ),
                 ("Steel ratio", f"{st.get('kg_per_m3', 0):.0f} kg/m³"),
                 ("Piles of this type", p.get("count")),
                 (
@@ -991,6 +1003,33 @@ def _beam(r: Report, b: dict) -> None:
         )
     ex = bend.get("extremes") or {}
     r.table(["Action", "Max", "Min"], [[k, v.get("max"), v.get("min")] for k, v in ex.items()])
+    faces = b.get("faces") or []
+    if faces:
+        r.h(3, "What sets each face (mm² each check needs)")
+
+        def need(f: dict, k: str) -> Any:
+            v = (f.get("needs_mm2") or {}).get(k, "–")
+            return "below minimum" if v == 0 else "more than any bars" if v is None else v
+
+        keys = ["minimum", "bending", "crack", "restraint"] + (
+            ["truss"] if any("truss" in (f.get("needs_mm2") or {}) for f in faces) else []
+        )
+        r.table(
+            ["Face", "Minimum", "Bending (Plaxis)", "QP crack (Plaxis)", "Restraint", "Truss tie"][
+                : len(keys) + 1
+            ]
+            + ["From Plaxis alone", "Final", "Governed by"],
+            [
+                [
+                    f["face"],
+                    *[need(f, k) for k in keys],
+                    f.get("plaxis"),
+                    f.get("final"),
+                    f.get("governed_by"),
+                ]
+                for f in faces
+            ],
+        )
     cr = b.get("cracks") or {}
     rs = (b.get("restraint") or {}).get("faces") or {}
     rows = [

@@ -352,6 +352,13 @@ class DesignSettings(_Model):
         description="Sagging: positive M puts the bottom face of slabs and beams in tension. In the sample "
         "the deck's M11 peaks negative at every pile head, so positive is sagging there.",
     )
+    beam_actions: Literal["peak_width", "integrated"] = Field(
+        "peak_width",
+        title="Beam bending and shear from the plates",
+        description="Peak × width: the largest nodal M and Q per metre near each station times the beam "
+        "width, as the calc report takes them. Integrated: the plate results fitted and integrated across "
+        "the model's width (smaller where the mesh is coarse and noisy).",
+    )
     shear_check_distance: Literal["d", "2d"] = Field(
         "d", title="Shear checked at", description="Distance from the support face"
     )
@@ -1001,10 +1008,12 @@ def default_element(name: str) -> ElementInput | None:
     if cls is None:
         return None
     if cls is BeamInput:
-        # The office's usual sizes: front beam 1.6 m deep, rear beam 2.0 m.
+        # The office's current sizes (width x depth): front beam 2.0 x 1.6 m, rear beam 2.0 x 2.0 m.
         kind = parsed.spec.type.value
         if kind == "front_beam":
-            return BeamInput(kind=kind, depth=1600.0, truss=FrontBeamTruss())
+            return BeamInput(kind=kind, width=2000.0, depth=1600.0, truss=FrontBeamTruss())
+        if kind == "rear_beam":
+            return BeamInput(kind=kind, width=2000.0, depth=2000.0)
         return BeamInput(kind=kind, depth=2000.0)
     return cls()
 
