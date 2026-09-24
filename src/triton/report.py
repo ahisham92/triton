@@ -1242,9 +1242,16 @@ def _beam(r: Report, b: dict) -> None:
 WALL = {"sea": "Sea-side wall", "land": "Land-side wall", "floor": "Floor", "roof": "Roof"}
 
 
-def _room(r: Report, rm: dict) -> None:
-    """A room cut into the beam: its section, checks and extra bars."""
-    r.h(3, f"{rm['name']}: room in the beam from {rm['start_m']:g} to {rm['end_m']:g} m")
+def _room(r: Report, rm: dict, kind: str = "room") -> None:
+    """A room cut into the beam (or a channel in the deck): its section, checks and extra bars."""
+    if kind == "room":
+        r.h(3, f"{rm['name']}: room in the beam from {rm['start_m']:g} to {rm['end_m']:g} m")
+    else:
+        r.h(
+            3,
+            f"{rm['name']}: channel along {rm.get('direction', '')} from {rm['start_m']:g} to {rm['end_m']:g} m, "
+            f"centre line at {rm.get('at_m', 0):g} m",
+        )
     x = rm.get("section")
     if not x:
         for n in rm.get("notes", []):
@@ -1259,13 +1266,19 @@ def _room(r: Report, rm: dict) -> None:
     r.kv(
         [
             (
-                "Room",
+                kind.capitalize(),
                 f"{x['width_mm']} × {x['height_mm']} mm"
                 + (f" under a {x['top_mm']} mm roof" if x["top_mm"] else ", open at the top"),
             ),
             ("Concrete below", f"{x['bottom_mm']} mm"),
-            ("Walls", f"{x['wall_sea_mm']} mm sea side, {x['wall_land_mm']} mm land side"),
-            ("Stations over the room", rm.get("stations")),
+            (
+                "Walls",
+                f"{x['wall_sea_mm']} mm sea side, {x['wall_land_mm']} mm land side"
+                if kind == "room"
+                else f"{x['wall_sea_mm']} mm",
+            ),
+            ("Below the slab soffit", f"{rm['downstand_mm']} mm" if rm.get("downstand_mm") else None),
+            (f"Stations along the {kind}", rm.get("stations")),
             (
                 "N with biaxial bending",
                 f"{rm['bending']['utilisation']} ({g.get('combination')} at {g.get('s')} m: N {g.get('N_kN')} kN, "
@@ -1530,7 +1543,81 @@ def _slab(r: Report, s: dict) -> None:
             ],
         )
         r.p(f"{rest.get('length_m')} m between joints, R = {rest.get('R')} ({rest.get('R_from')}).")
+    op = s.get("openings") or {}
+    for m in op.get("manholes") or []:
+        _manhole(r, m)
+    for c in op.get("channels") or []:
+        _room(r, c, "channel")
     for n in s.get("notes", []):
+        r.note(n)
+
+
+def _manhole(r: Report, m: dict) -> None:
+    """A manhole or pit in the deck: the strips beside it and their trimmer bars."""
+    r.h(3, f"{m['name']}: opening in the deck")
+    if not m.get("directions"):
+        for n in m.get("notes", []):
+            r.note(n)
+        r.kv([("Result", _ok(False))])
+        return
+    r.kv(
+        [
+            (
+                "Opening",
+                f"{m['size_x_mm']} × {m['size_y_mm']} mm at X {m['x']:g}, Y {m['y']:g}"
+                + ("" if m["through"] else f", a pit {m['depth_mm']:g} mm deep"),
+            ),
+        ]
+    )
+    r.table(
+        [
+            "Bars along",
+            "Cut over (mm)",
+            "Strip (mm)",
+            "Factor",
+            "Strips need top / bottom",
+            "Trimmers top",
+            "Trimmers bottom",
+            "Utilisation",
+            "Shear",
+        ],
+        [
+            [
+                k,
+                d["cut_width_mm"],
+                d["strip_mm"],
+                d["factor"],
+                f"{d['strip']['top']['label']} / {d['strip']['bottom']['label']}",
+                d["trimmers"]["top"]["label"],
+                d["trimmers"]["bottom"]["label"],
+                d["strip"]["utilisation"],
+                d["shear"]["utilisation"],
+            ]
+            for k, d in m["directions"].items()
+        ],
+    )
+    pairs = [("Corners", m["corners"]["diagonals"])]
+    for p in m.get("piles") or []:
+        pairs.append(
+            (
+                f"Punching, {p['pile']}",
+                f"{round(100 * p['share'])}% of the perimeter lost: {p['utilisation_before']} → {p['utilisation']}",
+            )
+        )
+    if m.get("pit"):
+        pit = m["pit"]
+        pairs.append(
+            (
+                "Pit floor",
+                f"{pit['thickness_mm']} mm: top {pit['top']['label']}, bottom "
+                f"{pit['bottom']['label']}, utilisation {pit['utilisation']}",
+            )
+        )
+    pairs += [("Utilisation", m.get("utilisation")), ("Result", _ok(m.get("passed")))]
+    r.kv(pairs)
+    if m.get("suggestion"):
+        r.note(m["suggestion"]["text"])
+    for n in m.get("notes", []):
         r.note(n)
 
 

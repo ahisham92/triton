@@ -865,6 +865,52 @@ class SlabVoids(_Model):
     )
 
 
+class Manhole(_Model):
+    """An opening in the deck (a manhole or a pit), not in the Plaxis model: the bars it cuts go to
+    trimmer bars each side."""
+
+    name: str = Field("Manhole 1", title="Manhole")
+    x: float = _m("Centre X", 0.0)
+    y: float = _m("Centre Y", 0.0)
+    size_x: float = _mm("Size along X", 1000.0, gt=0, description="Inside size in plan.")
+    size_y: float = _mm("Size along Y", 1000.0, gt=0)
+    depth: float | None = _mm(
+        "Pit depth",
+        None,
+        gt=0,
+        description="Empty: through the slab. Set: a pit from the top with the rest of the slab under it.",
+    )
+    floor_load: float = Field(10.0, title="Load on the pit floor", ge=0, json_schema_extra={"unit": "kPa"})
+
+
+class Channel(_Model):
+    """A service channel cast into the deck, not in the Plaxis model: the slab's actions go round it
+    through its walls and base."""
+
+    name: str = Field("Channel 1", title="Channel")
+    direction: Literal["X", "Y"] = Field("Y", title="Runs along")
+    start: float = _m("From", 0.0, description="Where it starts along its direction (m, model coordinate).")
+    end: float = _m("To", 10.0)
+    at: float = _m("Centre line at", 0.0, description="Its centre line, across its direction (m).")
+    width: float = _mm("Inside width", 600.0, gt=0)
+    depth: float = _mm("Inside depth", 500.0, gt=0, description="From the top of the slab.")
+    walls: float = _mm("Wall thickness", 250.0, gt=0)
+    base: float | None = _mm(
+        "Base thickness",
+        None,
+        gt=0,
+        description="Empty: what the slab leaves under it. Deeper than the slab: the base hangs below the "
+        "soffit.",
+    )
+    floor_load: float = Field(10.0, title="Load in the channel", ge=0, json_schema_extra={"unit": "kPa"})
+
+    @model_validator(mode="after")
+    def _ends(self) -> Channel:
+        if self.end <= self.start:
+            raise ValueError(f"{self.name}: 'To' must be past 'From'")
+        return self
+
+
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
     thickness: float = _mm("Slab thickness", 700.0, gt=0)
@@ -985,6 +1031,16 @@ class SlabInput(_ConcreteSection):
         default_factory=list,
         title="Slab thickness at single piles",
         description="For punching only, e.g. on a slope.",
+    )
+    manholes: list[Manhole] = Field(
+        default_factory=list,
+        title="Manholes and pits",
+        description="Openings in the deck that the Plaxis model does not have (Openings tab).",
+    )
+    channels: list[Channel] = Field(
+        default_factory=list,
+        title="Service channels",
+        description="Channels cast into the deck that the Plaxis model does not have (Openings tab).",
     )
     crane: list[CraneArea] = Field(
         default_factory=list,

@@ -275,6 +275,43 @@ def _room_view(b: dict[str, Any], rm: dict[str, Any]) -> View:
 # --- slabs -------------------------------------------------------------------------------------------
 
 
+def _manhole_view(d: dict[str, Any], m: dict[str, Any]) -> View:
+    """A manhole in plan (mm from its centre): the opening, the trimmer bars each side and the corner
+    diagonals. Top and bottom trimmers are the same lines; the text gives both."""
+    v = View(f"{d['element']} - {m['name']}", f"{d['element']}: {m['name']} in plan", 20, d["element"])
+    a, b = m["size_x_mm"] / 2, m["size_y_mm"] / 2
+    v.rect("concrete", (-a, -b), (a, b))
+    lines = []
+    for along, faces in m["trimmers"].items():
+        t = faces["top"] if faces["top"]["count"] >= faces["bottom"]["count"] else faces["bottom"]
+        half = t["length_mm"] / 2
+        gap = max(2.5 * t["phi"], 50.0)
+        for side in (1, -1):
+            for k in range(t["count"]):
+                off = side * ((b if along == "X" else a) + 75 + k * gap)
+                if along == "X":
+                    v.line(bar_key(t["phi"]), (-half, off), (half, off))
+                else:
+                    v.line(bar_key(t["phi"]), (off, -half), (off, half))
+        lines.append(
+            f"Along {along}: top {faces['top']['count']}Ø{faces['top']['phi']}, bottom "
+            f"{faces['bottom']['count']}Ø{faces['bottom']['phi']} each side, {_mm(t['length_mm'])} long"
+        )
+    dg = m.get("diagonals") or {}
+    if dg.get("phi"):
+        r = (dg.get("length_mm") or 0) / 2 / math.sqrt(2)
+        for sx in (1, -1):
+            for sy in (1, -1):
+                cx, cy = sx * (a + 100), sy * (b + 100)
+                # Square to the line from the opening's centre through the corner.
+                v.line(bar_key(dg["phi"]), (cx - r, cy + r * sx * sy), (cx + r, cy - r * sx * sy))
+    top = max(a, b) + 40 * v.scale
+    v.text((-a, top), f"{d['element']} {m['name']} {_mm(2 * a)} x {_mm(2 * b)}  1:{v.scale}", 1.4)
+    for i, t in enumerate(lines + ([dg["diagonals"]] if dg.get("diagonals") else [])):
+        v.text((-a, -top - 5 * i * v.scale), t)
+    return v
+
+
 def _grid(lo: float, hi: float, spacing: float, offset: float) -> list[float]:
     """Bar positions k*s + offset (mm, from the slab edge ``lo``) that fall inside [lo, hi]."""
     if spacing <= 0:
@@ -473,6 +510,19 @@ def from_cages(
         views += _beam_views(b)
     for d in data["slabs"]:
         views += _slab_views(d)
+        views += [_manhole_view(d, m) for m in d.get("manholes") or []]
+        views += [
+            _room_view(
+                {
+                    "element": d["element"],
+                    "width_mm": c["strip_mm"],
+                    "depth_mm": c["depth_mm"],
+                    "cover_mm": c["cover_mm"],
+                },
+                c,
+            )
+            for c in d.get("channels") or []
+        ]
     if element:
         wanted = {element} if isinstance(element, str) else set(element)
         views = [v for v in views if v.element in wanted]

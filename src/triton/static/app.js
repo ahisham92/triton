@@ -305,7 +305,7 @@ function checkingPanel(names, runAt) {
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d", "clashes", "compare", "ve"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "openings", "view3d", "clashes", "compare", "ve"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -331,6 +331,7 @@ async function projectPage(id, tab, sectionId) {
     ["elements", `Elements (${Object.keys(sec().elements).length})`],
     ["workbook", "Workbook"],
     ["design", "Design"],
+    ["openings", "Openings"],
     ["view3d", "3D view"],
     ["clashes", "Clashes"],
     ["costing", "Costing"],
@@ -398,6 +399,7 @@ async function projectPage(id, tab, sectionId) {
   }
   else if (tab === "settings") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
   else if (tab === "design") renderDesignTab(host);
+  else if (tab === "openings") renderOpeningsTab(host);
   else if (tab === "sections") renderSections(host);
   else if (tab === "elements") renderElements(host);
   else if (tab === "workbook") renderWorkbookTab(host);
@@ -4122,13 +4124,9 @@ function beamCard(b) {
       ${b.truss.cases.map((c) => `<tr><td>${esc(c.case)}</td><td>${fmt(c.slab_thickness_mm)}</td><td>${fmt(c.P_kN)}</td><td>${fmt(c.T_kN)}</td><td>${fmt(c.As_req_mm2)}</td>
         <td class="cell ${c.utilisation <= 1 ? "ok" : "error"}">${fmt(c.utilisation, 2)}</td></tr>`).join("")}</table></div>
     <p class="status">${esc(b.truss.method)}</p>` : b.truss?.note ? `<p class="status">${esc(b.truss.note)}</p>` : ""}
-    ${roomsHtml(b)}
+    ${b.rooms?.length ? `<p class="status">${b.rooms.length === 1 ? "A room is" : `${b.rooms.length} rooms are`} cut into this beam: see the Openings tab (${b.rooms.every((r) => r.passed) ? "all pass" : "some fail"}).</p>` : ""}
     ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}`;
   mountCrackPictures(card, beamCrackItems(b));
-  (b.rooms || []).forEach((rm, i) => {
-    const el = card.querySelector(`[data-room-section="${i}"]`);
-    if (el && rm.section) roomSection(el, b, rm);
-  });
   wireBeamCage(card, b);
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
   if (b.profile?.length) {
@@ -4146,72 +4144,186 @@ function beamCard(b) {
   return card;
 }
 
-// Rooms cut into the beam (e.g. for electrical work): the section left and its extra bars.
-function roomsHtml(b) {
-  if (!b.rooms?.length) return "";
+// A room cut into a beam or a channel in the deck: the section left and its extra bars.
+function troughHtml(rm, key, kind) {
   const ok = (x) => `<span class="sev ${x ? "ok" : "error"}">${x ? "passes" : "fails"}</span>`;
   const u = (x) => `<td class="cell ${x != null && x <= 1 ? "ok" : "error"}">${fmt(x, 2)}</td>`;
-  return b.rooms.map((rm, i) => {
-    const head = `<h3 style="margin-top:18px">${esc(rm.name)}, ${fmt(rm.start_m, 2)} to ${fmt(rm.end_m, 2)} m along the beam ${ok(rm.passed)}</h3>`;
-    if (!rm.section) return `${head}${(rm.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
-    const x = rm.section, bars = rm.bars || {}, fr = rm.frame || {}, g = rm.bending?.governing || {};
-    const walls = Object.entries(rm.shear || {}).filter(([k]) => k === "sea" || k === "land");
-    const partName = { sea: "Sea-side wall", land: "Land-side wall", floor: "Floor", roof: "Roof" };
-    const crack = Object.entries(rm.cracks || {}).map(([f, c]) => `QP crack at the ${f === "top" ? "top of the walls" : "bottom"}: ${fmt(c.wk, 3)} mm of ${fmt(c.limit, 2)}`).join("; ");
-    const perM = (p) => p ? `top ${esc(p.top.label)}, bottom ${esc(p.bottom.label)} (utilisation ${fmt(p.utilisation, 2)}${Object.entries(p.cracks || {}).map(([f, c]) => `, crack ${f} ${fmt(c.wk, 3)} of ${fmt(c.limit, 2)} mm`).join("")})` : "";
-    return `${head}
+  const room = kind === "room";
+  const where = room
+    ? `${fmt(rm.start_m, 2)} to ${fmt(rm.end_m, 2)} m along the beam`
+    : `along ${esc(rm.direction || "")} from ${fmt(rm.start_m, 2)} to ${fmt(rm.end_m, 2)} m, centre line at ${fmt(rm.at_m, 2)} m`;
+  const head = `<h3 style="margin-top:18px">${esc(rm.name)}, ${where} ${ok(rm.passed)}</h3>`;
+  if (!rm.section) return `${head}${(rm.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
+  const x = rm.section, bars = rm.bars || {}, fr = rm.frame || {}, g = rm.bending?.governing || {};
+  const walls = Object.entries(rm.shear || {}).filter(([k]) => k === "sea" || k === "land");
+  const partName = room ? { sea: "Sea-side wall", land: "Land-side wall", floor: "Floor", roof: "Roof" } : { sea: "Wall", land: "Other wall", floor: "Base", roof: "Roof" };
+  const floor = room ? "floor" : "base";
+  const shown = room ? walls : walls.slice(0, 1);
+  const crack = Object.entries(rm.cracks || {}).map(([f, c]) => `QP crack at the ${f === "top" ? "top of the walls" : "bottom"}: ${fmt(c.wk, 3)} mm of ${fmt(c.limit, 2)}`).join("; ");
+  const perM = (p) => p ? `top ${esc(p.top.label)}, bottom ${esc(p.bottom.label)} (utilisation ${fmt(p.utilisation, 2)}${Object.entries(p.cracks || {}).map(([f, c]) => `, crack ${f} ${fmt(c.wk, 3)} of ${fmt(c.limit, 2)} mm`).join("")})` : "";
+  return `${head}
     ${(rm.warnings || []).map((w) => `<p class="status sev error" style="display:block">${esc(w)}</p>`).join("")}
     ${rm.suggestion ? `<p><b>${esc(rm.suggestion.text)}</b></p>` : ""}
     <div class="counts" style="margin-top:0">
-      <div class="count"><b>${fmt(rm.utilisation, 2)}</b>room utilisation (all checks)</div>
-      <div class="count"><b>${fmt(x.bottom_mm)} mm</b>concrete below, room ${fmt(x.height_mm)} high</div>
-      <div class="count"><b>${fmt(x.wall_sea_mm)} / ${fmt(x.wall_land_mm)} mm</b>walls, sea / land side</div>
-      <div class="count"><b>${fmt(rm.extra_steel_kg)} kg</b>extra bars and links over ${fmt(rm.length_m, 2)} m</div>
+      <div class="count"><b>${fmt(rm.utilisation, 2)}</b>utilisation (all checks)</div>
+      <div class="count"><b>${fmt(x.bottom_mm)} mm</b>concrete below, ${kind} ${fmt(x.height_mm)} deep</div>
+      <div class="count"><b>${room ? `${fmt(x.wall_sea_mm)} / ${fmt(x.wall_land_mm)} mm` : `${fmt(x.wall_sea_mm)} mm`}</b>${room ? "walls, sea / land side" : "walls"}</div>
+      ${rm.downstand_mm ? `<div class="count"><b>${fmt(rm.downstand_mm)} mm</b>below the slab soffit</div>` : ""}
+      ${rm.extra_steel_kg != null ? `<div class="count"><b>${fmt(rm.extra_steel_kg)} kg</b>extra bars and links over ${fmt(rm.length_m, 2)} m</div>` : ""}
     </div>
-    <div class="cage"><div class="chart" data-room-section="${i}"></div><div class="scroll"><table>
-      <tr><th>Check over the room</th><th>Utilisation</th></tr>
-      <tr><td>N with biaxial bending on the section left</td>${u(rm.bending?.utilisation)}</tr>
-      ${walls.map(([k, w]) => `<tr><td>${partName[k]}: shear and torsion</td>${u(w.utilisation)}</tr>`).join("")}
+    <div class="cage"><div class="chart" data-open-section="${esc(key)}"></div><div class="scroll"><table>
+      <tr><th>Check along the ${kind}</th><th>Utilisation</th></tr>
+      <tr><td>N with biaxial bending on the section left${room ? "" : ` (a strip ${fmt(rm.strip_mm)} mm wide)`}</td>${u(rm.bending?.utilisation)}</tr>
+      ${shown.map(([k, w]) => `<tr><td>${partName[k]}: shear and torsion</td>${u(w.utilisation)}</tr>`).join("")}
       ${["floor", "roof"].filter((k) => rm.shear?.[k]).map((k) => `<tr><td>${partName[k]}: torsion</td>${u(rm.shear[k].utilisation)}</tr>`).join("")}
       ${Object.entries(rm.cracks || {}).map(([f, c]) => `<tr><td>QP crack, ${f === "top" ? "top of the walls" : "bottom"}</td>${u(c.wk / c.limit)}</tr>`).join("")}
-      <tr><td>Floor across the room, per metre</td>${u(fr.floor?.utilisation)}</tr>
-      <tr><td>Floor shear per metre</td>${u(fr.floor_shear?.utilisation)}</tr>
+      <tr><td>${partName.floor} across, per metre</td>${u(fr.floor?.utilisation)}</tr>
+      <tr><td>${partName.floor} shear per metre</td>${u(fr.floor_shear?.utilisation)}</tr>
       <tr><td>Walls at the corners, per metre</td>${u(fr.walls?.utilisation)}</tr>
     </table></div></div>
-    <div class="scroll"><table><tr><th>Bars in the room's length</th><th></th></tr>
-      <tr><td>Beam top bars cut by the room</td><td>${bars.cut_top?.count ? `${bars.cut_top.count}Ø${bars.cut_top.phi} (${fmt(bars.cut_top.area_mm2)} mm²)` : "none"}</td></tr>
-      <tr><td>Top of each wall (replaces them)</td><td><b>${esc(bars.wall_top?.label || "none")}</b>, ${fmt(rm.corners?.wall_top_bars_past_ends_mm)} mm past each end of the room</td></tr>
-      <tr><td>Extra bottom bars (layer above the beam's)</td><td>${esc(bars.bottom_extra?.label || "none")}</td></tr>
+    <div class="scroll"><table><tr><th>Bars over its length</th><th></th></tr>
+      <tr><td>${room ? "Beam" : "Slab"} top bars cut</td><td>${bars.cut_top?.count ? `${bars.cut_top.count}Ø${bars.cut_top.phi} (${fmt(bars.cut_top.area_mm2)} mm²)` : "none"}</td></tr>
+      <tr><td>Top of each wall (replaces them)</td><td><b>${esc(bars.wall_top?.label || "none")}</b>, ${fmt(rm.corners?.wall_top_bars_past_ends_mm)} mm past each end</td></tr>
+      <tr><td>Extra bottom bars (a layer above)</td><td>${esc(bars.bottom_extra?.label || "none")}</td></tr>
       <tr><td>Inside faces of the walls</td><td>${esc(bars.inner_sides?.label || "none")}</td></tr>
-      ${walls.map(([k, w]) => `<tr><td>${partName[k]} links</td><td>${w.link ? esc(w.link.label) : "none fit"}</td></tr>`).join("")}
+      ${shown.map(([k, w]) => `<tr><td>${room ? partName[k] : "Each wall"}: links</td><td>${w.link ? esc(w.link.label) : "none fit"}</td></tr>`).join("")}
       ${["floor", "roof"].filter((k) => rm.shear?.[k]?.link).map((k) => `<tr><td>${partName[k]} links (torsion)</td><td>${esc(rm.shear[k].link.label)}</td></tr>`).join("")}
-      <tr><td>Floor, across the room, per metre</td><td>${perM(fr.floor)}</td></tr>
-      ${fr.floor_shear?.links ? `<tr><td>Floor shear links</td><td>${esc(fr.floor_shear.links)}</td></tr>` : ""}
+      <tr><td>${partName.floor}, across, per metre</td><td>${perM(fr.floor)}</td></tr>
+      ${fr.floor_shear?.links ? `<tr><td>${partName.floor} shear links</td><td>${esc(fr.floor_shear.links)}</td></tr>` : ""}
       <tr><td>Walls, vertical bars each face, per metre</td><td>${esc(fr.walls?.top?.label || "")}</td></tr>
       <tr><td>Inside corners</td><td>${esc(fr.corner_bars?.label || "")}</td></tr>
       <tr><td>Corners of the opening</td><td>${esc(rm.corners?.diagonals || "")}</td></tr>
     </table></div>
     ${g.combination ? `<p>Governing bending: ${esc(g.combination)} at ${fmt(g.s, 2)} m, N = ${fmt(g.N_kN)} kN, M<sub>v</sub> = ${fmt(g.Mv_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_v_kNm)}), M<sub>h</sub> = ${fmt(g.Mh_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_h_kNm)}).${crack ? ` ${crack}.` : ""}</p>` : ""}
-    ${walls.map(([k, w]) => w.governing ? `<p class="status">${partName[k]} (${fmt(w.b_mm)} mm, ${fmt(100 * w.V_share)}% of V, ${fmt(100 * w.T_share)}% of T): V = ${fmt(w.governing.V_kN)} kN, T = ${fmt(w.governing.T_kNm)} kNm, V<sub>Rd,c</sub> ${fmt(w.governing.VRd_c_kN)} kN, V<sub>Rd,max</sub> ${fmt(w.governing.VRd_max_kN)} kN, T<sub>Rd,max</sub> ${fmt(w.governing.TRd_max_kNm)} kNm, cot θ ${fmt(w.governing.cot_theta, 2)}${w.torsion_long_steel_mm2 ? `; torsion takes ${fmt(w.torsion_long_steel_mm2)} mm² of its longitudinal bars` : ""}.</p>` : "").join("")}
-    <p class="status">Across the room: M = ${fmt(fr.M_kNm_per_m?.max)} / ${fmt(fr.M_kNm_per_m?.min)} kNm/m from the plates, plus the floor's own span of ${fmt(fr.floor_load?.span_m, 2)} m under ${fmt(fr.floor_load?.g_kPa, 1)} kPa self weight and ${fmt(fr.floor_load?.q_kPa, 1)} kPa floor load. Horizontal shear ${fmt(rm.horizontal_shear?.V_kN)} kN through the floor${rm.section.top_mm ? " and roof" : ""} (V<sub>Rd,c</sub> ${fmt(rm.horizontal_shear?.VRd_c_kN)} kN).</p>
+    ${shown.map(([k, w]) => w.governing ? `<p class="status">${room ? partName[k] : "Each wall"} (${fmt(w.b_mm)} mm, ${fmt(100 * w.V_share)}% of V, ${fmt(100 * w.T_share)}% of T): V = ${fmt(w.governing.V_kN)} kN, T = ${fmt(w.governing.T_kNm)} kNm, V<sub>Rd,c</sub> ${fmt(w.governing.VRd_c_kN)} kN, V<sub>Rd,max</sub> ${fmt(w.governing.VRd_max_kN)} kN, T<sub>Rd,max</sub> ${fmt(w.governing.TRd_max_kNm)} kNm, cot θ ${fmt(w.governing.cot_theta, 2)}${w.torsion_long_steel_mm2 ? `; torsion takes ${fmt(w.torsion_long_steel_mm2)} mm² of its longitudinal bars` : ""}.</p>` : "").join("")}
+    <p class="status">Across: M = ${fmt(fr.M_kNm_per_m?.max)} / ${fmt(fr.M_kNm_per_m?.min)} kNm/m from the plates, plus the ${partName.floor.toLowerCase()}'s own span of ${fmt(fr.floor_load?.span_m, 2)} m under ${fmt(fr.floor_load?.g_kPa, 1)} kPa self weight and ${fmt(fr.floor_load?.q_kPa, 1)} kPa load.</p>
     ${(rm.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
-  }).join("");
 }
 
-function roomSection(el, b, rm) {
-  // The section left by the room, to scale: outline, the room, every bar.
-  const w = b.width_mm, h = b.depth_mm;
+function troughSection(el, w, h, rm) {
+  // The section left, to scale: outline, the room or channel, every bar.
   const [u0, u1, v0, v1] = rm.section.void_mm;
   const pad = Math.max(w, h) * 0.06;
   const bars = (rm.bars?.all || []).map(([u, v, phi]) => `<circle class="bar" cx="${u}" cy="${-v}" r="${phi / 2}"><title>Ø${phi}</title></circle>`).join("");
-  el.innerHTML = `<div class="chart-title">Section through ${esc(rm.name)}: ${fmt(w)} × ${fmt(h)} mm, room ${fmt(rm.section.width_mm)} × ${fmt(rm.section.height_mm)} mm</div>
-    <svg viewBox="${-w / 2 - pad} ${-h / 2 - pad} ${w + 2 * pad} ${h + 2 * pad}" role="img" aria-label="Section through the room">
+  el.innerHTML = `<div class="chart-title">Section through ${esc(rm.name)}: ${fmt(w)} × ${fmt(h)} mm, inside ${fmt(rm.section.width_mm)} × ${fmt(rm.section.height_mm)} mm</div>
+    <svg viewBox="${-w / 2 - pad} ${-h / 2 - pad} ${w + 2 * pad} ${h + 2 * pad}" role="img" aria-label="Section through the opening">
       <rect class="outline" x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}"/>
       ${rm.section.top_mm
         ? `<rect x="${u0}" y="${-v1}" width="${u1 - u0}" height="${v1 - v0}" style="fill:var(--panel);stroke:var(--text);stroke-width:6"/>`
         : `<rect x="${u0}" y="${-v1 - 8}" width="${u1 - u0}" height="${v1 - v0 + 8}" style="fill:var(--panel)"/>
            <polyline points="${u0},${-v1} ${u0},${-v0} ${u1},${-v0} ${u1},${-v1}" style="fill:none;stroke:var(--text);stroke-width:6"/>`}
       ${bars}</svg>`;
+}
+
+function manholeHtml(m) {
+  const ok = (x) => `<span class="sev ${x ? "ok" : "error"}">${x ? "passes" : "fails"}</span>`;
+  const u = (x) => `<td class="cell ${x != null && x <= 1 ? "ok" : "error"}">${fmt(x, 2)}</td>`;
+  const head = `<h3 style="margin-top:18px">${esc(m.name)}${m.x != null ? `, ${fmt(m.size_x_mm)} × ${fmt(m.size_y_mm)} mm at X ${fmt(m.x, 2)}, Y ${fmt(m.y, 2)}${m.through ? "" : `, a pit ${fmt(m.depth_mm)} mm deep`}` : ""} ${ok(m.passed)}</h3>`;
+  if (!m.directions) return `${head}${(m.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
+  const dirs = Object.entries(m.directions);
+  return `${head}
+    ${m.suggestion ? `<p><b>${esc(m.suggestion.text)}</b></p>` : ""}
+    <div class="scroll"><table><tr><th>Bars along</th><th>Cut over</th><th>Strips each side</th><th>M round it (kNm/m)</th><th>Slab has (top / bottom)</th><th>Strips need (top / bottom)</th><th>Trimmer bars, top</th><th>Trimmer bars, bottom</th><th>Bending and cracks</th><th>Shear</th></tr>
+      ${dirs.map(([k, d]) => `<tr><td>${k}</td><td>${fmt(d.cut_width_mm)} mm</td><td>${fmt(d.strip_mm)} mm (× ${fmt(d.factor, 2)})</td>
+        <td>${fmt(d.M_kNm_per_m.max)} / ${fmt(d.M_kNm_per_m.min)}</td><td>${fmt(d.existing.top.as_mm2_per_m)} / ${fmt(d.existing.bottom.as_mm2_per_m)} mm²/m</td>
+        <td>${esc(d.strip.top.label)} / ${esc(d.strip.bottom.label)}</td>
+        <td><b>${esc(d.trimmers.top.label)}</b>, ${fmt(d.trimmers.top.length_mm)} long</td><td><b>${esc(d.trimmers.bottom.label)}</b>, ${fmt(d.trimmers.bottom.length_mm)} long</td>
+        ${u(Math.max(d.strip.utilisation ?? 99, ...Object.values(d.strip.cracks || {}).map((c) => c.wk / c.limit)))}${u(d.shear.utilisation)}</tr>`).join("")}
+    </table></div>
+    <p class="status">${esc(m.corners.diagonals)}.${dirs.map(([k, d]) => d.shear.links ? ` Bars along ${k}: ${esc(d.shear.links)}.` : "").join("")}</p>
+    ${m.piles?.length ? `<p class="status">Piles near it (EC2 6.4.2(3)): ${m.piles.map((p) => `${esc(p.pile)} at X ${fmt(p.x, 2)}, Y ${fmt(p.y, 2)} loses ${fmt(100 * p.share)}% of its punching perimeter, utilisation ${fmt(p.utilisation_before, 2)} → ${fmt(p.utilisation, 2)}`).join("; ")}.</p>` : ""}
+    ${m.pit ? `<p class="status">Pit floor ${fmt(m.pit.thickness_mm)} mm over ${fmt(m.pit.span_m, 2)} m: top ${esc(m.pit.top.label)}, bottom ${esc(m.pit.bottom.label)}, utilisation ${fmt(m.pit.utilisation, 2)}.</p>` : ""}
+    ${(m.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
+}
+
+// Openings: rooms in the beams, manholes and channels in the deck, entered and checked per section.
+async function renderOpeningsTab(host) {
+  const section = sec();
+  const idx = secIndex();
+  const defs = SCHEMA.$defs;
+  const beams = Object.entries(section.elements).filter(([, e]) => ["front_beam", "rear_beam", "transverse_beam"].includes(e.kind));
+  const slabs = Object.entries(section.elements).filter(([, e]) => e.kind === "slab");
+  host.innerHTML = `<p class="sub">Cuts the Plaxis model does not have: rooms in a beam (e.g. for electrical work), manholes and pits in the deck,
+    and service channels. Each is checked on the concrete that is left, with the Plaxis actions where it is, and gets its own extra bars.
+    Enter them here, then check them (their elements are designed again).</p>
+    <div class="panel"><div class="row" style="gap:10px;flex-wrap:wrap"><button id="op-run">Check openings</button><span class="status" id="op-status"></span></div></div>
+    <div id="op-inputs"></div><div id="op-out"></div>`;
+  const inputs = host.querySelector("#op-inputs");
+  if (!beams.length && !slabs.length) {
+    inputs.innerHTML = `<p class="empty">Add a beam or slab element first (Elements tab).</p>`;
+    host.querySelector("#op-run").disabled = true;
+    return;
+  }
+  const editor = (name, el, keys, def) => {
+    const schema = { properties: Object.fromEntries(keys.map((k) => [k, def.properties[k]])) };
+    const card = document.createElement("div");
+    card.className = "panel";
+    card.style.marginBottom = "16px";
+    card.innerHTML = `<div class="element-head"><h3>${esc(name)}<span class="type">${esc(KIND_LABEL[el.kind] || el.kind)}</span></h3></div>`;
+    const fs = renderObject(schema, el, `sections.${idx}.elements.${name}`, "");
+    fs.style.border = "0";
+    fs.style.padding = "0";
+    card.append(fs);
+    if (state.project.locked) card.querySelectorAll("input, select, textarea, button").forEach((x) => (x.disabled = true));
+    inputs.append(card);
+  };
+  for (const [n, e] of beams) editor(n, e, ["rooms"], defs.BeamInput);
+  for (const [n, e] of slabs) editor(n, e, ["manholes", "channels"], defs.SlabInput);
+  if (state.project.locked)
+    inputs.insertAdjacentHTML("afterbegin", `<p class="status">Locked since the design: unlock to change the openings.</p>`);
+  const withOpenings = () => [...beams.filter(([, e]) => e.rooms?.length), ...slabs.filter(([, e]) => e.manholes?.length || e.channels?.length)].map(([n]) => n);
+  const status = host.querySelector("#op-status");
+  host.querySelector("#op-run").onclick = async () => {
+    const names = withOpenings();
+    if (!names.length) return (status.textContent = "No openings entered yet.");
+    if (state.dirty) await save();
+    if (state.errors?.length) return (status.textContent = state.errors.map((e) => e.msg).join(" "));
+    status.textContent = `Designing ${names.join(", ")} with their openings…`;
+    await designJob(section, names);
+  };
+  const out = host.querySelector("#op-out");
+  let res;
+  try {
+    res = await api(`${secUrl()}/design`);
+  } catch {
+    return;
+  }
+  if (!state.project.locked) {
+    out.innerHTML = `<div class="panel"><p style="margin:0">Results are hidden while the model is unlocked. Check the openings to see them.</p></div>`;
+    return;
+  }
+  const draws = [];
+  let html = "";
+  for (const b of res.beams || []) {
+    if (!b.rooms?.length) continue;
+    html += `<h2>Rooms in ${esc(b.key || b.element)}</h2><div class="panel">`;
+    b.rooms.forEach((rm, i) => {
+      const key = `r-${b.key || b.element}-${i}`;
+      html += troughHtml(rm, key, "room");
+      if (rm.section) draws.push([key, b.width_mm, b.depth_mm, rm]);
+    });
+    html += "</div>";
+  }
+  for (const d of res.slabs || []) {
+    const op = d.openings;
+    if (!op || !(op.manholes?.length || op.channels?.length)) continue;
+    const label = esc(d.key || d.element);
+    if (op.manholes?.length) html += `<h2>Manholes and pits in ${label}</h2><div class="panel">${op.manholes.map(manholeHtml).join("")}</div>`;
+    if (op.channels?.length) {
+      html += `<h2>Channels in ${label}</h2><div class="panel">`;
+      op.channels.forEach((c, i) => {
+        const key = `c-${d.key || d.element}-${i}`;
+        html += troughHtml(c, key, "channel");
+        if (c.section) draws.push([key, c.strip_mm, c.depth_total_mm, c]);
+      });
+      html += "</div>";
+    }
+  }
+  out.innerHTML = html || `<p class="status">No openings in the last design. Enter them above and check them.</p>`;
+  for (const [key, w, h, rm] of draws) {
+    const el = [...out.querySelectorAll("[data-open-section]")].find((x) => x.dataset.openSection === key);
+    if (el) troughSection(el, w, h, rm);
+  }
 }
 
 // A beam's longitudinal bars set by hand, face by face; Check designs just that beam with them.
