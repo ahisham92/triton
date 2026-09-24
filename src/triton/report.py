@@ -372,6 +372,20 @@ def _sections(r: Report, section: Section, res: dict) -> None:
         rows += _part_rows(f"{w['element']} – infill", w.get("infill") or {}, w["element"])
     for p in res.get("piles", []):
         rows += _part_rows(p["element"], p)
+        t = (p.get("casing") or {}).get("tube") or {}
+        if t:
+            g = t.get("governing") or {}
+            m, mrd = (None if v is None else float(v) for v in (g.get("M_kNm"), g.get("M_Rd_kNm")))
+            rows.append(
+                [
+                    f"{p['element']} – steel casing (considering interaction between moment and normal)",
+                    "N.A",
+                    t.get("utilisation"),
+                    m,
+                    mrd,
+                    _sheet(p["element"], g.get("combination")),
+                ]
+            )
     for b in res.get("beams", []):
         g = (b.get("bending") or {}).get("governing") or {}
         cracks = [c.get("wk") for c in (b.get("cracks") or {}).values() if c.get("wk") is not None]
@@ -745,6 +759,33 @@ def _pile_body(r: Report, p: dict) -> None:
         )
     if c and c.get("casing"):
         r.note(c["casing"])
+    cas = p.get("casing")
+    if cas and cas.get("tube"):
+        t = cas["tube"]
+        sc = t.get("section") or {}
+        g = t.get("governing") or {}
+        r.h(3, "Steel casing (structural)")
+        r.p(cas["note"])
+        r.kv(
+            [
+                (
+                    "Casing",
+                    f"Ø{_fmt(sc.get('diameter_mm'))} × {_fmt(sc.get('thickness_mm'))} mm {sc.get('grade', '')}",
+                ),
+                (
+                    "Corroded",
+                    f"Ø{_fmt(sc.get('corroded_diameter_mm'))} × {_fmt(sc.get('corroded_thickness_mm'))} mm",
+                ),
+                *[(k.replace("_", " "), v) for k, v in (t.get("resistances") or {}).items()],
+                (
+                    "Governing",
+                    f"{g.get('combination')}, z {g.get('z')} m: N = {_fmt(g.get('N_kN'))} kN, "
+                    f"M = {_fmt(g.get('M_kNm'))} kNm, V = {_fmt(g.get('V_kN'))} kN ({g.get('check')})",
+                ),
+                ("Utilisation", t.get("utilisation")),
+                ("Result", _ok(t.get("passed"))),
+            ]
+        )
     con = p.get("connection")
     if con:
         r.h(3, "Casing connection")

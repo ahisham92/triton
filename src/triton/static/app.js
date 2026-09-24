@@ -417,7 +417,7 @@ function optionLabel(key, o) {
 }
 
 function prettyOption(o) {
-  const map = { crack_only: "Crack width only", structural: "Structural (shares load)", min_steel: "Least steel",
+  const map = { crack_only: "No: it only removes the crack width check", structural: "Yes: designed with the concrete (E·I share)", min_steel: "Least steel",
     lap: "Lapped", raw: "Raw values", average: "Average with neighbours", unified: "Unified", zoned: "Zoned", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
     min_cost: "Lowest cost", en1992: "EN 1992-1-1 (Table 4.4N)", en1993_5: "EN 1993-5 (Table 4.2)", bs6349: "BS 6349-1-4 (maritime)", uniform: "Uniform slab", column_and_field: "Column and field strips",
     office: "Office sheets", ec2: "EN 1992-1-1", ec3: "EN 1993 (plastic filled, shell buckling empty)", ei_split: "E·I split where filled", all: "All actions on the tube",
@@ -1008,17 +1008,51 @@ async function renderDesignTab(host) {
 
 const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : (Math.abs(v) < 0.5 * 10 ** -d ? 0 : Number(v)).toLocaleString("en-GB", { maximumFractionDigits: d, minimumFractionDigits: d }));
 
-function renderResults(res) {
+// The results of the elements picked in the "Show" row (all by default); the exports always cover
+// every element.
+function renderResults(full) {
   const out = document.getElementById("design-out");
   if (!out) return;
+  const kinds = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls"];
+  const names = kinds.flatMap((k) => (full[k] || []).map((e) => e.element));
+  state.designShow ??= {};
+  let shown = (state.designShow[sec().id] || []).filter((n) => names.includes(n));
+  if (!shown.length) shown = null;
+  const view = { ...full };
+  for (const k of kinds) view[k] = (full[k] || []).filter((e) => !shown || shown.includes(e.element));
+  drawResults(view, full);
+  if (names.length < 2) return;
+  const bar = document.createElement("div");
+  bar.className = "panel row show-bar";
+  bar.innerHTML = `<span>Show</span>
+    <label class="chip"><input type="checkbox" data-show="*" ${shown ? "" : "checked"}> All</label>
+    ${names.map((n) => `<label class="chip"><input type="checkbox" data-show="${esc(n)}" ${shown?.includes(n) ? "checked" : ""}> ${esc(n)}</label>`).join("")}`;
+  out.prepend(bar);
+  bar.querySelectorAll("input").forEach(
+    (c) =>
+      (c.onchange = () => {
+        const n = c.dataset.show;
+        const now = new Set(shown || []);
+        if (n === "*") now.clear();
+        else if (c.checked) now.add(n);
+        else now.delete(n);
+        state.designShow[sec().id] = [...now];
+        renderResults(full);
+      })
+  );
+}
+
+function drawResults(res, full = res) {
+  const out = document.getElementById("design-out");
   const walls = res.combi_walls || [];
   const spws = res.sheet_pile_walls || [];
   const beams = res.beams || [];
   const slabs = res.slabs || [];
+  const anyCages = full.piles.length || (full.combi_walls || []).length;
   const link = document.getElementById("cages");
-  if (link) link.hidden = !res.piles.length && !walls.length;
+  if (link) link.hidden = !anyCages;
   const ads = document.getElementById("ads");
-  if (ads) ads.hidden = !res.piles.length && !walls.length;
+  if (ads) ads.hidden = !anyCages;
   const reports = document.getElementById("reports");
   if (reports) {
     reports.hidden = false;
@@ -1031,7 +1065,7 @@ function renderResults(res) {
     setLinks();
   }
   const sets = document.getElementById("sets");
-  if (sets) sets.hidden = !res.piles.length && !walls.length && !spws.length && !beams.length;
+  if (sets) sets.hidden = !anyCages && !(full.sheet_pile_walls || []).length && !(full.beams || []).length;
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
@@ -1132,6 +1166,7 @@ function alerts(res) {
     else if (u < 0.5) add("safe", p.element, `N–M utilisation ${fmt(u, 2)}: very safe, could be lighter`);
     if (p.shear && !p.shear.passed) add("unsafe", p.element, `shear utilisation ${fmt(p.shear.utilisation, 2)}`);
     if (p.connection?.passed === false) add("unsafe", p.element, `casing connection utilisation ${fmt(p.connection.utilisation, 2)}`);
+    if (p.casing?.tube?.passed === false) add("unsafe", p.element, `steel casing utilisation ${fmt(p.casing.tube.utilisation, 2)}`);
   }
   const noTop = (res.piles || []).filter((p) => p.section?.head_level_set === false).map((p) => p.element);
   if (noTop.length) add("limit", noTop.join(", "), "no top level set, so results inside the slab are included: set it on the Elements tab");
@@ -1607,6 +1642,7 @@ function pileCard(p) {
       <p class="status">Clear gap between rows: ${lim.row_gap_mm == null ? "EN 1992-1-1 8.2 minimum" : `${fmt(lim.row_gap_mm)} mm`}.</p></div></div>` : ""}
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
     ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
+    ${casingBlock(p.casing)}
     ${connectionBlock(p.connection)}
     ${pileCrackBlock(p.cracks)}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
@@ -1728,6 +1764,25 @@ function setsBlock(stations, note = null) {
   return `<details style="margin-top:12px"><summary>Governing sets per station for AdSec (${stations.length} station${stations.length === 1 ? "" : "s"}, 7 QP + 7 ULS each)</summary>
     <p class="status">${esc(note || "N in the concrete sign convention (Plaxis N × −1, compression +). M2 and M3 as in Plaxis.")} For QP the 7th set is the largest resultant moment.</p>
     <div class="scroll"><table class="sets"><tr><th>Station (m)</th><th>Limit state</th><th>Case</th><th>Combination</th><th>Node</th><th>z (m)</th><th>N kN</th><th>M2 kNm</th><th>M3 kNm</th><th>N–M util.</th></tr>${rows}</table></div></details>`;
+}
+
+// A structural casing: its E·I share of the actions between its levels, checked as a filled tube.
+function casingBlock(c) {
+  if (!c?.tube) return "";
+  const t = c.tube;
+  const s = t.section || {};
+  const r = t.resistances || {};
+  const g = t.governing || {};
+  return `<h3 style="margin-top:18px">Steel casing, ${fmt(c.top, 2)} to ${fmt(c.bottom, 2)} m
+      <span class="sev ${t.passed ? "ok" : "error"}">${fmt(t.utilisation, 2)}</span></h3>
+    <p class="status">${esc(c.note)}</p>
+    <div class="scroll"><table>
+      <tr><td>Casing (corroded)</td><td>Ø${fmt(s.diameter_mm)} × ${fmt(s.thickness_mm)} mm ${esc(s.grade || "")} (Ø${fmt(s.corroded_diameter_mm)} × ${fmt(s.corroded_thickness_mm, 1)} mm)</td></tr>
+      <tr><td>Share of the actions</td><td>${fmt(c.steel_share * 100)}% casing, ${fmt((1 - c.steel_share) * 100)}% concrete</td></tr>
+      <tr><td>N<sub>pl,Rd</sub> / M<sub>pl,Rd</sub> / V<sub>pl,Rd</sub></td><td>${fmt(r.N_pl_kN)} kN / ${fmt(r.M_pl_kNm)} kNm / ${fmt(r.V_pl_kN)} kN</td></tr>
+      ${g.combination ? `<tr><td>Governing</td><td>${esc(g.combination)}, z ${fmt(g.z, 2)} m: N = ${fmt(g.N_kN)} kN, M = ${fmt(g.M_kNm)} kNm, V = ${fmt(g.V_kN)} kN (${esc(g.check)})</td></tr>` : ""}
+    </table></div>
+    ${(t.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
 }
 
 function connectionBlock(c) {

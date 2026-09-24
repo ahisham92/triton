@@ -156,3 +156,9 @@ table.edit-list td { padding: 4px; }
 .pp-u1line { stroke: var(--muted); stroke-dasharray: 4 3; }
 .pp-linkline { stroke: var(--accent); stroke-width: 2; }
 table.punch tr.on td { background: var(--accent-bg); }
+
+/* Which elements the design page shows */
+.show-bar { gap: 8px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border: 1px solid var(--line);
+        border-radius: 999px; font-size: 13px; cursor: pointer; }
+.chip:has(input:checked) { background: var(--accent-bg); border-color: var(--accent); }

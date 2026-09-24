@@ -372,10 +372,10 @@ class Casing(_Model):
 
     role: Literal["crack_only", "structural"] = Field(
         "crack_only",
-        title="Casing role",
-        description="Crack width only: the casing removes the crack width check, the concrete "
-        "carries all forces. Structural: the casing works with the concrete and forces are "
-        "shared by E·I, as in the combi wall.",
+        title="Is the casing designed?",
+        description="No: the casing only removes the crack width check between its levels, and the "
+        "concrete carries all forces. Yes: the casing works with the concrete; between its levels the "
+        "forces are shared by E·I, as in the combi wall, and the casing itself is checked.",
     )
     top_level: float = _m("Casing top level", 2.7)
     bottom_level: float = _m("Casing bottom level", -1.3)
@@ -433,7 +433,10 @@ class PileInput(_ConcreteSection):
         "inside the slab and ignored. Empty: every result is used.",
     )
     casing: Casing | None = Field(
-        None, title="Steel casing", description="Leave empty for a plain concrete pile."
+        None,
+        title="This pile has a permanent steel casing",
+        description="Tick it and give the casing's top and bottom levels: there is no crack width check "
+        "between them. Leave it unticked for a plain concrete pile.",
     )
 
 

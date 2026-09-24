@@ -154,6 +154,7 @@ class PileDesign:
     alternatives: list[dict] = field(default_factory=list)
     governing_sets: list[dict] = field(default_factory=list)
     connection: dict | None = None
+    casing: dict | None = None
     cracks: dict | None = None
     bands: list[list[float]] = field(default_factory=list)
     moments: list[dict] = field(default_factory=list)
@@ -180,6 +181,7 @@ class PileDesign:
             "steel": self.steel,
             "governing_sets": self.governing_sets,
             "connection": self.connection,
+            "casing": self.casing,
             "cracks": self.cracks,
             "bands": self.bands,
             "moments": self.moments,
@@ -403,6 +405,11 @@ def design_pile(
 ) -> PileDesign:
     pile = with_project_grades(pile, settings.materials, settings.durability)
     above = settings.results_into_connection / 1e3
+    full_loads = None
+    casing_check = None
+    if pile.casing is not None and pile.casing.role == "structural":
+        full_loads = PileLoads.from_sheets(sheets, pile.head_level, above).frame
+        sheets, casing_check = structural_casing(pile, settings, sheets)
     loads = PileLoads.from_sheets(sheets, pile.head_level, above).frame
     ac = math.pi * pile.diameter**2 / 4
     area_min, area_max = min_area_pile(ac), max_ratio(settings) * ac
@@ -423,12 +430,8 @@ def design_pile(
             "head_level_set": pile.head_level is not None,
         }
     notes: list[str] = []
-    if pile.casing is not None and pile.casing.role == "structural":
-        notes.append(
-            "The structural casing is not yet included in the N–M check; the pile is designed as "
-            "reinforced concrete only, which is conservative. The connection where the casing stops "
-            "is checked on its own."
-        )
+    if casing_check is not None:
+        notes.append(casing_check["note"])
     if pile.head_level is None:
         notes.append("No pile top level is set, so results inside the slab are included.")
     elif above > 0:
@@ -517,6 +520,9 @@ def design_pile(
     ]
     governing_sets = station_sets(pile, settings, loads, qp_loads(sheets, pile.head_level, above), stations)
     cracks = crack_summary(pile, settings, qp, stations)
+    if casing_check is not None and not casing_check["tube"]["passed"]:
+        passed = False
+        notes.append("The steel casing fails its check.")
     if not cracks["passed"]:
         passed = False
         notes.append(
@@ -549,7 +555,8 @@ def design_pile(
         steel=steel,
         alternatives=alternatives,
         governing_sets=governing_sets,
-        connection=connection_check(pile, settings, loads, chosen),
+        connection=connection_check(pile, settings, loads if full_loads is None else full_loads, chosen),
+        casing=casing_check,
         cracks=cracks,
         bands=util_bands(loads),
         moments=[
@@ -624,6 +631,61 @@ def util_bands(loads: pd.DataFrame) -> list[list[float]]:
     key = [loads["X"].round(2), loads["Y"].round(2), loads["Z"].mul(2).round() / 2]
     g = loads.groupby(key)["util"].max()
     return [[float(x), float(y), float(z), round(float(u), 3)] for (x, y, z), u in g.items()]
+
+
+def structural_casing(
+    pile: PileInput, settings: DesignSettings, sheets: dict[str, SheetData]
+) -> tuple[dict[str, SheetData], dict]:
+    """A casing designed with the pile: between its levels the actions are shared by E·I with the
+    corroded casing (as in the combi wall). Returns the sheets with the concrete's share, and the
+    casing's own check (EN 1993, plastic: the casing is concrete filled)."""
+    from ..forces import CombiSection, scale_forces
+    from .tube import Tube, check_tube, tube_loads
+
+    c = pile.casing
+    loss = c.corrosion_loss or 0.0
+    conc = concrete(pile.concrete)
+    share = CombiSection(
+        pile.diameter / 1e3,
+        c.thickness / 1e3,
+        loss / 1e3,
+        e_steel=210e6,
+        e_concrete=conc.ecm * 1e3,
+    ).steel_share
+
+    def inside(f: pd.DataFrame) -> pd.Series:
+        return (f["Z"] >= c.bottom_level - 1e-9) & (f["Z"] <= c.top_level + 1e-9)
+
+    concrete_part, casing_part = {}, {}
+    for combo, sheet in sheets.items():
+        f = sheet.frame
+        if f.empty or "Z" not in f:
+            concrete_part[combo] = sheet
+            continue
+        m = inside(f)
+        concrete_part[combo] = replace(
+            sheet, frame=pd.concat([f[~m], scale_forces(f[m], 1 - share)]).sort_index()
+        )
+        if m.any():
+            casing_part[combo] = replace(sheet, frame=f[m])
+    above = settings.results_into_connection / 1e3
+    loads = tube_loads(casing_part, share, -math.inf, pile.head_level, above)
+    pf = settings.partial_factors
+    tube = Tube(pile.diameter, c.thickness, loss, c.steel or settings.materials.structural_steel)
+    check = check_tube(tube, loads, method="ec3", gamma_m0=pf.gamma_m0, gamma_m1=pf.gamma_m1)
+    note = (
+        f"Structural steel casing from {c.bottom_level:g} to {c.top_level:g} m: there, {share:.0%} of the "
+        f"actions go to the casing and {1 - share:.0%} to the reinforced concrete (E·I, casing corroded by "
+        f"{loss:g} mm, Ecm {conc.ecm / 1e3:.1f} GPa). The concrete is taken at the full pile diameter. "
+        "No crack width check inside the casing."
+    )
+    return concrete_part, {
+        "top": c.top_level,
+        "bottom": c.bottom_level,
+        "steel_share": round(share, 3),
+        "tube": check,
+        "note": note,
+    }
 
 
 def connection_check(
