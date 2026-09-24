@@ -34,6 +34,13 @@ def kind_of(element: Any) -> str | None:
 def size_of(element: Any, designed: dict | None = None) -> dict[str, float]:
     """The element's current size, as a trial size."""
     if isinstance(element, SlabInput):
+        voids = getattr(element, "voids", None)  # circular voids (PVC pipes), when the slab has them
+        if voids is not None:
+            return {
+                "thickness": element.thickness,
+                "void_diameter": voids.diameter,
+                "void_spacing": voids.spacing,
+            }
         return {"thickness": element.thickness}
     if isinstance(element, PileInput):
         return {"diameter": element.diameter}
@@ -47,6 +54,9 @@ def size_key(size: dict[str, float]) -> str:
 
 def size_label(size: dict[str, float]) -> str:
     if "thickness" in size:
+        if size.get("void_diameter"):
+            spacing = size.get("void_spacing") or 0
+            return f"{size['thickness']:g} mm, voids Ø{size['void_diameter']:g} @ {spacing:g}"
         return f"{size['thickness']:g} mm"
     if "diameter" in size:
         return f"Ø{size['diameter']:g}"
@@ -58,32 +68,54 @@ def default_sizes(element: Any, designed: dict | None = None) -> list[dict[str, 
     now = size_of(element, designed)
     if "thickness" in now:
         t = now["thickness"]
-        return [{"thickness": t + d} for d in (-100, -50, 0, 50, 100) if t + d > 0]
+        return [{**now, "thickness": t + d} for d in (-100, -50, 0, 50, 100) if t + d > 0]
     if "diameter" in now:
         D = now["diameter"]
         return [{"diameter": D + d} for d in (-200, 0, 200) if D + d > 0]
     return [{**now, "depth": now["depth"] + d} for d in (-200, -100, 0, 100, 200) if now["depth"] + d > 0]
 
 
+SLAB_KEYS = ("thickness", "void_diameter", "void_spacing")
+
+
 def clean_size(element: Any, size: dict[str, Any]) -> dict[str, float]:
-    keys = {"slabs": ("thickness",), "piles": ("diameter",), "beams": ("width", "depth")}[kind_of(element)]
+    kind = kind_of(element)
+    keys = {"slabs": SLAB_KEYS, "piles": ("diameter",), "beams": ("width", "depth")}[kind]
+    voided = getattr(element, "voids", None) is not None
     out = {}
     for k in keys:
         v = size.get(k)
-        if v in (None, ""):
+        if v in (None, "") or (k.startswith("void_") and not voided):
             continue
         v = float(v)
         if not 50 <= v <= 10000:
-            raise ValueError(f"{k} {v:g} mm is not a size Triton can design.")
+            raise ValueError(f"{k.replace('_', ' ')} {v:g} mm is not a size Triton can design.")
         out[k] = v
-    if not out or ("depth" not in out and kind_of(element) == "beams"):
+    if not out or {"slabs": "thickness", "piles": "diameter", "beams": "depth"}[kind] not in out:
         raise ValueError("Give each trial its size.")
+    if voided:
+        voids = element.voids
+        dia, spacing = out.get("void_diameter", voids.diameter), out.get("void_spacing", voids.spacing)
+        if dia >= out["thickness"] - 100:
+            raise ValueError(f"Voids Ø{dia:g} leave too little concrete in a {out['thickness']:g} mm slab.")
+        if spacing <= dia:
+            raise ValueError(f"Voids Ø{dia:g} at {spacing:g} mm would touch: the spacing must be larger.")
     return out
+
+
+def with_size(element: Any, size: dict[str, float]) -> Any:
+    """The element at a trial size: its own dimensions and, for a voided slab, the voids'."""
+    own = {k: v for k, v in size.items() if not k.startswith("void_")}
+    voids = {k[len("void_") :]: v for k, v in size.items() if k.startswith("void_")}
+    update: dict[str, Any] = dict(own)
+    if voids and getattr(element, "voids", None) is not None:
+        update["voids"] = element.voids.model_copy(update=voids)
+    return element.model_copy(update=update)
 
 
 def trial_section(section: Section, name: str, size: dict[str, float]) -> Section:
     """The section with the element at the trial size and without the bars set for its current size."""
-    element = section.elements[name].model_copy(update=size)
+    element = with_size(section.elements[name], size)
     update: dict[str, Any] = {"elements": {**section.elements, name: element}}
     for field in ("user_cages", "beam_cages"):
         cages = getattr(section, field)
@@ -141,6 +173,7 @@ def prune(d: Path, data: dict[str, Any]) -> None:
     if not folder.is_dir():
         return
     used = {r["key"] for el in data.values() for r in (el.get("runs") or {}).values()}
+    used |= {k for run in (load_scenarios(d).get("runs") or {}).values() for k in run.values() if k}
     for f in folder.glob("*.json.gz"):
         if f.name[: -len(".json.gz")] not in used:
             f.unlink(missing_ok=True)
@@ -352,6 +385,7 @@ def view(
                 "current": current,
                 "current_label": size_label(current),
                 "sizes": sizes,
+                "voided": getattr(element, "voids", None) is not None,
                 "rows": rows,
             }
         )
@@ -367,4 +401,238 @@ def view(
         "model_length_m": round(L, 2) if L else None,
         "elements": out,
         "notes": notes,
+    }
+
+
+# --- The whole section: a setting changed on every element ----------------------------
+#
+# A variant changes one thing on every element (for now the crack width limit, all faces) and the
+# whole section is designed with it, each element on its own so the page can go in short steps.
+# "As set" is the section as it is. Like a trial, every variant designs without the bars set by
+# hand, so the variants differ only by the change. An element whose inputs a variant does not
+# change (a sheet pile wall has no crack limit) is designed once and shared.
+
+CRACK_FIELDS = ("crack_width_limit", "crack_width_limit_bottom")
+
+
+def variant_key(variant: dict[str, Any]) -> str:
+    return "as-set" if not variant else "x".join(f"{k}{float(v):g}" for k, v in sorted(variant.items()))
+
+
+def variant_label(variant: dict[str, Any], section: Section | None = None) -> str:
+    if variant.get("crack_width_limit"):
+        return f"wk {variant['crack_width_limit']:g} mm"
+    if section is None:
+        return "As set"
+    limits = sorted({getattr(e, f) for e in section.elements.values() for f in CRACK_FIELDS if hasattr(e, f)})
+    return "As set" + (f" (wk {', '.join(f'{x:g}' for x in limits)} mm)" if limits else "")
+
+
+def clean_variant(variant: dict[str, Any]) -> dict[str, float]:
+    out = {}
+    v = variant.get("crack_width_limit")
+    if v not in (None, ""):
+        v = float(v)
+        if not 0.05 <= v <= 0.5:
+            raise ValueError(f"A crack width limit of {v:g} mm is outside 0.05 to 0.5 mm.")
+        out["crack_width_limit"] = v
+    return out
+
+
+def variant_section(section: Section, variant: dict[str, float]) -> Section:
+    """The section with the variant's change on every element, and no bars set by hand."""
+    elements = {}
+    for name, e in section.elements.items():
+        wk = variant.get("crack_width_limit")
+        change = {f: wk for f in CRACK_FIELDS if wk and hasattr(e, f)}
+        elements[name] = e.model_copy(update=change) if change else e
+    strips = {k: v.model_copy(update={"bars": {}, "spacing": None}) for k, v in section.slab_strips.items()}
+    return section.model_copy(
+        update={"elements": elements, "user_cages": {}, "beam_cages": {}, "slab_strips": strips}
+    )
+
+
+def _designable(section: Section) -> list[str]:
+    """Every element the Design tab designs, in its order (a sheet pile wall only when defined)."""
+    from .project import CombiWallInput, SheetPileInput
+
+    order = (PileInput, CombiWallInput, SheetPileInput, BeamInput, SlabInput)
+    return [n for t in order for n, e in section.elements.items() if isinstance(e, t)]
+
+
+def _scenario_file(d: Path) -> Path:
+    return d / "scenarios.json"
+
+
+def load_scenarios(d: Path) -> dict[str, Any]:
+    try:
+        return json.loads(_scenario_file(d).read_text("utf-8"))
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def _save_scenarios(d: Path, data: dict[str, Any]) -> None:
+    tmp = _scenario_file(d).with_suffix(".stmp")
+    tmp.write_text(json.dumps(data, default=str), "utf-8")
+    tmp.replace(_scenario_file(d))
+
+
+DESIGN_KINDS = ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs")
+
+
+def run_scenarios(
+    project: Project,
+    section: Section,
+    workbook: Any,
+    summary: dict | None,
+    d: Path,
+    variants: list[dict[str, float]],
+    deadline: float | None = None,
+    tell=None,
+) -> dict[str, Any]:
+    """Design every element for each variant ("as set" first), skipping what is already designed from
+    the same inputs, until ``deadline`` (at least one element). ``left`` counts what is still to do."""
+    variants = [{}] + [v for v in variants if v]
+    data = load_scenarios(d)
+    data["variants"] = variants[1:]
+    runs = data.setdefault("runs", {})
+    names = _designable(section)
+    todo = [(v, n) for v in variants for n in names]
+    done, left = 0, 0
+    for i, (variant, name) in enumerate(todo):
+        vs = variant_section(section, variant)
+        key = run_key(project, vs, name, summary)
+        vk = variant_key(variant)
+        mine = runs.setdefault(vk, {})
+        if mine.get(name) == key and (d / "trials" / f"{key}.json.gz").exists():
+            continue
+        if (d / "trials" / f"{key}.json.gz").exists() or _no_results(d, key):
+            mine[name] = key  # the same inputs in another variant: shared
+            continue
+        if deadline is not None and done and time.monotonic() > deadline:
+            left += 1
+            continue
+        if tell:
+            tell(i / max(len(todo), 1), f"Designing {name} ({variant_label(variant)})")
+        res = run_section(project.design, vs, workbook, only=[name])
+        design = next((e for k in DESIGN_KINDS for e in res.get(k) or [] if e["element"] == name), None)
+        if design is None:
+            _mark_no_results(d, key)
+        else:
+            _save_design(d, key, design)
+        mine[name] = key
+        done += 1
+    wanted = {variant_key(v) for v in variants}
+    data["runs"] = {k: v for k, v in runs.items() if k in wanted}
+    _save_scenarios(d, data)
+    prune(d, load(d))
+    return {"done": done, "left": left}
+
+
+def _no_results(d: Path, key: str) -> bool:
+    return (d / "trials" / f"{key}.none").exists()
+
+
+def _mark_no_results(d: Path, key: str) -> None:
+    (d / "trials").mkdir(exist_ok=True)
+    (d / "trials" / f"{key}.none").write_text("", "utf-8")
+
+
+def design_kind(element: Any) -> str:
+    from .project import CombiWallInput, SheetPileInput
+
+    if isinstance(element, CombiWallInput):
+        return "combi_walls"
+    if isinstance(element, SheetPileInput):
+        return "sheet_pile_walls"
+    return kind_of(element)
+
+
+def _element_summary(kind: str, design: dict[str, Any]) -> dict[str, Any]:
+    if kind == "sheet_pile_walls":
+        uf = (design.get("design") or {}).get("uf")
+        return {"utilisation": uf, "passed": uf is not None and uf <= 1}
+    if kind == "combi_walls":
+        return {"utilisation": design.get("utilisation"), "passed": bool(design.get("passed"))}
+    return _summary(kind, design)
+
+
+def scenarios_view(
+    project: Project, section: Section, summary: dict | None, results: dict[str, Any] | None, d: Path
+) -> dict[str, Any]:
+    """Each variant's whole-section cost per metre of berth, and each element's part in it."""
+    data = load_scenarios(d)
+    variants = [{}] + [v for v in data.get("variants") or [{"crack_width_limit": 0.3}] if v]
+    names = _designable(section)
+    L0 = model_length(section, results or {})
+    cols = []
+    for variant in variants:
+        vk = variant_key(variant)
+        vs = variant_section(section, variant)
+        mine = (data.get("runs") or {}).get(vk) or {}
+        designs: dict[str, list] = {}
+        elements: dict[str, dict] = {}
+        missing = 0
+        for name in names:
+            key = run_key(project, vs, name, summary)
+            if mine.get(name) != key:
+                missing += 1
+                elements[name] = {"state": "out of date" if name in mine else "not run"}
+                continue
+            if _no_results(d, key):
+                elements[name] = {"state": "no results"}
+                continue
+            design = load_design(d, key)
+            if design is None:
+                missing += 1
+                elements[name] = {"state": "not run"}
+                continue
+            kind = design_kind(section.elements[name])
+            designs.setdefault(kind, []).append(design)
+            elements[name] = {"state": "done", **_element_summary(kind, design)}
+        col: dict[str, Any] = {
+            "variant": variant,
+            "key": vk,
+            "label": variant_label(variant, section),
+            "base": not variant,
+            "complete": missing == 0,
+            "missing": missing,
+            "elements": elements,
+        }
+        if missing == 0:
+            L = L0 or model_length(section, designs)
+            berth = section.costing.berth_length or L
+            if berth:
+                c = cost_section(project, section, designs, length=L, berth=berth)
+                for r in c.get("rows") or []:
+                    e = elements.get(r["element"])
+                    if e is not None:
+                        e |= {"cost_per_m": r["cost_per_m"], "rebar_t_per_m": round(r["rebar_t"] / berth, 4)}
+                t = c.get("totals") or {}
+                col |= {
+                    "cost_per_m": c.get("per_m", {}).get("cost"),
+                    "cost": t.get("cost") if section.costing.berth_length else None,
+                    "concrete_m3_per_m": c.get("per_m", {}).get("concrete_m3"),
+                    "rebar_t_per_m": c.get("per_m", {}).get("rebar_t"),
+                    "steel_t_per_m": c.get("per_m", {}).get("steel_t"),
+                    "prices_complete": t.get("complete"),
+                    "missing_prices": sorted({m for r in c.get("rows") or [] for m in r["missing"] if m}),
+                }
+            done = [e for e in elements.values() if e.get("state") == "done"]
+            col["unsafe"] = [
+                n for n, e in elements.items() if e.get("state") == "done" and not e.get("passed")
+            ]
+            col["safe_count"] = len(done) - len(col["unsafe"])
+        cols.append(col)
+    base = cols[0]
+    for c in cols:
+        if base.get("cost_per_m") is not None and c.get("cost_per_m") is not None:
+            c["saving_per_m"] = round(base["cost_per_m"] - c["cost_per_m"], 0)
+            if section.costing.berth_length:
+                c["saving"] = round(c["saving_per_m"] * section.costing.berth_length, 0)
+    return {
+        "currency": project.prices.currency,
+        "berth_length_m": section.costing.berth_length,
+        "elements": names,
+        "variants": cols,
     }

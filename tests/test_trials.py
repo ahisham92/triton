@@ -145,3 +145,62 @@ def test_trial_api_needs_a_workbook_and_a_known_element(tmp_path, monkeypatch):
     assert c.post(url, json={"element": "Deck", "sizes": [{"thickness": 5}]}).status_code == 422
     assert c.post(url, json={"element": "Deck", "sizes": [{"thickness": 700}]}).status_code == 409
     assert c.post(url + "/use", json={"element": "Deck", "size": {"thickness": 750}}).status_code == 409
+
+
+def test_voided_slab_trials_carry_the_voids():
+    import triton.project as pr
+
+    if not hasattr(pr, "SlabVoids"):
+        pytest.skip("slab voids not in this build")
+    deck = SlabInput(thickness=700, voids=pr.SlabVoids(diameter=500, spacing=700))
+    assert trials.size_of(deck) == {"thickness": 700, "void_diameter": 500, "void_spacing": 700}
+    assert all("void_diameter" in s for s in trials.default_sizes(deck))
+    size = trials.clean_size(deck, {"thickness": 750, "void_diameter": 450, "void_spacing": 650})
+    moved = trials.with_size(deck, size)
+    assert moved.thickness == 750 and moved.voids.diameter == 450 and moved.voids.spacing == 650
+    assert deck.voids.diameter == 500
+    with pytest.raises(ValueError):
+        trials.clean_size(deck, {"thickness": 550, "void_diameter": 500})
+    with pytest.raises(ValueError):
+        trials.clean_size(deck, {"thickness": 800, "void_diameter": 500, "void_spacing": 450})
+    # A solid slab takes no void sizes.
+    assert trials.clean_size(SlabInput(), {"thickness": 700, "void_diameter": 500}) == {"thickness": 700.0}
+
+
+def test_all_elements_with_a_crack_limit(tmp_path, monkeypatch):
+    p = project()
+    s = p.sections[0]
+    s.elements = {"Pile(1)": PileInput(), "Deck": SlabInput(thickness=700)}
+    calls = []
+
+    def fake(settings, section, workbook, progress=None, only=None, deadline=None):
+        (name,) = only
+        e = section.elements[name]
+        calls.append((name, e.crack_width_limit))
+        if name == "Deck":
+            kg = 100 * 0.2 / e.crack_width_limit  # a looser limit: less steel
+            box = {"X": [-20, 0], "Y": [0, 33.6]}
+            return {
+                "slabs": [
+                    slab(steel={"kg_per_m2": kg, "area_m2": 672.0}, utilisation=0.9, passed=True, box=box)
+                ]
+            }
+        return {"piles": [{**results()["piles"][0], "utilisation": 0.9, "passed": True}]}
+
+    monkeypatch.setattr(trials, "run_section", fake)
+    variants = [{"crack_width_limit": 0.3}]
+    out = trials.run_scenarios(p, s, None, None, tmp_path, variants)
+    assert out["left"] == 0 and len(calls) == 4
+    assert trials.variant_section(s, variants[0]).elements["Deck"].crack_width_limit_bottom == 0.3
+    trials.run_scenarios(p, s, None, None, tmp_path, variants)
+    assert len(calls) == 4  # nothing changed: not run again
+    v = trials.scenarios_view(p, s, None, {}, tmp_path)
+    base, loose = v["variants"]
+    assert base["base"] and base["label"].startswith("As set") and loose["label"] == "wk 0.3 mm"
+    assert base["complete"] and loose["complete"]
+    assert loose["saving_per_m"] > 0 and loose["rebar_t_per_m"] < base["rebar_t_per_m"]
+    assert loose["elements"]["Deck"]["cost_per_m"] < base["elements"]["Deck"]["cost_per_m"]
+    # Stepping: a deadline in the past designs one element per call.
+    s.elements["Deck"] = SlabInput(thickness=750)
+    out = trials.run_scenarios(p, s, None, None, tmp_path, variants, deadline=0.0)
+    assert out["done"] == 1 and out["left"] == 1
