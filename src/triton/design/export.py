@@ -14,7 +14,8 @@ have to repeat any design logic:
 Beams (``beams``): the straight cage between the beam's ends along global X or
 Y, each longitudinal bar at its place in the section (y across from the
 centreline, z up from mid-depth, mm), the links, and the transverse bars of the
-top and bottom faces per metre. ``level_m`` is the plate's level in the model.
+top and bottom faces per metre. ``level_m`` is the plate's level in the model. Rooms cut into the
+beam (``rooms``) give their hole in the section and the bars over their length.
 
 Slabs (``slabs``): per face and direction, the basic mesh and each zone of
 added bars (a plan rectangle), layer by layer with the distance of each layer
@@ -163,6 +164,38 @@ def _beam(b: dict[str, Any]) -> dict[str, Any]:
             for face, t in trans.items()
             if face in ("top", "bottom") and isinstance(t, dict)
         },
+        "rooms": [_room(rm) for rm in b.get("rooms") or [] if rm.get("section")],
+    }
+
+
+def _room(rm: dict[str, Any]) -> dict[str, Any]:
+    """A room cut into the beam: where it is, the hole in the section (y from, y to, z from, z to, mm)
+    and every longitudinal bar over its length."""
+    walls = {k: (v.get("link") or {}) for k, v in (rm.get("shear") or {}).items() if k in ("sea", "land")}
+    fr = rm.get("frame") or {}
+    return {
+        "name": rm["name"],
+        "start_m": rm["start_m"],
+        "end_m": rm["end_m"],
+        "void_mm": rm["section"]["void_mm"],
+        "land_side": rm["section"]["land_side"],
+        "bars": [{"y_mm": y, "z_mm": z, "diameter_mm": phi} for y, z, phi in rm["bars"]["all"]],
+        "wall_links": {
+            k: {"diameter_mm": v.get("phi"), "spacing_mm": v.get("spacing_mm")} for k, v in walls.items() if v
+        },
+        "wall_top_bars_past_ends_mm": (rm.get("corners") or {}).get("wall_top_bars_past_ends_mm"),
+        "diagonals": (rm.get("corners") or {}).get("diagonals"),
+        "floor_per_metre": {
+            f: {
+                "diameter_mm": (fr.get("floor") or {}).get(f, {}).get("phi"),
+                "spacing_mm": (fr.get("floor") or {}).get(f, {}).get("spacing_mm"),
+            }
+            for f in ("top", "bottom")
+        },
+        "walls_per_metre": {
+            "diameter_mm": (fr.get("walls") or {}).get("top", {}).get("phi"),
+            "spacing_mm": (fr.get("walls") or {}).get("top", {}).get("spacing_mm"),
+        },
     }
 
 
@@ -220,6 +253,42 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
             }
             for z in (d.get("shear") or {}).get("links") or []
         ],
+        "manholes": [
+            _manhole(m) for m in (d.get("openings") or {}).get("manholes") or [] if m.get("directions")
+        ],
+        "channels": [
+            {
+                **_room(c),
+                "direction": c["direction"],
+                "at_m": c["at_m"],
+                "strip_mm": c["strip_mm"],
+                "depth_mm": c["depth_total_mm"],
+                "cover_mm": max(d.get("cover_top_mm") or 0, d.get("cover_bottom_mm") or 0),
+            }
+            for c in (d.get("openings") or {}).get("channels") or []
+            if c.get("section")
+        ],
+    }
+
+
+def _manhole(m: dict[str, Any]) -> dict[str, Any]:
+    """An opening in the deck (plan, m) and its trimmer bars: for the bars along X and along Y, per face,
+    the bars each side, their size and length (centred on the opening)."""
+    return {
+        "name": m["name"],
+        "x_m": m["x"],
+        "y_m": m["y"],
+        "size_x_mm": m["size_x_mm"],
+        "size_y_mm": m["size_y_mm"],
+        "through": m["through"],
+        "trimmers": {
+            along: {
+                face: {k: t[k] for k in ("count", "phi", "length_mm")} | {"strip_mm": dd["strip_mm"]}
+                for face, t in dd["trimmers"].items()
+            }
+            for along, dd in m["directions"].items()
+        },
+        "diagonals": m["corners"],
     }
 
 

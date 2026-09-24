@@ -25,11 +25,13 @@ from .design import (
     curtailment,
     ductility,
     governing,
+    openings,
     peaks,
     pile_cracks,
     pile_shear,
     piles,
     rect,
+    rooms,
     sheet_piles,
     slabs,
     spw_design,
@@ -72,6 +74,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
     "Slabs": [
         ("Bars, strips, shear and punching", slabs),
         ("Circular voids (PVC pipes)", voids),
+        ("Manholes and channels (Openings tab)", openings),
         ("Crack widths and restraint", crack),
     ],
     "Beams": [
@@ -80,6 +83,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
         ("Crack widths and restraint", crack),
         ("Bollard tie bars (front beam)", bollard),
         ("Truss model (front beam)", truss),
+        ("Rooms cut into the beam", rooms),
     ],
 }
 
