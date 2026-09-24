@@ -113,3 +113,14 @@ def test_sections_side_by_side():
     assert [s["section"] for s in out["sections"]] == ["Section 1", "Section 2"]
     assert out["sections"][1]["notes"] == ["Not designed yet."]
     assert out["total"]["cost"] == out["sections"][0]["totals"]["cost"]
+
+
+def test_costs_default_to_usd():
+    from triton.project import Prices
+
+    assert Prices().currency == "USD"
+    assert Prices.model_validate({"currency": "EGP"}).currency == "USD"  # the old default, never chosen
+    chosen = Prices().model_dump()
+    chosen["currency"] = "EGP"  # picked on the Project tab and saved
+    assert Prices.model_validate(chosen).currency == "EGP"
+    assert Prices.model_validate({"currency": "EUR"}).currency == "EUR"
