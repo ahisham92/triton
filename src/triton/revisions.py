@@ -19,7 +19,7 @@ from .project import Project, Revision
 from .store import ProjectStore
 
 KINDS = ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs")
-_SKIP = {"created_at", "updated_at", "revisions", "locked", "checks", "clashes", "id"}
+_SKIP = {"created_at", "updated_at", "revisions", "revision", "locked", "checks", "clashes", "id"}
 
 
 def folder(store: ProjectStore, project_id: str) -> Path:
