@@ -52,6 +52,9 @@ def build(
         c.font = Font(bold=True)
     sheets: dict[str, dict[int, list[dict]]] = {}
     for i in issues:
+        c = choices(i["code"])
+        if i["severity"] == "info" and (c is None or c["before"] == "auto" or decisions.get(i["id"])):
+            continue  # tidy-ups and decided clean-ups are listed, not copied out
         if i.get("sheet") and i.get("rows"):
             for r in i["rows"]:
                 sheets.setdefault(i["sheet"], {}).setdefault(r, []).append(i)

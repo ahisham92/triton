@@ -1097,7 +1097,7 @@ function renderReport(d) {
 // ---------------------------------------------------------------- warnings review
 // Every warning with what accepting and rejecting it does. Nothing that changes the numbers happens
 // before it is accepted; a rejected warning leaves its sheet (or element) out of the design.
-const rowRanges = (rows) => {
+const rowRanges = (rows, most = 12) => {
   const out = [];
   let a = null, b = null;
   for (const r of [...rows].sort((x, y) => x - y)) {
@@ -1106,7 +1106,7 @@ const rowRanges = (rows) => {
     else { out.push(a === b ? `${a}` : `${a}–${b}`); a = b = r; }
   }
   if (a != null) out.push(a === b ? `${a}` : `${a}–${b}`);
-  return out.join(", ");
+  return out.length > most ? `${out.slice(0, most).join(", ")} and ${out.length - most} more` : out.join(", ");
 };
 
 function renderReview(data, refresh, url) {
@@ -1227,7 +1227,7 @@ async function openSheet(url, name, refresh, start = null) {
       ${d.issues.length ? `<ul class="sheet-issues">${d.issues.map((i) => `<li><span class="sev ${i.severity}">${i.severity}</span> ${esc(i.message)}${i.rows.length ? ` <span class="rows">rows ${esc(rowRanges(i.rows))}</span>` : ""}</li>`).join("")}</ul>` : ""}
       ${d.editable ? "" : '<p class="status">This workbook was uploaded before its rows were kept, so this shows the rows as cleaned and cannot be edited. Upload it again to edit here.</p>'}
       <p class="status" id="sheet-status">${d.editable ? "Click a cell to change it. Highlighted rows are the flagged ones; hover for the reason." : ""}</p>
-      <div class="sheet-grid"><table><tr><th></th>${Array.from({ length: d.width }, (_, c) => `<th>${colName(c)}</th>`).join("")}</tr>${body}</table></div></div>`;
+      <div class="sheet-grid"><table><tr><th></th>${Array.from({ length: d.width }, (_, c) => `<th>${colName(c)}${d.header?.[c] != null && d.header[c] !== "" ? `<div class="head-text">${esc(d.header[c])}</div>` : ""}</th>`).join("")}</tr>${body}</table></div></div>`;
     box.querySelector("#sheet-close").onclick = () => box.remove();
     box.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => load(Number(b.dataset.go))));
     const saveBtn = box.querySelector("#sheet-save");

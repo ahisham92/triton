@@ -93,7 +93,7 @@ def _is_blank(row: Row) -> bool:
     return all(_is_empty_cell(v) for v in row)
 
 
-def _is_header(row: Row) -> bool:
+def is_header(row: Row) -> bool:
     cells = {str(v).strip().lower() for v in row if isinstance(v, str)}
     return "node" in cells and any(c.startswith("x") and "[" in c for c in cells)
 
@@ -130,7 +130,7 @@ def clean_sheet(name: str, rows: list[Row]) -> SheetData:
         issue(Severity.INFO, "empty_sheet", "Sheet is empty and was ignored.")
         return SheetData(name, parsed, pd.DataFrame(), issues=issues, raw_rows=len(rows), empty=True)
 
-    header_idx = [i for i in non_blank if _is_header(rows[i])]
+    header_idx = [i for i in non_blank if is_header(rows[i])]
     if not header_idx:
         issue(
             Severity.ERROR,

@@ -194,3 +194,4 @@ td.nowrap { white-space: nowrap; }
 .sheet-grid td.edited { outline: 2px solid var(--accent); }
 .sheet-issues { margin: 8px 0; padding-left: 18px; max-height: 120px; overflow: auto; }
 @media (max-width: 700px) { .sheet-view { padding: 0; } }
+.sheet-grid .head-text { font-weight: 400; color: var(--muted); font-size: 12px; }

@@ -26,6 +26,7 @@ from .design.runner import factored_elements, run_section
 from .design.spw import workbook as spw_workbook
 from .elements import ElementType
 from .geometry import section_geometry
+from .importer import is_header
 from .materials import catalogue
 from .project import (
     CombiWallInput,
@@ -578,13 +579,17 @@ def workbook_sheet(project_id: str, section_id: str, name: str, start: int | Non
         start = max(0, first - 5)
     start = max(0, min(start, max(len(rows) - 1, 0)))
     page = [[_cell(v) for v in r] for r in rows[start : start + SHEET_PAGE]]
-    width = max((len(r) for r in page), default=0)
+    header = next((n for n, r in enumerate(rows[:200]) if is_header(r)), None) if editable else 0
+    head_cells = [_cell(v) for v in rows[header]] if header is not None and rows else []
+    width = max([len(r) for r in page] + [len(head_cells)], default=0)
     return {
         "name": name,
         "start": start,
         "total": len(rows),
         "width": width,
         "rows": page,
+        "header_row": header + 1 if header is not None else None,
+        "header": head_cells,
         "flags": {str(k): v for k, v in flags.items()},
         "flagged_rows": sorted(flags),
         "issues": [
