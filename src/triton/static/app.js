@@ -82,7 +82,7 @@ async function projectsPage() {
     settings used to design the elements in a Plaxis workbook.</p>
     <div class="row"><input id="new-name" placeholder="Project name" style="flex:1;max-width:320px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--input);color:var(--text);font:inherit">
     <button id="new">New project</button></div>
-    <div class="row"><label for="trt">Open a project file</label>
+    <div class="row" style="margin-top:10px"><label for="trt">Open a project file</label>
       <input type="file" id="trt" accept=".trt"><button id="open-trt" disabled>Open</button>
       <span class="status" id="trt-status">A .trt downloaded from Triton (Project page › Download project).</span></div>
     <div class="row" id="trt-choice" hidden></div>
