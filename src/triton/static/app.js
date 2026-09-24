@@ -536,7 +536,8 @@ function checkerHtml() {
   return `<div class="panel row">
       <input type="file" id="file" accept=".xlsb,.xlsx,.xlsm">
       <button id="run" disabled>Check workbook</button>
-      <span class="status" id="status"></span></div>
+      <span class="status" id="status"></span>
+      <button class="quiet" id="stop" hidden>Stop</button></div>
     <div id="report" hidden>
       <div class="counts">
         <div class="count error"><b id="n-error">0</b>errors</div>
@@ -585,16 +586,42 @@ function watchProgress(key, show) {
   };
 }
 
+// A Stop button for a long step: while uploading it stops sending pieces; once the server is
+// working it asks it to stop at its next sheet or element.
+function stopButton(button, run, status) {
+  button.hidden = false;
+  button.disabled = false;
+  button.onclick = async () => {
+    run.stopped = true;
+    button.disabled = true;
+    status.textContent = "Stopping…";
+    // The step may not have started on the server yet: ask again for a few seconds.
+    for (let i = 0; i < 10 && !run.done; i++) {
+      if (run.key && (await api(`${ROOT}/api/progress/${run.key}/stop`, { method: "POST" }).then(() => true, () => false))) return;
+      await new Promise((r) => setTimeout(r, 700));
+    }
+  };
+  return () => {
+    run.done = true;
+    button.hidden = true;
+  };
+}
+
 // Workbooks go up in pieces: hosts cap one request (PythonAnywhere at about 100 MB), and a whole
 // project's workbook can be bigger than that. A piece that fails is sent again.
 const PIECE = 8 * 1024 * 1024;
-async function sendInPieces(f, progress) {
+async function sendInPieces(f, progress, run = {}) {
   const { id } = await api(ROOT + "/api/uploads", {
     method: "POST",
     body: JSON.stringify({ filename: f.name, size: f.size }),
   });
+  run.upload = id;
   let at = 0;
   do {
+    if (run.stopped) {
+      await api(`${ROOT}/api/uploads/${id}`, { method: "DELETE" }).catch(() => {});
+      throw new Error("Stopped.");
+    }
     const piece = f.slice(at, at + PIECE);
     for (let tries = 1; ; tries++) {
       try {
@@ -624,25 +651,38 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
     if (!f) return;
     run.disabled = true;
     const status = document.getElementById("status");
+    const job = {};
+    const hideStop = stopButton(document.getElementById("stop"), job, status);
     try {
       const mb = (n) => (n / 1048576).toFixed(0);
-      const id = await sendInPieces(f, (at) => {
-        const pct = Math.round((100 * at) / Math.max(f.size, 1));
-        status.textContent = `Uploading ${f.name}: ${pct}% (${mb(at)} of ${mb(f.size)} MB)`;
-      });
+      const id = await sendInPieces(
+        f,
+        (at) => {
+          const pct = Math.round((100 * at) / Math.max(f.size, 1));
+          if (!job.stopped) status.textContent = `Uploading ${f.name}: ${pct}% (${mb(at)} of ${mb(f.size)} MB)`;
+        },
+        job,
+      );
+      if (job.stopped) {
+        await api(`${ROOT}/api/uploads/${id}`, { method: "DELETE" }).catch(() => {});
+        throw new Error("Stopped.");
+      }
       status.textContent = `Reading ${f.name}…`;
-      const stop = watchProgress(id, (text) => (status.textContent = text));
+      job.key = id;
+      const stop = watchProgress(id, (text) => (job.stopped ? null : (status.textContent = text)));
       let data;
       try {
         data = await api(`${url}/${id}`, { method: "POST" });
       } finally {
         stop();
+        hideStop();
       }
       renderReport(data);
       onReport?.(data);
       document.getElementById("status").textContent = `Checked ${data.file}`;
     } catch (e) {
-      document.getElementById("status").textContent = `Failed: ${e.message}`;
+      hideStop();
+      status.textContent = job.stopped ? "Stopped. Nothing was kept from this upload." : `Failed: ${e.message}`;
     } finally {
       run.disabled = false;
     }
@@ -698,48 +738,102 @@ function renderMapping(data, refresh) {
   if (!box) return;
   const p = sec();
   p.sheet_map ??= {};
-  const unknown = data.sheets.filter((x) => !x.element && !x.empty && !(x.name in p.sheet_map)).map((x) => x.name);
-  const names = [...Object.keys(p.sheet_map), ...unknown];
-  const others = data.sheets.filter((x) => !names.includes(x.name) && !x.empty).map((x) => x.name);
-  if (!names.length && !others.length) {
-    box.innerHTML = "";
-    return;
-  }
-  const known = [...new Set([...data.elements, ...Object.keys(p.elements)])];
+  const hints = data.suggestions || {};
+  const sheets = data.sheets.filter((x) => !x.empty);
+  // The sheets that need a look: not recognised, spelled differently from the rest, or mapped by hand.
+  const needs = (x) => x.name in p.sheet_map || !x.element || x.name in hints;
+  let showAll = false;
+  const picked = new Set();
+  const known = [...new Set([...data.elements, ...Object.keys(p.elements), ...Object.values(hints).map((h) => h.element)])];
+  const combos = [...new Set([...data.combinations.map((c) => c.name), ...Object.values(hints).map((h) => h.combination)])];
+  const pending = () => Object.keys(hints).filter((n) => !(n in p.sheet_map));
+  const accept = (n) => {
+    const h = hints[n];
+    p.sheet_map[n] = { element: h.element, combination: h.combination, ignore: false };
+  };
   const draw = () => {
-    const rows = names.map((n) => {
-      const m = p.sheet_map[n] || { element: "", combination: "", ignore: false };
-      return `<tr><td>${esc(n)}${n in p.sheet_map ? "" : ' <span class="sev warning">not recognised</span>'}</td>
-        <td><input type="text" list="map-elements" data-map="${esc(n)}" data-key="element" value="${esc(m.element)}" placeholder="Pile(5)" ${m.ignore ? "disabled" : ""}></td>
-        <td><input type="text" list="map-combos" data-map="${esc(n)}" data-key="combination" value="${esc(m.combination)}" placeholder="PT-B-Apron" ${m.ignore ? "disabled" : ""}></td>
-        <td><label><input type="checkbox" data-map="${esc(n)}" data-key="ignore" ${m.ignore ? "checked" : ""}> leave out</label></td>
-        <td>${n in p.sheet_map ? `<button class="quiet" data-unmap="${esc(n)}">Remove</button>` : ""}</td></tr>`;
-    }).join("");
+    const list = sheets.filter((x) => showAll || needs(x));
+    const rows = list
+      .map((x) => {
+        const n = x.name;
+        const mapped = p.sheet_map[n];
+        const h = hints[n];
+        const m = mapped || (h ? h : { element: x.element || "", combination: x.combination || "" });
+        const tag = mapped
+          ? '<span class="sev ok">mapped</span>'
+          : h
+            ? `<span class="sev ${h.sure ? "info" : "warning"}" title="${esc(h.why)}">suggested${h.sure ? "" : ", check"}</span>`
+            : x.element
+              ? ""
+              : '<span class="sev warning">not recognised</span>';
+        const off = mapped?.ignore;
+        return `<tr><td><input type="checkbox" data-pick="${esc(n)}" ${picked.has(n) ? "checked" : ""}></td>
+          <td>${esc(n)} ${tag}${h && !mapped ? `<div class="status">${esc(h.why)}</div>` : ""}</td>
+          <td><input type="text" list="map-elements" data-map="${esc(n)}" data-key="element" value="${esc(m.element)}" placeholder="Pile(5)" ${off ? "disabled" : ""}></td>
+          <td><input type="text" list="map-combos" data-map="${esc(n)}" data-key="combination" value="${esc(m.combination)}" placeholder="PT-B-Apron" ${off ? "disabled" : ""}></td>
+          <td><label><input type="checkbox" data-map="${esc(n)}" data-key="ignore" ${off ? "checked" : ""}> leave out</label></td>
+          <td>${h && !mapped ? `<button class="quiet" data-accept="${esc(n)}">Accept</button>` : ""}${mapped ? `<button class="quiet" data-unmap="${esc(n)}">Undo</button>` : ""}</td></tr>`;
+      })
+      .join("");
+    const waiting = pending().length;
     box.innerHTML = `<h2>Sheet mapping</h2>
-      <p class="status" style="margin-top:0">For sheets whose names do not follow &lt;Element&gt;-&lt;Combination&gt;: say which element and combination each one holds, or leave it out. Apply saves the project and checks the workbook again.</p>
-      <div class="panel scroll"><table><tr><th>Sheet</th><th>Element</th><th>Combination</th><th></th><th></th></tr>${rows || '<tr><td colspan="5">No sheets mapped by hand.</td></tr>'}</table>
-      <div class="row" style="margin-top:10px">${others.length ? `<select id="map-pick"><option value="">Reassign another sheet…</option>${others.map((n) => `<option>${esc(n)}</option>`).join("")}</select>` : ""}
-        <button id="map-apply">Apply mapping</button><span class="status" id="map-status"></span></div></div>
+      <p class="status" style="margin-top:0">Which element and combination each sheet holds. Sheets whose names are not written as
+        &lt;Element&gt;-&lt;Combination&gt;, or whose combination is spelled differently from the other sheets, get a suggestion:
+        accept it, correct it, or leave the sheet out. Apply saves the project and checks the workbook again.</p>
+      ${waiting ? `<div class="panel row"><span>${waiting} sheet(s) have a suggested mapping.</span><button id="map-accept-all">Accept all suggestions</button></div>` : ""}
+      <div class="panel scroll"><table><tr><th></th><th>Sheet</th><th>Element</th><th>Combination</th><th></th><th></th></tr>
+        ${rows || '<tr><td colspan="6">Every sheet is named as expected.</td></tr>'}</table>
+      <div class="row" style="margin-top:10px">
+        <label><input type="checkbox" id="map-all" ${showAll ? "checked" : ""}> show all ${sheets.length} sheets</label>
+        <span class="status">Selected: ${picked.size}</span>
+        <input type="text" list="map-elements" id="bulk-element" placeholder="Element for selected" ${picked.size ? "" : "disabled"}>
+        <input type="text" list="map-combos" id="bulk-combo" placeholder="Combination for selected" ${picked.size ? "" : "disabled"}>
+        <button class="quiet" id="bulk-set" ${picked.size ? "" : "disabled"}>Set</button>
+        <button class="quiet" id="bulk-out" ${picked.size ? "" : "disabled"}>Leave out</button>
+      </div>
+      <div class="row" style="margin-top:10px"><button id="map-apply">Apply mapping</button><span class="status" id="map-status"></span></div></div>
       <datalist id="map-elements">${known.map((e) => `<option value="${esc(e)}">`).join("")}</datalist>
-      <datalist id="map-combos">${data.combinations.map((c) => `<option value="${esc(c.name)}">`).join("")}</datalist>`;
-    const entry = (n) => (p.sheet_map[n] ??= { element: "", combination: "", ignore: false });
+      <datalist id="map-combos">${combos.map((c) => `<option value="${esc(c)}">`).join("")}</datalist>`;
+    const entry = (n) => {
+      if (!p.sheet_map[n]) {
+        const x = sheets.find((q) => q.name === n);
+        const h = hints[n];
+        p.sheet_map[n] = { element: h?.element || x?.element || "", combination: h?.combination || x?.combination || "", ignore: false };
+      }
+      return p.sheet_map[n];
+    };
     box.querySelectorAll("input[data-map]").forEach((inp) => {
       const n = inp.dataset.map;
       if (inp.type === "checkbox") inp.onchange = () => { entry(n).ignore = inp.checked; markDirty(); draw(); };
-      else inp.oninput = () => { entry(n)[inp.dataset.key] = inp.value; markDirty(); };
+      else inp.onchange = () => { entry(n)[inp.dataset.key] = inp.value.trim(); markDirty(); draw(); };
     });
-    box.querySelectorAll("[data-unmap]").forEach((b) => (b.onclick = () => {
-      delete p.sheet_map[b.dataset.unmap];
-      markDirty();
-      renderMapping(data, refresh);
+    box.querySelectorAll("input[data-pick]").forEach((c) => (c.onchange = () => {
+      c.checked ? picked.add(c.dataset.pick) : picked.delete(c.dataset.pick);
+      draw();
     }));
-    const pick = box.querySelector("#map-pick");
-    if (pick) pick.onchange = () => {
-      if (!pick.value) return;
-      const x = data.sheets.find((q) => q.name === pick.value);
-      p.sheet_map[pick.value] = { element: x?.element || "", combination: x?.combination || "", ignore: false };
+    box.querySelectorAll("[data-accept]").forEach((b) => (b.onclick = () => { accept(b.dataset.accept); markDirty(); draw(); }));
+    box.querySelectorAll("[data-unmap]").forEach((b) => (b.onclick = () => { delete p.sheet_map[b.dataset.unmap]; markDirty(); draw(); }));
+    const all = box.querySelector("#map-accept-all");
+    if (all) all.onclick = () => { pending().forEach(accept); markDirty(); draw(); };
+    box.querySelector("#map-all").onchange = (e) => { showAll = e.target.checked; draw(); };
+    box.querySelector("#bulk-set").onclick = () => {
+      const el = box.querySelector("#bulk-element").value.trim();
+      const co = box.querySelector("#bulk-combo").value.trim();
+      picked.forEach((n) => {
+        const m = entry(n);
+        m.ignore = false;
+        if (el) m.element = el;
+        if (co) m.combination = co;
+      });
+      picked.clear();
       markDirty();
-      renderMapping(data, refresh);
+      draw();
+    };
+    box.querySelector("#bulk-out").onclick = () => {
+      picked.forEach((n) => (entry(n).ignore = true));
+      picked.clear();
+      markDirty();
+      draw();
     };
     box.querySelector("#map-apply").onclick = async () => {
       const st = box.querySelector("#map-status");
@@ -753,6 +847,10 @@ function renderMapping(data, refresh) {
       await refresh();
     };
   };
+  if (!sheets.some(needs) && !sheets.length) {
+    box.innerHTML = "";
+    return;
+  }
   draw();
 }
 
@@ -879,21 +977,26 @@ async function renderDesignTab(host) {
       </span>
       ${Object.values(sec().elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
       <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile, combi wall, beam or slab elements first."}</span>
+      <button class="quiet" id="design-stop" hidden>Stop</button>
     </div><div id="design-out"></div>`;
   document.getElementById("run-design").onclick = async () => {
     if (state.dirty) await save();
     if (state.errors?.length) return;
     const status = document.getElementById("design-status");
     status.textContent = "Designing…";
-    const stop = watchProgress(`design-${state.project.id}-${sec().id}`, (text) => (status.textContent = text));
+    const job = { key: `design-${state.project.id}-${sec().id}` };
+    const hideStop = stopButton(document.getElementById("design-stop"), job, status);
+    const stop = watchProgress(job.key, (text) => (job.stopped ? null : (status.textContent = text)));
     try {
       const res = await api(`${url}/design`, { method: "POST" });
       stop();
+      hideStop();
       renderResults(res);
       status.textContent = "Done.";
     } catch (e) {
       stop();
-      status.textContent = e.message;
+      hideStop();
+      status.textContent = job.stopped ? "Stopped. The previous results are kept." : e.message;
     }
   };
   try {

@@ -230,6 +230,8 @@ def _import_path(path: Path, progress: Callable[[float, str], None] | None = Non
         return import_workbook(path, progress)
     except UnsupportedWorkbook as e:
         raise HTTPException(400, str(e)) from e
+    except Stopped:
+        raise
     except Exception as e:  # corrupt or password-protected files
         raise HTTPException(400, f"Could not read the workbook: {e}") from e
 
@@ -259,12 +261,25 @@ def _progress_path(key: str) -> Path:
     return root / f"{key}.json"
 
 
+class Stopped(Exception):
+    """The user pressed Stop; raised at the next sheet or element."""
+
+
+@app.exception_handler(Stopped)
+def _stopped(_request: Request, _exc: Stopped) -> JSONResponse:
+    return JSONResponse({"detail": "Stopped."}, status_code=409)
+
+
 class _Progress:
     def __init__(self, key: str) -> None:
         self.path, self.started, self.written = _progress_path(key), time.time(), 0.0
+        self.stop = self.path.with_suffix(".stop")
+        self.stop.unlink(missing_ok=True)  # a Stop pressed on an earlier run
         self(0.0, "Starting")
 
     def __call__(self, fraction: float, step: str) -> None:
+        if self.stop.exists():
+            raise Stopped
         now = time.time()
         if now - self.written < 0.5 and 0 < fraction < 1:
             return
@@ -280,6 +295,17 @@ class _Progress:
 
     def __exit__(self, *_: object) -> None:
         self.path.unlink(missing_ok=True)
+        self.stop.unlink(missing_ok=True)
+
+
+@app.post("/api/progress/{key}/stop", status_code=202)
+def stop(key: str) -> dict:
+    """Ask a running step to stop; it stops at its next sheet or element."""
+    path = _progress_path(key)
+    if not path.exists():
+        raise HTTPException(404, "Not running.")
+    path.with_suffix(".stop").touch()
+    return {"stopping": True}
 
 
 @app.get("/api/progress/{key}")
@@ -339,6 +365,12 @@ def start_upload(body: NewUpload) -> dict:
     (d / "name").write_text(body.filename, "utf-8")
     (d / f"data{suffix}").touch()
     return {"id": upload_id, "received": 0}
+
+
+@app.delete("/api/uploads/{upload_id}", status_code=204)
+def drop_upload(upload_id: str) -> Response:
+    shutil.rmtree(_upload_dir(upload_id), ignore_errors=True)
+    return Response(status_code=204)
 
 
 def _upload_file(d: Path) -> Path:

@@ -44,6 +44,7 @@ td.cell { text-align: center; font-weight: 600; white-space: nowrap; }
 .warning { background: var(--warn-bg); color: var(--warn); }
 .error { background: var(--err-bg); color: var(--err); }
 .missing { background: var(--miss-bg); color: var(--muted); }
+.info { background: var(--accent-bg); color: var(--accent); }
 .sev { border-radius: 6px; padding: 1px 8px; font-size: 12px; font-weight: 600; text-transform: uppercase; }
 .rows { color: var(--muted); font-size: 13px; }
 .counts { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }

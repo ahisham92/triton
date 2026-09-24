@@ -17,6 +17,7 @@ from .elements import CombinationType, combination_type, mapped_sheet_name
 from .importer import SheetData, clean_sheet
 from .issues import Issue, Severity
 from .reader import Row, read_workbook
+from .suggest import suggest
 
 
 @dataclass
@@ -52,12 +53,14 @@ class ImportResult:
         )
         by_key = {(s.parsed.element, s.parsed.combination): s for s in self.sheets if s.parsed}
         coverage = {e: {c: _cell_state(by_key.get((e, c))) for c in combos} for e in elements}
+        sheets = [_sheet_summary(s) for s in self.sheets]
         return {
             "counts": counts,
             "elements": elements,
             "combinations": [{"name": c, "type": combination_type(c).value} for c in combos],
             "coverage": coverage,
-            "sheets": [_sheet_summary(s) for s in self.sheets],
+            "sheets": sheets,
+            "suggestions": suggest(sheets),
             "issues": [i.to_dict() for i in sorted(issues, key=_issue_sort_key)],
             "axes": sorted(getattr(self, "axes", []), key=lambda a: _element_sort_key(a["element"])),
         }

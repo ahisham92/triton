@@ -49,6 +49,7 @@ def test_pieces_are_joined_and_checked(data_dir):
     assert r.status_code == 200, r.text
     assert r.json()["file"] == "section.xlsx"
     assert r.json()["coverage"]["SPW"] == {"PT-B-Apron": "ok", "QP": "ok"}
+    assert r.json()["suggestions"] == {}  # every sheet named as expected
     assert not any((data_dir / "uploads").iterdir())  # taken, then deleted
 
 
@@ -123,3 +124,37 @@ def test_progress_is_served_while_a_step_runs_and_gone_after(monkeypatch):
         assert state["fraction"] == 0.5 and state["step"] == "Reading Pile(1)-QP"
         assert 9 <= state["remaining_s"] <= 11  # as long again as it has taken
     assert client.get("/api/progress/abc").status_code == 404
+
+
+def test_stop_ends_a_read_at_the_next_sheet_and_keeps_nothing(data_dir, monkeypatch):
+    from triton import api
+
+    upload_id = send(workbook_bytes())
+
+    def read(path, progress):
+        progress(0.1, "Reading SPW-QP")
+        assert client.post(f"/api/progress/{upload_id}/stop").status_code == 202
+        progress(0.2, "Reading SPW-PT-B-Apron")
+        raise AssertionError("should have stopped")
+
+    monkeypatch.setattr(api, "import_workbook", read)
+    r = client.post(f"/api/workbooks/check/{upload_id}")
+    assert r.status_code == 409 and r.json()["detail"] == "Stopped."
+    assert not any((data_dir / "uploads").iterdir())
+    assert not any((data_dir / "progress").iterdir())
+
+
+def test_stop_needs_a_running_step_and_a_new_run_is_not_stopped_by_an_old_press():
+    from triton import api
+
+    assert client.post("/api/progress/idle/stop").status_code == 404
+    with api._Progress("again"):
+        client.post("/api/progress/again/stop")
+    with api._Progress("again") as tell:  # the old press is gone
+        tell(1.0, "Done")
+
+
+def test_an_upload_can_be_dropped(data_dir):
+    upload_id = client.post("/api/uploads", json={"filename": "w.xlsx"}).json()["id"]
+    assert client.delete(f"/api/uploads/{upload_id}").status_code == 204
+    assert not (data_dir / "uploads" / upload_id).exists()
