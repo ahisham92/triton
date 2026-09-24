@@ -140,6 +140,7 @@ def run_section(
     only: Collection[str] | None = None,
     deadline: float | None = None,
     approach: ApproachSlabInput | None = None,
+    furniture_at: Callable[[float], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Design the piles, combi walls and beams of one section; pick the sheet pile wall's governing sets.
     ``progress(fraction, step)`` is told as each element is started. ``only``: design just these
@@ -270,7 +271,9 @@ def run_section(
     axes = {a["element"]: a.get("local") for a in found}
     signs = {a["element"]: a for a in found if a["kind"] == "plate"}
     parts, alignment = section_alignment(section, sheets) if plates else ([], {"parts": [], "points": []})
-    joints = section_joints(settings, section, raw, parts, along_axis(section)) if plates else None
+    joints = (
+        section_joints(settings, section, raw, parts, along_axis(section), furniture_at) if plates else None
+    )
     use_joints = bool(joints and joints.get("segments") and settings.joints.use_in_restraint)
 
     def with_joints(element: Any, part: Any) -> tuple[Any, list[float]]:

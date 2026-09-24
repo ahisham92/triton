@@ -130,7 +130,7 @@ def test_pile_and_slab_joints_in_the_design_report_and_drawings():
         Project(sections=[section]), section, {**res, "run_at": "2026-09-24T22:00"}, "detailed"
     )
     heads = [b.text for b in rep.blocks if b.kind.startswith("h")]
-    assert "3.6 Construction joints" in heads and "Deck: construction joints" in heads
+    assert "3.7 Construction joints" in heads and "Deck: construction joints" in heads
     d = drawings("P", res, DrawingSettings(), "S1")
     texts = [i["text"] for v in d["views"] for i in v["items"] if i["type"] == "text"]
     assert any(t.startswith("Construction joint +2.70") for t in texts)

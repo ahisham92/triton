@@ -30,9 +30,20 @@ _SECTION_OWN = {
     "slab_strips",
     "clashes",
     "checks",
+    "furniture",
     "displacements",
     "joints",
 }
+
+
+def _furniture_spots(project: Project, section: Section) -> list | None:
+    """The quay furniture's positions the joints keep clear of (the joints set the restraint length)."""
+    from .furniture import nominal
+
+    if section.joints.furniture:
+        return None  # positions given for the section, already in its joints
+    berth = sum(section.joints.runs) or section.costing.berth_length or 0.0
+    return nominal(project.furniture, section.furniture, berth)
 
 
 def _hash(value: Any) -> str:
@@ -75,6 +86,7 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
                 section.joints.model_dump(mode="json"),
                 None if section.joints.runs else c.berth_length,
                 [i.model_dump(mode="json") for i in c.items if i.unit == "each"],
+                _furniture_spots(project, section),
             ]
         )
     for name, element in section.elements.items():

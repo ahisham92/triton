@@ -133,7 +133,7 @@ def test_other_items_follow_the_berth():
     s = p.sections[0]
     s.costing.berth_length = 100.0
     names = [i.name for i in s.costing.items]
-    assert names == ["Fenders", "Bollards", "Crane rails"]
+    assert names == ["Fenders", "Bollards", "Crane rails", "Ladders", "Storm pins", "Crane stoppers"]
     out = cost_section(p, s, results())
     rows = {r["element"]: r for r in out["rows"]}
     assert rows["Fenders"]["count"] == 6 and rows["Bollards"]["count"] == 4  # 100 m: every 20 m, every 30 m
@@ -143,9 +143,24 @@ def test_other_items_follow_the_berth():
     s.costing.items[1].count = 10
     s.costing.items[1].price = 500.0
     s.costing.items[2].price = 20.0
-    s.costing.items.append(OtherItem(name="Ladders", unit="lump", price=7000.0))
+    s.costing.items.append(OtherItem(name="Mooring rings", unit="lump", price=7000.0))
     out = cost_section(p, s, results())
     rows = {r["element"]: r for r in out["rows"]}
     assert rows["Bollards"]["count"] == 10 and rows["Bollards"]["count_auto"] == 4
     assert rows["Crane rails"]["cost"] == 2 * 100 * 20
     assert out["totals"]["cost"] == before + 6000 + 5000 + 4000 + 7000
+
+
+def test_furniture_numbers_fill_the_items():
+    p = project()
+    s = p.sections[0]
+    s.costing.berth_length = 100.0
+    s.costing.items[0].price = 1000.0
+    s.costing.items[4].price = 300.0
+    out = cost_section(p, s, results(), furniture={"Fenders": 7, "Storm pins": 4})
+    rows = {r["element"]: r for r in out["rows"]}
+    assert rows["Fenders"]["count"] == 7 and "Furniture tab" in rows["Fenders"]["basis"]
+    assert rows["Storm pins"]["count"] == 4 and rows["Storm pins"]["cost"] == 1200
+    s.costing.items[0].count = 3  # a number given still wins
+    rows = {r["element"]: r for r in cost_section(p, s, results(), furniture={"Fenders": 7})["rows"]}
+    assert rows["Fenders"]["count"] == 3 and rows["Fenders"]["count_auto"] == 7
