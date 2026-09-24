@@ -13,7 +13,7 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from .project import Project, Section
+from .project import BeamInput, Project, Section, SlabInput
 
 _SECTION_OWN = {
     "id",
@@ -51,15 +51,17 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         "workbook": _hash([(workbook or {}).get(k) for k in ("version", "uploaded_at")]),
     }
     joints = project.design.joints
-    if joints.use_in_restraint:
-        # The joint layout sets the beams' and slabs' restraint length: its rules, the section's berth
-        # and the furniture priced each (Costing) when no positions are given.
+    plates = any(isinstance(e, (BeamInput, SlabInput)) for e in section.elements.values())
+    if joints.use_in_restraint and plates:
+        # The joint layout sets the beams' and slabs' restraint length: its rules, the section's runs
+        # (or the berth length on the Costing tab when no runs are given) and the furniture priced
+        # each. A section with no beam or slab does not use it, so its costing stays out of the design.
         c = section.costing
         parts["expansion joints"] = _hash(
             [
                 joints.model_dump(mode="json"),
                 section.joints.model_dump(mode="json"),
-                c.berth_length,
+                None if section.joints.runs else c.berth_length,
                 [i.model_dump(mode="json") for i in c.items if i.unit == "each"],
             ]
         )
