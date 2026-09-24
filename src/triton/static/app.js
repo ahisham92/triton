@@ -2481,7 +2481,11 @@ function drawResults(res, full = res) {
   if (sets) sets.hidden = !anyCages && !(full.sheet_pile_walls || []).length;
   const draw = document.getElementById("drawings");
   if (draw) draw.hidden = !anyCages;
-  const exported = ["piles", "combi_walls", "sheet_pile_walls", "beams", "slabs"].flatMap((k) => (full[k] || []).map((x) => x.element));
+  // In the order of the Design row's tick boxes.
+  const order = designUnits(sec());
+  const exported = ["piles", "combi_walls", "sheet_pile_walls", "beams", "slabs"]
+    .flatMap((k) => (full[k] || []).map((x) => x.element))
+    .sort((a, b) => (order.indexOf(a) + 1 || 1e9) - (order.indexOf(b) + 1 || 1e9));
   wireExportPick(exported, new Set((full.sheet_pile_walls || []).map((x) => x.element)), anyCages);
   if (draw) {
     document.getElementById("drawing-help").onclick = (e) => {
