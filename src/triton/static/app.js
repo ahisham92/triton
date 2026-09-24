@@ -2368,7 +2368,7 @@ function resultBands(res) {
   for (const w of res?.sheet_pile_walls || []) {
     // The wall's largest Uf per level, in 0.5 m bands (the same all along the wall).
     const by = new Map();
-    for (const [z, u] of w.design?.profile || []) {
+    for (const [z, u] of (w.design?.designed || w.design?.as_plaxis)?.profile || []) {
       const k = Math.round(z * 2) / 2;
       by.set(k, Math.max(by.get(k) ?? 0, u));
     }

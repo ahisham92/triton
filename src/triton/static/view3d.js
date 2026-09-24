@@ -281,12 +281,15 @@ export class View3D {
           const [a0, a1] = c[along];
           const w = c[flat][0];
           const pt = (sv, zv) => (along === "Y" ? [w, sv, zv] : [sv, w, zv]);
-          for (const [, , z, u] of b) {
-            if (u == null) continue;
-            items.push({ kind: "quad", pts: [pt(a0, z - 0.26), pt(a1, z - 0.26), pt(a1, z + 0.26), pt(a0, z + 0.26)], faded,
+          // Each band reaches halfway to its neighbours, so the wall reads as one surface.
+          const lv = b.filter((q) => q[3] != null).sort((p, q) => q[2] - p[2]);
+          lv.forEach(([, , z, u], k) => {
+            const up = k ? (z + lv[k - 1][2]) / 2 + 0.02 : Math.min(z + 0.25, c.Z[1]);
+            const down = k < lv.length - 1 ? (z + lv[k + 1][2]) / 2 - 0.02 : Math.max(z - 0.25, c.Z[0]);
+            items.push({ kind: "quad", pts: [pt(a0, down), pt(a1, down), pt(a1, up), pt(a0, up)], faded,
               element: e.element, fill: src.color(u), stroke: false,
               tip: `${e.element} at z ${z.toFixed(1)} m: ${src.words ? src.words(u) : `utilisation ${u.toFixed(2)}`}` });
-          }
+          });
         }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);
         items.push({ kind: "label", at: mid, text: e.element, faded, element: e.element });
