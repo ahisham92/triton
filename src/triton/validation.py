@@ -148,9 +148,108 @@ def apply_mapping(result: ImportResult, mapping: dict[str, Any]) -> ImportResult
 
 # Issues the workbook checks add to single sheets; a sheet moved into another workbook drops them
 # and is checked again there.
-_SHEET_CHECKS = {"duplicate_sheet_name", "identical_combinations", "node_set_differs"}
+_SHEET_CHECKS = {
+    "duplicate_sheet_name",
+    "identical_combinations",
+    "node_set_differs",
+    "undefined_combination",
+}
 
 MERGE_MODES = ("replace", "update", "add")
+
+
+def defined_match(combination: str, defined: list[str]) -> str | None:
+    """The defined combination a workbook spelling is, when it is the same one written differently
+    (case, separators, ``Seismic2`` for ``Seismic 2``), or None."""
+    if combination in defined:
+        return combination
+    same = [d for d in defined if squash(d) == squash(combination)]
+    if len(same) == 1:
+        return same[0]
+    key = combination_key(combination)
+    if key:
+        same = [d for d in defined if combination_key(d) == key]
+        if len(same) == 1:
+            return same[0]
+    return None
+
+
+def combination_check(result: ImportResult, defined: list[str], aliases: dict[str, str]) -> dict[str, Any]:
+    """The workbook's combinations against the section's list, before any sheet is designed: each
+    one found with its sheets, what it is read as, and whether that still needs a decision."""
+    counts: dict[str, int] = defaultdict(int)
+    for s in result.sheets:
+        if s.parsed and not s.empty:
+            counts[s.parsed.combination] += 1
+    found = []
+    for name, n in sorted(counts.items(), key=lambda kv: _combo_order(kv[0], defined)):
+        if name in aliases:
+            status, target = ("left_out" if not aliases[name] else "read_as"), aliases[name]
+            if target and target not in defined:
+                status, target = "undefined", None
+        elif name in defined:
+            status, target = "defined", name
+        elif defined_match(name, defined):
+            status, target = "matched", defined_match(name, defined)
+        else:
+            status, target = "undefined", None
+        found.append({"name": name, "sheets": n, "status": status, "target": target})
+    used = {f["target"] for f in found if f["target"]}
+    return {
+        "defined": defined,
+        "found": found,
+        "missing": [d for d in defined if d not in used],
+        "unresolved": [f["name"] for f in found if f["status"] == "undefined"],
+    }
+
+
+def _combo_order(name: str, defined: list[str]) -> tuple[int, str]:
+    target = defined_match(name, defined)
+    return (defined.index(target) if target else len(defined), name)
+
+
+def apply_section(
+    result: ImportResult,
+    sheet_map: dict[str, Any] | None = None,
+    defined: list[str] | None = None,
+    aliases: dict[str, str] | None = None,
+) -> ImportResult:
+    """The workbook as a section reads it: sheets assigned by hand, then each combination read as
+    one of the section's defined combinations. A sheet whose combination is not defined (and not
+    said to be one) is marked as an error and not designed; one left out is ignored."""
+    mapped = apply_mapping(result, sheet_map or {})
+    if defined is None:
+        return mapped
+    aliases = aliases or {}
+    sheets, ignored = [], set()
+    for s in mapped.sheets:
+        issues = [i for i in s.issues if i.code not in _SHEET_CHECKS]
+        if s.parsed is None or s.empty:
+            sheets.append(replace(s, issues=issues))
+            continue
+        c = s.parsed.combination
+        target = aliases[c] if c in aliases else defined_match(c, defined)
+        if c in aliases and not target:
+            ignored.add(s.name)
+            sheets.append(replace(s, parsed=None, issues=issues))
+            continue
+        if target is None or target not in defined:
+            issues.append(
+                Issue(
+                    Severity.ERROR,
+                    "undefined_combination",
+                    f"'{c}' is not one of this section's load combinations, so the sheet is not used. "
+                    "Say which combination it is, add it to the list, or leave it out.",
+                    sheet=s.name,
+                    element=s.parsed.element,
+                    combination=c,
+                )
+            )
+            sheets.append(replace(s, issues=issues))
+            continue
+        sheets.append(replace(s, parsed=replace(s.parsed, combination=target), issues=issues))
+    ignored |= {i.sheet for i in mapped.issues if i.code == "ignored_sheet" and i.sheet}
+    return _checked(ImportResult(sheets), ignored)
 
 
 def merge_workbooks(

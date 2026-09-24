@@ -39,7 +39,8 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
                 "count": p.get("count", len(p.get("positions", [])) or 1),
                 "diameter_mm": p["section"]["diameter_mm"],
                 "cover_mm": p["section"]["cover_mm"],
-                "link_diameter_mm": p["section"]["link_diameter_mm"],
+                "link_diameter_mm": (p.get("shear") or {}).get("link_diameter_mm")
+                or p["section"]["link_diameter_mm"],
                 "head_level_m": p["section"].get("head_level_m"),
                 "toe_level_m": p["section"].get("toe_level_m"),
                 "positions": [{"x": x, "y": y} for x, y in p.get("positions", [])],

@@ -155,7 +155,7 @@ def test_candidates_respect_detailing_rules():
             assert ring.clear_spacing >= max(pr.min_clear_spacing, ring.diameter) - 1e-9
             assert ring.diameter <= a.outer.diameter
         assert a.area <= MAX_RATIO * ac
-        assert a.outer.radius == pytest.approx(600 - 75 - 12 - a.outer.diameter / 2)
+        assert a.outer.radius == pytest.approx(600 - 75 - pile.link_diameter - a.outer.diameter / 2)
     keys = [(a.area, a.rows, a.bar_count) for a in cands]
     assert keys == sorted(keys)
 

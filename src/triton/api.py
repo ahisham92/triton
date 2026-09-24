@@ -40,7 +40,16 @@ from .project import (
 from .reader import UnsupportedWorkbook
 from .report import RENDERERS, build_report
 from .store import ProjectNotFound, ProjectStore
-from .validation import MERGE_MODES, ImportResult, apply_mapping, import_workbook, merge_workbooks
+from .suggest import suggest
+from .validation import (
+    MERGE_MODES,
+    ImportResult,
+    apply_mapping,
+    apply_section,
+    combination_check,
+    import_workbook,
+    merge_workbooks,
+)
 
 STATIC = Path(__file__).parent / "static"
 ALLOWED = {".xlsb", ".xlsx", ".xlsm"}
@@ -457,12 +466,17 @@ def keep_uploaded_workbook(project_id: str, section_id: str, upload_id: str, mod
     return _take_upload(upload_id, _keeper(project_id, section_id, mode))
 
 
+def _sheet_map(section: Section) -> dict[str, dict]:
+    return {k: v.model_dump() for k, v in section.sheet_map.items()}
+
+
 def _workbook(project_id: str, section: Section) -> ImportResult | None:
-    """The section's stored workbook with its sheet mapping applied."""
+    """The section's stored workbook as the section reads it: its sheet mapping applied and each
+    combination read as one of the section's load combinations."""
     wb = store().load_workbook(project_id, section.id)
-    if wb is None or not section.sheet_map:
-        return wb
-    return apply_mapping(wb, {k: v.model_dump() for k, v in section.sheet_map.items()})
+    if wb is None:
+        return None
+    return apply_section(wb, _sheet_map(section), section.combinations, section.combination_map)
 
 
 @app.get(SECTION + "/workbook")
@@ -471,10 +485,16 @@ def section_workbook(project_id: str, section_id: str) -> dict:
     summary = store().workbook_summary(project_id, section_id)
     if summary is None:
         raise HTTPException(404, "No workbook uploaded for this section yet.")
-    if section.sheet_map:
-        wb = _workbook(project_id, section)
-        if wb is not None:
-            summary = {**summary, **wb.summary(), "sheet_map": list(section.sheet_map)}
+    raw = store().load_workbook(project_id, section_id)
+    if raw is None:
+        return summary
+    wb = apply_section(raw, _sheet_map(section), section.combinations, section.combination_map)
+    summary = {**summary, **wb.summary(), "sheet_map": list(section.sheet_map)}
+    check = combination_check(
+        apply_mapping(raw, _sheet_map(section)), section.combinations, section.combination_map
+    )
+    summary["combination_check"] = check
+    summary["suggestions"] = suggest(summary["sheets"], list(section.elements), section.combinations)
     return summary
 
 

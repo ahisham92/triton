@@ -413,7 +413,13 @@ class PileInput(_ConcreteSection):
     kind: Literal["pile"] = "pile"
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
     cover: float | None = _mm("Cover to links", None, gt=0, description=_PROJECT_VALUE)
-    link_diameter: float = _mm("Link diameter", 12.0, gt=0)
+    link_diameter: float = _mm(
+        "Smallest link diameter",
+        10.0,
+        gt=0,
+        description="The links are designed: from this size up, the first that carries the shear at a "
+        "pitch of 100 mm or more.",
+    )
     count: int | None = Field(
         None,
         title="Number of piles",
@@ -477,7 +483,12 @@ class CombiWallInput(_Model):
         "inside the front beam and ignored. Empty: every result is used.",
     )
     cover: float | None = _mm("Cover to infill links", None, gt=0, description=_PROJECT_VALUE)
-    link_diameter: float = _mm("Infill link diameter", 12.0, gt=0)
+    link_diameter: float = _mm(
+        "Smallest infill link diameter",
+        10.0,
+        gt=0,
+        description="The links are designed: from this size up, the first that carries the shear.",
+    )
     bar_count: int | None = Field(
         None,
         title="Infill bars in the outer row",
@@ -1133,6 +1144,21 @@ class SheetMapping(_Model):
         return self
 
 
+DEFAULT_COMBINATIONS = [
+    "QP",
+    "PT-B-Apron",
+    "PT-B-Yard",
+    "PT-C-Apron",
+    "PT-C-Yard",
+    "Accidental-Apron",
+    "Accidental-Yard",
+    "Seismic 1",
+    "Seismic 2",
+    "Seismic 3",
+    "Seismic 4",
+]
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
@@ -1166,6 +1192,26 @@ class Section(_Model):
         default_factory=dict, title="Sheet mapping", description="Sheets assigned by hand, by sheet name."
     )
     costing: SectionCosting = Field(default_factory=SectionCosting, title="Costing")
+    combinations: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_COMBINATIONS),
+        title="Load combinations",
+        description="The combinations this section's workbook should have. An upload is checked against "
+        "them first, and sheets are mapped only to them.",
+    )
+    combination_map: dict[str, str] = Field(
+        default_factory=dict,
+        title="Workbook combinations read as",
+        description="A combination as spelled in the workbook, and the defined one it is (empty: left out).",
+    )
+
+    @field_validator("combinations")
+    @classmethod
+    def _combinations(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for c in (x.strip() for x in v):
+            if c and c.lower() not in {o.lower() for o in out}:
+                out.append(c)
+        return out
 
     @model_validator(mode="after")
     def _zone(self) -> Section:

@@ -484,6 +484,11 @@ function renderSections(host) {
     fs.style.border = "0";
     fs.style.padding = "0";
     card.append(fs);
+    const combos = document.createElement("div");
+    combos.className = "field full";
+    combos.innerHTML = `<label>Load combinations</label><div class="hint">${esc(def.properties.combinations.description)}</div>`;
+    combos.append(comboListEditor(s));
+    card.append(combos);
     host.append(card);
   });
 }
@@ -561,6 +566,7 @@ function checkerHtml() {
         <div class="count"><b id="n-info">0</b>automatic clean-ups</div>
       </div>
       <div id="add-found"></div>
+      <div id="combos"></div>
       <div id="mapping"></div>
       <div id="factors"></div>
       <h2>Sheets found</h2>
@@ -733,11 +739,13 @@ async function renderWorkbookTab(host) {
       `Workbook in use: ${data.file}, uploaded ${when(data.uploaded_at)} (Cairo time). Upload another file to replace it, replace some of its tabs or add tabs to it.`;
     document.getElementById("upload-mode").hidden = false;
     renderFactors(data);
-    renderMapping(data, async () => {
+    const refresh = async () => {
       const fresh = await api(`${url}/workbook`);
       renderReport(fresh);
       onReport(fresh);
-    });
+    };
+    renderMapping(data, refresh);
+    renderCombos(data, refresh);
     if (state.geometry?.uploaded !== data.uploaded_at) state.geometry = { uploaded: data.uploaded_at };
     const missing = data.elements.filter((e) => !(e in sec().elements));
     const box = document.getElementById("add-found");
@@ -762,6 +770,98 @@ async function renderWorkbookTab(host) {
   }
 }
 
+// A section's load combinations as removable chips, with a box to add one.
+function comboListEditor(section, changed) {
+  const wrap = document.createElement("div");
+  wrap.className = "combo-list";
+  const draw = () => {
+    wrap.innerHTML = `${section.combinations
+      .map((c, i) => `<span class="chip">${esc(c)} <button type="button" class="x" data-del="${i}" title="Remove ${esc(c)}">×</button></span>`)
+      .join("")}<input type="text" placeholder="Add a combination" data-add-combo><button type="button" class="quiet" data-add-btn>Add</button>`;
+    wrap.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => {
+      section.combinations.splice(Number(b.dataset.del), 1);
+      markDirty();
+      draw();
+      changed?.();
+    }));
+    const box = wrap.querySelector("[data-add-combo]");
+    const add = () => {
+      const v = box.value.trim();
+      if (!v || section.combinations.some((c) => c.toLowerCase() === v.toLowerCase())) return;
+      section.combinations.push(v);
+      markDirty();
+      draw();
+      changed?.();
+    };
+    wrap.querySelector("[data-add-btn]").onclick = add;
+    box.onkeydown = (e) => e.key === "Enter" && add();
+  };
+  section.combinations ??= [];
+  draw();
+  return wrap;
+}
+
+// The first step after an upload: the workbook's combinations against the section's list. Mapping
+// the sheets comes after every combination is either one of the list or left out.
+function renderCombos(data, refresh) {
+  const box = document.getElementById("combos");
+  const map = document.getElementById("mapping");
+  const check = data.combination_check;
+  if (!box || !check) return;
+  const p = sec();
+  p.combination_map ??= {};
+  const draw = () => {
+    const rows = check.found
+      .map((f) => {
+        const chosen = f.name in p.combination_map ? p.combination_map[f.name] : f.target ?? null;
+        const opts = p.combinations
+          .map((c) => `<option value="${esc(c)}" ${chosen === c ? "selected" : ""}>${esc(c)}</option>`)
+          .join("");
+        const state = { defined: ["ok", "defined"], matched: ["info", "same, spelled differently"], read_as: ["info", "read as chosen"], left_out: ["info", "left out"], undefined: ["error", "not in the list"] }[f.status];
+        return `<tr><td>${esc(f.name)}</td><td>${f.sheets}</td>
+          <td><select data-combo="${esc(f.name)}">${chosen == null ? '<option value="?" selected>Pick one…</option>' : ""}${opts}
+            <option value="+" >Add “${esc(f.name)}” to the list</option><option value="" ${chosen === "" ? "selected" : ""}>Leave these sheets out</option></select></td>
+          <td><span class="sev ${state[0]}">${esc(state[1])}</span></td></tr>`;
+      })
+      .join("");
+    const open = check.unresolved.length;
+    box.innerHTML = `<h2>Load combinations</h2>
+      <p class="status" style="margin-top:0">This section's combinations. Each combination in the workbook is read as one of them or left out; sheets are mapped only to them.</p>
+      <div class="panel"><div id="combo-list"></div>
+        <div class="scroll" style="margin-top:12px"><table><tr><th>In the workbook</th><th>Sheets</th><th>Read as</th><th></th></tr>${rows || '<tr><td colspan="4">No combinations read yet.</td></tr>'}</table></div>
+        ${check.missing.length ? `<p class="status">In the list but not in the workbook: ${esc(check.missing.join(", "))}.</p>` : ""}
+        <div class="row" style="margin-top:10px"><button id="combo-apply">Apply combinations</button><span class="status" id="combo-status">${open ? `${open} combination(s) to decide before the sheets are mapped.` : ""}</span></div></div>`;
+    box.querySelector("#combo-list").append(comboListEditor(p, () => (box.querySelector("#combo-status").textContent = "Changed: press Apply combinations.")));
+    box.querySelectorAll("[data-combo]").forEach((sel) => (sel.onchange = () => {
+      const name = sel.dataset.combo;
+      if (sel.value === "+") {
+        if (!p.combinations.includes(name)) p.combinations.push(name);
+        delete p.combination_map[name];
+      } else if (sel.value !== "?") {
+        const f = check.found.find((x) => x.name === name);
+        if (sel.value === f.target && f.status !== "read_as" && f.status !== "left_out") delete p.combination_map[name];
+        else p.combination_map[name] = sel.value;
+      }
+      markDirty();
+      box.querySelector("#combo-status").textContent = "Changed: press Apply combinations.";
+      if (sel.value === "+") draw();
+    }));
+    box.querySelector("#combo-apply").onclick = async () => {
+      const st = box.querySelector("#combo-status");
+      st.textContent = "Saving…";
+      await save();
+      if (state.errors?.length) {
+        st.textContent = state.errors.map((e) => e.msg).join(" ");
+        return;
+      }
+      st.textContent = "Checking the workbook again…";
+      await refresh();
+    };
+    if (map) map.hidden = open > 0;
+  };
+  draw();
+}
+
 // Sheet mapping: sheets whose names do not follow '<Element>-<Combination>', assigned by hand.
 function renderMapping(data, refresh) {
   const box = document.getElementById("mapping");
@@ -775,7 +875,11 @@ function renderMapping(data, refresh) {
   let showAll = false;
   const picked = new Set();
   const known = [...new Set([...data.elements, ...Object.keys(p.elements), ...Object.values(hints).map((h) => h.element)])];
-  const combos = [...new Set([...data.combinations.map((c) => c.name), ...Object.values(hints).map((h) => h.combination)])];
+  const combos = p.combinations?.length ? p.combinations : [...new Set([...data.combinations.map((c) => c.name), ...Object.values(hints).map((h) => h.combination)])];
+  const comboSelect = (attrs, value, first) =>
+    `<select ${attrs}><option value="">${first}</option>${[...combos, ...(value && !combos.includes(value) ? [value] : [])]
+      .map((c) => `<option ${c === value ? "selected" : ""}>${esc(c)}</option>`)
+      .join("")}</select>`;
   const pending = () => Object.keys(hints).filter((n) => !(n in p.sheet_map));
   const accept = (n) => {
     const h = hints[n];
@@ -800,7 +904,7 @@ function renderMapping(data, refresh) {
         return `<tr><td><input type="checkbox" data-pick="${esc(n)}" ${picked.has(n) ? "checked" : ""}></td>
           <td>${esc(n)} ${tag}${h && !mapped ? `<div class="status">${esc(h.why)}</div>` : ""}</td>
           <td><input type="text" list="map-elements" data-map="${esc(n)}" data-key="element" value="${esc(m.element)}" placeholder="Pile(5)" ${off ? "disabled" : ""}></td>
-          <td><input type="text" list="map-combos" data-map="${esc(n)}" data-key="combination" value="${esc(m.combination)}" placeholder="PT-B-Apron" ${off ? "disabled" : ""}></td>
+          <td>${comboSelect(`data-map="${esc(n)}" data-key="combination" ${off ? "disabled" : ""}`, m.combination, "Pick one")}</td>
           <td><label><input type="checkbox" data-map="${esc(n)}" data-key="ignore" ${off ? "checked" : ""}> leave out</label></td>
           <td>${h && !mapped ? `<button class="quiet" data-accept="${esc(n)}">Accept</button>` : ""}${mapped ? `<button class="quiet" data-unmap="${esc(n)}">Undo</button>` : ""}</td></tr>`;
       })
@@ -809,7 +913,7 @@ function renderMapping(data, refresh) {
     box.innerHTML = `<h2>Sheet mapping</h2>
       <p class="status" style="margin-top:0">Which element and combination each sheet holds. Sheets whose names are not written as
         &lt;Element&gt;-&lt;Combination&gt;, or whose combination is spelled differently from the other sheets, get a suggestion:
-        accept it, correct it, or leave the sheet out. Apply saves the project and checks the workbook again.</p>
+        accept it, correct it, or leave the sheet out. Combinations are the section's load combinations above. Apply saves the project and checks the workbook again.</p>
       ${waiting ? `<div class="panel row"><span>${waiting} sheet(s) have a suggested mapping.</span><button id="map-accept-all">Accept all suggestions</button></div>` : ""}
       <div class="panel scroll"><table><tr><th></th><th>Sheet</th><th>Element</th><th>Combination</th><th></th><th></th></tr>
         ${rows || '<tr><td colspan="6">Every sheet is named as expected.</td></tr>'}</table>
@@ -817,13 +921,13 @@ function renderMapping(data, refresh) {
         <label><input type="checkbox" id="map-all" ${showAll ? "checked" : ""}> show all ${sheets.length} sheets</label>
         <span class="status">Selected: ${picked.size}</span>
         <input type="text" list="map-elements" id="bulk-element" placeholder="Element for selected" ${picked.size ? "" : "disabled"}>
-        <input type="text" list="map-combos" id="bulk-combo" placeholder="Combination for selected" ${picked.size ? "" : "disabled"}>
+        ${comboSelect(`id="bulk-combo" ${picked.size ? "" : "disabled"}`, "", "Combination for selected")}
         <button class="quiet" id="bulk-set" ${picked.size ? "" : "disabled"}>Set</button>
         <button class="quiet" id="bulk-out" ${picked.size ? "" : "disabled"}>Leave out</button>
       </div>
       <div class="row" style="margin-top:10px"><button id="map-apply">Apply mapping</button><span class="status" id="map-status"></span></div></div>
       <datalist id="map-elements">${known.map((e) => `<option value="${esc(e)}">`).join("")}</datalist>
-      <datalist id="map-combos">${combos.map((c) => `<option value="${esc(c)}">`).join("")}</datalist>`;
+      `;
     const entry = (n) => {
       if (!p.sheet_map[n]) {
         const x = sheets.find((q) => q.name === n);
@@ -832,7 +936,7 @@ function renderMapping(data, refresh) {
       }
       return p.sheet_map[n];
     };
-    box.querySelectorAll("input[data-map]").forEach((inp) => {
+    box.querySelectorAll("[data-map]").forEach((inp) => {
       const n = inp.dataset.map;
       if (inp.type === "checkbox") inp.onchange = () => { entry(n).ignore = inp.checked; markDirty(); draw(); };
       else inp.onchange = () => { entry(n)[inp.dataset.key] = inp.value.trim(); markDirty(); draw(); };

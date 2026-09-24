@@ -85,16 +85,22 @@ def combination_key(text: str) -> tuple[str, ...] | None:
     words = flat.split()
     if re.search(r"\bqp\b|quasi|\bsls\b", flat) or squashed in ("qp", "sqp", "slsqp"):
         return ("QP",)
-    if re.search(r"seis|\beq\b|earthquake", flat):
-        return ("SEISMIC", *_location(words))
+    if re.search(r"seis|\beq\d*\b|earthquake", flat):
+        return ("SEISMIC", *_number(flat), *_location(words))
     if re.search(r"\bacc", flat):
-        return ("ACCIDENTAL", *_location(words))
+        return ("ACCIDENTAL", *_number(flat), *_location(words))
     letter = re.search(r"(?:^|[^a-z])(?:pt|set|uls|str)\s*([abc])(?![a-z])", flat) or re.search(
         r"^(?:pt|set)([abc])", squashed
     )
     if not letter:
         return None
     return ("ULS", letter.group(1).upper(), *_location(words))
+
+
+def _number(flat: str) -> tuple[str, ...]:
+    """Seismic 1 and Seismic 2 are different combinations: keep the number."""
+    m = re.search(r"(\d+)", flat)
+    return (str(int(m.group(1))),) if m else ()
 
 
 def _location(words: list[str]) -> tuple[str, ...]:
@@ -110,6 +116,8 @@ def _spell(key: tuple[str, ...]) -> str:
         return "QP"
     if key[0] == "ULS":
         return "-".join(["PT", *key[1:]])
+    if key[0] == "SEISMIC" and len(key) > 1 and key[1].isdigit():
+        return " ".join([key[0].capitalize(), key[1], *key[2:]])
     return "-".join([key[0].capitalize(), *key[1:]])
 
 
@@ -129,8 +137,11 @@ def split_name(name: str) -> tuple[str, bool, tuple[str, ...], str] | None:
     return best[1] if best else None
 
 
-def suggest(sheets: list[dict[str, Any]], section_elements: list[str] = ()) -> dict[str, dict[str, Any]]:
-    """Suggestions by sheet name, from the workbook's sheet summaries (name, element, combination)."""
+def suggest(
+    sheets: list[dict[str, Any]], section_elements: list[str] = (), defined: list[str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Suggestions by sheet name, from the workbook's sheet summaries (name, element, combination).
+    With the section's ``defined`` combinations, a suggestion uses their spelling, and only them."""
     # The spelling the workbook already uses for each combination and element.
     spellings: dict[tuple[str, ...], Counter] = {}
     for s in sheets:
@@ -143,6 +154,10 @@ def suggest(sheets: list[dict[str, Any]], section_elements: list[str] = ()) -> d
         top = max(counts.values())
         tied = [c for c, n in counts.items() if n == top]
         preferred[key] = _spell(key) if _spell(key) in tied else sorted(tied)[0]
+    for d in defined or ():
+        key = combination_key(d)
+        if key:
+            preferred[key] = d
     known_elements = {e for e in section_elements} | {s["element"] for s in sheets if s.get("element")}
 
     def element_spelling(canonical: str) -> str:
@@ -156,6 +171,8 @@ def suggest(sheets: list[dict[str, Any]], section_elements: list[str] = ()) -> d
         if s.get("empty"):
             continue
         name = s["name"]
+        if s.get("element") and defined is not None:
+            continue  # the section's combination check deals with its spelling
         if s.get("element"):
             # Recognised, but is its combination spelled like the same combination elsewhere?
             key = combination_key(s["combination"])
@@ -173,15 +190,19 @@ def suggest(sheets: list[dict[str, Any]], section_elements: list[str] = ()) -> d
             continue
         element, exact, key, typed = found
         combination = preferred.get(key) or _spell(key)
+        if defined is not None and combination not in defined:
+            combination = ""  # the user picks one of the section's combinations
         why = []
         if not exact:
             why.append("element name read as a close spelling")
-        if squash(typed) != squash(combination):
+        if not combination:
+            why.append(f"“{typed}” is not one of the section's combinations: pick one")
+        elif squash(typed) != squash(combination):
             why.append(f"“{typed}” read as {combination}")
         out[name] = {
             "element": element_spelling(element),
             "combination": combination,
-            "sure": exact and key in preferred,
+            "sure": bool(combination) and exact and key in preferred,
             "why": "; ".join(why) or "name written differently",
         }
     return out

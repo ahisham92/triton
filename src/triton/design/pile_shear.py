@@ -16,6 +16,9 @@ for ρl.
 * Detailing to 9.5.3: hoop diameter at least max(6 mm, φl,max/4), spacing at
   most min(20·φl,min, D, 400 mm), times 0.6 for a length D below the pile
   head (slab above) and over laps of bars larger than 14 mm.
+* The links are designed, not only checked: from the pile's link diameter (T10 by
+  default) up through the link sizes, the first that carries the shear at a pitch
+  of at least PREFERRED_PITCH is chosen (else the first that works at all).
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, pile_cover
 
 MIN_LINK_SPACING = 75.0  # mm, practical minimum pitch
+PREFERRED_PITCH = 100.0  # mm, a larger link is chosen before a pitch closer than this
+LINK_SIZES = (10, 12, 14, 16, 20, 25)
 STEP = 0.05  # m, level grid
 MIN_LINK_ZONE = 1.0  # m, shorter zones join a neighbour at the closer spacing
 
@@ -58,6 +63,34 @@ def _factors(settings: DesignSettings, accidental: np.ndarray) -> tuple[np.ndarr
 def design_shear(
     pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, zones: list[CageZone]
 ) -> dict:
+    """The links of a pile: the smallest size from the pile's link diameter up that carries the
+    shear at a practical pitch."""
+    start = pile.link_diameter
+    sizes = [start] + [d for d in LINK_SIZES if d > start]
+    tried = []
+    for link in sizes:
+        out = _design_with(pile, settings, loads, zones, float(link))
+        tried.append(out)
+        pitch = min(z["spacing_mm"] for z in out["zones"])
+        if out["passed"] and pitch >= PREFERRED_PITCH - 1e-9:
+            break
+        if out.get("crushed"):
+            break  # no link helps: the concrete strut crushes
+    else:
+        out = next((t for t in tried if t["passed"]), tried[-1])
+    if out["link_diameter_mm"] > start:
+        out["notes"] = [
+            f"Links designed as Ø{out['link_diameter_mm']:g}: Ø{start:g} would need a pitch closer than "
+            f"{PREFERRED_PITCH:g} mm or would not carry the shear."
+        ] + out["notes"]
+    for t in tried:
+        t.pop("crushed", None)
+    return out
+
+
+def _design_with(
+    pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, zones: list[CageZone], link: float
+) -> dict:
     D = pile.diameter
     r = D / 2
     ac = math.pi * r * r
@@ -65,7 +98,6 @@ def design_shear(
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     alpha_cc = settings.partial_factors.alpha_cc
     head, toe = zones[0].top, zones[-1].bottom
-    link = pile.link_diameter
     asw = math.pi * link * link / 4
 
     # Cage at each load's level.
@@ -189,6 +221,8 @@ def design_shear(
             "VRd_max_kN": round(float(vrd_max(cot[i])[i]), 1),
             "cot_theta": round(float(cot[i]), 2),
         },
+        "link_diameter_mm": link,
+        "crushed": bool(crushed.any()),
         "max_spacing_mm": s_max,
         "min_link_diameter_mm": link_min,
         "zones": out_zones,
