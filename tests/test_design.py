@@ -373,7 +373,9 @@ def test_design_endpoints(client):
     assert client.get(f"{url}/design").json()["changed"] == []  # costing inputs are not design inputs
     cost = client.get(f"/api/projects/{p['id']}/costing").json()
     (sec,) = cost["sections"]
-    assert [r["element"] for r in sec["rows"]] == ["Pile(1)"] and cost["currency"] == "USD"
+    assert [r["element"] for r in sec["rows"] if r["kind"] != "item"] == ["Pile(1)"] and cost[
+        "currency"
+    ] == "USD"
 
 
 def test_a_second_upload_replaces_or_adds_tabs(client):

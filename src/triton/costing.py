@@ -38,6 +38,7 @@ class _Row:
         self.count_auto: int | None = None
         self.spacing: float | None = None
         self.length: float | None = None
+        self.item: int | None = None
 
     def add(self, amount: float | None, what: str) -> None:
         """Add a cost; a missing price leaves the row without a total and says which."""
@@ -63,6 +64,7 @@ class _Row:
             "cost_per_m": _money(self.cost / berth) if self.cost is not None and berth else None,
             "missing": self.missing,
             "flags": self.flags,
+            "item": self.item,
         }
 
 
@@ -365,8 +367,46 @@ def cost_section(
         row.add(_price(prices.rebar, row.rebar_t), "reinforcement price")
         rows.append(row)
 
+    unpriced = []
+    for i, item in enumerate(section.costing.items):
+        if not item.name.strip() and item.price is None:
+            continue
+        row = _Row(item.name.strip() or f"Item {i + 1}", "item")
+        row.item = i
+        if item.unit == "each":
+            auto = (math.floor(berth / item.spacing + 1e-6) + 1) if item.spacing else None
+            row.count_auto = auto
+            row.count = item.count if item.count is not None else auto
+            row.spacing = item.spacing
+            if row.count is None:
+                row.basis.append("give the spacing or the number")
+                row.add(None, f"{row.element} number")
+            else:
+                how = (
+                    "number given"
+                    if item.count is not None
+                    else f"one at each end and every {item.spacing:g} m"
+                )
+                row.basis.append(f"{row.count} ({how})")
+                row.add(_price(item.price, row.count), f"{row.element} price")
+        elif item.unit == "m":
+            each = item.length or berth
+            run = each * item.runs
+            row.length = run
+            row.basis.append(f"{item.runs:g} × {each:.1f} m" if item.runs != 1 else f"{each:.1f} m")
+            row.add(_price(item.price, run), f"{row.element} price")
+        else:
+            row.basis.append("lump sum")
+            row.add(item.price if item.price is not None else None, f"{row.element} price")
+        if item.price is None:
+            unpriced.append(row.element)
+        rows.append(row)
+
     out_rows = [r.to_dict(berth) for r in rows]
-    complete = all(r["cost"] is not None for r in out_rows)
+    # An item with no price yet is listed but left out of the totals without making them incomplete.
+    complete = all(
+        r["cost"] is not None for r in out_rows if not (r["kind"] == "item" and r["element"] in unpriced)
+    )
     total = sum(r["cost"] or 0 for r in out_rows)
     totals = {
         "concrete_m3": round(sum(r["concrete_m3"] for r in out_rows), 1),
@@ -377,7 +417,17 @@ def cost_section(
     }
     per_m = {k: round(v / berth, 3) for k, v in totals.items() if k in ("concrete_m3", "rebar_t", "steel_t")}
     per_m["cost"] = _money(total / berth)
-    missing = sorted({m for r in out_rows for m in r["missing"] if m})
+    missing = sorted(
+        {
+            m
+            for r in out_rows
+            if r["kind"] != "item" or r["element"] not in unpriced
+            for m in r["missing"]
+            if m
+        }
+    )
+    if unpriced:
+        notes.append("No price yet, so left out of the totals: " + ", ".join(unpriced) + ".")
     if missing:
         notes.append("Prices or inputs missing, so the totals leave them out: " + ", ".join(missing) + ".")
     return {

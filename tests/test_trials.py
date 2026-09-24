@@ -204,3 +204,54 @@ def test_all_elements_with_a_crack_limit(tmp_path, monkeypatch):
     s.elements["Deck"] = SlabInput(thickness=750)
     out = trials.run_scenarios(p, s, None, None, tmp_path, variants, deadline=0.0)
     assert out["done"] == 1 and out["left"] == 1
+
+
+def test_value_engineering_ideas_and_mixes(tmp_path, monkeypatch):
+    p = project()
+    s = p.sections[0]
+    s.elements = {"Pile(1)": PileInput(diameter=1200), "Deck": SlabInput(thickness=700)}
+    ideas = trials.ideas(s)
+    labels = [i["label"] for i in ideas]
+    assert "Crack width limit 0.3 mm on every element" in labels and "Deck 750 mm thick (+50)" in labels
+    assert "Pile(1) Ø1400 (+200)" in labels
+    assert any(i["what"] == "peaks" for i in ideas)
+    deck = next(i for i in ideas if i["label"] == "Deck 750 mm thick (+50)")
+    pile = next(i for i in ideas if i["label"] == "Pile(1) Ø1400 (+200)")
+    mix = trials.clean_variant(
+        {"crack_width_limit": 0.3, "elements": {**deck["change"]["elements"], **pile["change"]["elements"]}},
+        s,
+    )
+    vs = trials.variant_section(s, mix)
+    assert vs.elements["Deck"].thickness == 750 and vs.elements["Pile(1)"].diameter == 1400
+    assert vs.elements["Deck"].crack_width_limit_bottom == 0.3 and s.elements["Deck"].thickness == 700
+    with pytest.raises(ValueError):
+        trials.clean_variant({"elements": {"Nope": {"thickness": 700}}}, s)
+    with pytest.raises(ValueError):
+        trials.clean_variant({"elements": {"Pile(1)": {"peaks": "ring_mean"}}}, s)
+    # The deck is designed again when only the piles under it change.
+    only_pile = trials.variant_section(s, {"elements": pile["change"]["elements"]})
+    assert trials.scenario_key(p, only_pile, "Deck", None) != trials.scenario_key(p, s, "Deck", None)
+    assert trials.run_key(p, only_pile, "Deck", None) == trials.run_key(p, s, "Deck", None)
+    calls = []
+
+    def fake(settings, section, workbook, progress=None, only=None, deadline=None):
+        (name,) = only
+        calls.append(name)
+        if name == "Deck":
+            h = section.elements["Deck"].thickness
+            box = {"X": [-20, 0], "Y": [0, 33.6]}
+            return {
+                "slabs": [
+                    slab(thickness_mm=h, steel={"kg_per_m2": 100.0, "area_m2": 672.0}, passed=True, box=box)
+                ]
+            }
+        return {"piles": [{**results()["piles"][0], "utilisation": 0.9, "passed": True}]}
+
+    monkeypatch.setattr(trials, "run_section", fake)
+    out = trials.run_scenarios(p, s, None, None, tmp_path, [{**mix, "label": "Mix"}], which="ve")
+    assert out["left"] == 0 and len(calls) == 4
+    v = trials.scenarios_view(p, s, None, {}, tmp_path, "ve")
+    assert [c["label"] for c in v["variants"]][1] == "Mix" and v["variants"][1]["complete"]
+    assert (
+        trials.scenarios_view(p, s, None, {}, tmp_path)["variants"][1]["label"] == "wk 0.3 mm"
+    )  # its own list
