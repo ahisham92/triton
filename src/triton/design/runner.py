@@ -31,6 +31,7 @@ from .approach import ELEMENT as APPROACH
 from .approach import design_approach
 from .beams import design_beam
 from .combi import design_combi_wall
+from .construction_joints import add_weights, beam_lines, beam_top, for_beam, for_pile, for_slab
 from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
 from .piles import design_pile
@@ -219,6 +220,7 @@ def run_section(
         out["peaks"] = peaks
         out["positions"] = positions
         out["count"] = count
+        out["construction_joints"] = add_weights(for_pile(name, element, settings, own, out), count)
         steel = out.get("steel") or {}
         if steel.get("total_kg") is not None:
             out["steel"]["element_total_t"] = round(steel["total_kg"] * count / 1000, 2)
@@ -347,6 +349,22 @@ def run_section(
                 b["notes"].append(joint_note(element, placed.joint_spacing))
             if lengths:
                 b["restraint"]["length_from"] = "expansion joints"
+            if element.construction_joints:
+                top = beam_top(section.clashes, name, b.get("level_m") or 0.0, float(b.get("depth_mm") or 0))
+                b["construction_joints"] = add_weights(
+                    for_beam(
+                        name,
+                        element,
+                        settings,
+                        own,
+                        geo,
+                        section.elements,
+                        axes.get(name),
+                        signs.get(name),
+                        b,
+                        top,
+                    )
+                )
             beams.append(b if part is None else tag_part(b, part, parts))
     slabs = []
     for name, element in section.elements.items():
@@ -376,6 +394,11 @@ def run_section(
                 signs.get(name),
             )
             d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+            if element.construction_joints:
+                lines = beam_lines(around, section.elements, axes)
+                d["construction_joints"] = add_weights(
+                    for_slab(name, element, settings, own, axes.get(name), signs.get(name), d, lines)
+                )
             if lengths:
                 if element.restraint_check != "off" and element.restraint_factor is None:
                     d["notes"].append(joint_note(element, placed.joint_spacing))

@@ -124,14 +124,6 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
         ]
     )
-    if project.revisions:
-        r.table(
-            ["Rev", "Date", "Description", "Prepared", "Checked", "Approved"],
-            [
-                [v.rev, clock.show(v.issued_at)[:10], v.description, v.prepared, v.checked, v.approved]
-                for v in project.revisions
-            ],
-        )
     checks = _check_rows(section, results)
     if checks:
         r.p("Checking of each element:")
@@ -148,16 +140,20 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     _displacements(r, section)
     for a in results.get("approach_slabs", []):
         _approach_summary(r, a)
+    _construction_joints(r, results)
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
         for p in results.get("piles", []):
             _pile(r, p)
+            _joint_calcs(r, p)
         for w in results.get("combi_walls", []):
             _combi(r, w)
         for b in results.get("beams", []):
             _beam(r, b)
+            _joint_calcs(r, b)
         for s in results.get("slabs", []):
             _slab(r, s)
+            _joint_calcs(r, s)
         for w in results.get("sheet_pile_walls", []):
             _spw(r, w)
         for a in results.get("approach_slabs", []):
@@ -1000,6 +996,111 @@ def _displacements(r: Report, section: Section) -> None:
     r.table(["What", "Combination or phase", "Displacement (mm)", "Limit (mm)", "Check", "Source"], rows)
 
 
+def _joint_extra(j: dict) -> str:
+    stretches = j.get("stretches") or []
+    if stretches:
+        return "; ".join(
+            (s["bars"] or {}).get("label")
+            or f"{s['additional_mm2_per_m']} mm²/m more from {s['from_m']:g} to {s['to_m']:g} m: no allowed bar fits"
+            for s in stretches
+        )
+    if j.get("additional"):
+        return j["additional"]["label"]
+    return "None" if j.get("passed") else j.get("status") or "–"
+
+
+def _construction_joints(r: Report, res: dict) -> None:
+    """Every construction joint set on the elements: its check and the bars it needs there."""
+    from .design.construction_joints import summary
+
+    joints = summary(res)
+    if not joints:
+        return
+    r.h(2, "3.7 Construction joints")
+    r.p(
+        "Each construction joint set on an element is checked with the Plaxis actions at it (ULS): shear "
+        "across the joint to EN 1992-1-1 6.2.5 (vRdi = c fctd + μ σn + ρ fyd μ ≤ 0.5 ν fcd, β = 1, z = 0.9 d), "
+        "and the bars crossing it carry the tension of N with M there, with the shear friction steel on top. "
+        "Where they are not enough, the additional bars at that joint are given."
+    )
+    r.caption("Table 3-8: Construction joints")
+    rows = []
+    for j in joints:
+        unit = "mm²/m" if j.get("provided_mm2_per_m") is not None else "mm²"
+        get = lambda k, j=j: j.get(f"{k}_mm2_per_m", j.get(f"{k}_mm2"))  # noqa: E731
+        rows.append(
+            [
+                j["element"],
+                j["where"] + (f" ({j['note']})" if j.get("note") else ""),
+                j["surface"],
+                (j.get("crossing") or {}).get("label", "–"),
+                "–" if get("needed") is None else f"{get('needed')} / {get('provided')} {unit}",
+                "–" if j.get("v_Edi_MPa") is None else f"{j['v_Edi_MPa']:.2f} / {j['v_Rdi_MPa']:.2f}",
+                _fmt(j.get("utilisation")),
+                _joint_extra(j),
+                " ".join(j.get("laps") or []) or ("OK" if j.get("passed") else j.get("status", "")),
+            ]
+        )
+    r.table(
+        [
+            "Element",
+            "Joint",
+            "Surface",
+            "Bars crossing",
+            "Needed / provided",
+            "vEdi / vRdi (MPa)",
+            "Utilisation",
+            "Additional bars",
+            "Check",
+        ],
+        rows,
+    )
+
+
+def _joint_calcs(r: Report, d: dict) -> None:
+    """The calculation of each construction joint of one element (detailed report)."""
+    joints = d.get("construction_joints") or []
+    if not joints:
+        return
+    r.h(2, f"{d.get('key') or d['element']}: construction joints")
+    for j in joints:
+        r.h(3, j["where"] + (f" ({j['note']})" if j.get("note") else ""))
+        if j.get("v_Edi_MPa") is None:
+            r.p(j.get("status", "Not checked."))
+            continue
+        f = j.get("forces") or {}
+        per_m = j.get("provided_mm2_per_m") is not None
+        unit = "mm²/m" if per_m else "mm²"
+        get = lambda k, j=j: j.get(f"{k}_mm2_per_m", j.get(f"{k}_mm2"))  # noqa: E731
+        pairs = [
+            ("Surface", f"{j['surface']}: c = {j['c']}, μ = {j['mu']} (EN 1992-1-1 6.2.5(2))"),
+            ("Governing actions", ", ".join(f"{k} {v}" for k, v in f.items() if v is not None)),
+            ("Bars crossing", f"{(j.get('crossing') or {}).get('label', '–')}: {get('provided')} {unit}"),
+            ("vEdi = V / (z bi)", f"{j['v_Edi_MPa']} MPa"),
+            ("σn (compression +)", f"{j.get('sigma_n_MPa')} MPa"),
+            ("fctd, fyd", f"{j.get('fctd_MPa')} MPa, {j.get('fyd_MPa')} MPa"),
+            ("ρ of the bars left after the tension", f"{j.get('rho_pct')}%"),
+            ("vRdi (≤ 0.5 ν fcd)", f"{j['v_Rdi_MPa']} MPa (max {j['v_Rdi_max_MPa']} MPa)"),
+            ("Steel for tension (N with M)", f"{get('tension')} {unit}"),
+            ("Steel for shear friction", f"{get('shear')} {unit}"),
+            (
+                "Needed / provided",
+                f"{get('needed')} / {get('provided')} {unit}: utilisation {_fmt(j.get('utilisation'))}",
+            ),
+            ("Additional bars at this joint", _joint_extra(j)),
+            ("Result", j.get("status", "")),
+        ]
+        if j.get("method_note"):
+            pairs.insert(1, ("Method", j["method_note"]))
+        if j.get("averaged_over_m"):
+            pairs.insert(
+                1, ("Actions", f"mean over {j['averaged_over_m']:g} m along the joint, pile heads left out")
+            )
+        r.kv(pairs)
+        for w in j.get("laps") or []:
+            r.note(w)
+
+
 def _sets(r: Report, sets: list[dict], title: str) -> None:
     for st in sets or []:
         head = f"{title}, {st.get('top', '')} to {st.get('bottom', '')} m, {st.get('cage', '')}"
@@ -1447,7 +1548,10 @@ def _beam(r: Report, b: dict) -> None:
                     ("Torsion", f"T = {_fmt(bb['T_kNm'])} kNm, {_fmt(bb['T_Ed_kNm'])} kNm each side"),
                     ("Thin-walled section", f"tef {bb['tef_mm']} mm, Ak {bb['Ak_m2']} m², uk {bb['uk_m']} m"),
                     ("Struts", f"TRd,max {_fmt(bb['T_Rd_max_kNm'])} kNm, utilisation {bb['utilisation']}"),
-                    ("Uplift", f"P {_fmt(bb['uplift_kN'])} kN over {bb['span_m']:g} m: M {_fmt(bb['M_uplift_kNm'])} kNm"),
+                    (
+                        "Uplift",
+                        f"P {_fmt(bb['uplift_kN'])} kN over {bb['span_m']:g} m: M {_fmt(bb['M_uplift_kNm'])} kNm",
+                    ),
                 ]
             )
             r.note(bb["note"])
@@ -1456,9 +1560,18 @@ def _beam(r: Report, b: dict) -> None:
             r.h(3, "Thickened slab at the bollard to the slab")
             r.kv(
                 [
-                    ("Step", f"{th['thickening_mm']:g} mm to {th['slab_mm']:g} mm, {th['width_m']:g} m wide, {th['length_m']:g} m from the beam"),
-                    ("Tension at the step", f"N {_fmt(th['N_kN'])} kN at e {th['e_mm']} mm: M {_fmt(th['M_kNm'])} kNm, z {th['z_mm']} mm"),
-                    ("Bottom", f"needs {th['bottom']['need_mm2']} mm², ties give {th['bottom']['ties_mm2']} mm² (utilisation {th['bottom']['utilisation']})"),
+                    (
+                        "Step",
+                        f"{th['thickening_mm']:g} mm to {th['slab_mm']:g} mm, {th['width_m']:g} m wide, {th['length_m']:g} m from the beam",
+                    ),
+                    (
+                        "Tension at the step",
+                        f"N {_fmt(th['N_kN'])} kN at e {th['e_mm']} mm: M {_fmt(th['M_kNm'])} kNm, z {th['z_mm']} mm",
+                    ),
+                    (
+                        "Bottom",
+                        f"needs {th['bottom']['need_mm2']} mm², ties give {th['bottom']['ties_mm2']} mm² (utilisation {th['bottom']['utilisation']})",
+                    ),
                     ("Top", f"needs {th['top']['need_mm2']} mm², mesh {th['top']['mesh_mm2']} mm²"),
                     ("Shear", f"V {_fmt(th['V_kN'])} kN: {th['links_note']}"),
                     ("Bars past the step", f"{th['lap_past_step_mm']} mm (lap, EN 1992-1-1 8.7.3)"),

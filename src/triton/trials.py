@@ -21,8 +21,8 @@ from typing import Any
 from . import fresh
 from .alignment import combine_parts
 from .costing import cost_section, model_length, slab_links
-from .furniture import positions_for
 from .design.runner import run_section
+from .furniture import positions_for
 from .materials import STEEL_DENSITY
 from .project import ApproachSlabInput, BeamInput, PileInput, Project, Section, SlabInput
 

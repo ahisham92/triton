@@ -59,6 +59,7 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
                 "toe_level_m": p["section"].get("toe_level_m"),
                 "positions": [{"x": x, "y": y} for x, y in p.get("positions", [])],
                 "splice": c.get("splice", "lap"),
+                "construction_joints": joints_for_drawing(p),
                 "user_set": bool(p.get("user_set")),
                 "runs": [
                     {
@@ -141,6 +142,30 @@ def _approach(a: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def joints_for_drawing(d: dict[str, Any]) -> list[dict[str, Any]]:
+    """An element's construction joints where they are, and the additional bars at each."""
+    out = []
+    for j in d.get("construction_joints") or []:
+        stretches = [s for s in j.get("stretches") or [] if s.get("bars")]
+        extra = [{**s["bars"], "from_m": s["from_m"], "to_m": s["to_m"]} for s in stretches] or (
+            [j["additional"]] if j.get("additional") else []
+        )
+        out.append(
+            {
+                "where": j["where"],
+                "note": j.get("note", ""),
+                "level_m": j.get("level_m"),
+                "at_m": j.get("at_m"),
+                "height_above_soffit_mm": j.get("height_above_soffit_mm"),
+                "line": j.get("line"),
+                "passed": j.get("passed"),
+                "status": j.get("status"),
+                "additional": extra,
+            }
+        )
+    return out
+
+
 def _beam(b: dict[str, Any]) -> dict[str, Any]:
     cage = b["cage"]
     link = (b.get("shear") or {}).get("link") or {}
@@ -157,6 +182,7 @@ def _beam(b: dict[str, Any]) -> dict[str, Any]:
         "depth_mm": b.get("depth_mm"),
         "cover_mm": b.get("cover_mm"),
         "user_set": bool(b.get("user_set")),
+        "construction_joints": joints_for_drawing(b),
         "label": cage.get("label"),
         "bars": [{"y_mm": y, "z_mm": z, "diameter_mm": phi} for y, z, phi in cage.get("bars") or []],
         "links": {
@@ -252,6 +278,7 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
         "level_m": d.get("level_m"),
         "box_m": d.get("box"),
         "voids": _voids(d.get("voids")),
+        "construction_joints": joints_for_drawing(d),
         "faces": faces,
         "links": [
             {
