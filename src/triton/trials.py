@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import fresh
+from .alignment import combine_parts
 from .costing import cost_section, model_length, slab_links
 from .design.runner import run_section
 from .materials import STEEL_DENSITY
@@ -287,7 +288,8 @@ def run(
         if tell:
             tell(i / max(len(sizes), 1), f"Designing {name} at {size_label(size)}")
         res = run_section(project.design, trial, workbook, only=[name])
-        design = next((e for e in res.get(kind) or [] if e["element"] == name), None)
+        # A corner berth's parts as one design: the worst utilisation, the steel over all of them.
+        design = next((e for e in combine_parts(res).get(kind) or [] if e["element"] == name), None)
         if design is None:
             runs[sk] = {
                 "size": size,
@@ -315,7 +317,7 @@ def view(
 ) -> dict[str, Any]:
     """Every element that can have trials: its sizes, each run's summary and cost per metre of berth."""
     data = load(d)
-    results = results or {}
+    results = combine_parts(results or {})
     L = model_length(section, results)
     berth = section.costing.berth_length or L
     out = []

@@ -28,10 +28,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..alignment import named_parts
+
 FORMAT = "triton.pile-cages/1"
 
 
 def pile_cages(project_name: str, results: dict[str, Any], section: str = "") -> dict[str, Any]:
+    results = named_parts(results)  # a corner berth's parts by their own names
     piles = []
     cages = [(p, "pile") for p in results.get("piles", [])]
     cages += [(w["infill"], "infill") for w in results.get("combi_walls", [])]

@@ -7,10 +7,11 @@ from collections.abc import Callable, Collection
 from dataclasses import replace
 from typing import Any
 
+from ..alignment import element_in_part, part_elements, section_parts, tag_part
 from ..axes import infer_axes
 from ..elements import ElementType
 from ..forces import scale_forces
-from ..geometry import section_geometry
+from ..geometry import elements_geometry, section_geometry
 from ..importer import SheetData
 from ..materials import SHEET_PILE_GRADES
 from ..project import (
@@ -111,6 +112,16 @@ def combi_bands(wall: dict[str, Any], positions: list[list[float]]) -> list[list
         for z, u in tube.items():
             out.setdefault((x, y, z), u)
     return [[x, y, z, round(u, 3)] for (x, y, z), u in out.items()]
+
+
+def section_alignment(
+    section: Section, sheets: dict[str, dict[str, SheetData]]
+) -> tuple[list, dict[str, Any]]:
+    """The parts the section's slabs and beams are designed in (none for a straight berth), from its
+    results as designed (multipliers and working zone applied)."""
+    slab = next((e for e in section.elements.values() if isinstance(e, SlabInput)), None)
+    along = "X" if slab is not None and slab.strip_direction == "Y" else "Y"
+    return section_parts(section.alignment, sheets, along)
 
 
 def run_section(
@@ -246,6 +257,29 @@ def run_section(
         found = infer_axes(workbook.elements())[0]  # read before Triton read the sign
     axes = {a["element"]: a.get("local") for a in found}
     signs = {a["element"]: a for a in found if a["kind"] == "plate"}
+    parts, alignment = section_alignment(section, sheets) if plates else ([], {"parts": [], "points": []})
+    # Per part: every element's results inside it, turned onto the quay's axis, and their geometry.
+    views: list[tuple[Any, dict[str, dict[str, SheetData]], list[dict[str, Any]]]] = []
+    if parts:
+        for part in parts:
+            own = part_elements(sheets, parts, part, axes)
+            views.append((part, own, elements_geometry(own)))
+
+    def runs(name: str) -> list[tuple[Any, dict[str, SheetData], list[dict[str, Any]], str]]:
+        """(part, the element's sheets, geometry, choice key) for each part the element is in."""
+        nonlocal geometry
+        if not parts:
+            if geometry is None:
+                geometry = section_geometry(workbook)
+            own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
+            return [(None, own, geometry, name)]
+        out = []
+        for part, own_all, geo in views:
+            own = {c: s for c, s in (own_all.get(name) or {}).items() if not s.frame.empty}
+            if own:
+                out.append((part, own, geo, f"{name} · {part.name}" if len(parts) > 1 else name))
+        return out
+
     for name, element in section.elements.items():
         if not isinstance(element, BeamInput) or not take(name):
             continue
@@ -253,27 +287,22 @@ def run_section(
             where = " inside the working zone" if name in sheets else ""
             skipped.append(f"{name}: no usable results in the workbook{where}.")
             continue
-        if geometry is None:
-            geometry = section_geometry(workbook)
-        own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
         tick(name)
-        b = design_beam(
-            name,
-            element,
-            settings,
-            own,
-            geometry,
-            section.elements,
-            axes.get(name),
-            section.beam_cages.get(name),
-            signs.get(name),
-        )
-        b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
-        beams.append(b)
+        for part, own, geo, key in runs(name):
+            b = design_beam(
+                name,
+                element,
+                settings,
+                own,
+                geo,
+                section.elements,
+                axes.get(name),
+                section.beam_cages.get(key),
+                signs.get(name),
+            )
+            b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+            beams.append(b if part is None else tag_part(b, part, parts))
     slabs = []
-    pile_sheets = {
-        n: sheets[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in sheets
-    }
     for name, element in section.elements.items():
         if not isinstance(element, SlabInput) or not take(name):
             continue
@@ -281,24 +310,26 @@ def run_section(
             where = " inside the working zone" if name in sheets else ""
             skipped.append(f"{name}: no usable results in the workbook{where}.")
             continue
-        if geometry is None:
-            geometry = section_geometry(workbook)
-        own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
         tick(name)
-        d = design_slab_meshes(
-            name,
-            element,
-            settings,
-            own,
-            geometry,
-            section.elements,
-            axes.get(name),
-            pile_sheets,
-            section.slab_strips.get(name),
-            signs.get(name),
-        )
-        d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
-        slabs.append(d)
+        for part, own, geo, key in runs(name):
+            around = views[part.index][1] if part else sheets
+            pile_sheets = {
+                n: around[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in around
+            }
+            d = design_slab_meshes(
+                name,
+                element_in_part(element, part),
+                settings,
+                own,
+                geo,
+                section.elements,
+                axes.get(name),
+                pile_sheets,
+                section.slab_strips.get(key),
+                signs.get(name),
+            )
+            d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+            slabs.append(d if part is None else tag_part(d, part, parts))
     if missing:
         skipped.append(f"Load multiplier sheets not in the workbook: {', '.join(missing)}.")
     return {
@@ -308,6 +339,7 @@ def run_section(
         "sheet_pile_walls": spws,
         "beams": beams,
         "slabs": slabs,
+        "alignment": alignment,
         "skipped": skipped,
         "designed": handled,
         "left": left,

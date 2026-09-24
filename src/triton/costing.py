@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .alignment import combine_parts
 from .materials import STEEL_DENSITY
 from .project import CombiWallInput, ElementCosting, PileInput, Prices, Project, Section, SheetPileInput
 
@@ -162,6 +163,7 @@ def cost_section(
 ) -> dict[str, Any]:
     """``length``: the length of berth the model covers, when ``results`` do not hold the beams it is
     taken from; ``berth``: a berth length to use when the section has none (a trial costed per metre)."""
+    results = combine_parts(results)  # a corner berth's parts: one row per element
     prices = project.prices
     L = length or model_length(section, results)
     berth = section.costing.berth_length or berth
