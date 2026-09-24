@@ -195,3 +195,72 @@ td.nowrap { white-space: nowrap; }
 .sheet-issues { margin: 8px 0; padding-left: 18px; max-height: 120px; overflow: auto; }
 @media (max-width: 700px) { .sheet-view { padding: 0; } }
 .sheet-grid .head-text { font-weight: 400; color: var(--muted); font-size: 12px; }
+
+/* Anything hidden stays hidden, whatever its display. */
+[hidden] { display: none !important; }
+
+/* ---- Long work: a card with an overall bar and one bar per step or element ---- */
+.job { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+       margin-top: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+.job-head { display: flex; align-items: baseline; gap: 10px; }
+.job-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-pct { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 20px; color: var(--accent); }
+.job.done .job-pct { color: var(--ok); }
+.job.failed .job-pct, .job.stopped .job-pct { color: var(--err); font-size: 15px; }
+.job .x { border: 0; background: none; color: var(--muted); padding: 0 4px; cursor: pointer; font-size: 18px; }
+button.small { padding: 3px 10px; font-size: 13px; }
+.bar { display: block; position: relative; height: 6px; border-radius: 99px; background: var(--miss-bg); overflow: hidden; }
+.bar i { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit; background: var(--accent);
+         transition: width .6s cubic-bezier(.2,.7,.2,1); }
+.bar.big { height: 10px; margin: 10px 0 6px; }
+.job.running .bar.big i {
+  background-image: linear-gradient(90deg, transparent 0, rgba(255,255,255,.35) 50%, transparent 100%);
+  background-size: 200px 100%; background-repeat: no-repeat; animation: glide 1.6s linear infinite;
+  background-color: var(--accent); }
+.job.done .bar.big i { background: var(--ok); }
+.job.failed .bar.big i, .job.stopped .bar.big i { background: var(--err); }
+@keyframes glide { from { background-position: -200px 0; } to { background-position: calc(100% + 200px) 0; } }
+.job-sub { font-size: 13px; color: var(--muted); min-height: 1.4em; }
+.job-steps { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.job-steps.many { max-height: 220px; overflow-y: auto; padding-right: 4px; }
+.job-steps li { display: grid; grid-template-columns: minmax(90px, 180px) 1fr minmax(70px, auto); gap: 10px;
+                align-items: center; font-size: 13px; }
+.job-steps .step-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.job-steps li.running .step-name, .job-steps li.done .step-name { color: var(--text); }
+.job-steps .step-note { font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; white-space: nowrap; }
+.job-steps li.done .bar i { background: var(--ok); }
+.job-steps li.done .step-note { color: var(--ok); }
+.job-steps li.bad .bar i { background: var(--err); }
+.job-steps li.bad .step-note { color: var(--err); font-weight: 600; }
+.job-steps li.busy .bar i {
+  background: repeating-linear-gradient(-45deg, var(--accent) 0 8px, var(--accent-bg) 8px 16px);
+  background-size: 22.6px 100%; animation: stripes .8s linear infinite; }
+@keyframes stripes { from { background-position: 0 0; } to { background-position: 22.6px 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .bar i, .job.running .bar.big i, .job-steps li.busy .bar i { animation: none; transition: none; }
+}
+
+/* The dock: jobs running away from their own tab. */
+#dock { position: fixed; right: 16px; bottom: 72px; width: min(380px, calc(100vw - 32px)); z-index: 40;
+        display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+#dock .job { pointer-events: auto; margin: 0; box-shadow: 0 8px 24px rgba(0,0,0,.14); }
+#dock .job-steps.many { max-height: 150px; }
+
+/* The lock after a design. */
+.lockbar { display: flex; gap: 12px; align-items: center; margin: 0 0 14px; padding: 10px 14px; border-radius: 10px;
+           background: var(--accent-bg); border: 1px solid var(--accent); font-size: 14px; }
+.lockbar svg { width: 18px; height: 18px; fill: var(--accent); flex: none; }
+.lockbar span { flex: 1; }
+
+/* Saved by itself: the bar at the bottom says so. */
+.save-state { font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+.save-state::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.save-state.saved { color: var(--ok); } .save-state.saved::before { background: var(--ok); }
+.save-state.saving { color: var(--muted); } .save-state.saving::before { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+.save-state.unsaved { color: var(--err); } .save-state.unsaved::before { background: var(--err); }
+@keyframes pulse { 50% { opacity: .3; } }
+
+/* Picking what to design. */
+.pick-row { margin-bottom: 12px; }
+.chip.stale-chip { border-color: var(--warn); background: var(--warn-bg); }
+.tabs-list { margin: 12px 0; max-height: 240px; overflow-y: auto; }

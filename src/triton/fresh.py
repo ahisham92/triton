@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from typing import Any
 
 from .project import Project, Section
@@ -47,12 +48,7 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
     return parts
 
 
-def changes(results: dict[str, Any], now: dict[str, str]) -> list[str] | None:
-    """The inputs changed since the results were designed: [] when none, None for results designed
-    before fingerprints were kept (nothing to compare)."""
-    then = results.get("inputs")
-    if not isinstance(then, dict):
-        return None
+def _diff(then: dict[str, str], now: dict[str, str]) -> list[str]:
     out = []
     for part in list(now) + [p for p in then if p not in now]:
         if then.get(part) == now.get(part):
@@ -68,6 +64,64 @@ def changes(results: dict[str, Any], now: dict[str, str]) -> list[str] | None:
     return out
 
 
+def element_inputs(now: dict[str, str], elements: Iterable[str], names: Iterable[str]) -> dict:
+    """What each of ``names`` was designed from: the section-wide parts and its own."""
+    shared = {k: v for k, v in now.items() if k not in set(elements)}
+    return {n: {**shared, **({n: now[n]} if n in now else {})} for n in names}
+
+
+def _by_element(results: dict[str, Any], elements: Iterable[str]) -> dict[str, dict[str, str]] | None:
+    """Each designed element's inputs; results designed in one go before elements could be designed
+    on their own carry one fingerprint for all."""
+    by = results.get("element_inputs")
+    if isinstance(by, dict):
+        return by
+    then = results.get("inputs")
+    if not isinstance(then, dict):
+        return None
+    names = set(elements) | {e["element"] for e in _designed(results)}
+    shared = {k: v for k, v in then.items() if k not in names}
+    return {n: {**shared, n: then[n]} for n in names if n in then}
+
+
+KINDS = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls")
+
+
+def _designed(results: dict[str, Any]) -> list[dict]:
+    return [e for k in KINDS for e in results.get(k) or []]
+
+
+def status(results: dict[str, Any], now: dict[str, str], elements: Iterable[str]) -> tuple[list | None, list]:
+    """What changed since the results were designed ([] = up to date, None for results designed
+    before fingerprints were kept), and the elements whose results are out of date."""
+    elements = list(elements)
+    by = _by_element(results, elements)
+    if by is None:
+        return None, []
+    shared = {k: v for k, v in now.items() if k not in set(elements)}
+    changed: list[str] = []
+    stale: list[str] = []
+    for name, then in by.items():
+        diff = _diff(then, {**shared, name: now[name]} if name in now else shared)
+        if diff:
+            stale.append(name)
+        changed += [d for d in diff if d not in changed]
+    for name in elements:
+        if name not in by:
+            changed.append(f"{name} (added)")
+            stale.append(name)
+    return changed, stale
+
+
+def changes(results: dict[str, Any], now: dict[str, str]) -> list[str] | None:
+    """The inputs changed since the results were designed in one go: [] when none, None for results
+    designed before fingerprints were kept (nothing to compare)."""
+    then = results.get("inputs")
+    return _diff(then, now) if isinstance(then, dict) else None
+
+
 def with_status(project: Project, section: Section, results: dict[str, Any], workbook: dict | None) -> dict:
-    """The results with ``changed``: what changed since they were designed ([] = up to date)."""
-    return {**results, "changed": changes(results, fingerprint(project, section, workbook))}
+    """The results with ``changed``: what changed since they were designed ([] = up to date), and
+    ``stale``: the elements whose results are out of date."""
+    changed, stale = status(results, fingerprint(project, section, workbook), section.elements)
+    return {**results, "changed": changed, "stale": stale}

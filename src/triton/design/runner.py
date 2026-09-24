@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Collection
 from dataclasses import replace
 from typing import Any
 
@@ -10,7 +11,16 @@ from ..elements import ElementType
 from ..forces import scale_forces
 from ..geometry import section_geometry
 from ..importer import SheetData
-from ..project import BeamInput, CombiWallInput, DesignSettings, PileInput, Section, SlabInput, _now
+from ..project import (
+    BeamInput,
+    CombiWallInput,
+    DesignSettings,
+    PileInput,
+    Section,
+    SheetPileInput,
+    SlabInput,
+    _now,
+)
 from ..validation import ImportResult
 from .beams import design_beam
 from .combi import design_combi_wall
@@ -22,7 +32,7 @@ from .slabs import design_slab
 
 def factored_elements(section: Section, workbook: ImportResult) -> dict[str, dict[str, SheetData]]:
     """element -> combination -> sheet, with the section's load multipliers applied to the forces
-    and only the results inside the section's working zone."""
+    and only the results inside the section's working zone (and below a sheet pile wall's top level)."""
     out = {}
     for element, combos in workbook.elements().items():
         out[element] = {}
@@ -31,6 +41,9 @@ def factored_elements(section: Section, workbook: ImportResult) -> dict[str, dic
             frame = sheet.frame if f == 1.0 else scale_forces(sheet.frame, f)
             if section.has_zone and {"X", "Y"} <= set(frame.columns):
                 frame = frame[section.in_zone(frame["X"], frame["Y"])]
+            wall = section.elements.get(element)
+            if isinstance(wall, SheetPileInput) and wall.top_level is not None and "Z" in frame.columns:
+                frame = frame[frame["Z"] <= wall.top_level + 1e-6]  # above it: in the capping beam
             out[element][combo] = sheet if frame is sheet.frame else replace(sheet, frame=frame)
     return out
 
@@ -92,15 +105,33 @@ def run_section(
     section: Section,
     workbook: ImportResult,
     progress: Callable[[float, str], None] | None = None,
+    only: Collection[str] | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Design the piles, combi walls and beams of one section; pick the sheet pile wall's governing sets.
-    ``progress(fraction, step)`` is told as each element is started."""
+    ``progress(fraction, step)`` is told as each element is started. ``only``: design just these
+    elements. ``deadline`` (``time.monotonic()``): start no element after it (at least one is done);
+    the rest are listed in ``left``, the ones done in ``designed``."""
     started: list[str] = []
+    handled: list[str] = []
+    left: list[str] = []
 
     def tick(name: str) -> None:
         if progress:
-            progress(len(started) / max(len(section.elements), 1), f"Designing {name}")
+            progress(
+                len(started) / max(len(only) if only is not None else len(section.elements), 1),
+                f"Designing {name}",
+            )
         started.append(name)
+
+    def take(name: str) -> bool:
+        if only is not None and name not in only:
+            return False
+        if deadline is not None and handled and time.monotonic() > deadline:
+            left.append(name)
+            return False
+        handled.append(name)
+        return True
 
     raw = workbook.elements()
     sheets = factored_elements(section, workbook)
@@ -109,7 +140,7 @@ def run_section(
     excluded = set(section.excluded_peaks)
     piles, walls, skipped = [], [], []
     for name, element in section.elements.items():
-        if not isinstance(element, PileInput | CombiWallInput):
+        if not isinstance(element, PileInput | CombiWallInput) or not take(name):
             continue
         if name not in sheets or all(s.frame.empty for s in sheets[name].values()):
             where = " inside the working zone" if name in sheets else ""
@@ -160,6 +191,8 @@ def run_section(
     for name, combos in sheets.items():
         if not any(s.parsed and s.parsed.spec.type is ElementType.SHEET_PILE_WALL for s in combos.values()):
             continue
+        if not take(name):
+            continue
         sets = steel_sets(uls_frame(combos), "plate")
         if not sets["rows"]:
             where = " inside the working zone" if section.has_zone else ""
@@ -179,11 +212,14 @@ def run_section(
                 "length_m": round(max(z) - min(z), 2) if z else None,
             }
         )
+    for name, element in section.elements.items():
+        if isinstance(element, SheetPileInput) and name not in sheets and take(name):
+            skipped.append(f"{name}: no usable results in the workbook.")
     beams = []
     geometry = None
     axes = {a["element"]: a.get("local") for a in (getattr(workbook, "axes", None) or [])}
     for name, element in section.elements.items():
-        if not isinstance(element, BeamInput):
+        if not isinstance(element, BeamInput) or not take(name):
             continue
         if name not in sheets or all(s.frame.empty for s in sheets[name].values()):
             where = " inside the working zone" if name in sheets else ""
@@ -201,7 +237,7 @@ def run_section(
         n: sheets[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in sheets
     }
     for name, element in section.elements.items():
-        if not isinstance(element, SlabInput):
+        if not isinstance(element, SlabInput) or not take(name):
             continue
         if name not in sheets or all(s.frame.empty for s in sheets[name].values()):
             where = " inside the working zone" if name in sheets else ""
@@ -224,6 +260,8 @@ def run_section(
         "beams": beams,
         "slabs": slabs,
         "skipped": skipped,
+        "designed": handled,
+        "left": left,
         "working_zone": any(
             v is not None for v in (section.x_min, section.x_max, section.y_min, section.y_max)
         ),

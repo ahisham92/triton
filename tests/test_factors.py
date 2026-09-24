@@ -69,3 +69,20 @@ def test_results_10_cm_into_the_slab_are_used():
     settings = DesignSettings(results_into_connection=0)
     (pile,) = run_section(settings, section, sheets)["piles"]
     assert pile["governing"]["M_kNm"] == pytest.approx(500.0)
+
+
+def test_sheet_pile_wall_results_above_its_top_level_are_ignored():
+    from conftest import plate_sheet
+
+    from triton.project import SheetPileInput
+
+    wb = import_sheets({"SPW-QP": plate_sheet(), "SPW-PT-B-Apron": plate_sheet(scale=2.0)})
+    section = Section(elements={"SPW": SheetPileInput()})
+    everything = factored_elements(section, wb)["SPW"]["QP"].frame["Z"]
+    top = float(everything.max()) - 2.0
+    section.elements["SPW"].top_level = top
+    kept = factored_elements(section, wb)["SPW"]
+    assert all(float(s.frame["Z"].max()) <= top for s in kept.values())
+    assert len(kept["QP"].frame) < len(everything)
+    spw = run_section(DesignSettings(), section, wb)["sheet_pile_walls"][0]
+    assert spw["length_m"] == round(top - float(everything.min()), 2)

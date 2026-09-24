@@ -167,6 +167,16 @@ def edit_sheet(result: ImportResult, name: str, rows: list[Row]) -> ImportResult
     return out
 
 
+def drop_sheets(result: ImportResult, names: set[str]) -> ImportResult:
+    """The workbook without some of its tabs, checked again."""
+    sheets = [
+        replace(s, issues=[i for i in s.issues if i.code not in _SHEET_CHECKS])
+        for s in result.sheets
+        if s.name not in names
+    ]
+    return _checked(ImportResult(sheets))
+
+
 def apply_mapping(result: ImportResult, mapping: dict[str, Any]) -> ImportResult:
     """The workbook with sheets assigned by hand: each entry maps a sheet name to an element and
     combination (``element``, ``combination``) or leaves it out (``ignore``). Checks run again."""
@@ -198,7 +208,7 @@ _SHEET_CHECKS = {
     "undefined_combination",
 }
 
-MERGE_MODES = ("replace", "update", "add")
+MERGE_MODES = ("replace", "update", "matching", "add")
 
 
 def defined_match(combination: str, defined: list[str]) -> str | None:
@@ -373,7 +383,8 @@ def merge_workbooks(
 
     ``replace``: the new workbook replaces the old one. ``update``: each new sheet replaces the old
     sheet of the same name, or else the old sheet holding the same element and combination (as
-    mapped); the rest are added. ``add``: only sheets whose names are not there yet are added.
+    mapped); the rest are added. ``matching``: as ``update``, but new sheets are left out. ``add``: only
+    sheets whose names are not there yet are added.
     Returns the combined (unmapped) workbook and what was replaced, added and left out.
     """
     if mode not in MERGE_MODES:
@@ -404,10 +415,13 @@ def merge_workbooks(
             replaced.append(s.name)
             sheets[s.name] = s
             continue
-        twin = old_keys.get(key(s)) if mode == "update" and key(s) else None
+        twin = old_keys.get(key(s)) if mode in ("update", "matching") and key(s) else None
         if twin and twin in sheets:
             replaced.append(f"{twin} → {s.name}")
             sheets = {(s.name if n == twin else n): (s if n == twin else v) for n, v in sheets.items()}
+            continue
+        if mode == "matching":
+            skipped.append(s.name)
             continue
         added.append(s.name)
         sheets[s.name] = s

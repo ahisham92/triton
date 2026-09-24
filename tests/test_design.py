@@ -336,9 +336,17 @@ def test_design_endpoints(client):
     st = pile["steel"]
     assert st["ratio_pct"] == round(100 * st["longitudinal_kg"] / 7850 / st["concrete_m3"], 2) > 0
     assert r.json()["changed"] == []
-    assert client.get(f"{url}/design").json() == r.json()
+    assert r.json()["designed"] == ["Pile(1)"] and r.json()["locked"]
+    step = ("designed", "left", "locked")
+    assert client.get(f"{url}/design").json() == {k: v for k, v in r.json().items() if k not in step}
 
-    # A new workbook keeps the old results, flagged as out of date.
+    # Designing locked the model; unlocked to edit, a new workbook keeps the old results, flagged as
+    # out of date.
+    assert client.post(f"{url}/workbook", files={"file": ("s2.xlsx", data)}).status_code == 409
+    project = client.get(f"/api/projects/{p['id']}").json()
+    assert project["locked"]
+    project["locked"] = False
+    assert client.put(f"/api/projects/{p['id']}", json=project).status_code == 200
     client.post(f"{url}/workbook", files={"file": ("s2.xlsx", data)})
     assert client.get(f"{url}/design").json()["changed"] == ["workbook"]
 
@@ -356,7 +364,8 @@ def test_design_endpoints(client):
     assert cost["sections"][0]["rows"] == [] and "berth length" in cost["sections"][0]["notes"][0]
     project = client.get(f"/api/projects/{p['id']}").json()
     project["sections"][0]["costing"]["berth_length"] = 20
-    client.put(f"/api/projects/{p['id']}", json=project)
+    assert project["locked"]  # costing inputs can change while the model is locked
+    assert client.put(f"/api/projects/{p['id']}", json=project).status_code == 200
     assert client.get(f"{url}/design").json()["changed"] == []  # costing inputs are not design inputs
     cost = client.get(f"/api/projects/{p['id']}/costing").json()
     (sec,) = cost["sections"]
@@ -382,7 +391,100 @@ def test_a_second_upload_replaces_or_adds_tabs(client):
     assert r["merged"]["replaced"] == ["Pile(1)-QP → Pile 1 - QP"] and not r["merged"]["added"]
     assert [s["name"] for s in r["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile 1 - QP", "Pile(2)-QP"]
 
+    # Matching only: tabs that match replace theirs, new ones are left out.
+    fix = xlsx_bytes({"Pile(2)-QP": pile_sheet(scale=0.8), "Pile(3)-QP": pile_sheet()})
+    r = client.post(f"{url}/workbook?mode=matching", files={"file": ("e.xlsx", fix)}).json()
+    assert r["merged"]["replaced"] == ["Pile(2)-QP"]
+    assert r["merged"]["skipped"] == ["Pile(3)-QP"] and not r["merged"]["added"]
+
     # Replace: the new file is the whole workbook.
     r = client.post(f"{url}/workbook?mode=replace", files={"file": ("d.xlsx", first)}).json()
     assert "merged" not in r and [s["name"] for s in r["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile(1)-QP"]
     assert client.post(f"{url}/workbook?mode=bad", files={"file": ("d.xlsx", first)}).status_code == 422
+
+
+def test_design_chosen_elements_and_in_steps(client):
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)", "Pile(2)"]}).json()
+    pid = p["id"]
+    url = f"/api/projects/{pid}/sections/{p['sections'][0]['id']}"
+    data = xlsx_bytes(
+        {
+            "Pile(1)-PT-B-Apron": pile_sheet(),
+            "Pile(1)-QP": pile_sheet(),
+            "Pile(2)-PT-B-Apron": pile_sheet(scale=0.5),
+            "Pile(2)-QP": pile_sheet(scale=0.5),
+        }
+    )
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
+
+    # In steps: at least one element per request, the rest come back to be asked for again.
+    r = client.post(f"{url}/design", json={"budget_s": 1e-6}).json()
+    assert r["designed"] == ["Pile(1)"] and r["left"] == ["Pile(2)"]
+    assert r["stale"] == ["Pile(2)"] and r["changed"] == ["Pile(2) (added)"]
+    r = client.post(f"{url}/design", json={"elements": r["left"], "budget_s": 1e-6}).json()
+    assert r["designed"] == ["Pile(2)"] and r["left"] == [] and r["changed"] == []
+    assert [x["element"] for x in r["piles"]] == ["Pile(1)", "Pile(2)"]
+
+    # One element changed: only it is out of date, and designing it alone keeps the other's results.
+    first = client.get(f"{url}/design").json()
+    project = client.get(f"/api/projects/{pid}").json()
+    project["locked"] = False
+    project["sections"][0]["elements"]["Pile(2)"]["diameter"] = 1500
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+    now = client.get(f"{url}/design").json()
+    assert now["changed"] == ["Pile(2)"] and now["stale"] == ["Pile(2)"]
+    r = client.post(f"{url}/design", json={"elements": ["Pile(2)"]}).json()
+    assert r["designed"] == ["Pile(2)"] and r["changed"] == [] and r["stale"] == []
+    piles = {x["element"]: x for x in r["piles"]}
+    assert piles["Pile(1)"] == next(x for x in first["piles"] if x["element"] == "Pile(1)")
+
+    # A change shared by every element (a design setting) puts both out of date.
+    project = client.get(f"/api/projects/{pid}").json()
+    project["locked"] = False
+    project["design"]["results_into_connection"] = 50
+    client.put(f"/api/projects/{pid}", json=project)
+    assert client.get(f"{url}/design").json()["stale"] == ["Pile(1)", "Pile(2)"]
+
+
+def test_lock_blocks_changes_until_unlocked(client):
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)"]}).json()
+    pid, sid = p["id"], p["sections"][0]["id"]
+    url = f"/api/projects/{pid}/sections/{sid}"
+    data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet()})
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
+    client.post(f"{url}/design")
+    project = client.get(f"/api/projects/{pid}").json()
+    project["sections"][0]["elements"]["Pile(1)"]["diameter"] = 1500
+    r = client.put(f"/api/projects/{pid}", json=project)
+    assert r.status_code == 409 and "Unlock" in r.json()["detail"]
+    assert client.post(f"/api/projects/{pid}/sections", json={"name": "S2"}).status_code == 409
+    assert client.post(f"{url}/elements", json={"names": ["Pile(2)"]}).status_code == 409
+    assert client.delete(f"{url}/workbook").status_code == 409
+    assert client.post(f"{url}/design").status_code == 200  # designing again is fine
+    project["locked"] = False  # unlocking and editing in one save
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+
+
+def test_delete_some_or_all_tabs(client):
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)", "Pile(2)"]}).json()
+    url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
+    data = xlsx_bytes(
+        {"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet(), "Pile(2)-QP": pile_sheet()}
+    )
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
+    client.post(f"{url}/design")
+    project = client.get(f"/api/projects/{p['id']}").json()
+    project["locked"] = False
+    client.put(f"/api/projects/{p['id']}", json=project)
+
+    r = client.post(f"{url}/workbook/delete", json={"sheets": ["Pile(2)-QP"]})
+    assert r.status_code == 200, r.text
+    assert [s["name"] for s in r.json()["workbook"]["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile(1)-QP"]
+    assert client.get(f"{url}/workbook/sheet", params={"name": "Pile(2)-QP"}).status_code == 404
+    assert client.get(f"{url}/workbook/sheet", params={"name": "Pile(1)-QP"}).json()["editable"]
+    assert client.get(f"{url}/design").json()["changed"] == ["workbook"]
+    assert client.post(f"{url}/workbook/delete", json={"sheets": ["Nope"]}).status_code == 404
+
+    assert client.delete(f"{url}/workbook").status_code == 204
+    assert client.get(f"{url}/workbook").status_code == 404
+    assert client.get(f"{url}/design").json()["changed"] == ["workbook"]  # results kept, out of date

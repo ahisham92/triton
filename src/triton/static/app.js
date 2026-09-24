@@ -45,6 +45,10 @@ async function again(fn, tries = 4) {
   }
 }
 
+// Uploads and designs under way, whatever page is open (see "long work" below).
+const JOBS = [];
+let state = null; // the open project: { project, sectionId, dirty, errors }
+
 let SCHEMA = null;
 let MATERIALS = null;
 async function reference() {
@@ -57,6 +61,7 @@ window.addEventListener("hashchange", route);
 route();
 
 function route() {
+  if (state?.dirty) save(); // what was typed on the last tab
   const hash = location.hash.slice(1) || "/";
   const m = hash.match(/^\/project\/([a-f0-9]+)(?:\/(\w+))?(?:\/([a-f0-9]+))?$/);
   if (m) return projectPage(m[1], m[2] || "info", m[3]);
@@ -95,7 +100,6 @@ async function projectsPage() {
 }
 
 // ---------------------------------------------------------------- project page
-let state = null; // { project, sectionId, dirty, errors }
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
 const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d"]);
@@ -137,8 +141,9 @@ async function projectPage(id, tab, sectionId) {
   $app.innerHTML = `<h1>${esc(p.info.name)}</h1>
     <p class="sub">${esc([p.info.number, p.sections.length > 1 ? `${p.sections.length} sections` : sec().name].filter(Boolean).join(" · "))}</p>
     <div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${t}</button>`).join("")}</div>
+    <div id="lockbar"></div>
     ${picker}<div id="tab"></div>
-    <div class="savebar"><button id="save">Save</button><span class="status" id="save-status"></span>
+    <div class="savebar"><span class="save-state" id="save-status"></span>
       <span style="flex:1"></span><button class="danger" id="delete">Delete project</button></div>
     <ul class="errors" id="errors"></ul>`;
   $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab))));
@@ -148,7 +153,6 @@ async function projectPage(id, tab, sectionId) {
       state.sectionId = pick.value;
       location.hash = tabHash(tab);
     };
-  document.getElementById("save").onclick = save;
   document.getElementById("delete").onclick = async () => {
     if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
     await api(`${ROOT}/api/projects/${id}`, { method: "DELETE" });
@@ -158,7 +162,9 @@ async function projectPage(id, tab, sectionId) {
   const host = document.getElementById("tab");
   if (tab === "info") {
     host.append(renderObject(SCHEMA.properties.info, p.info, "info", "Project"));
-    host.append(renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)"));
+    const prices = renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)");
+    prices.dataset.free = ""; // not a design input: open while the model is locked
+    host.append(prices);
   }
   else if (tab === "settings") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
   else if (tab === "design") renderDesignTab(host);
@@ -169,29 +175,110 @@ async function projectPage(id, tab, sectionId) {
   else if (tab === "costing") renderCostingTab(host);
   showSaveState();
   showErrors();
+  applyLock();
+  drawJobs();
 }
 
+// ---------------------------------------------------------------- lock
+// Designing locks the model: its inputs are read only (prices and costing inputs stay open) until
+// Unlock to edit. Changes after unlocking mark the results out of date.
+const LOCKED_TABS = new Set(["info", "settings", "sections", "elements", "workbook"]);
+
+function applyLock() {
+  const bar = document.getElementById("lockbar");
+  const host = document.getElementById("tab");
+  if (!bar || !host || !state) return;
+  const locked = state.project.locked;
+  bar.innerHTML = locked
+    ? `<div class="lockbar"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7V5a4 4 0 0 1 8 0v2h.5A1.5 1.5 0 0 1 14 8.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-5A1.5 1.5 0 0 1 3.5 7H4Zm2 0h4V5a2 2 0 0 0-4 0v2Z"/></svg>
+        <span><strong>Locked since the design.</strong> The inputs are read only, so the results match them. Prices and costing inputs can still change.</span>
+        <button id="unlock">Unlock to edit</button></div>`
+    : "";
+  const unlock = document.getElementById("unlock");
+  if (unlock)
+    unlock.onclick = async () => {
+      state.project.locked = false;
+      state.dirty = true;
+      await save();
+      route();
+    };
+  host._lockWatch?.disconnect();
+  const tab = (location.hash.match(/^#\/project\/[a-f0-9]+\/(\w+)/) || [])[1] || "info";
+  if (!locked || !LOCKED_TABS.has(tab)) return;
+  const lock = () =>
+    host.querySelectorAll("input, select, textarea, button").forEach((el) => {
+      if (!el.disabled && !el.closest("[data-free], [data-slot]")) el.disabled = true;
+    });
+  lock();
+  // Parts of a tab arrive later (the workbook's report): lock them as they come.
+  host._lockWatch = new MutationObserver(lock);
+  host._lockWatch.observe(host, { childList: true, subtree: true });
+}
+
+// Every change saves itself a moment later; the bar at the bottom says whether it has.
+let saveTimer = null;
+let saving = null;
 function markDirty() {
   state.dirty = true;
+  state.edits = (state.edits || 0) + 1;
   showSaveState();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(save, 700);
 }
 function showSaveState(text) {
   const s = document.getElementById("save-status");
-  if (s) s.textContent = text || (state.dirty ? "Unsaved changes" : "All changes saved");
+  if (!s) return;
+  const bad = state.errors?.length;
+  s.className = `save-state ${text === "Saving…" || (!bad && state.dirty) ? "saving" : bad ? "unsaved" : "saved"}`;
+  s.textContent = text || (bad ? "Not saved: fix the fields below" : state.dirty ? "Saving…" : "All changes saved");
+}
+
+// Copies the saved project into the one the forms are bound to, keeping its objects.
+function mergeInto(target, source) {
+  for (const k of Object.keys(target)) if (!(k in source)) delete target[k];
+  for (const [k, v] of Object.entries(source)) {
+    const t = target[k];
+    if (Array.isArray(v) && Array.isArray(t) && v.length === t.length) {
+      v.forEach((x, i) => {
+        if (x && typeof x === "object" && t[i] && typeof t[i] === "object" && !Array.isArray(x)) mergeInto(t[i], x);
+        else t[i] = x;
+      });
+    } else if (v && typeof v === "object" && !Array.isArray(v) && t && typeof t === "object" && !Array.isArray(t)) mergeInto(t, v);
+    else target[k] = v;
+  }
 }
 
 async function save() {
-  showSaveState("Saving…");
-  try {
-    state.project = await api(`${ROOT}/api/projects/${state.project.id}`, { method: "PUT", body: JSON.stringify(state.project) });
-    state.dirty = false;
-    state.errors = [];
-    showSaveState();
-  } catch (e) {
-    state.errors = Array.isArray(e.detail) ? e.detail : [{ loc: [], msg: e.message }];
-    showSaveState("Not saved: fix the fields below");
+  clearTimeout(saveTimer);
+  if (saving) {
+    await saving; // one save at a time; the next picks up what changed meanwhile
+    if (!state.dirty) return;
   }
-  showErrors();
+  saving = (async () => {
+    const edits = state.edits || 0;
+    const project = state.project;
+    showSaveState("Saving…");
+    try {
+      const saved = await api(`${ROOT}/api/projects/${project.id}`, { method: "PUT", body: JSON.stringify(project) });
+      if (state?.project !== project) return;
+      state.errors = [];
+      if ((state.edits || 0) === edits) {
+        mergeInto(project, saved);
+        state.dirty = false;
+      } else project.updated_at = saved.updated_at; // changed again meanwhile: saved next
+    } catch (e) {
+      if (state?.project !== project) return;
+      state.errors = Array.isArray(e.detail) ? e.detail : [{ loc: [], msg: e.message }];
+    }
+    showSaveState();
+    showErrors();
+    if (state.dirty && !state.errors.length) saveTimer = setTimeout(save, 700);
+  })();
+  try {
+    await saving;
+  } finally {
+    saving = null;
+  }
 }
 
 function showErrors() {
@@ -246,12 +333,24 @@ function renderObject(schema, obj, path, title) {
   const grid = document.createElement("div");
   grid.className = "fields";
   fs.append(grid);
+  const conditional = [];
   for (const [k, prop] of Object.entries(schema.properties || {})) {
     if (HIDDEN.has(k)) continue;
     const p = path ? `${path}.${k}` : k;
     const nullable = Boolean(prop.anyOf && prop.anyOf.some((a) => a.type === "null"));
     const inner = nullable ? resolve(prop.anyOf.find((a) => a.type !== "null")) : resolve(prop);
-    grid.append(inner.properties ? renderNested(obj, k, prop, inner, nullable, p) : renderField(obj, k, prop, inner, nullable, p));
+    const el = inner.properties ? renderNested(obj, k, prop, inner, nullable, p) : renderField(obj, k, prop, inner, nullable, p);
+    if (prop.show_when) conditional.push([el, prop.show_when]);
+    grid.append(el);
+  }
+  // Fields that only apply for some values of another field (a structural casing's welded bars).
+  if (conditional.length) {
+    const apply = () => {
+      for (const [el, when] of conditional)
+        el.hidden = !Object.entries(when).every(([key, values]) => values.includes(obj[key]));
+    };
+    apply();
+    grid.addEventListener("change", apply);
   }
   return fs;
 }
@@ -502,7 +601,7 @@ function renderSections(host) {
     card.style.marginBottom = "16px";
     const n = Object.keys(s.elements).length;
     card.innerHTML = `<div class="element-head"><h3>${esc(s.name)}<span class="type">${n} element${n === 1 ? "" : "s"}</span></h3>
-      <span><button class="quiet" data-open>Open</button> <button class="quiet" data-copy title="A new section with this one's settings, without its workbook, mapping or results">Duplicate</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
+      <span><button class="quiet" data-open data-free>Open</button> <button class="quiet" data-copy title="A new section with this one's settings, without its workbook, mapping or results">Duplicate</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
     card.querySelector("[data-open]").onclick = () => {
       state.sectionId = s.id;
       location.hash = tabHash("elements");
@@ -588,17 +687,20 @@ async function addElements(names) {
 }
 
 // ---------------------------------------------------------------- workbook check
-function checkerHtml() {
+function checkerHtml(slot = "upload-check") {
   return `<div class="panel row">
       <input type="file" id="file" accept=".xlsb,.xlsx,.xlsm">
       <select id="upload-mode" hidden title="What to do with the workbook this section already has">
         <option value="replace">Replace the whole workbook</option>
-        <option value="update">Replace matching tabs, add new ones</option>
+        <option value="update">Replace matching tabs and add new ones</option>
+        <option value="matching">Replace matching tabs only</option>
         <option value="add">Add new tabs only</option>
       </select>
       <button id="run" disabled>Check workbook</button>
-      <span class="status" id="status"></span>
-      <button class="quiet" id="stop" hidden>Stop</button></div>
+      <button class="quiet" id="del-tabs" hidden>Delete tabs…</button>
+      <span class="status" id="status"></span></div>
+    <div id="del-panel" hidden></div>
+    <div data-slot="${esc(slot)}"></div>
     <div id="report" hidden>
       <div class="counts">
         <div class="count error"><b id="n-error">0</b>errors</div>
@@ -622,53 +724,131 @@ function checkerHtml() {
     </div>`;
 }
 
-// Long steps (reading a workbook, designing a section) report how far they have got; the page asks
-// every second and a half and shows the step, a percentage and the time left.
-function leftText(s) {
-  if (s == null) return "";
-  if (s < 60) return `, about ${Math.max(5, Math.ceil(s / 5) * 5)} s left`;
-  return `, about ${Math.ceil(s / 60)} min left`;
+// ---------------------------------------------------------------- long work
+// An upload or a design is a job that keeps running whatever tab, section or project is open. The
+// tab it belongs to shows it in place (a slot, data-slot="…"); anywhere else the dock at the bottom
+// right shows it, and a finished job says so there with a link back.
+function newJob(job) {
+  Object.assign(job, { id: Math.random().toString(36).slice(2), began: Date.now(), state: "running", stopped: false });
+  for (const old of JOBS.filter((j) => j.slot === job.slot && j.state !== "running")) JOBS.splice(JOBS.indexOf(old), 1);
+  JOBS.push(job);
+  drawJobs();
+  return job;
 }
 
-function watchProgress(key, show) {
-  let stopped = false;
-  const tick = async () => {
-    if (stopped) return;
-    try {
-      const p = await api(`${ROOT}/api/progress/${key}`);
-      if (!stopped) show(`${p.step}: ${Math.round(p.fraction * 100)}%${leftText(p.remaining_s)}`);
-    } catch {
-      /* not started yet, or already finished */
-    }
-    if (!stopped) timer = setTimeout(tick, 1500);
-  };
-  let timer = setTimeout(tick, 1000);
-  return () => {
-    stopped = true;
-    clearTimeout(timer);
-  };
+function jobDone(job, end, message) {
+  job.state = end;
+  job.message = message;
+  for (const s of job.steps) if (s.state === "running") s.state = end === "done" ? "done" : "waiting";
+  drawJobs();
+  if (end === "done") setTimeout(() => dismissJob(job), 60000);
 }
 
-// A Stop button for a long step: while uploading it stops sending pieces; once the server is
-// working it asks it to stop at its next sheet or element.
-function stopButton(button, run, status) {
-  button.hidden = false;
-  button.disabled = false;
-  button.onclick = async () => {
-    run.stopped = true;
-    button.disabled = true;
-    status.textContent = "Stopping…";
-    // The step may not have started on the server yet: ask again for a few seconds.
-    for (let i = 0; i < 10 && !run.done; i++) {
-      if (run.key && (await api(`${ROOT}/api/progress/${run.key}/stop`, { method: "POST" }).then(() => true, () => false))) return;
-      await new Promise((r) => setTimeout(r, 700));
-    }
-  };
-  return () => {
-    run.done = true;
-    button.hidden = true;
-  };
+function dismissJob(job) {
+  const i = JOBS.indexOf(job);
+  if (i >= 0) JOBS.splice(i, 1);
+  drawJobs();
 }
+
+const busyWith = (slot) => JOBS.some((j) => j.slot === slot && j.state === "running");
+
+function jobFraction(job) {
+  if (job.state === "done") return 1;
+  const weight = (s) => s.weight ?? 1;
+  const total = job.steps.reduce((a, s) => a + weight(s), 0) || 1;
+  const got = job.steps.reduce((a, s) => a + weight(s) * (s.state === "done" ? 1 : s.fraction ?? 0), 0);
+  return Math.min(got / total, 0.99);
+}
+
+function timeLeft(job, f) {
+  const spent = (Date.now() - job.began) / 1000;
+  if (job.state !== "running" || f < 0.04 || spent < 4) return "";
+  const s = (spent * (1 - f)) / f;
+  return s < 60 ? `about ${Math.max(5, Math.ceil(s / 5) * 5)} s left` : `about ${Math.ceil(s / 60)} min left`;
+}
+
+const JOB_END = { done: "Done", failed: "Failed", stopped: "Stopped" };
+
+function stepNote(s) {
+  if (s.note) return s.note;
+  if (s.state === "done") return "Done";
+  if (s.state === "running") return s.fraction == null ? "Working" : `${Math.round(s.fraction * 100)}%`;
+  return "";
+}
+
+// The card: an overall bar with the percentage and time left, then one bar per step (or element).
+function jobCardHtml(job, inDock) {
+  return `<div class="job ${job.state}" data-job="${job.id}" data-sig="${job.state}:${job.steps.length}">
+    <div class="job-head"><span class="job-title">${esc(job.title)}</span><span class="job-pct"></span>
+      ${job.state === "running" ? `<button class="quiet small" data-job-stop>Stop</button>` : `<button class="x" data-job-close title="Close">×</button>`}</div>
+    <div class="bar big"><i></i></div>
+    <div class="job-sub"><span></span>${inDock && job.home ? ` <a href="${job.home}">Open</a>` : ""}</div>
+    <ol class="job-steps${job.steps.length > 5 ? " many" : ""}">${job.steps
+      .map((s) => `<li><span class="step-name">${esc(s.label)}</span><span class="bar"><i></i></span><span class="step-note"></span></li>`)
+      .join("")}</ol></div>`;
+}
+
+// Updates a card in place, so the bars glide from one value to the next.
+function fillJobCard(card, job) {
+  const f = jobFraction(job);
+  const running = job.steps.find((s) => s.state === "running");
+  card.querySelector(".job-pct").textContent = JOB_END[job.state] && job.state !== "done" ? JOB_END[job.state] : `${Math.round(f * 100)}%`;
+  card.querySelector(".bar.big i").style.width = `${Math.max(f * 100, 1)}%`;
+  card.querySelector(".job-sub span").textContent =
+    job.state === "running" ? [running?.detail || running?.label, timeLeft(job, f)].filter(Boolean).join(" · ") : job.message || "";
+  card.querySelectorAll(".job-steps li").forEach((li, i) => {
+    const s = job.steps[i];
+    li.className = `${s.state}${s.bad ? " bad" : ""}${s.state === "running" && s.fraction == null ? " busy" : ""}`;
+    li.querySelector("i").style.width = `${s.state === "done" ? 100 : s.state === "running" && s.fraction == null ? 100 : Math.round((s.fraction ?? 0) * 100)}%`;
+    li.querySelector(".step-note").textContent = stepNote(s);
+  });
+  if (running && card.querySelector(".job-steps.many")) {
+    const li = card.querySelectorAll(".job-steps li")[job.steps.indexOf(running)];
+    const list = li?.parentElement;
+    if (li && list && (li.offsetTop < list.scrollTop || li.offsetTop > list.scrollTop + list.clientHeight - 24))
+      list.scrollTop = li.offsetTop - list.clientHeight / 2;
+  }
+}
+
+function showJob(box, job, inDock) {
+  let card = box.querySelector(`[data-job="${job.id}"]`);
+  if (!card || card.dataset.sig !== `${job.state}:${job.steps.length}`) {
+    const html = jobCardHtml(job, inDock);
+    if (card) card.outerHTML = html;
+    else box.insertAdjacentHTML("beforeend", html);
+    card = box.querySelector(`[data-job="${job.id}"]`);
+    card.querySelector("[data-job-stop]")?.addEventListener("click", (e) => {
+      e.target.disabled = true;
+      e.target.textContent = "Stopping…";
+      job.stop?.();
+    });
+    card.querySelector("[data-job-close]")?.addEventListener("click", () => dismissJob(job));
+  }
+  fillJobCard(card, job);
+}
+
+function drawJobs() {
+  let dock = document.getElementById("dock");
+  if (!dock) {
+    dock = document.createElement("div");
+    dock.id = "dock";
+    document.body.append(dock);
+  }
+  const shown = new Set();
+  for (const job of JOBS) {
+    const slot = document.querySelector(`[data-slot="${CSS.escape(job.slot)}"]`);
+    const box = slot || dock;
+    shown.add(job.id);
+    if (slot) dock.querySelector(`[data-job="${job.id}"]`)?.remove();
+    showJob(box, job, !slot);
+  }
+  document.querySelectorAll("[data-job]").forEach((c) => shown.has(c.dataset.job) || c.remove());
+}
+// Time left moves on even between answers.
+setInterval(() => JOBS.some((j) => j.state === "running") && drawJobs(), 1000);
+window.addEventListener("beforeunload", (e) => {
+  if (JOBS.some((j) => j.state === "running") || state?.dirty) e.preventDefault();
+});
 
 // Workbooks go up in pieces: hosts cap one request (PythonAnywhere at about 100 MB), and a whole
 // project's workbook can be bigger than that. A piece that fails is sent again.
@@ -699,67 +879,95 @@ async function sendInPieces(f, progress, run = {}) {
   return id;
 }
 
-function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
-  const file = document.getElementById("file");
-  const run = document.getElementById("run");
-  file.onchange = () => (run.disabled = !file.files.length);
-  run.onclick = async () => {
-    const f = file.files[0];
-    if (!f) return;
-    run.disabled = true;
-    const status = document.getElementById("status");
-    const job = {};
-    const hideStop = stopButton(document.getElementById("stop"), job, status);
-    try {
-      const mb = (n) => (n / 1048576).toFixed(0);
-      const id = await sendInPieces(
-        f,
-        (at) => {
-          const pct = Math.round((100 * at) / Math.max(f.size, 1));
-          if (!job.stopped) status.textContent = `Uploading ${f.name}: ${pct}% (${mb(at)} of ${mb(f.size)} MB)`;
-        },
-        job,
-      );
+// Upload, read (a few sheets per request) and check a workbook as a job. ``url`` takes the upload:
+// the workbook check, or a section's workbook (with ``mode`` for a second upload).
+async function uploadJob(f, { url, mode, title, slot, home, onDone }) {
+  const mb = (n) => (n / 1048576).toFixed(0);
+  const job = newJob({
+    kind: "upload",
+    title,
+    slot,
+    home,
+    steps: [
+      { label: "Upload", weight: 3, state: "running", fraction: 0 },
+      { label: "Read the sheets", weight: 6, state: "waiting" },
+      { label: "Check and keep", weight: 1, state: "waiting" },
+    ],
+  });
+  const [up, read, check] = job.steps;
+  job.stop = async () => {
+    job.stopped = true;
+    if (job.key) await api(`${ROOT}/api/progress/${job.key}/stop`, { method: "POST" }).catch(() => {});
+  };
+  try {
+    const id = await sendInPieces(
+      f,
+      (at) => {
+        up.fraction = at / Math.max(f.size, 1);
+        up.detail = `Uploading ${f.name}: ${mb(at)} of ${mb(f.size)} MB`;
+        up.note = `${mb(at)} / ${mb(f.size)} MB`;
+        drawJobs();
+      },
+      job,
+    );
+    up.state = "done";
+    read.state = "running";
+    read.fraction = 0;
+    drawJobs();
+    // A few sheets per request: a host cuts off a request that runs too long.
+    for (;;) {
       if (job.stopped) {
         await api(`${ROOT}/api/uploads/${id}`, { method: "DELETE" }).catch(() => {});
         throw new Error("Stopped.");
       }
-      // Read a few sheets per request: a host cuts off a request that runs too long.
-      status.textContent = `Reading ${f.name}…`;
-      const began = Date.now();
-      for (;;) {
-        if (job.stopped) {
-          await api(`${ROOT}/api/uploads/${id}`, { method: "DELETE" }).catch(() => {});
-          throw new Error("Stopped.");
-        }
-        const r = await again(() => api(`${ROOT}/api/uploads/${id}/read`, { method: "POST" }));
-        if (r.done) break;
-        const spent = (Date.now() - began) / 1000;
-        const left = r.fraction >= 0.03 ? (spent * (1 - r.fraction)) / r.fraction : null;
-        if (!job.stopped)
-          status.textContent = `Reading ${f.name}: ${Math.round(r.fraction * 100)}% (${r.sheets} of ${r.of} sheets)${leftText(left)}`;
-      }
-      job.key = id;
-      const stop = watchProgress(id, (text) => (job.stopped ? null : (status.textContent = text)));
-      let data;
-      try {
-        const mode = document.getElementById("upload-mode");
-        const how = mode && !mode.hidden ? `?mode=${mode.value}` : "";
-        status.textContent = `Checking ${f.name}…`;
-        data = await again(() => api(`${url}/${id}${how}`, { method: "POST" }));
-      } finally {
-        stop();
-        hideStop();
-      }
-      renderReport(data);
-      onReport?.(data);
-      document.getElementById("status").textContent = data.merged ? mergedText(data.merged) : `Checked ${data.file}`;
-    } catch (e) {
-      hideStop();
-      status.textContent = job.stopped ? "Stopped. Nothing was kept from this upload." : `Failed: ${e.message}`;
-    } finally {
-      run.disabled = false;
+      const r = await again(() => api(`${ROOT}/api/uploads/${id}/read`, { method: "POST" }));
+      read.fraction = r.fraction;
+      read.note = `${r.sheets} of ${r.of} sheets`;
+      read.detail = r.step;
+      drawJobs();
+      if (r.done) break;
     }
+    read.state = "done";
+    check.state = "running";
+    job.key = id;
+    drawJobs();
+    const data = await again(() => api(`${url}/${id}${mode ? `?mode=${mode}` : ""}`, { method: "POST" }));
+    const counts = data.counts ? `${data.counts.error} errors, ${data.counts.warning} warnings` : "";
+    jobDone(job, "done", data.merged ? mergedText(data.merged) : `Checked ${data.file}${counts ? `: ${counts}` : ""}.`);
+    onDone?.(data);
+  } catch (e) {
+    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped. Nothing was kept from this upload." : `Failed: ${e.message}`);
+  }
+}
+
+function wireChecker(onReport, url = ROOT + "/api/workbooks/check", slot = "upload-check") {
+  const file = document.getElementById("file");
+  const run = document.getElementById("run");
+  const ready = () => (run.disabled = !file.files.length || busyWith(slot));
+  file.onchange = ready;
+  ready();
+  run.onclick = async () => {
+    const f = file.files[0];
+    if (!f || busyWith(slot)) return;
+    const mode = document.getElementById("upload-mode");
+    const home = location.hash;
+    const job = uploadJob(f, {
+      url,
+      mode: mode && !mode.hidden ? mode.value : null,
+      title: `${f.name}${state && url !== ROOT + "/api/workbooks/check" ? ` into ${sec().name}` : ""}`,
+      slot,
+      home,
+      onDone: (data) => {
+        if (location.hash !== home) return; // the tab shows it when opened again
+        if (url === ROOT + "/api/workbooks/check") {
+          renderReport(data);
+          onReport?.(data);
+        } else route();
+      },
+    });
+    ready();
+    await job;
+    if (document.body.contains(run)) ready();
   };
 }
 
@@ -778,16 +986,19 @@ function checkPage() {
   $app.innerHTML = `<h1>Check a workbook</h1>
     <p class="sub">Upload the Plaxis straining-actions workbook to check it before design.</p>` + checkerHtml();
   wireChecker();
+  drawJobs();
 }
 
 async function renderWorkbookTab(host) {
   const url = secUrl();
+  const slot = `upload-${sec().id}`;
   host.innerHTML = `<p class="sub" id="wb-note">Upload the Plaxis workbook for ${esc(sec().name)}. It is checked, then kept with
-    the section so its elements can be designed without uploading it again.</p>` + checkerHtml();
+    the section so its elements can be designed without uploading it again. You can go on working on other tabs while it uploads.</p>` + checkerHtml(slot);
   const onReport = (data) => {
     document.getElementById("wb-note").textContent =
       `Workbook in use: ${data.file}, uploaded ${when(data.uploaded_at)} (Cairo time). Upload another file to replace it, replace some of its tabs or add tabs to it.`;
     document.getElementById("upload-mode").hidden = false;
+    wireDeleteTabs(data, url);
     renderFactors(data);
     const refresh = async () => {
       const fresh = await api(`${url}/workbook`);
@@ -811,7 +1022,8 @@ async function renderWorkbookTab(host) {
       location.hash = tabHash("elements");
     };
   };
-  wireChecker(onReport, `${url}/workbook`);
+  wireChecker(onReport, `${url}/workbook`, slot);
+  drawJobs();
   try {
     const stored = await api(`${url}/workbook`);
     renderReport(stored);
@@ -819,6 +1031,62 @@ async function renderWorkbookTab(host) {
   } catch {
     /* no workbook yet */
   }
+}
+
+// Delete some tabs of the section's workbook, or all of it (back to a blank section). Results
+// designed from them stay, flagged as out of date.
+function wireDeleteTabs(data, url) {
+  const button = document.getElementById("del-tabs");
+  const panel = document.getElementById("del-panel");
+  button.hidden = false;
+  button.onclick = () => {
+    panel.hidden = !panel.hidden;
+    if (panel.hidden) return;
+    panel.innerHTML = `<div class="panel" style="margin-top:12px">
+        <div class="row"><strong>Delete tabs</strong><span class="status">Pick the tabs to delete from ${esc(data.file)}.</span>
+          <span style="flex:1"></span><label class="chip"><input type="checkbox" data-all-tabs> All tabs</label></div>
+        <div class="checks tabs-list">${data.sheets
+          .map((s) => `<label><input type="checkbox" value="${esc(s.name)}"> ${esc(s.name)}</label>`)
+          .join("")}</div>
+        <div class="row"><button class="danger" id="del-some" disabled>Delete selected tabs</button>
+          <button class="danger quiet" id="del-all">Delete the whole workbook</button><span class="status" id="del-status"></span></div></div>`;
+    const boxes = [...panel.querySelectorAll(".tabs-list input")];
+    const some = panel.querySelector("#del-some");
+    const picked = () => boxes.filter((b) => b.checked).map((b) => b.value);
+    const count = () => {
+      const n = picked().length;
+      some.disabled = !n;
+      some.textContent = n ? `Delete ${n} tab${n === 1 ? "" : "s"}` : "Delete selected tabs";
+    };
+    boxes.forEach((b) => (b.onchange = count));
+    panel.querySelector("[data-all-tabs]").onchange = (e) => {
+      boxes.forEach((b) => (b.checked = e.target.checked));
+      count();
+    };
+    const status = panel.querySelector("#del-status");
+    some.onclick = async () => {
+      const names = picked();
+      const list = names.length > 6 ? `${names.slice(0, 6).join(", ")} and ${names.length - 6} more` : names.join(", ");
+      if (!confirm(`Delete ${names.length} tab(s) from this section's workbook?\n\n${list}\n\nResults designed from them will show as out of date.`)) return;
+      status.textContent = "Deleting…";
+      try {
+        await api(`${url}/workbook/delete`, { method: "POST", body: JSON.stringify({ sheets: names }) });
+        route();
+      } catch (e) {
+        status.textContent = e.message;
+      }
+    };
+    panel.querySelector("#del-all").onclick = async () => {
+      if (!confirm(`Delete the whole workbook of ${sec().name}? The section keeps its elements and settings, and its results show as out of date until a new workbook is uploaded and designed.`)) return;
+      status.textContent = "Deleting…";
+      try {
+        await api(`${url}/workbook`, { method: "DELETE" });
+        route();
+      } catch (e) {
+        status.textContent = e.message;
+      }
+    };
+  };
 }
 
 // A section's load combinations as removable chips, with a box to add one.
@@ -1260,6 +1528,8 @@ async function openSheet(url, name, refresh, start = null) {
     const q = new URLSearchParams({ name });
     if (from != null) q.set("start", from);
     const d = await api(`${url}/workbook/sheet?${q}`);
+    const locked = state?.project.locked && d.editable;
+    if (locked) d.editable = false; // read only while the model is locked
     const flagged = d.flagged_rows;
     const body = d.rows
       .map((r, k) => {
@@ -1282,7 +1552,7 @@ async function openSheet(url, name, refresh, start = null) {
         ${d.editable ? '<button id="sheet-save" disabled>Save edits</button>' : ""}
         <button class="quiet" id="sheet-close">Close</button></div>
       ${d.issues.length ? `<ul class="sheet-issues">${d.issues.map((i) => `<li><span class="sev ${i.severity}">${i.severity}</span> ${esc(i.message)}${i.rows.length ? ` <span class="rows">rows ${esc(rowRanges(i.rows))}</span>` : ""}</li>`).join("")}</ul>` : ""}
-      ${d.editable ? "" : '<p class="status">This workbook was uploaded before its rows were kept, so this shows the rows as cleaned and cannot be edited. Upload it again to edit here.</p>'}
+      ${d.editable ? "" : locked ? '<p class="status">Read only while the model is locked. Press Unlock to edit to change cells.</p>' : '<p class="status">This workbook was uploaded before its rows were kept, so this shows the rows as cleaned and cannot be edited. Upload it again to edit here.</p>'}
       <p class="status" id="sheet-status">${d.editable ? "Click a cell to change it. Highlighted rows are the flagged ones; hover for the reason." : ""}</p>
       <div class="sheet-grid"><table><tr><th></th>${Array.from({ length: d.width }, (_, c) => `<th>${colName(c)}${d.header?.[c] != null && d.header[c] !== "" ? `<div class="head-text">${esc(d.header[c])}</div>` : ""}</th>`).join("")}</tr>${body}</table></div></div>`;
     box.querySelector("#sheet-close").onclick = () => box.remove();
@@ -1329,16 +1599,29 @@ function overallRatio(st) {
 function staleHtml(res) {
   if (!res?.changed?.length) return "";
   return `<div class="stale"><strong>Inputs updated since this design:</strong> ${esc(res.changed.join(", "))}.
-    These results are out of date. Press <em>Design the elements</em> to redesign.</div>`;
+    These results are out of date: design the elements marked out of date again.</div>`;
 }
 
 const DESIGNED = new Set(["pile", "combi_wall", "front_beam", "rear_beam", "transverse_beam", "slab"]);
 
+// What the Design tab can design: every pile, combi wall, beam and slab, and the sheet pile wall's
+// governing sets.
+const DESIGN_ORDER = { pile: 0, combi_wall: 0, sheet_pile_wall: 1, front_beam: 2, rear_beam: 2, transverse_beam: 2, slab: 3 };
+const designUnits = (section) =>
+  Object.entries(section.elements)
+    .filter(([, e]) => e.kind in DESIGN_ORDER)
+    .sort(([, a], [, b]) => DESIGN_ORDER[a.kind] - DESIGN_ORDER[b.kind]) // the order the server designs them in
+    .map(([n]) => n);
+
 async function renderDesignTab(host) {
   const url = secUrl();
-  const els = Object.entries(sec().elements).filter(([, e]) => DESIGNED.has(e.kind));
-  host.innerHTML = `<div class="panel row">
-      <button id="run-design" ${els.length ? "" : "disabled"}>Design the elements</button>
+  const section = sec();
+  const units = designUnits(section);
+  state.designPick ??= {};
+  host.innerHTML = `<div class="panel">
+      <div class="row pick-row" id="design-pick"></div>
+      <div class="row">
+      <button id="run-design" ${units.length ? "" : "disabled"}>Design</button>
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec files (.ads per pile part)</a>
@@ -1348,34 +1631,146 @@ async function renderDesignTab(host) {
         <a class="quiet-link" data-fmt="pdf" href="#">PDF</a>
         <a class="quiet-link" data-fmt="xlsx" href="#">Excel</a>
       </span>
-      ${Object.values(sec().elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
-      <span class="status" id="design-status">${els.length ? esc(els.map(([n]) => n).join(", ")) : "Add pile, combi wall, beam or slab elements first."}</span>
-      <button class="quiet" id="design-stop" hidden>Stop</button>
+      ${Object.values(section.elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
+      <span class="status" id="design-status">${units.length ? "" : "Add pile, combi wall, beam or slab elements first."}</span>
+      </div>
+      <div data-slot="design-${esc(section.id)}"></div>
     </div><div id="design-out"></div>`;
-  document.getElementById("run-design").onclick = async () => {
+  let stale = [];
+  const run = document.getElementById("run-design");
+  const drawPick = () => {
+    const picked = state.designPick[section.id]?.filter((n) => units.includes(n)) ?? null;
+    const box = document.getElementById("design-pick");
+    if (!box) return;
+    box.innerHTML = `<span>Design</span>
+      <label class="chip"><input type="checkbox" data-pick="*" ${picked ? "" : "checked"}> All</label>
+      ${units
+        .map((n) => `<label class="chip${stale.includes(n) ? " stale-chip" : ""}" title="${stale.includes(n) ? "Out of date" : ""}">
+          <input type="checkbox" data-pick="${esc(n)}" ${picked?.includes(n) ? "checked" : ""}> ${esc(n)}</label>`)
+        .join("")}
+      ${stale.length ? `<button class="quiet small" id="pick-stale">Only the ${stale.length} out of date</button>` : ""}`;
+    box.querySelectorAll("[data-pick]").forEach(
+      (c) =>
+        (c.onchange = () => {
+          const n = c.dataset.pick;
+          const now = new Set(picked || []);
+          if (n === "*") now.clear();
+          else if (c.checked) now.add(n);
+          else now.delete(n);
+          state.designPick[section.id] = now.size && now.size < units.length ? [...now] : null;
+          drawPick();
+        })
+    );
+    const only = box.querySelector("#pick-stale");
+    if (only)
+      only.onclick = () => {
+        state.designPick[section.id] = stale.filter((n) => units.includes(n));
+        drawPick();
+      };
+    const n = picked?.length;
+    run.textContent = busyWith(`design-${section.id}`) ? "Designing…" : n ? `Design ${n} element${n === 1 ? "" : "s"}` : "Design all elements";
+    run.disabled = !units.length || busyWith(`design-${section.id}`);
+  };
+  drawPick();
+  run.onclick = async () => {
     if (state.dirty) await save();
     if (state.errors?.length) return;
-    const status = document.getElementById("design-status");
-    status.textContent = "Designing…";
-    const job = { key: `design-${state.project.id}-${sec().id}` };
-    const hideStop = stopButton(document.getElementById("design-stop"), job, status);
-    const stop = watchProgress(job.key, (text) => (job.stopped ? null : (status.textContent = text)));
-    try {
-      const res = await api(`${url}/design`, { method: "POST" });
-      stop();
-      hideStop();
-      renderResults(res);
-      status.textContent = "Done.";
-    } catch (e) {
-      stop();
-      hideStop();
-      status.textContent = job.stopped ? "Stopped. The previous results are kept." : e.message;
-    }
+    const picked = state.designPick[section.id]?.filter((n) => units.includes(n)) ?? null;
+    const job = designJob(section, picked);
+    drawPick();
+    await job;
+    drawPick();
   };
+  drawJobs();
   try {
-    renderResults(await api(`${url}/design`));
+    const res = await api(`${url}/design`);
+    stale = res.stale || [];
+    drawPick();
+    renderResults(res);
   } catch {
     /* not designed yet */
+  }
+}
+
+// Design a section's elements (all, or the ones picked) as a job: a few elements per request, each
+// element with its own bar; the others keep their results.
+async function designJob(section, chosen) {
+  const pid = state.project.id;
+  const url = `${ROOT}/api/projects/${pid}/sections/${section.id}`;
+  const key = `design-${pid}-${section.id}`;
+  const names = chosen || designUnits(section);
+  const job = newJob({
+    kind: "design",
+    title: `Designing ${section.name}${chosen ? ` (${names.length} of ${designUnits(section).length})` : ""}`,
+    slot: `design-${section.id}`,
+    home: `#/project/${pid}/design/${section.id}`,
+    steps: names.map((n) => ({ label: n, name: n, state: "waiting" })),
+  });
+  const step = (n) => {
+    let s = job.steps.find((x) => x.name === n);
+    if (!s) job.steps.push((s = { label: n, name: n, state: "waiting" }));
+    return s;
+  };
+  job.stop = async () => {
+    job.stopped = true;
+    await api(`${ROOT}/api/progress/${key}/stop`, { method: "POST" }).catch(() => {});
+  };
+  // Which element the server is on, between its answers.
+  const poll = setInterval(async () => {
+    try {
+      const p = await api(`${ROOT}/api/progress/${key}`);
+      const m = /^Designing (.+)$/.exec(p.step || "");
+      const s = m && job.steps.find((x) => x.name === m[1]);
+      if (s && s.state === "waiting") {
+        for (const x of job.steps) if (x.state === "running") Object.assign(x, { state: "done", fraction: 1 });
+        s.state = "running";
+        drawJobs();
+      }
+    } catch {
+      /* between requests */
+    }
+  }, 1200);
+  let ask = chosen;
+  let res = null;
+  try {
+    job.steps[0] && (job.steps[0].state = "running");
+    drawJobs();
+    for (;;) {
+      if (job.stopped) throw new Error("Stopped.");
+      res = await again(() => api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3 }) }));
+      const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls"].flatMap((k) => res[k] || []);
+      for (const n of res.designed) {
+        const s = step(n);
+        const r = all.find((x) => x.element === n);
+        s.state = "done";
+        s.fraction = 1;
+        if (!r) s.note = (res.skipped || []).some((m) => m.startsWith(`${n}:`)) ? "No results in the workbook" : "Nothing to design";
+        else if (r.passed === false) {
+          s.note = "Unsafe";
+          s.bad = true;
+        } else s.note = "OK";
+      }
+      res.left.forEach(step);
+      const next = res.left.find((n) => step(n).state !== "done");
+      if (next) step(next).state = "running";
+      drawJobs();
+      if (!res.left.length) break;
+      ask = res.left;
+    }
+    for (const s of job.steps) if (s.state !== "done") Object.assign(s, { state: "done", note: "Nothing to design" });
+    const bad = job.steps.filter((s) => s.bad).length;
+    jobDone(job, "done", `Designed ${job.steps.length} element${job.steps.length === 1 ? "" : "s"}${bad ? `, ${bad} unsafe` : ", all safe"}.`);
+    if (state?.project.id === pid) {
+      state.project.locked = true;
+      if (location.hash.startsWith(`#/project/${pid}/`)) route();
+    }
+  } catch (e) {
+    const on = job.steps.find((s) => s.state === "running");
+    const cut = GATEWAY.includes(e.status) || e instanceof TypeError;
+    const why = cut && on ? `The server stopped answering while designing ${on.label}; it may take longer than the host allows. Try designing it on its own.` : e.message;
+    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped. Elements already designed keep their new results." : `Failed: ${why}`);
+  } finally {
+    clearInterval(poll);
   }
 }
 

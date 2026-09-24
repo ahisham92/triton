@@ -50,6 +50,7 @@ from .validation import (
     apply_mapping,
     apply_section,
     combination_check,
+    drop_sheets,
     edit_sheet,
     import_workbook,
     merge_workbooks,
@@ -173,11 +174,30 @@ def get_project(project_id: str) -> Project:
     return _get(project_id)
 
 
+LOCKED = "The model is locked since it was designed. Press Unlock to edit first."
+
+
+def _model(p: Project) -> dict:
+    """What the lock protects: everything the design depends on (not prices and costing inputs)."""
+    d = p.model_dump(mode="json", exclude={"locked", "created_at", "updated_at", "prices"})
+    for s in d["sections"]:
+        s.pop("costing", None)
+    return d
+
+
+def _unlocked(project: Project) -> Project:
+    if project.locked:
+        raise HTTPException(409, LOCKED)
+    return project
+
+
 @app.put("/api/projects/{project_id}")
 def update_project(project_id: str, body: Project) -> Project:
     existing = _get(project_id)
     if body.id != project_id:
         raise HTTPException(400, "Project id in the body does not match the URL.")
+    if existing.locked and body.locked and _model(body) != _model(existing):
+        raise HTTPException(409, LOCKED)
     body.created_at = existing.created_at
     saved = store().save(body)
     kept = {s.id for s in saved.sections}
@@ -204,7 +224,7 @@ WORKBOOK_OWN = {"id", "name", "sheet_map", "combination_map", "review", "exclude
 
 @app.post("/api/projects/{project_id}/sections", status_code=201)
 def add_section(project_id: str, body: NewSection) -> Project:
-    project = _get(project_id)
+    project = _unlocked(_get(project_id))
     if any(s.name.strip().lower() == body.name.strip().lower() for s in project.sections):
         raise HTTPException(400, f"There is already a section called '{body.name}'.")
     settings = {}
@@ -220,7 +240,7 @@ def add_section(project_id: str, body: NewSection) -> Project:
 
 @app.delete("/api/projects/{project_id}/sections/{section_id}")
 def delete_section(project_id: str, section_id: str) -> Project:
-    project = _get(project_id)
+    project = _unlocked(_get(project_id))
     _section(project, section_id)
     if len(project.sections) == 1:
         raise HTTPException(400, "A project needs at least one section.")
@@ -231,7 +251,7 @@ def delete_section(project_id: str, section_id: str) -> Project:
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/elements")
 def add_elements(project_id: str, section_id: str, body: ElementNames) -> dict:
-    project = _get(project_id)
+    project = _unlocked(_get(project_id))
     added = _section(project, section_id).add_elements(body.names)
     store().save(project)
     return {"added": added, "project": project}
@@ -417,7 +437,7 @@ async def upload_piece(upload_id: str, request: Request, offset: int = 0) -> dic
 
 
 # How long one reading step runs before it answers (a host ends requests that run too long).
-READ_STEP_S = float(os.environ.get("TRITON_READ_STEP_S", "8"))
+READ_STEP_S = float(os.environ.get("TRITON_READ_STEP_S", "4"))
 
 
 @app.post("/api/uploads/{upload_id}/read")
@@ -468,7 +488,7 @@ SECTION = "/api/projects/{project_id}/sections/{section_id}"
 def _keeper(project_id: str, section_id: str, mode: str) -> Callable[[str, ImportResult], dict]:
     """Saves an uploaded workbook into a section: replacing its workbook, or (``update``, ``add``)
     brought into the one it has; see ``merge_workbooks``."""
-    section = _section(_get(project_id), section_id)
+    section = _section(_unlocked(_get(project_id)), section_id)
     if mode not in MERGE_MODES:
         raise HTTPException(422, "mode is replace, update or add.")
 
@@ -484,6 +504,40 @@ def _keeper(project_id: str, section_id: str, mode: str) -> Callable[[str, Impor
         return {**section_workbook(project_id, section_id), "merged": what}
 
     return keep
+
+
+class SheetNames(BaseModel):
+    sheets: list[str] = Field(min_length=1)
+
+
+@app.delete(SECTION + "/workbook", status_code=204)
+def delete_workbook(project_id: str, section_id: str) -> Response:
+    """Delete the section's whole workbook, back to a blank section. Its results stay, out of date."""
+    _section(_unlocked(_get(project_id)), section_id)
+    store().delete_workbook(project_id, section_id)
+    return Response(status_code=204)
+
+
+@app.post(SECTION + "/workbook/delete")
+def delete_workbook_sheets(project_id: str, section_id: str, body: SheetNames) -> dict:
+    """Delete some tabs of the section's workbook; the rest is checked again."""
+    _section(_unlocked(_get(project_id)), section_id)
+    wb = store().load_workbook(project_id, section_id)
+    if wb is None:
+        raise HTTPException(404, "No workbook uploaded for this section yet.")
+    names = set(body.sheets)
+    unknown = names - {s.name for s in wb.sheets}
+    if unknown:
+        raise HTTPException(404, f"No sheet named {', '.join(sorted(unknown))} in this section's workbook.")
+    if names >= {s.name for s in wb.sheets}:
+        store().delete_workbook(project_id, section_id)
+        return {"deleted": sorted(names), "workbook": None}
+    summary = store().workbook_summary(project_id, section_id) or {}
+    store().save_workbook(
+        project_id, section_id, summary.get("file") or "workbook", drop_sheets(wb, names), replace=False
+    )
+    store().drop_raw(project_id, section_id, names)
+    return {"deleted": sorted(names), "workbook": section_workbook(project_id, section_id)}
 
 
 @app.post(SECTION + "/workbook")
@@ -672,7 +726,7 @@ def _value(v):
 def edit_workbook_sheet(project_id: str, section_id: str, name: str, body: SheetEdits) -> dict:
     """Change cells of a sheet as read; the sheet is cleaned and the workbook checked again, as if
     the corrected workbook had been uploaded."""
-    section = _section(_get(project_id), section_id)
+    section = _section(_unlocked(_get(project_id)), section_id)
     wb, raw = _raw_sheet(project_id, section, name)
     if raw is None:
         raise HTTPException(
@@ -700,21 +754,73 @@ def edit_workbook_sheet(project_id: str, section_id: str, name: str, body: Sheet
 # --- Design ------------------------------------------------------------------------------
 
 
+class DesignRequest(BaseModel):
+    elements: list[str] | None = Field(None, description="The elements to design; empty: all of them.")
+    budget_s: float | None = Field(
+        None, gt=0, description="Start no element after this long; the rest come back in 'left'."
+    )
+
+
+def _merge(old: dict | None, new: dict, handled: list[str], section: Section) -> dict:
+    """The section's results with the elements just designed replacing their earlier results; the
+    other elements keep theirs."""
+    old = old or {}
+    done, kept = set(handled), set(section.elements)
+    out = {**old, **{k: v for k, v in new.items() if k not in ("designed", "left")}}
+    for kind in fresh.KINDS:
+        earlier = [e for e in old.get(kind) or [] if e["element"] not in done]
+        # Elements no longer in the section drop out (a sheet pile wall need not be one).
+        earlier = [e for e in earlier if e["element"] in kept or kind == "sheet_pile_walls"]
+        out[kind] = earlier + new.get(kind, [])
+    multiplier = "Load multiplier sheets not in the workbook"
+    out["skipped"] = [
+        m for m in old.get("skipped") or [] if m.split(":")[0] not in done and not m.startswith(multiplier)
+    ] + new.get("skipped", [])
+    return out
+
+
 @app.post(SECTION + "/design")
-def design_section(project_id: str, section_id: str) -> dict:
-    """Design the piles and combi walls of a section."""
+def design_section(project_id: str, section_id: str, body: DesignRequest | None = None) -> dict:
+    """Design a section's elements (all, or the ones asked for); the others keep their results. The
+    model is locked from here until it is unlocked to edit."""
+    body = body or DesignRequest()
     project = _get(project_id)
     section = _section(project, section_id)
     workbook = _workbook(project_id, section)
     if workbook is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    only = None if body.elements is None else [n for n in body.elements if n]
+    deadline = time.monotonic() + body.budget_s if body.budget_s else None
     with _Progress(f"design-{project_id}-{section_id}") as tell:
-        results = run_section(project.design, section, workbook, tell)
+        new = run_section(project.design, section, workbook, tell, only=only, deadline=deadline)
         summary = store().workbook_summary(project_id, section_id)
-        results["inputs"] = fresh.fingerprint(project, section, summary)
+        now = fresh.fingerprint(project, section, summary)
+        old = store().load_results(project_id, section_id)
+        handled = new["designed"]
+        if only is None and not new["left"]:
+            old = None  # everything designed again: nothing earlier stays
+        results = _merge(old, new, handled, section)
+        spws = {e["element"] for e in results["sheet_pile_walls"]}
+        earlier = (fresh._by_element(old, section.elements) or {}) if old else {}
+        results["element_inputs"] = {
+            **{k: v for k, v in earlier.items() if k in section.elements or k in spws},
+            **fresh.element_inputs(now, section.elements, handled),
+        }
+        results["inputs"] = now
         tell(0.97, "Saving")
         store().save_results(project_id, section_id, results)
-    return {**results, "changed": []}
+    if not project.locked:
+        project.locked = True
+        store().save(project)
+    changed, stale = fresh.status(results, now, section.elements)
+    return {
+        **results,
+        "changed": changed,
+        "stale": stale,
+        "designed": handled,
+        "left": new["left"],
+        "locked": True,
+    }
 
 
 def _results(project_id: str, section_id: str) -> tuple[Project, Section, dict]:

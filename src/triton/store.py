@@ -9,6 +9,7 @@ import os
 import pickle
 import shutil
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,18 @@ class ProjectStore:
         self._write_json(d / "workbook.json", summary)
         # The results stay, flagged as out of date (the workbook is part of their fingerprint).
         return summary
+
+    def delete_workbook(self, project_id: str, section_id: str) -> None:
+        """The section's workbook and the rows kept with it; its results stay (out of date)."""
+        d = self._dir(project_id, section_id)
+        for name in ("workbook.pkl", "workbook.json"):
+            (d / name).unlink(missing_ok=True)
+        shutil.rmtree(d / "raw", ignore_errors=True)
+
+    def drop_raw(self, project_id: str, section_id: str, sheets: Iterable[str]) -> None:
+        d = self._dir(project_id, section_id)
+        for sheet in sheets:
+            self._raw_path(d, sheet).unlink(missing_ok=True)
 
     def workbook_summary(self, project_id: str, section_id: str) -> dict[str, Any] | None:
         path = self._dir(project_id, section_id) / "workbook.json"

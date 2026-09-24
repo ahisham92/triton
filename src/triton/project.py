@@ -38,8 +38,12 @@ def _mm(title: str, default: float | None = None, **kw) -> Field:
     return Field(default, title=title, json_schema_extra={"unit": "mm"}, **kw)
 
 
-def _m(title: str, default: float | None = None, **kw) -> Field:
-    return Field(default, title=title, json_schema_extra={"unit": "m"}, **kw)
+def _m(title: str, default: float | None = None, extra: dict | None = None, **kw) -> Field:
+    return Field(default, title=title, json_schema_extra={"unit": "m", **(extra or {})}, **kw)
+
+
+# A field shown on the form only while another field of the same object has one of these values.
+STRUCTURAL_CASING = {"show_when": {"role": ["structural"]}}
 
 
 # --- Project-wide settings -------------------------------------------------
@@ -388,16 +392,20 @@ class Casing(_Model):
         None,
         title="Bars welded to the casing at its top",
         ge=0,
-        description="Structural casing only. Where the casing stops, these bars (cover 0, welded to the "
-        "pipe) and the cage carry the forces with no help from the casing.",
+        description="Where the casing stops, these bars (cover 0, welded to the pipe) and the cage carry "
+        "the forces with no help from the casing.",
+        json_schema_extra=STRUCTURAL_CASING,
     )
-    connection_bar_diameter: int = Field(32, title="Welded bar diameter", json_schema_extra={"unit": "mm"})
+    connection_bar_diameter: int = Field(
+        32, title="Welded bar diameter", json_schema_extra={"unit": "mm", **STRUCTURAL_CASING}
+    )
     connection_length: float = _m(
         "Connection zone length",
         0.5,
         gt=0,
         description="Length checked without the casing, from the casing top upward (or the top of the pile "
         "downward when the casing reaches it).",
+        extra=STRUCTURAL_CASING,
     )
 
     @model_validator(mode="after")
@@ -586,6 +594,12 @@ class SheetPileInput(_Model):
         None, title="Plastic section modulus Wpl per m", gt=0, json_schema_extra={"unit": "cm³/m"}
     )
     section_class: Literal[1, 2, 3, 4] = Field(2, title="Section class")
+    top_level: float | None = _m(
+        "Top level of the wall (capping beam soffit)",
+        None,
+        description="Straining actions above this level are ignored, in the design and in the exports. "
+        "Empty: every result is used.",
+    )
     corrosion_loss_per_face: float | None = _mm(
         "Corrosion loss per face", None, ge=0, description=_PROJECT_VALUE
     )
@@ -1311,6 +1325,11 @@ class Project(_Model):
     design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
     prices: Prices = Field(default_factory=Prices, title="Prices")
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
+    locked: bool = Field(
+        False,
+        title="Locked",
+        description="Set when the model is designed: its inputs cannot change until it is unlocked to edit.",
+    )
 
     @model_validator(mode="before")
     @classmethod
