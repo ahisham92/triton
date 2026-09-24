@@ -43,7 +43,11 @@ def _furniture_spots(project: Project, section: Section) -> list | None:
     if section.joints.furniture:
         return None  # positions given for the section, already in its joints
     berth = sum(section.joints.runs) or section.costing.berth_length or 0.0
-    return nominal(project.furniture, section.furniture, berth)
+    return nominal(project.furniture, section.furniture, berth) or None
+
+
+# Costing items added to the defaults with the Furniture tab.
+_NEW = {"Ladders", "Storm pins", "Crane stoppers"}
 
 
 def _hash(value: Any) -> str:
@@ -80,14 +84,21 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         # (or the berth length on the Costing tab when no runs are given) and the furniture priced
         # each. A section with no beam or slab does not use it, so its costing stays out of the design.
         c = section.costing
+        # Items with no berth place nothing; those added to the defaults later then keep earlier hashes.
+        berth = sum(section.joints.runs) or c.berth_length
         parts["expansion joints"] = _hash(
             [
                 joints.model_dump(mode="json"),
                 section.joints.model_dump(mode="json"),
                 None if section.joints.runs else c.berth_length,
-                [i.model_dump(mode="json") for i in c.items if i.unit == "each"],
-                _furniture_spots(project, section),
+                [
+                    i.model_dump(mode="json")
+                    for i in c.items
+                    if i.unit == "each" and (berth or i.name not in _NEW)
+                ],
             ]
+            # Only when the Furniture tab places something, so earlier designs keep their hash.
+            + ([spots] if (spots := _furniture_spots(project, section)) else [])
         )
     for name, element in section.elements.items():
         cage = section.user_cages.get(name) or section.beam_cages.get(name) or section.slab_strips.get(name)
