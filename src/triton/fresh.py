@@ -68,8 +68,9 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
     for name, element in section.elements.items():
         cage = section.user_cages.get(name) or section.beam_cages.get(name) or section.slab_strips.get(name)
         own = element.model_dump(mode="json")
-        if not own.get("rooms"):
-            own.pop("rooms", None)  # a beam with no rooms keeps the fingerprint it had before rooms
+        for key in ("rooms", "manholes", "channels"):
+            if not own.get(key):
+                own.pop(key, None)  # no openings: the fingerprint it had before openings existed
         # A corner berth's parts keep their own bars and stations ("Deck · Part 2").
         each = {
             k: v.model_dump(mode="json")
