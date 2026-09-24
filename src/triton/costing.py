@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .alignment import combine_parts
 from .materials import STEEL_DENSITY
 from .project import CombiWallInput, ElementCosting, PileInput, Prices, Project, Section, SheetPileInput
 
@@ -131,6 +132,7 @@ def _how(row: _Row, c: ElementCosting, what: str) -> str:
 
 
 def cost_section(project: Project, section: Section, results: dict[str, Any]) -> dict[str, Any]:
+    results = combine_parts(results)  # a corner berth's parts: one row per element
     prices = project.prices
     L = model_length(section, results)
     berth = section.costing.berth_length

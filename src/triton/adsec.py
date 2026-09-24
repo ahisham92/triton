@@ -38,6 +38,7 @@ from typing import Any
 
 from . import clock
 from .adsec_template import STATIC
+from .alignment import named_parts
 
 END = b"####@@@@"
 SEP = b"####"
@@ -352,6 +353,7 @@ def section_files(
     ``elements`` maps each element name to its diameter (mm), concrete grade and cover (mm) to
     the main bars' links, as designed.
     """
+    results = named_parts(results)  # a corner berth's parts by their own names
     designs = [(p["element"], p) for p in results.get("piles", [])]
     designs += [
         (f"{w['element']} infill", w["infill"]) for w in results.get("combi_walls", []) if w.get("infill")

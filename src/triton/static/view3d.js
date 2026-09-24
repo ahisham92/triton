@@ -45,6 +45,24 @@ export function crackLegendHtml() {
 // Tension zones: one colour per state (validated for colour-blind separation; tooltips name the state).
 const TENSION = { none: "#c9e3cf", bottom: "#2563eb", top: "#d9730d", both: "#a3389f", whole: "#9f1d1d" };
 
+// A corner berth's part is designed turned onto the quay's axis (triton/alignment.py): its box and
+// bands come in that turned frame, and are turned back to plan here.
+function turnBack(items, turn) {
+  const a = (-turn.deg * Math.PI) / 180;
+  const c = Math.cos(a), s = Math.sin(a);
+  const [px, py] = turn.pivot;
+  const back = (p) => {
+    const dx = p[0] - px, dy = p[1] - py;
+    return [px + c * dx - s * dy, py + s * dx + c * dy, p[2]];
+  };
+  for (const it of items) {
+    if (it.pts) it.pts = it.pts.map(back);
+    if (it.a) it.a = back(it.a);
+    if (it.b) it.b = back(it.b);
+    if (it.at) it.at = back(it.at);
+  }
+}
+
 // State of a tension code (see triton/design/tension.py): [colour key, words].
 export function tensionState(kind, code, dir = "x") {
   if (code == null) return null;
@@ -171,12 +189,12 @@ export class View3D {
   _source(e) {
     if (this.view === "crack") {
       const pct = (u) => `crack width ${Math.round(u * 100)}% of the limit (worst QP combination)`;
-      return { bands: this.scene.crack?.[e.element] || [], color: heat, words: pct };
+      return { bands: this.scene.crack?.[e.key || e.element] || [], color: heat, words: pct };
     }
     if (this.view !== "tension") {
-      return { bands: this.scene.bands?.[e.element] || [], color: heat, words: null };
+      return { bands: this.scene.bands?.[e.key || e.element] || [], color: heat, words: null };
     }
-    const t = this.scene.tension?.[e.element];
+    const t = this.scene.tension?.[e.key || e.element];
     if (!t) return { bands: [], color: heat, words: null };
     const { combo, dir } = View3D.prefs;
     const codes = t.codes?.[combo] ?? null;
@@ -198,6 +216,7 @@ export class View3D {
     for (const e of elements) {
       const faded = selected && e.element !== selected;
       const src = this._source(e);
+      const first = items.length;
       if (e.lines) {
         const b = src.bands;
         const byPos = new Map();
@@ -292,21 +311,24 @@ export class View3D {
           });
         }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);
-        items.push({ kind: "label", at: mid, text: e.element, faded, element: e.element });
+        items.push({ kind: "label", at: mid, text: e.key || e.element, faded, element: e.element });
       }
+      if (e.turn) turnBack(items.slice(first), e.turn);
     }
     if (this.view === "crack") {
       for (const e of elements) {
         const faded = selected && e.element !== selected;
         // Slab cells are small and many: one mark per 3 m block, at its widest crack.
         const blocks = new Map();
-        for (const [x, y, z, u, size] of this.scene.crack?.[e.element] || []) {
+        for (const [x, y, z, u, size] of this.scene.crack?.[e.key || e.element] || []) {
           if (!(u >= 0.5)) continue;
           const key = size ? `${Math.floor(x / 3)},${Math.floor(y / 3)}` : `${x},${y},${z}`;
           const was = blocks.get(key);
           if (!was || u > was.u) blocks.set(key, { u, at: [x, y, z] });
         }
+        const first = items.length;
         for (const { at, u } of blocks.values()) items.push({ kind: "mark", at, u, faded, element: e.element });
+        if (e.turn) turnBack(items.slice(first), e.turn);
       }
     }
     for (const a of this.scene.arrows || []) items.push({ kind: "arrow", ...a });
@@ -575,6 +597,18 @@ export class View3D {
 
 // Arrows showing which way each action of an element acts, from the workbook's direction check.
 export function directionArrows(el, finding) {
+  // A corner berth's turned part: the arrows stand on its box turned back to plan; Plaxis's local
+  // axes stay global, so their directions do not turn.
+  const list = _directionArrows(el, finding);
+  if (el?.turn) {
+    const items = list.map((a) => ({ at: a.from }));
+    turnBack(items, el.turn);
+    list.forEach((a, k) => (a.from = items[k].at));
+  }
+  return list;
+}
+
+function _directionArrows(el, finding) {
   if (!el || !finding) return [];
   const unit = { X: [1, 0, 0], Y: [0, 1, 0], Z: [0, 0, 1] };
   if (el.lines && finding.kind === "beam") {

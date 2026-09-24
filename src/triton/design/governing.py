@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 from ..adsec import slab_sets, strip_width, tension_face
+from ..alignment import named_parts
 from ..importer import SheetData
 from ..project import DesignSettings, PileInput
 
@@ -295,6 +296,7 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
     ws.append(
         ["N in the concrete (AdSec) sign convention: Plaxis N × −1, compression +. M2, M3 as in Plaxis."]
     )
+    results = named_parts(results)  # a corner berth's parts by their own names
     designs = [(p["element"], p) for p in results.get("piles", [])]
     designs += [(f"{w['element']} infill", w["infill"]) for w in results.get("combi_walls", [])]
     designs += [

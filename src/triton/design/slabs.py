@@ -109,6 +109,8 @@ def slab_loads(
                     "Ny": -f[cols["Ny"]].to_numpy(float),
                     "Vx": f[cols["Vx"]].to_numpy(float),
                     "Vy": f[cols["Vy"]].to_numpy(float),
+                    # Plan X, Y of a corner berth's turned part (crane areas are given in plan).
+                    **({"PX": f["PX"].to_numpy(float), "PY": f["PY"].to_numpy(float)} if "PX" in f else {}),
                 }
             )
         )
@@ -598,10 +600,11 @@ def add_crane(uls: pd.DataFrame, slab: SlabInput) -> tuple[pd.DataFrame, int]:
         return uls, 0
     uls = uls.copy()
     hit = np.zeros(len(uls), bool)
+    px, py = ("PX", "PY") if "PX" in uls else ("X", "Y")  # areas are in plan
     for a in slab.crane:
         m = (
-            uls["X"].between(min(a.x_from, a.x_to), max(a.x_from, a.x_to))
-            & uls["Y"].between(min(a.y_from, a.y_to), max(a.y_from, a.y_to))
+            uls[px].between(min(a.x_from, a.x_to), max(a.x_from, a.x_to))
+            & uls[py].between(min(a.y_from, a.y_to), max(a.y_from, a.y_to))
         ).to_numpy()
         for col, v in (
             ("Mx", a.mx),

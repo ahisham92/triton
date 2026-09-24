@@ -22,10 +22,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 from . import adsec, checker, durability, fresh
+from .alignment import plan_geometry
 from .costing import cost_project
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
-from .design.runner import factored_elements, run_section
+from .design.runner import factored_elements, run_section, section_alignment
 from .design.spw import workbook as spw_workbook
 from .elements import ElementType
 from .geometry import section_geometry
@@ -1141,7 +1142,11 @@ def geometry(project_id: str, section_id: str) -> dict:
     wb = _workbook(project_id, section)
     if wb is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
-    return {"elements": section_geometry(wb), "axes": wb.summary()["axes"]}
+    sheets = factored_elements(section, wb)
+    parts, alignment = section_alignment(section, sheets)
+    axes = {a["element"]: a.get("local") for a in getattr(wb, "axes", None) or []}
+    elements = plan_geometry(section_geometry(wb), sheets, parts, axes)
+    return {"elements": elements, "axes": wb.summary()["axes"], "alignment": alignment}
 
 
 def _king_piles(section: Section, wb) -> list[tuple[float, float, float]]:

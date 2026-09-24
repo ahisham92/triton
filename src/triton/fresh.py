@@ -49,7 +49,15 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
     for name, element in section.elements.items():
         cage = section.user_cages.get(name) or section.beam_cages.get(name) or section.slab_strips.get(name)
         own = element.model_dump(mode="json")
-        parts[name] = _hash(own if cage is None else [own, cage.model_dump(mode="json")])
+        # A corner berth's parts keep their own bars and stations ("Deck · Part 2").
+        each = {
+            k: v.model_dump(mode="json")
+            for store in (section.beam_cages, section.slab_strips)
+            for k, v in store.items()
+            if k.startswith(f"{name} · ")
+        }
+        value = own if cage is None else [own, cage.model_dump(mode="json")]
+        parts[name] = _hash([value, sorted(each.items())] if each else value)
     return parts
 
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import clock
+from .alignment import named_parts
 from .figures import slab_stations
 from .materials import STEEL_DENSITY
 from .project import DesignSettings, Project, Section
@@ -100,6 +101,7 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     then shear, punching and steel quantities). The detailed report adds an appendix with the
     calculation of each element.
     """
+    results = named_parts(results)  # a corner berth's parts by their own names
     info = project.info
     run_at = clock.show(results.get("run_at", ""))
     r = Report(
@@ -457,6 +459,7 @@ def _sections(r: Report, section: Section, res: dict) -> None:
 
 def _sheet(element: str, combination: Any) -> Any:
     """The combination as the workbook's sheet name, e.g. Pile(1)-PT-C-Apron, as the office tables."""
+    element = element.split(" · ")[0]  # a corner berth's part: the element's own sheets
     return f"{element}-{combination}" if isinstance(combination, str) and combination else combination
 
 

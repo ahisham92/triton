@@ -665,8 +665,83 @@ function renderSections(host) {
     combos.innerHTML = `<label>Load combinations</label><div class="hint">${esc(def.properties.combinations.description)}</div>`;
     combos.append(comboListEditor(s));
     card.append(combos);
+    card.append(alignmentEditor(p, s));
     host.append(card);
   });
+}
+
+// A corner berth: the quay's line in plan, found from the front beam or given by hand
+// (triton/alignment.py). Slabs and beams are designed part by part, each turned onto the quay's axis.
+function alignmentEditor(p, s) {
+  const def = SCHEMA.$defs.Alignment.properties;
+  s.alignment ??= { mode: "auto", points: [], min_angle: 2, own_axes: [] };
+  const a = s.alignment;
+  const box = document.createElement("div");
+  box.className = "field full";
+  const pts = (list) => (list || []).map((q) => `${fmt(q[0], 2)}, ${fmt(q[1], 2)}`).join("\n");
+  box.innerHTML = `<label>Berth alignment (corner berths)</label><div class="hint">${esc(def.mode.description)}
+      An inclined part is turned (sin, cos) to lie straight along the quay and designed like the straight part: its own column and
+      field strips, stations, zones, punching and cracking. The 3D view keeps it where it is in Plaxis.</div>
+    <div class="row" style="gap:10px;align-items:flex-start;flex-wrap:wrap">
+      <select data-al="mode"><option value="auto">Automatic, from the front beam</option><option value="straight">Straight berth</option><option value="manual">Corner points by hand</option></select>
+      <label class="hint" style="margin:0">Least turn for a corner <input type="number" step="any" min="0.1" max="45" data-al="min_angle" style="width:70px"> °</label>
+      <label class="hint" style="margin:0" title="${esc(def.own_axes.description)}">Parts with results in their own axes <input data-al="own_axes" placeholder="e.g. 2" style="width:70px"></label>
+      <button class="quiet" data-al-find data-free>Find the parts</button>
+    </div>
+    <div data-al-points style="margin-top:8px"><div class="hint">${esc(def.points.description)} One point per line: X, Y.</div>
+      <textarea data-al="points" rows="4" style="width:100%;max-width:360px;font:inherit"></textarea></div>
+    <div class="status" data-al-found></div>`;
+  const mode = box.querySelector('[data-al="mode"]');
+  const minA = box.querySelector('[data-al="min_angle"]');
+  const own = box.querySelector('[data-al="own_axes"]');
+  const text = box.querySelector('[data-al="points"]');
+  const found = box.querySelector("[data-al-found]");
+  const show = () => (box.querySelector("[data-al-points]").style.display = a.mode === "manual" ? "" : "none");
+  mode.value = a.mode;
+  minA.value = a.min_angle ?? 2;
+  own.value = (a.own_axes || []).join(", ");
+  text.value = pts(a.points);
+  show();
+  mode.onchange = () => {
+    a.mode = mode.value;
+    show();
+    markDirty();
+  };
+  minA.onchange = () => {
+    a.min_angle = Number(minA.value) || 2;
+    markDirty();
+  };
+  own.onchange = () => {
+    a.own_axes = own.value.split(/[ ,;]+/).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    markDirty();
+  };
+  text.onchange = () => {
+    a.points = text.value.split("\n").map((l) => l.split(/[ ,;\t]+/).filter(Boolean).map(Number)).filter((q) => q.length === 2 && q.every(Number.isFinite));
+    markDirty();
+  };
+  box.querySelector("[data-al-find]").onclick = async () => {
+    found.textContent = "Reading the workbook…";
+    try {
+      if (state.dirty) await save();
+      const g = await api(`${ROOT}/api/projects/${p.id}/sections/${s.id}/geometry`);
+      const al = g.alignment || {};
+      const parts = al.parts || [];
+      found.innerHTML = `${esc(al.text || "")}${parts.length > 1 || parts.some((q) => q.rotation_deg) ? `<br>${parts.map((q) => `${esc(q.name)}: ${fmt(q.length_m, 1)} m, from X ${fmt(q.start[0], 2)}, Y ${fmt(q.start[1], 2)} to X ${fmt(q.end[0], 2)}, Y ${fmt(q.end[1], 2)}`).join("<br>")}
+        <br><button class="quiet" data-al-use>Edit these points by hand</button>` : ""}`;
+      const use = found.querySelector("[data-al-use]");
+      if (use) use.onclick = () => {
+        a.mode = "manual";
+        a.points = (al.points || []).map((q) => q.map((v) => Math.round(v * 1000) / 1000));
+        mode.value = "manual";
+        text.value = pts(a.points);
+        show();
+        markDirty();
+      };
+    } catch (e) {
+      found.textContent = e.message;
+    }
+  };
+  return box;
 }
 
 // ---------------------------------------------------------------- elements tab
@@ -2229,7 +2304,7 @@ function renderResults(full) {
   const out = document.getElementById("design-out");
   if (!out) return;
   const kinds = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls"];
-  const names = kinds.flatMap((k) => (full[k] || []).map((e) => e.element));
+  const names = [...new Set(kinds.flatMap((k) => (full[k] || []).map((e) => e.element)))]; // a corner berth's parts: once
   state.designShow ??= {};
   let shown = (state.designShow[sec().id] || []).filter((n) => names.includes(n));
   if (!shown.length) shown = null;
@@ -2345,7 +2420,7 @@ async function sectionGeometry() {
 function resultTension(res) {
   const out = {};
   for (const k of ["piles", "combi_walls", "beams", "slabs"]) {
-    for (const d of res?.[k] || []) if (d.tension?.points?.length) out[d.element] = d.tension;
+    for (const d of res?.[k] || []) if (d.tension?.points?.length) out[d.key || d.element] = d.tension;
   }
   return out;
 }
@@ -2355,7 +2430,7 @@ function resultCracks(res) {
   const out = {};
   for (const p of res?.piles || []) if (p.cracks?.bands?.length) out[p.element] = p.cracks.bands;
   for (const w of res?.combi_walls || []) if (w.infill?.cracks?.bands?.length) out[w.element] = w.infill.cracks.bands;
-  for (const k of ["beams", "slabs"]) for (const d of res?.[k] || []) if (d.crack_bands?.length) out[d.element] = d.crack_bands;
+  for (const k of ["beams", "slabs"]) for (const d of res?.[k] || []) if (d.crack_bands?.length) out[d.key || d.element] = d.crack_bands;
   return out;
 }
 
@@ -2363,8 +2438,8 @@ function resultBands(res) {
   const bands = {};
   for (const p of res?.piles || []) bands[p.element] = p.bands || [];
   for (const w of res?.combi_walls || []) bands[w.element] = w.bands || [];
-  for (const b of res?.beams || []) bands[b.element] = b.bands || [];
-  for (const d of res?.slabs || []) bands[d.element] = d.bands || [];
+  for (const b of res?.beams || []) bands[b.key || b.element] = b.bands || [];
+  for (const d of res?.slabs || []) bands[d.key || d.element] = d.bands || [];
   for (const w of res?.sheet_pile_walls || []) {
     // The wall's largest Uf per level, in 0.5 m bands (the same all along the wall).
     const by = new Map();
@@ -2448,33 +2523,33 @@ function alerts(res) {
     for (const [f, c] of Object.entries(b.restraint?.faces || {})) {
       if (isFinite(c.wk)) checks.push([`${f} restraint crack ${fmt(c.wk, 2)} mm of ${fmt(c.limit, 2)}`, c.wk / c.limit, null]);
     }
-    if (b.utilisation == null) add("unsafe", b.element, "no reinforcement passes");
+    if (b.utilisation == null) add("unsafe", (b.key || b.element), "no reinforcement passes");
     for (const [what, u, g] of checks) {
       if (u == null) continue;
-      if (u > 1) add("unsafe", b.element, `${what}: ${fmt(u, 2)}${at2(g)}`);
-      else if (u >= 0.95) add("limit", b.element, `${what}: ${fmt(u, 2)}${at2(g)}, close to the limit`);
+      if (u > 1) add("unsafe", (b.key || b.element), `${what}: ${fmt(u, 2)}${at2(g)}`);
+      else if (u >= 0.95) add("limit", (b.key || b.element), `${what}: ${fmt(u, 2)}${at2(g)}, close to the limit`);
     }
-    if (b.utilisation != null && b.utilisation < 0.5) add("safe", b.element, `max utilisation ${fmt(b.utilisation, 2)}: very safe`);
+    if (b.utilisation != null && b.utilisation < 0.5) add("safe", (b.key || b.element), `max utilisation ${fmt(b.utilisation, 2)}: very safe`);
   }
   for (const d of res.slabs || []) {
     for (const [k, l] of Object.entries(d.layers || {})) {
-      if (l.utilisation > 1) add("unsafe", d.element, `${k.replace("_", " bars along ")}: ${fmt(l.utilisation, 2)} of the steel needed`);
+      if (l.utilisation > 1) add("unsafe", (d.key || d.element), `${k.replace("_", " bars along ")}: ${fmt(l.utilisation, 2)} of the steel needed`);
     }
-    const where = (q) => `${q.pile} (X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)})`;
+    const where = (q) => `${q.pile} (X ${fmt(q.plan_x ?? q.x, 1)}, Y ${fmt(q.plan_y ?? q.y, 1)})`;
     for (const q of d.punching || []) {
-      if (!q.passed) add("unsafe", d.element, `punching at ${where(q)}: ${q.vEd_face_MPa > q.vRd_max_MPa ? "crushes at the pile face" : `needs more than links can give (${fmt(q.kmax_ratio, 2)} × 1.5·vRd,c)`}${punchFix(q) ? `. Fix: ${punchFix(q)}` : ""}`);
+      if (!q.passed) add("unsafe", (d.key || d.element), `punching at ${where(q)}: ${q.vEd_face_MPa > q.vRd_max_MPa ? "crushes at the pile face" : `needs more than links can give (${fmt(q.kmax_ratio, 2)} × 1.5·vRd,c)`}${punchFix(q) ? `. Fix: ${punchFix(q)}` : ""}`);
     }
     const links = (d.punching || []).filter((q) => q.passed && q.needs_reinforcement);
-    if (links.length === 1) add("limit", d.element, `punching links needed at ${where(links[0])}, ${links[0].perimeters} perimeters`);
+    if (links.length === 1) add("limit", (d.key || d.element), `punching links needed at ${where(links[0])}, ${links[0].perimeters} perimeters`);
     else if (links.length) {
       const by = {};
       for (const q of links) by[q.pile] = (by[q.pile] || 0) + 1;
       const most = Math.max(...links.map((q) => q.perimeters));
-      add("limit", d.element, `punching links needed at ${links.length} piles (${Object.entries(by).map(([k, n]) => `${n} × ${k}`).join(", ")}), up to ${most} perimeters: see the punching table`);
+      add("limit", (d.key || d.element), `punching links needed at ${links.length} piles (${Object.entries(by).map(([k, n]) => `${n} × ${k}`).join(", ")}), up to ${most} perimeters: see the punching table`);
     }
-    if (d.shear && d.shear.passed === false) add("unsafe", d.element, `shear per metre ${fmt(d.shear.utilisation, 2)}`);
+    if (d.shear && d.shear.passed === false) add("unsafe", (d.key || d.element), `shear per metre ${fmt(d.shear.utilisation, 2)}`);
     for (const [k, r] of Object.entries(d.restraint?.check && d.restraint.check !== "design" ? {} : d.restraint?.layers || {})) {
-      if (!r.passed) add("unsafe", d.element, `restraint crack ${k.replace("_", " ")} ${fmt(r.wk, 2)} mm of ${fmt(r.limit, 2)}`);
+      if (!r.passed) add("unsafe", (d.key || d.element), `restraint crack ${k.replace("_", " ")} ${fmt(r.wk, 2)} mm of ${fmt(r.limit, 2)}`);
     }
   }
   // From the run itself, so the alert matches the results shown (older runs: the section as saved).
@@ -2625,8 +2700,8 @@ async function renderView3dTab(host) {
   const max = {};
   for (const p of res?.piles || []) max[p.element] = p.utilisation;
   for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
-  for (const b of res?.beams || []) max[b.element] = b.utilisation;
-  for (const d of res?.slabs || []) max[d.element] = d.utilisation;
+  for (const b of res?.beams || []) max[b.key || b.element] = b.utilisation;
+  for (const d of res?.slabs || []) max[d.key || d.element] = d.utilisation;
   for (const w of res?.sheet_pile_walls || []) if (w.design?.uf != null) max[w.element] = w.design.uf;
   let selected = state.pick3d && geo.elements.some((e) => e.element === state.pick3d) ? state.pick3d : null;
   state.pick3d = null;
@@ -2642,8 +2717,8 @@ async function renderView3dTab(host) {
     ${res ? "" : '<p class="status">Not designed yet: run the design on the Design tab to colour the elements.</p>'}
     ${list.length ? alertsHtml(list) : res ? '<p class="status">Nothing unsafe or close to the limit.</p>' : ""}
     <h3>Elements</h3><p class="status">Pick one to see it alone with the directions of its actions.</p>
-    <div class="v3d-picks">${geo.elements.map((e) => `<button class="quiet" data-pick="${esc(e.element)}">
-      <i style="background:${heat(max[e.element])}"></i>${esc(e.element)}<span>${max[e.element] == null ? "not designed" : fmt(max[e.element], 2)}</span></button>`).join("")}</div>`;
+    <div class="v3d-picks">${geo.elements.map((e) => { const k = e.key || e.element; return `<button class="quiet" data-pick="${esc(e.element)}">
+      <i style="background:${heat(max[k])}"></i>${esc(k)}<span>${max[k] == null ? "not designed" : fmt(max[k], 2)}</span></button>`; }).join("")}</div>`;
   side.querySelectorAll("[data-pick]").forEach((b) => (b.onclick = () => {
     selected = selected === b.dataset.pick ? null : b.dataset.pick;
     show();
@@ -2692,7 +2767,7 @@ async function saveSlabStrips(name, change, status) {
   await save();
   if (state.errors?.length) return (status.textContent = state.errors.map((e) => e.msg).join(" "));
   status.textContent = `Checking ${name}…`;
-  state.runDesign?.([name]);
+  state.runDesign?.([name.split(" · ")[0]]); // a corner berth's part: its slab is designed again
 }
 
 function layerBuilder(d, r, f) {
@@ -2788,7 +2863,7 @@ function wireStripTable(card, d) {
     card.querySelectorAll("tr.bars-edit").forEach((x) => x.remove());
     if (open) return;
     const faces = r.edit || Object.keys(r.layers);
-    const mine = sec().slab_strips?.[d.element]?.bars || {};
+    const mine = sec().slab_strips?.[d.key || d.element]?.bars || {};
     const hasOwn = faces.some((f) => (r.keys[f] || []).some((k) => k in mine) || `${r.layers[f]}|mesh` in mine);
     const edit = document.createElement("tr");
     edit.className = "bars-edit";
@@ -2802,7 +2877,7 @@ function wireStripTable(card, d) {
     builders.forEach((b) => host.appendChild(b.el));
     const status = edit.querySelector("[data-bars-status]");
     edit.querySelector("[data-recheck]").onclick = () =>
-      saveSlabStrips(d.element, (cur) => {
+      saveSlabStrips(d.key || d.element, (cur) => {
         const bars = { ...(cur.bars || {}) };
         builders.forEach((b, j) => {
           const st = b.read();
@@ -2814,7 +2889,7 @@ function wireStripTable(card, d) {
       }, status);
     const auto = edit.querySelector("[data-auto]");
     if (auto) auto.onclick = () =>
-      saveSlabStrips(d.element, (cur) => {
+      saveSlabStrips(d.key || d.element, (cur) => {
         const bars = { ...(cur.bars || {}) };
         faces.forEach((f) => {
           (r.keys[f] || []).forEach((k) => delete bars[k]);
@@ -2849,7 +2924,7 @@ function stationEditor(card, d) {
   let which = (sd.table || []).find((r) => r.along_strips)?.moment || names[0];
   const start = sd.start ?? sd.stations[0], end = sd.end ?? sd.stations[sd.stations.length - 1];
   let st = sd.stations.slice();
-  const own = sec().slab_strips?.[d.element]?.stations;
+  const own = sec().slab_strips?.[d.key || d.element]?.stations;
   ctl.innerHTML = `<div class="legend"><span><i></i>Column strip, largest</span><span><i class="low"></i>Column strip, smallest</span><span><i class="field"></i>Field strip, largest</span><span><i class="field low"></i>Field strip, smallest</span><span>▲ row of piles</span></div>
     <div class="row">${names.map((n) => `<button class="quiet${n === which ? " on" : ""}" data-m="${esc(n)}">${esc(n)}</button>`).join("")}${limitSwitch(sd.profile_qp && Object.keys(sd.profile_qp).length, "Results:")}</div>
     <div data-st-tools><p class="status">Drag a station's circle to move it, press × to delete it, or Add station. You can also type the stations. Then Design with these stations. ${own ? "These are your stations." : "These are Triton's stations: 2 m each side of every row of piles."}</p>
@@ -2964,9 +3039,9 @@ function stationEditor(card, d) {
     st.splice(k + 1, 0, round((st[k] + st[k + 1]) / 2));
     draw();
   };
-  ctl.querySelector("[data-st-design]").onclick = () => saveSlabStrips(d.element, (cur) => ({ ...cur, stations: st.slice(1, -1) }), status);
+  ctl.querySelector("[data-st-design]").onclick = () => saveSlabStrips(d.key || d.element, (cur) => ({ ...cur, stations: st.slice(1, -1) }), status);
   const auto = ctl.querySelector("[data-st-auto]");
-  if (auto) auto.onclick = () => saveSlabStrips(d.element, (cur) => ({ ...cur, stations: null }), status);
+  if (auto) auto.onclick = () => saveSlabStrips(d.key || d.element, (cur) => ({ ...cur, stations: null }), status);
   draw();
 }
 
@@ -3131,8 +3206,15 @@ function wireMeshChooser(card, d) {
     const sp = Number(b.dataset.meshPick);
     if (sp === d.mesh_choice.chosen_mm && d.mesh_choice.picked) return;
     card.querySelectorAll("[data-mesh-pick]").forEach((x) => (x.disabled = true));
-    saveSlabStrips(d.element, (cur) => ({ ...cur, spacing: sp }), status);
+    saveSlabStrips(d.key || d.element, (cur) => ({ ...cur, spacing: sp }), status);
   }));
+}
+
+// "Part 2, turned +25°: " for a corner berth's part (triton/alignment.py), else nothing.
+function partText(d) {
+  const p = d.part;
+  if (!p || (d.parts || 1) < 2 && !p.rotation_deg) return "";
+  return `${esc(p.name)}${p.rotation_deg ? `, turned ${p.rotation_deg > 0 ? "+" : ""}${fmt(p.rotation_deg, 1)}°` : ", straight"}, ${fmt(p.length_m, 1)} m · `;
 }
 
 function slabCard(d) {
@@ -3145,7 +3227,7 @@ function slabCard(d) {
   const needs = punch.filter((q) => q.needs_reinforcement);
   const sh = d.shear || {};
   const layers = d.layers || {};
-  card.innerHTML = `<div class="element-head"><h3>${esc(d.element)}<span class="type">Slab, ${fmt(d.thickness_mm)} mm, ${esc(d.concrete || "")}, covers ${fmt(d.cover_top_mm)} top / ${fmt(d.cover_bottom_mm)} bottom, ${d.strips === "column_and_field" ? "column and field strips" : "uniform"}</span></h3>${ok(d.passed)}</div>
+  card.innerHTML = `<div class="element-head"><h3>${esc(d.key || d.element)}<span class="type">${partText(d)}Slab, ${fmt(d.thickness_mm)} mm, ${esc(d.concrete || "")}, covers ${fmt(d.cover_top_mm)} top / ${fmt(d.cover_bottom_mm)} bottom, ${d.strips === "column_and_field" ? "column and field strips" : "uniform"}</span></h3>${ok(d.passed)}</div>
     ${meshChooser(d)}
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(d.utilisation, 2)}</b>max utilisation</div>
@@ -3155,6 +3237,7 @@ function slabCard(d) {
       <div class="count"><b>${needs.length} of ${punch.length}</b>piles need punching links</div>
       <div class="count"><b>${sh.cells_needing_links ?? 0}</b>${fmt(d.zone_size_m, 1)} m cells need shear links</div>
     </div>
+    ${d.frame_note ? `<p class="status">${esc(d.frame_note)}</p>` : ""}
     ${(d.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${v3dSlot(d.element)}
     ${d.strip_design ? `<h3 style="margin-top:18px">Moments across the deck and the stations</h3>
@@ -3176,7 +3259,7 @@ function slabCard(d) {
     <h3 style="margin-top:18px">Punching at the piles</h3>
     ${punch.length ? `<p class="status">Click a pile to see its control perimeters. Change a pile's thickness for a slope, then save and design again.</p>
       <div class="scroll"><table class="punch"><tr><th>Pile</th><th>X, Y</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Links</th><th></th></tr>
-      ${punch.map((q, i) => `<tr class="link" data-punch="${i}"><td>${esc(q.pile)}</td><td>${fmt(q.x, 1)}, ${fmt(q.y, 1)}</td>
+      ${punch.map((q, i) => `<tr class="link" data-punch="${i}"><td>${esc(q.pile)}</td><td>${fmt(q.plan_x ?? q.x, 1)}, ${fmt(q.plan_y ?? q.y, 1)}</td>
         <td><input type="number" step="any" data-depth="${i}" value="${q.thickness_mm}" style="width:80px" title="${esc(q.thickness_from)}"> mm</td><td>${fmt(q.V_kN)} kN, ${esc(q.direction)}<br><span class="status">${esc(q.combination)}</span></td><td>${fmt(q.beta, 2)}</td>
         <td>${fmt(q.vEd_MPa, 3)} / ${fmt(q.vRd_c_MPa, 3)}</td><td>${fmt(q.vEd_face_MPa, 2)} / ${fmt(q.vRd_max_MPa, 2)}</td>
         <td>${q.needs_reinforcement ? (q.perimeters ? `${q.perimeters} perimeters @ ${fmt(q.radial_spacing_mm)} mm, ${fmt(q.asw_mm2_per_perimeter)} mm² each, to ${fmt(q.reinforced_to_mm)} mm from the face` : q.fix ? `Links alone cannot: ${esc(punchFix(q))}` : "–") : "none"}</td><td>${ok(q.passed)}</td></tr>`).join("")}
@@ -3221,8 +3304,10 @@ function slabCard(d) {
     const q = punch[Number(inp.dataset.depth)];
     const el = sec().elements[d.element];
     if (!el) return;
-    const list = (el.punching_depths || []).filter((p) => Math.hypot(p.x - q.x, p.y - q.y) > 0.5);
-    if (inp.value !== "") list.push({ x: q.x, y: q.y, thickness: Number(inp.value) });
+    // In plan: a corner berth's turned part shows its piles at their plan X, Y too.
+    const [qx, qy] = [q.plan_x ?? q.x, q.plan_y ?? q.y];
+    const list = (el.punching_depths || []).filter((p) => Math.hypot(p.x - qx, p.y - qy) > 0.5);
+    if (inp.value !== "") list.push({ x: qx, y: qy, thickness: Number(inp.value) });
     el.punching_depths = list;
     markDirty();
   }));
@@ -3345,7 +3430,7 @@ function beamCard(b) {
   const ex = bend.extremes || {};
   const exRow = (k, label, unit) => ex[k] ? `<tr><td>${label}</td><td>${fmt(ex[k].max)} / ${fmt(ex[k].min)} ${unit}</td></tr>` : "";
   const worstCrack = Object.values(b.cracks || {}).reduce((m, x) => Math.max(m, x.wk), 0);
-  card.innerHTML = `<div class="element-head"><h3>${esc(b.element)}<span class="type">${esc(BEAM_KIND[b.kind] || "Beam")}, ${fmt(b.width_mm)} × ${fmt(b.depth_mm)} mm, ${esc(b.concrete || "")}, cover ${fmt(b.cover_mm)} mm</span></h3>
+  card.innerHTML = `<div class="element-head"><h3>${esc(b.key || b.element)}<span class="type">${partText(b)}${esc(BEAM_KIND[b.kind] || "Beam")}, ${fmt(b.width_mm)} × ${fmt(b.depth_mm)} mm, ${esc(b.concrete || "")}, cover ${fmt(b.cover_mm)} mm</span></h3>
       ${ok(b.passed)}</div>
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(b.utilisation, 2)}</b>max utilisation (all checks)</div>
@@ -3355,6 +3440,7 @@ function beamCard(b) {
       <div class="count"><b>${fmt(st.kg_per_m3)}</b>kg/m³ (${fmt(st.kg_per_m)} kg/m)</div>
       ${st.element_total_t != null ? `<div class="count"><b>${fmt(st.element_total_t, 1)} t</b>steel over ${fmt(st.length_m, 1)} m</div>` : ""}
     </div>
+    ${b.frame_note ? `<p class="status">${esc(b.frame_note)}</p>` : ""}
     ${b.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${v3dSlot(b.element)}
     ${c ? `<h3 style="margin-top:18px">Longitudinal cage, one for the whole beam</h3>
@@ -3421,7 +3507,7 @@ function beamCard(b) {
 // A beam's longitudinal bars set by hand, face by face; Check designs just that beam with them.
 function beamCageHtml(b) {
   if (!b.cage) return "";
-  const own = sec().beam_cages?.[b.element];
+  const own = sec().beam_cages?.[b.key || b.element];
   const c = b.cage;
   const v = own || {
     top: { count: c.top.count, diameter: c.top.phi, layers: c.top.layers },
@@ -3465,8 +3551,8 @@ function wireBeamCage(card, b) {
   const run = async (cage) => {
     const s = sec();
     s.beam_cages ??= {};
-    if (cage) s.beam_cages[b.element] = cage;
-    else delete s.beam_cages[b.element];
+    if (cage) s.beam_cages[b.key || b.element] = cage;
+    else delete s.beam_cages[b.key || b.element];
     status.textContent = "Saving…";
     markDirty();
     await save();
