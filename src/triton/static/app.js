@@ -1118,6 +1118,7 @@ function renderReview(data, refresh, url) {
   const reviewable = (i) => i.choices && i.choices.before !== "auto";
   const list = data.issues.filter((i) => reviewable(i) || (i.severity !== "info" && !i.choices));
   const kinds = [...new Set(list.map((i) => i.code))];
+  const expanded = new Set(); // kinds shown in full; long ones show their first few
   const draw = () => {
     const decided = (i) => p.review[i.id];
     const open = list.filter((i) => reviewable(i) && !decided(i)).length;
@@ -1135,7 +1136,9 @@ function renderReview(data, refresh, url) {
         const head = `<tr class="kind"><th colspan="3">${esc(code.replaceAll("_", " "))} (${items.length})
           ${c ? `<span class="status">Accept: ${esc(c.accept)}${c.reject ? ` · Reject: ${esc(c.reject)}` : ""}</span>` : '<span class="status">Fix it in the workbook, the sheet mapping or the load combinations.</span>'}</th>
           <th>${c ? `<button class="quiet" data-all="${esc(code)}" data-d="accept">Accept all</button>${c.reject ? ` <button class="quiet" data-all="${esc(code)}" data-d="reject">Reject all</button>` : ""}` : ""}</th></tr>`;
-        return head + items
+        const shown = items.length > 5 && !expanded.has(code) ? items.slice(0, 3) : items;
+        const more = shown.length < items.length ? `<tr><td></td><td colspan="3"><a href="#" data-more="${esc(code)}">Show all ${items.length}</a></td></tr>` : "";
+        return head + shown
           .map((i) => {
             const d = decided(i);
             const where = i.sheet
@@ -1148,7 +1151,7 @@ function renderReview(data, refresh, url) {
               <td class="nowrap">${reviewable(i) ? `<button class="quiet ${d === "accept" ? "on" : ""}" data-id="${i.id}" data-d="accept" title="${esc(i.choices.accept)}">Accept</button>
                 ${i.choices.reject ? `<button class="quiet ${d === "reject" ? "on" : ""}" data-id="${i.id}" data-d="reject" title="${esc(i.choices.reject)}">Reject</button>` : ""}` : ""}</td></tr>`;
           })
-          .join("");
+          .join("") + more;
       })
       .join("");
     table.innerHTML = list.length ? `<tr><th></th><th>Sheet</th><th>What was found</th><th></th></tr>${rows}` : "<tr><td>No problems found.</td></tr>";
@@ -1166,6 +1169,11 @@ function renderReview(data, refresh, url) {
       markDirty();
       draw();
       status();
+    }));
+    table.querySelectorAll("[data-more]").forEach((a) => (a.onclick = (e) => {
+      e.preventDefault();
+      expanded.add(a.dataset.more);
+      draw();
     }));
     table.querySelectorAll("[data-open]").forEach((a) => (a.onclick = (e) => {
       e.preventDefault();
