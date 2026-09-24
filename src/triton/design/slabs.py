@@ -1461,7 +1461,7 @@ def design_slab_meshes(
     spacings = sorted({float(v) for v in r.slab_spacings})
     args = (sheets, geometry, elements, axes, pile_sheets, choices, sign)
     if len(spacings) < 2:
-        return design_slab(name, slab, settings, *args)
+        return _with_openings(design_slab(name, slab, settings, *args), slab, settings, sheets, axes, sign)
     runs = {}
     for sp in spacings:
         one = settings.model_copy(update={"reinforcement": r.model_copy(update={"slab_spacings": [sp]})})
@@ -1516,6 +1516,31 @@ def design_slab_meshes(
         d["notes"].insert(
             1, f"The spacing picked ({want:g} mm) is not in Design settings: the lighter is used."
         )
+    return _with_openings(d, slab, settings, sheets, axes, sign)
+
+
+def _with_openings(d: dict, slab: SlabInput, settings: DesignSettings, sheets, axes, sign) -> dict:
+    """The slab's manholes and channels (Openings tab), checked with the slab's bars as designed."""
+    if not (slab.manholes or slab.channels) or not d.get("layers"):
+        return d
+    from .openings import design_slab_openings
+
+    slab = with_project_grades(slab, settings.materials, settings.durability)
+    sag, _ = sag_factor(settings.plate_positive_moment, sign)
+    uls = slab_loads(sheets, axes, sag, qp=False)
+    qp = slab_loads(sheets, axes, sag, qp=True)
+    op = design_slab_openings(slab, settings, uls, qp, d)
+    d["openings"] = op
+    every = op["manholes"] + op["channels"]
+    for o in every:
+        d["notes"].append(
+            f"{o['name']}: "
+            + (f"passes, utilisation {o['utilisation']:.2f}." if o["passed"] else "fails (Openings tab).")
+        )
+    us = [o["utilisation"] for o in every if o.get("utilisation") is not None]
+    if us:
+        d["utilisation"] = round(max([d.get("utilisation") or 0.0, *us]), 3)
+    d["passed"] = bool(d.get("passed")) and all(o["passed"] for o in every)
     return d
 
 

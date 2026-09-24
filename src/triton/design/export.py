@@ -226,6 +226,42 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
             }
             for z in (d.get("shear") or {}).get("links") or []
         ],
+        "manholes": [
+            _manhole(m) for m in (d.get("openings") or {}).get("manholes") or [] if m.get("directions")
+        ],
+        "channels": [
+            {
+                **_room(c),
+                "direction": c["direction"],
+                "at_m": c["at_m"],
+                "strip_mm": c["strip_mm"],
+                "depth_mm": c["depth_total_mm"],
+                "cover_mm": max(d.get("cover_top_mm") or 0, d.get("cover_bottom_mm") or 0),
+            }
+            for c in (d.get("openings") or {}).get("channels") or []
+            if c.get("section")
+        ],
+    }
+
+
+def _manhole(m: dict[str, Any]) -> dict[str, Any]:
+    """An opening in the deck (plan, m) and its trimmer bars: for the bars along X and along Y, per face,
+    the bars each side, their size and length (centred on the opening)."""
+    return {
+        "name": m["name"],
+        "x_m": m["x"],
+        "y_m": m["y"],
+        "size_x_mm": m["size_x_mm"],
+        "size_y_mm": m["size_y_mm"],
+        "through": m["through"],
+        "trimmers": {
+            along: {
+                face: {k: t[k] for k in ("count", "phi", "length_mm")} | {"strip_mm": dd["strip_mm"]}
+                for face, t in dd["trimmers"].items()
+            }
+            for along, dd in m["directions"].items()
+        },
+        "diagonals": m["corners"],
     }
 
 
