@@ -1938,6 +1938,105 @@ class Section(_Model):
         return added
 
 
+class Ledge(_Model):
+    """The ledge (nib) on the rear beam that the approach slab rests on, across the expansion joint."""
+
+    projection: float = _mm("Projection from the rear beam face", 400.0, gt=0)
+    depth: float = _mm("Depth at the beam face", 600.0, gt=0)
+    top_below_beam_top: float | None = _mm(
+        "Ledge top below the rear beam top",
+        None,
+        ge=0,
+        description="Empty: the approach slab thickness plus the bearing thickness, so the slab's top "
+        "is level with the beam's.",
+    )
+    bearing_width: float = _mm(
+        "Bearing strip width",
+        200.0,
+        gt=0,
+        description="Elastomeric strip under the slab end, across the ledge.",
+    )
+    bearing_thickness: float = _mm("Bearing strip thickness", 20.0, ge=0)
+    edge_distance: float = _mm("Bearing strip to the ledge tip", 50.0, ge=0)
+    cover: float | None = _mm("Cover", None, gt=0, description="Empty: the project's beam cover.")
+    horizontal_ratio: float = Field(
+        0.2,
+        title="Horizontal force H / vertical load F",
+        ge=0,
+        le=1,
+        description="EN 1992-1-1 J.3: at least 0.2 F for restraint and bearing friction.",
+    )
+    crack_width_limit: float = _mm("Crack width limit wk (QP)", 0.2, gt=0, le=0.5)
+
+
+class ApproachSlabInput(_Model):
+    """The approach slab between the quay and the existing slab on grade.
+
+    One for the whole project (typical); each section designs it with its own rear beam. Plaxis does
+    not model it, so its size and loads are entered here.
+    """
+
+    length: float = _m(
+        "Length (rear beam to the slab on grade)",
+        6.0,
+        gt=0,
+        description="From the bearing line on the ledge to the far end, which rests on the existing slab on "
+        "grade or the ground.",
+    )
+    thickness: float = _mm("Thickness", 400.0, gt=0)
+    concrete: ConcreteGrade | None = Field(None, title="Concrete grade", description=_PROJECT_GRADE)
+    cover_top: float | None = _mm(
+        "Cover, top", None, gt=0, description="Empty: the project's slab top cover."
+    )
+    cover_bottom: float = _mm("Cover, bottom (against the ground)", 75.0, gt=0)
+    joint_width: float = _mm("Expansion joint at the rear beam", 25.0, ge=0)
+    unsupported_length: float | None = _m(
+        "Length with no ground support",
+        None,
+        ge=0,
+        description="From the ledge, where the fill may settle away from the slab. Empty: the whole "
+        "length, so "
+        "the slab spans from the ledge to its far end. Beyond it the slab rests on the ground (springs).",
+    )
+    subgrade_modulus: float = Field(
+        20000.0,
+        title="Modulus of subgrade reaction",
+        gt=0,
+        description="Where the slab rests on the ground.",
+        json_schema_extra={"unit": "kN/m³"},
+    )
+    unit_weight: float = Field(
+        25.0, title="Reinforced concrete weight", gt=0, json_schema_extra={"unit": "kN/m³"}
+    )
+    surfacing: float = Field(
+        2.0, title="Surfacing and finishes", ge=0, description="Permanent.", json_schema_extra={"unit": "kPa"}
+    )
+    surcharge: float = Field(
+        35.0, title="Surcharge", ge=0, description="The office's 3.5 t/m².", json_schema_extra={"unit": "kPa"}
+    )
+    wheel_load: float = Field(
+        150.0,
+        title="Wheel or outrigger load",
+        ge=0,
+        description="Characteristic, dynamic factor included; 150 kN is a wheel of the EN 1991-2 tandem "
+        "(300 kN axle). 0: none.",
+        json_schema_extra={"unit": "kN"},
+    )
+    wheel_contact: float = _mm("Wheel contact width", 400.0, gt=0)
+    gamma_g: float = Field(1.35, title="γG permanent", ge=1)
+    gamma_q: float = Field(1.5, title="γQ variable (surcharge and wheel)", ge=1)
+    psi2: float = Field(
+        0.6,
+        title="ψ2 of the surcharge (QP)",
+        ge=0,
+        le=1,
+        description="The wheel is traffic: ψ2 = 0 in the QP combination.",
+    )
+    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.2, gt=0, le=0.5)
+    crack_width_limit_bottom: float = _mm("Crack width limit wk (QP), bottom face", 0.2, gt=0, le=0.5)
+    ledge: Ledge = Field(default_factory=Ledge, title="Ledge on the rear beam")
+
+
 class Revision(_Model):
     """An issued revision of the calculations, with a copy of the project as it was issued."""
 
@@ -1960,6 +2059,12 @@ class Project(_Model):
     drawings: DrawingSettings = Field(default_factory=DrawingSettings, title="Drawings (AutoCAD and Revit)")
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
     revisions: list[Revision] = Field(default_factory=list, title="Issued revisions")
+    approach: ApproachSlabInput | None = Field(
+        None,
+        title="Approach slab and rear beam ledge",
+        description="One for the whole project; each section designs it with its own rear beam, and adds the "
+        "ledge's load and torsion to that beam. Empty: no approach slab.",
+    )
     locked: bool = Field(
         False,
         title="Locked",

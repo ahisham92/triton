@@ -146,6 +146,8 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     _criteria(r, project.design, section, results)
     _sections(r, section, results)
     _displacements(r, section)
+    for a in results.get("approach_slabs", []):
+        _approach_summary(r, a)
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
         for p in results.get("piles", []):
@@ -158,6 +160,8 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             _slab(r, s)
         for w in results.get("sheet_pile_walls", []):
             _spw(r, w)
+        for a in results.get("approach_slabs", []):
+            _approach(r, a)
     return r
 
 
@@ -173,7 +177,7 @@ def _check_rows(section: Section, res: dict) -> list[list[str]]:
     """Each designed element's checking status; a check given on an earlier design says so."""
     names = [
         x["element"]
-        for k in ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs")
+        for k in ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs")
         for x in res.get(k, [])
     ]
     if not section.checks:
@@ -199,6 +203,10 @@ def _elements(res: dict) -> list[str]:
     ]
     out += [f"{b['element']} ({KIND.get(b.get('kind'), 'beam').lower()})" for b in res.get("beams", [])]
     out += [f"{s['element']} (deck slab)" for s in res.get("slabs", [])]
+    out += [
+        f"{a['element']} (approach slab to the slab on grade, on a ledge of the rear beam)"
+        for a in res.get("approach_slabs", [])
+    ]
     out += [
         f"{w['element']} (steel sheet pile wall"
         + (
@@ -505,7 +513,7 @@ def _sections(r: Report, section: Section, res: dict) -> None:
     _steel_summary(r, res)
     failing = [
         x["element"]
-        for k in ("piles", "combi_walls", "beams", "slabs")
+        for k in ("piles", "combi_walls", "beams", "slabs", "approach_slabs")
         for x in res.get(k, [])
         if not x.get("passed")
     ]
@@ -778,6 +786,154 @@ def _steel_summary(r: Report, res: dict) -> None:
             "Overall ρ is the main bars' volume over the whole element's concrete, laps included; the "
             "ratio at the pile head, where the cage is heaviest, is in each pile's calculation."
         )
+
+
+def _approach_summary(r: Report, a: dict) -> None:
+    """The approach slab and its ledge on the rear beam, per metre."""
+    b = a.get("bending") or {}
+    led = a.get("ledge") or {}
+    r.h(2, "3.6 Approach slab and rear beam ledge")
+    r.p(
+        f"The approach slab ({a.get('length_m', 0):g} m long, {a.get('thickness_mm', 0):g} mm thick, "
+        f"{a.get('concrete')}) links the quay to the existing slab on grade. It rests on an elastomeric bearing "
+        f"strip on a ledge of the rear beam, with a {a.get('joint_mm', 0):g} mm expansion joint, and is designed per "
+        "metre width to BS EN 1992-1-1; the ledge is designed as a nib by strut and tie (BS EN 1992-1-1 6.5 and "
+        "Annex J.3), and its load and torque are added to the rear beam."
+    )
+    rows = []
+    for face, label in (("bottom", "Bottom (sagging)"), ("top", "Top (hogging)")):
+        f = b.get(face) or {}
+        rows.append(
+            [
+                label,
+                f.get("bars"),
+                f.get("as_mm2_per_m"),
+                f.get("M_Ed_kNm"),
+                f.get("M_Rd_kNm"),
+                f"{f.get('wk_mm')} / {f.get('wk_limit_mm')}",
+                f.get("utilisation"),
+            ]
+        )
+    r.caption("Table 3-8: Approach slab, per metre width")
+    r.table(["Face", "Bars", "As (mm²/m)", "MEd (kNm/m)", "MRd (kNm/m)", "wk / limit (mm)", "Ratio"], rows)
+    sh = a.get("shear") or {}
+    r.p(
+        f"Shear at d from the ledge: VEd {sh.get('V_Ed_kN')} kN/m against VRd,c {sh.get('V_Rd_c_kN')} kN/m"
+        + (
+            f"; links of {sh['links_mm2_per_m2']} mm² per m² are needed near the ledge."
+            if sh.get("links_mm2_per_m2")
+            else ", no links needed."
+        )
+    )
+    u = led.get("utilisations") or {}
+    r.caption("Table 3-9: Ledge on the rear beam, per metre")
+    r.table(
+        ["Check", "Value", "Ratio"],
+        [
+            [
+                "Tie bars (top)",
+                f"{(led.get('tie') or {}).get('bars')}, Ft {led.get('F_t_kN_per_m')} kN/m",
+                u.get("tie"),
+            ],
+            ["Crack width (QP)", f"{(led.get('crack') or {}).get('wk_mm')} mm", u.get("crack")],
+            ["Bearing node", f"{(led.get('bearing') or {}).get('sigma_MPa')} MPa", u.get("bearing")],
+            ["Shear at the beam face", f"β = {(led.get('shear') or {}).get('beta')}", u.get("shear")],
+            ["Compression node at the face", f"x = {led.get('x_node_mm')} mm", u.get("node")],
+        ],
+    )
+
+
+def _approach(r: Report, a: dict) -> None:
+    """Appendix: the approach slab and its ledge in full."""
+    b = a.get("bending") or {}
+    led = a.get("ledge") or {}
+    rb = led.get("rear_beam") or {}
+    r.h(1, f"{a['element']}: approach slab and rear beam ledge")
+    r.kv(
+        [
+            ("Slab", f"{a.get('length_m')} m × {a.get('thickness_mm')} mm, {a.get('concrete')}"),
+            ("Covers", f"top {a.get('cover_top_mm')} mm, bottom {a.get('cover_bottom_mm')} mm"),
+            (
+                "Span",
+                f"{a.get('span_m')} m"
+                + (
+                    " (ledge to slab on grade)"
+                    if a.get("far_support")
+                    else " unsupported, then on the ground"
+                ),
+            ),
+            (
+                "Largest sagging moment",
+                f"{(b.get('bottom') or {}).get('M_Ed_kNm')} kNm/m at {a.get('M_sag_at_m')} m",
+            ),
+            (
+                "Largest hogging moment",
+                f"{(b.get('top') or {}).get('M_Ed_kNm')} kNm/m at {a.get('M_hog_at_m')} m",
+            ),
+            ("Bottom bars", (b.get("bottom") or {}).get("bars")),
+            ("Top bars", (b.get("top") or {}).get("bars")),
+            (
+                "Distribution bars",
+                f"bottom {((a.get('distribution') or {}).get('bottom') or {}).get('bars')}, top {((a.get('distribution') or {}).get('top') or {}).get('bars')}",
+            ),
+            (
+                "Reaction on the ledge",
+                f"ULS {(a.get('reaction') or {}).get('uls_kN_per_m')} kN/m, QP {(a.get('reaction') or {}).get('qp_kN_per_m')} kN/m",
+            ),
+            ("Utilisation", a.get("utilisation")),
+            ("Result", _ok(a.get("passed"))),
+        ]
+    )
+    r.bullets(a.get("notes") or [])
+    r.h(2, "Ledge (nib), strut and tie")
+    r.kv(
+        [
+            (
+                "Ledge",
+                f"{led.get('projection_mm')} mm projection × {led.get('depth_mm')} mm deep, top {led.get('top_below_beam_top_mm')} mm below the beam top",
+            ),
+            (
+                "Load F (ULS)",
+                f"{led.get('F_Ed_kN_per_m')} kN/m at a_c = {led.get('a_F_mm')} mm, H = {led.get('H_Ed_kN_per_m')} kN/m",
+            ),
+            (
+                "Lever arm",
+                f"d = {led.get('d_mm')} mm, z = {led.get('z_mm')} mm, tan θ = {led.get('tan_theta')}",
+            ),
+            ("Tie force Ft", f"{led.get('F_t_kN_per_m')} kN/m"),
+            (
+                "Tie bars",
+                f"{(led.get('tie') or {}).get('bars')} ({(led.get('tie') or {}).get('as_mm2_per_m')} / {(led.get('tie') or {}).get('as_req_mm2_per_m')} mm²/m); {(led.get('tie') or {}).get('detail')}",
+            ),
+            (
+                "Links",
+                f"{(led.get('links') or {}).get('bars') or 'none'}: {(led.get('links') or {}).get('rule')}",
+            ),
+            (
+                "Bearing node",
+                f"{(led.get('bearing') or {}).get('sigma_MPa')} ≤ {(led.get('bearing') or {}).get('sigma_Rd_MPa')} MPa",
+            ),
+            (
+                "Shear at the face",
+                f"β·VEd = {(led.get('shear') or {}).get('beta')} × {(led.get('shear') or {}).get('V_Ed_kN')} kN ≤ VRd,c {(led.get('shear') or {}).get('V_Rd_c_kN')} kN",
+            ),
+            (
+                "Crack width (QP)",
+                f"{(led.get('crack') or {}).get('wk_mm')} mm ≤ {(led.get('crack') or {}).get('limit_mm')} mm",
+            ),
+            (
+                "Hanger bars in the rear beam",
+                f"{(led.get('hanger') or {}).get('bars')} ({(led.get('hanger') or {}).get('as_req_mm2_per_m')} mm²/m), in addition to its links",
+            ),
+            (
+                "On the rear beam",
+                f"{rb.get('line_load_uls_kN_per_m')} kN/m and a {rb.get('wheel_uls_kN')} kN wheel (ULS), {rb.get('eccentricity_mm')} mm off its centre line",
+            ),
+            ("Utilisation", led.get("utilisation")),
+            ("Result", _ok(led.get("passed"))),
+        ]
+    )
+    r.bullets(led.get("notes") or [])
 
 
 def _displacements(r: Report, section: Section) -> None:

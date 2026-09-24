@@ -367,6 +367,35 @@ def cost_section(
         row.add(_price(prices.rebar, row.rebar_t), "reinforcement price")
         rows.append(row)
 
+    for a in results.get("approach_slabs", []):
+        # Per metre of berth: the slab over its length, and the ledge along the rear beam.
+        st = a.get("steel") or {}
+        led = a.get("ledge") or {}
+        row = _Row(a["element"], "approach_slab")
+        row.length = a.get("length_m")
+        slab_m3 = (a.get("length_m") or 0) * (a.get("thickness_mm") or 0) / 1000
+        row.basis.append(
+            f"{a.get('length_m', 0):g} m × {a.get('thickness_mm', 0):g} mm along {berth:.1f} m of berth, "
+            f"{st.get('slab_kg_per_m') or 0:.0f} kg of bars per m of berth"
+        )
+        row.concrete_m3 = slab_m3 * berth
+        row.rebar_t = (st.get("slab_kg_per_m") or 0) * berth / 1000
+        row.add(_price(prices.concrete_slab, row.concrete_m3), "slab concrete price")
+        row.add(_price(prices.rebar, row.rebar_t), "reinforcement price")
+        rows.append(row)
+        if led.get("projection_mm"):
+            row = _Row("Rear beam ledge", "ledge")
+            row.length = berth
+            row.basis.append(
+                f"{led['projection_mm']:g} × {led['depth_mm']:g} mm along {berth:.1f} m, "
+                f"{led.get('steel_kg_per_m') or 0:.0f} kg/m of ties, links and hanger bars"
+            )
+            row.concrete_m3 = (led.get("concrete_m3_per_m") or 0) * berth
+            row.rebar_t = (led.get("steel_kg_per_m") or 0) * berth / 1000
+            row.add(_price(prices.concrete_beams, row.concrete_m3), "beam concrete price")
+            row.add(_price(prices.rebar, row.rebar_t), "reinforcement price")
+            rows.append(row)
+
     unpriced = []
     for i, item in enumerate(section.costing.items):
         if not item.name.strip() and item.price is None:
