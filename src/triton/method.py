@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from . import alignment, trials
+from . import alignment, clashes, trials
 from .design import (
     beams,
     bollard,
@@ -86,6 +86,7 @@ GENERAL = [
     ("Corner berths: a quay that turns", alignment),
     ("Comparisons (trial sizes)", trials),
     ("Over-reinforced sections (slabs and beams)", ductility),
+    ("Reinforcement clashes at the pile heads", clashes),
     ("AdSec load sets and signs", governing),
 ]
 
