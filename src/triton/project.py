@@ -19,6 +19,7 @@ from .design.sheet_piles import SECTION_NAMES as SHEET_PILE_SECTIONS
 from .design.sheet_piles import normalise as _normalise_sheet_pile
 from .durability import bs6349_corrosion, bs6349_covers
 from .elements import ElementType, parse_sheet_name
+from .furniture_inputs import QuayFurniture, SectionFurniture
 from .materials import (
     BAR_DIAMETERS,
     CONCRETE_GRADES,
@@ -64,8 +65,8 @@ class ProjectInfo(_Model):
     document_number: str = Field("", title="Calculation document number")
     revision: str = Field(
         "P01",
-        title="Revision in work",
-        description="Printed on the reports. Issue revision on the Project tab keeps a copy of it, dated.",
+        title="Revision",
+        description="Printed on the reports' cover.",
     )
 
 
@@ -516,6 +517,64 @@ class Casing(_Model):
         return self
 
 
+Surface = Literal["very smooth", "smooth", "rough", "indented"]
+_SURFACE = (
+    "EN 1992-1-1 6.2.5(2): very smooth (cast against steel or timber), smooth (slipformed, or left without "
+    "treatment after vibration), rough (at least 3 mm roughness at about 40 mm spacing, e.g. raked or "
+    "exposed aggregate) or indented (shear keys)."
+)
+
+
+class PileJoint(_Model):
+    """A construction joint across the pile at a level: the pile top under the slab or beam, or a pour
+    break."""
+
+    level: float = _m(
+        "Joint level Z", 0.0, description="e.g. the pile top level for the joint into the slab."
+    )
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Pile to slab, pour break.")
+
+
+class BeamJoint(_Model):
+    """A construction joint in a beam: a horizontal joint at a level (the beam cast in lifts, or up to the
+    slab soffit), or a vertical stop end at a position along the beam."""
+
+    kind: Literal["level", "along"] = Field(
+        "level",
+        title="Joint",
+        description="level: horizontal, at level Z. along: vertical, at a position along the beam (X or Y "
+        "along it).",
+    )
+    at: float = _m("Level Z, or position along the beam", 0.0)
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Slab soffit, first lift.")
+
+
+class SlabJoint(_Model):
+    """A construction joint through the slab along a line: at an X or a Y, or at a beam's face (the slab cast
+    against a beam)."""
+
+    line: Literal["at X", "at Y", "beam face"] = Field(
+        "at X",
+        title="Joint line",
+        description="at X: the joint runs along Y at that X (bars along X cross it). at Y: along X at that "
+        "Y. beam face: the slab's joint with the beam named, at the beam's face.",
+    )
+    at: float | None = _m("X or Y of the line", None, description="Not used at a beam face.")
+    beam: str = Field("", title="Beam (beam face)", description="e.g. Front Beam.")
+    start: float | None = _m("From (along the line)", None, description="Empty: the whole slab.")
+    end: float | None = _m("To (along the line)", None)
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Pour 1 / pour 2.")
+
+
+_JOINTS = (
+    "Each joint is checked in the design (EN 1992-1-1 6.2.5 shear across it, and the bars crossing it carry "
+    "the tension there); where the bars are not enough, the additional bars at that joint are given."
+)
+
+
 class PileInput(_ConcreteSection):
     kind: Literal["pile"] = "pile"
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
@@ -550,6 +609,9 @@ class PileInput(_ConcreteSection):
         title="This pile has a permanent steel casing",
         description="Tick it and give the casing's top and bottom levels: there is no crack width check "
         "between them. Leave it unticked for a plain concrete pile.",
+    )
+    construction_joints: list[PileJoint] = Field(
+        default_factory=list, title="Construction joints", description=_JOINTS
     )
 
 
@@ -916,6 +978,52 @@ class SlabVoids(_Model):
     )
 
 
+class Manhole(_Model):
+    """An opening in the deck (a manhole or a pit), not in the Plaxis model: the bars it cuts go to
+    trimmer bars each side."""
+
+    name: str = Field("Manhole 1", title="Manhole")
+    x: float = _m("Centre X", 0.0)
+    y: float = _m("Centre Y", 0.0)
+    size_x: float = _mm("Size along X", 1000.0, gt=0, description="Inside size in plan.")
+    size_y: float = _mm("Size along Y", 1000.0, gt=0)
+    depth: float | None = _mm(
+        "Pit depth",
+        None,
+        gt=0,
+        description="Empty: through the slab. Set: a pit from the top with the rest of the slab under it.",
+    )
+    floor_load: float = Field(10.0, title="Load on the pit floor", ge=0, json_schema_extra={"unit": "kPa"})
+
+
+class Channel(_Model):
+    """A service channel cast into the deck, not in the Plaxis model: the slab's actions go round it
+    through its walls and base."""
+
+    name: str = Field("Channel 1", title="Channel")
+    direction: Literal["X", "Y"] = Field("Y", title="Runs along")
+    start: float = _m("From", 0.0, description="Where it starts along its direction (m, model coordinate).")
+    end: float = _m("To", 10.0)
+    at: float = _m("Centre line at", 0.0, description="Its centre line, across its direction (m).")
+    width: float = _mm("Inside width", 600.0, gt=0)
+    depth: float = _mm("Inside depth", 500.0, gt=0, description="From the top of the slab.")
+    walls: float = _mm("Wall thickness", 250.0, gt=0)
+    base: float | None = _mm(
+        "Base thickness",
+        None,
+        gt=0,
+        description="Empty: what the slab leaves under it. Deeper than the slab: the base hangs below the "
+        "soffit.",
+    )
+    floor_load: float = Field(10.0, title="Load in the channel", ge=0, json_schema_extra={"unit": "kPa"})
+
+    @model_validator(mode="after")
+    def _ends(self) -> Channel:
+        if self.end <= self.start:
+            raise ValueError(f"{self.name}: 'To' must be past 'From'")
+        return self
+
+
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
     thickness: float = _mm("Slab thickness", 700.0, gt=0)
@@ -1037,6 +1145,16 @@ class SlabInput(_ConcreteSection):
         title="Slab thickness at single piles",
         description="For punching only, e.g. on a slope.",
     )
+    manholes: list[Manhole] = Field(
+        default_factory=list,
+        title="Manholes and pits",
+        description="Openings in the deck that the Plaxis model does not have (Openings tab).",
+    )
+    channels: list[Channel] = Field(
+        default_factory=list,
+        title="Service channels",
+        description="Channels cast into the deck that the Plaxis model does not have (Openings tab).",
+    )
     crane: list[CraneArea] = Field(
         default_factory=list,
         title="Mobile crane additions",
@@ -1087,6 +1205,9 @@ class SlabInput(_ConcreteSection):
         description="Voids cast in the slab between the beams: bending on the voided section, shear on the "
         "webs between the voids with links in the webs only; the voids stop short of the piles, so the slab "
         "is solid over them.",
+    )
+    construction_joints: list[SlabJoint] = Field(
+        default_factory=list, title="Construction joints", description=_JOINTS
     )
 
 
@@ -1274,6 +1395,11 @@ class BeamInput(_ConcreteSection):
         title="Rooms in the beam",
         description="Rooms cut into the beam from the top, e.g. for electrical work. Each is checked on the "
         "section left (floor and walls) for the Plaxis actions over its length.",
+    )
+    construction_joints: list[BeamJoint] = Field(
+        default_factory=list,
+        title="Construction joints",
+        description=_JOINTS + " The slab's joint at the beam face is set on the slab.",
     )
 
 
@@ -1554,6 +1680,9 @@ def _other_items() -> list[OtherItem]:
         OtherItem(name="Fenders", unit="each", spacing=20.0),
         OtherItem(name="Bollards", unit="each", spacing=30.0),
         OtherItem(name="Crane rails", unit="m", runs=2.0),
+        OtherItem(name="Ladders", unit="each", spacing=30.0),
+        OtherItem(name="Storm pins", unit="each"),
+        OtherItem(name="Crane stoppers", unit="each"),
     ]
 
 
@@ -1957,6 +2086,11 @@ class Section(_Model):
     )
     costing: SectionCosting = Field(default_factory=SectionCosting, title="Costing")
     alignment: Alignment = Field(default_factory=Alignment, title="Berth alignment")
+    furniture: SectionFurniture = Field(
+        default_factory=SectionFurniture,
+        title="Quay furniture on this berth",
+        description="The items are the project's (Furniture tab); this is only where this berth differs.",
+    )
     joints: SectionJoints = Field(default_factory=SectionJoints, title="Expansion joints")
     user_cages: dict[str, UserCage] = Field(
         default_factory=dict,
@@ -2103,16 +2237,103 @@ class Section(_Model):
         return added
 
 
-class Revision(_Model):
-    """An issued revision of the calculations, with a copy of the project as it was issued."""
+class Ledge(_Model):
+    """The ledge (nib) on the rear beam that the approach slab rests on, across the expansion joint."""
 
-    rev: str = Field(title="Revision")
-    description: str = Field("", title="Description")
-    issued_at: str = Field(default_factory=_now, title="Issued")
-    prepared: str = Field("", title="Prepared by")
-    checked: str = Field("", title="Checked by")
-    approved: str = Field("", title="Approved by")
-    snapshot: str | None = Field(None, description="The copy's file name in the project's revisions folder.")
+    projection: float = _mm("Projection from the rear beam face", 400.0, gt=0)
+    depth: float = _mm("Depth at the beam face", 600.0, gt=0)
+    top_below_beam_top: float | None = _mm(
+        "Ledge top below the rear beam top",
+        None,
+        ge=0,
+        description="Empty: the approach slab thickness plus the bearing thickness, so the slab's top "
+        "is level with the beam's.",
+    )
+    bearing_width: float = _mm(
+        "Bearing strip width",
+        200.0,
+        gt=0,
+        description="Elastomeric strip under the slab end, across the ledge.",
+    )
+    bearing_thickness: float = _mm("Bearing strip thickness", 20.0, ge=0)
+    edge_distance: float = _mm("Bearing strip to the ledge tip", 50.0, ge=0)
+    cover: float | None = _mm("Cover", None, gt=0, description="Empty: the project's beam cover.")
+    horizontal_ratio: float = Field(
+        0.2,
+        title="Horizontal force H / vertical load F",
+        ge=0,
+        le=1,
+        description="EN 1992-1-1 J.3: at least 0.2 F for restraint and bearing friction.",
+    )
+    crack_width_limit: float = _mm("Crack width limit wk (QP)", 0.2, gt=0, le=0.5)
+
+
+class ApproachSlabInput(_Model):
+    """The approach slab between the quay and the existing slab on grade.
+
+    One for the whole project (typical); each section designs it with its own rear beam. Plaxis does
+    not model it, so its size and loads are entered here.
+    """
+
+    length: float = _m(
+        "Length (rear beam to the slab on grade)",
+        6.0,
+        gt=0,
+        description="From the bearing line on the ledge to the far end, which rests on the existing slab on "
+        "grade or the ground.",
+    )
+    thickness: float = _mm("Thickness", 400.0, gt=0)
+    concrete: ConcreteGrade | None = Field(None, title="Concrete grade", description=_PROJECT_GRADE)
+    cover_top: float | None = _mm(
+        "Cover, top", None, gt=0, description="Empty: the project's slab top cover."
+    )
+    cover_bottom: float = _mm("Cover, bottom (against the ground)", 75.0, gt=0)
+    joint_width: float = _mm("Expansion joint at the rear beam", 25.0, ge=0)
+    unsupported_length: float | None = _m(
+        "Length with no ground support",
+        None,
+        ge=0,
+        description="From the ledge, where the fill may settle away from the slab. Empty: the whole "
+        "length, so "
+        "the slab spans from the ledge to its far end. Beyond it the slab rests on the ground (springs).",
+    )
+    subgrade_modulus: float = Field(
+        20000.0,
+        title="Modulus of subgrade reaction",
+        gt=0,
+        description="Where the slab rests on the ground.",
+        json_schema_extra={"unit": "kN/m³"},
+    )
+    unit_weight: float = Field(
+        25.0, title="Reinforced concrete weight", gt=0, json_schema_extra={"unit": "kN/m³"}
+    )
+    surfacing: float = Field(
+        2.0, title="Surfacing and finishes", ge=0, description="Permanent.", json_schema_extra={"unit": "kPa"}
+    )
+    surcharge: float = Field(
+        35.0, title="Surcharge", ge=0, description="The office's 3.5 t/m².", json_schema_extra={"unit": "kPa"}
+    )
+    wheel_load: float = Field(
+        150.0,
+        title="Wheel or outrigger load",
+        ge=0,
+        description="Characteristic, dynamic factor included; 150 kN is a wheel of the EN 1991-2 tandem "
+        "(300 kN axle). 0: none.",
+        json_schema_extra={"unit": "kN"},
+    )
+    wheel_contact: float = _mm("Wheel contact width", 400.0, gt=0)
+    gamma_g: float = Field(1.35, title="γG permanent", ge=1)
+    gamma_q: float = Field(1.5, title="γQ variable (surcharge and wheel)", ge=1)
+    psi2: float = Field(
+        0.6,
+        title="ψ2 of the surcharge (QP)",
+        ge=0,
+        le=1,
+        description="The wheel is traffic: ψ2 = 0 in the QP combination.",
+    )
+    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.2, gt=0, le=0.5)
+    crack_width_limit_bottom: float = _mm("Crack width limit wk (QP), bottom face", 0.2, gt=0, le=0.5)
+    ledge: Ledge = Field(default_factory=Ledge, title="Ledge on the rear beam")
 
 
 class Project(_Model):
@@ -2123,8 +2344,19 @@ class Project(_Model):
     design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
     prices: Prices = Field(default_factory=Prices, title="Prices")
     drawings: DrawingSettings = Field(default_factory=DrawingSettings, title="Drawings (AutoCAD and Revit)")
+    furniture: QuayFurniture = Field(
+        default_factory=QuayFurniture,
+        title="Quay furniture",
+        description="Fenders, bollards, ladders, storm pins, crane rails and stoppers, tie rods: the same "
+        "on every section's berth.",
+    )
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
-    revisions: list[Revision] = Field(default_factory=list, title="Issued revisions")
+    approach: ApproachSlabInput | None = Field(
+        None,
+        title="Approach slab and rear beam ledge",
+        description="One for the whole project; each section designs it with its own rear beam, and adds the "
+        "ledge's load and torsion to that beam. Empty: no approach slab.",
+    )
     locked: bool = Field(
         False,
         title="Locked",
@@ -2154,6 +2386,8 @@ class Project(_Model):
         elif isinstance(data, dict) and isinstance(data.get("info"), dict) and "section" in data["info"]:
             data = dict(data)
             data["info"] = {k: v for k, v in data["info"].items() if k != "section"}
+        if isinstance(data, dict) and "revisions" in data:  # issued revisions were dropped
+            data = {k: v for k, v in data.items() if k != "revisions"}
         return data
 
     @field_validator("id")

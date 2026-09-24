@@ -217,6 +217,17 @@ def beam_loads(
     )
 
 
+def add_ledge(frame: pd.DataFrame, added: dict[str, float], combo: str) -> pd.DataFrame:
+    """The station forces with the ledge's ΔV, ΔT and ΔM added to the size of each Plaxis value."""
+    if frame.empty:
+        return frame
+    f = frame.copy()
+    for col, key in (("V", "V"), ("T", "T"), ("Mv", "M")):
+        v = f[col].to_numpy(float)
+        f[col] = v + np.where(v >= 0, 1.0, -1.0) * added[f"{key}_{combo}"]
+    return f
+
+
 # --- Supports -------------------------------------------------------------------------------------
 
 
@@ -881,10 +892,12 @@ def design_beam(
     user_cage: BeamCage | None = None,
     sign: dict[str, Any] | None = None,
     joint_lengths: list[float] | None = None,
+    ledge: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Choose the beam's longitudinal bars, or check the ones the user set (``user_cage``).
     ``joint_lengths``: the lengths of the berth's segments between expansion joints the beam runs
-    through; the restraint crack width is also given for each of them."""
+    through; the restraint crack width is also given for each of them. ``ledge``: the approach
+    slab's ledge on a rear beam, whose load and torque are added (``approach``)."""
     beam = with_project_grades(beam, settings.materials, settings.durability)
     lay = layout(sheets, axes)
     sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
@@ -901,6 +914,13 @@ def design_beam(
     peak = g.b / 1000 if settings.beam_actions == "peak_width" else None
     uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=cut, peak_width=peak)
     qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=cut, peak_width=peak)
+    added = None
+    if ledge is not None:
+        from .approach import rear_beam_additions
+
+        spacing = spacing_from_supports([q.s for q in supports]) or max(lay.end - lay.start, 1.0)
+        added = rear_beam_additions(ledge, float(b), spacing)
+        uls, qp = add_ledge(uls, added, "uls"), add_ledge(qp, added, "qp")
     notes = [
         f"Spans along global {lay.along} ({lay.start:.2f} to {lay.end:.2f} m, {lay.end - lay.start:.1f} m); "
         f"local {lay.span_local} is along the beam"
@@ -921,6 +941,14 @@ def design_beam(
         ),
         sign_note,
     ]
+    if added is not None:
+        notes.append(
+            f"Approach slab ledge added at every station: ΔV {added['V_uls']:.0f} kN, "
+            f"ΔT {added['T_uls']:.0f} kNm, "
+            f"ΔM {added['M_uls']:.0f} kNm (ULS; QP {added['V_qp']:.0f} kN, {added['T_qp']:.0f} kNm, "
+            f"{added['M_qp']:.0f} kNm), from the ledge's load at {added['e_m']:g} m off the centre line "
+            f"between supports {added['spacing_m']:g} m apart."
+        )
     if supports and cut:
         names = sorted({q.element for q in supports})
         notes.append(
@@ -950,6 +978,8 @@ def design_beam(
         "support_results": settings.beam_support_results,
         "notes": notes,
     }
+    if added is not None:
+        base["ledge_added"] = {k: round(v, 1) for k, v in added.items()}
     if uls.empty:
         notes.append("No ULS results.")
         return {**base, "utilisation": None, "passed": False}

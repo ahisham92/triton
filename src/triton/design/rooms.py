@@ -540,7 +540,7 @@ def check_shape(ctx: Context, shape: Shape, room: BeamRoom) -> dict:
     lost_bottom = float(cut.area[~cut_top].sum())
     if lost_bottom > 0:
         notes.append(
-            f"The floor is too thin for the beam's bottom bars: {lost_bottom:.0f} mm² of them has no cover "
+            f"The floor is too thin for the bottom bars: {lost_bottom:.0f} mm² of them has no cover "
             "under the room."
         )
 
@@ -555,6 +555,10 @@ def check_shape(ctx: Context, shape: Shape, room: BeamRoom) -> dict:
         for n in range(0, fit * rows_max + 1):
             wall_cands.append(Row(n, phi))
     wall_cands.sort(key=lambda x: (x.area, -x.phi))
+    thin_walls = not wall_cands
+    if thin_walls:
+        wall_cands = [Row(0, ctx.top_phi)]
+        notes.append("The walls are too thin to hold bars with their cover.")
     # The cut top bars come back at the top of the walls (half in each).
     wi = next((i for i, c in enumerate(wall_cands) if 2 * c.area >= cut_area_top - 1e-6), len(wall_cands) - 1)
     # Extra bottom bars: a layer above the beam's bottom bars, across the width, when the floor has room.
@@ -885,6 +889,7 @@ def check_shape(ctx: Context, shape: Shape, room: BeamRoom) -> dict:
         and frame["passed"]
         and status == "ok"
         and lost_bottom == 0
+        and not thin_walls
     )
     wall_lab = f"{wr.count}Ø{wr.phi} in each wall" if wr.count else "none"
     extra_kg = (
@@ -1027,8 +1032,6 @@ def frame_action(ctx: Context, shape: Shape, room: BeamRoom) -> dict:
                 )
                 fs["utilisation"] = round(max(v_ed / vrds, v_ed / vmax), 3)
                 break
-        if fs["utilisation"] is None:
-            fs["utilisation"] = math.inf
     fs["passed"] = fs["utilisation"] is not None and fs["utilisation"] <= 1 + 1e-6
     corner = max(floor["top"]["as_mm2_per_m"], walls["top"]["as_mm2_per_m"])
     corner_bar = (
@@ -1057,7 +1060,7 @@ def frame_action(ctx: Context, shape: Shape, room: BeamRoom) -> dict:
     }
 
 
-def design_room(ctx: Context, room: BeamRoom, shape: Shape) -> dict:
+def design_room(ctx: Context, room: BeamRoom, shape: Shape, kind: str = "room") -> dict:
     out = check_shape(ctx, shape, room)
     if out["passed"]:
         return out
@@ -1069,13 +1072,16 @@ def design_room(ctx: Context, room: BeamRoom, shape: Shape) -> dict:
         t += STEP
     found = _first_pass(ctx, room, tries)
     if found is not None:
-        kind, s = found
+        _, s = found
         out["suggestion"] = {
             "bottom_mm": round(s.bottom),
             "height_mm": round(s.height),
-            "text": f"{s.bottom:.0f} mm of concrete below the room passes (room {s.height:.0f} mm high).",
+            "text": f"{s.bottom:.0f} mm of concrete below the {kind} passes ({kind} {s.height:.0f} mm deep).",
         }
         return out
+    # A thicker floor does not help alone: the thinnest walls that pass with the thickest floor tried,
+    # then the thinnest floor with those walls.
+    deepest = tries[-1][1] if tries else shape
     walls = []
     w = STEP
     while shape.width - 2 * w >= 300:
@@ -1083,7 +1089,7 @@ def design_room(ctx: Context, room: BeamRoom, shape: Shape) -> dict:
             (
                 "walls",
                 replace(
-                    shape,
+                    deepest,
                     width=shape.width - 2 * w,
                     wall_sea=shape.wall_sea + w,
                     wall_land=shape.wall_land + w,
@@ -1092,19 +1098,29 @@ def design_room(ctx: Context, room: BeamRoom, shape: Shape) -> dict:
         )
         w += STEP
     found = _first_pass(ctx, room, walls)
-    if found is not None:
-        _, s = found
+    if found is None:
         out["suggestion"] = {
-            "wall_sea_mm": round(s.wall_sea),
-            "wall_land_mm": round(s.wall_land),
-            "width_mm": round(s.width),
-            "text": f"A thicker floor does not help; walls of {s.wall_sea:.0f} and {s.wall_land:.0f} mm pass "
-            f"(room {s.width:.0f} mm wide).",
+            "text": f"No floor or wall thickness that leaves a {kind} at least 300 mm deep and wide passes."
         }
-    else:
-        out["suggestion"] = {
-            "text": "No floor or wall thickness that leaves a room at least 300 mm high and wide passes."
-        }
+        return out
+    _, s = found
+    floors = [
+        ("bottom", replace(s, bottom=t2, height=shape.h - shape.top - t2))
+        for t2 in np.arange(shape.bottom, s.bottom + 1e-6, STEP)
+    ]
+    best = _first_pass(ctx, room, floors) or found
+    _, s = best
+    out["suggestion"] = {
+        "bottom_mm": round(s.bottom),
+        "height_mm": round(s.height),
+        "wall_sea_mm": round(s.wall_sea),
+        "wall_land_mm": round(s.wall_land),
+        "width_mm": round(s.width),
+        "text": f"A thicker floor alone does not pass. Walls of {s.wall_sea:.0f}"
+        + (f" and {s.wall_land:.0f}" if abs(s.wall_sea - s.wall_land) > 1 else "")
+        + f" mm ({kind} {s.width:.0f} mm wide) with {s.bottom:.0f} mm below "
+        f"({kind} {s.height:.0f} mm deep) pass.",
+    }
     return out
 
 

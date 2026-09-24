@@ -15,15 +15,21 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from . import alignment, clashes, joints, trials
+from . import furniture as furniture_layout
 from .design import (
+    anchors,
+    approach,
     beams,
     bollard,
     circular,
     combi,
+    construction_joints,
     crack,
     curtailment,
     ductility,
+    furniture,
     governing,
+    openings,
     peaks,
     pile_cracks,
     pile_shear,
@@ -72,6 +78,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
     "Slabs": [
         ("Bars, strips, shear and punching", slabs),
         ("Circular voids (PVC pipes)", voids),
+        ("Manholes and channels (Openings tab)", openings),
         ("Crack widths and restraint", crack),
     ],
     "Beams": [
@@ -82,15 +89,23 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
         ("Truss model (front beam)", truss),
         ("Rooms cut into the beam", rooms),
     ],
+    "Approach slab and ledge": [
+        ("Approach slab, ledge and what the rear beam takes", approach),
+        ("Crack widths", crack),
+    ],
 }
 
 GENERAL = [
     ("Corner berths: a quay that turns", alignment),
     ("Expansion joints along the berth", joints),
+    ("Construction joints (piles, beams, slabs)", construction_joints),
     ("Comparisons (trial sizes)", trials),
     ("Over-reinforced sections (slabs and beams)", ductility),
     ("Reinforcement clashes at the pile heads", clashes),
     ("AdSec load sets and signs", governing),
+    ("Quay furniture: arrangement along the berth", furniture_layout),
+    ("Quay furniture: design of each item", furniture),
+    ("Anchor bolts cast into the beams (EN 1992-4)", anchors),
 ]
 
 # Methods of the slab's moments at the pile faces, in the order the options are offered.
@@ -157,6 +172,13 @@ def view(project: Project) -> dict[str, Any]:
             k["elements"].append({"section": section.name, "element": name})
             for o in options_of(element):
                 k["options"].append({**o, "section": section.name, "element": name})
+    if project.approach is not None:
+        k = kinds.setdefault(
+            "Approach slab and ledge", {"kind": "Approach slab and ledge", "elements": [], "options": []}
+        )
+        k["elements"].append({"section": "Whole project", "element": approach.ELEMENT})
+        for o in options_of(project.approach):
+            k["options"].append({**o, "section": "Whole project", "element": approach.ELEMENT})
     order = list(TOPICS)
     out_kinds = []
     for label in sorted(kinds, key=order.index):

@@ -95,7 +95,9 @@ def test_trials_run_once_and_are_costed(tmp_path, monkeypatch):
     s.elements = {"Deck": SlabInput(thickness=700)}
     calls = []
 
-    def fake(settings, section, workbook, progress=None, only=None, deadline=None):
+    def fake(
+        settings, section, workbook, progress=None, only=None, deadline=None, approach=None, furniture_at=None
+    ):
         h = section.elements["Deck"].thickness
         calls.append(h)
         kg = 120000 / h  # thicker: less steel
@@ -173,7 +175,9 @@ def test_all_elements_with_a_crack_limit(tmp_path, monkeypatch):
     s.elements = {"Pile(1)": PileInput(), "Deck": SlabInput(thickness=700)}
     calls = []
 
-    def fake(settings, section, workbook, progress=None, only=None, deadline=None):
+    def fake(
+        settings, section, workbook, progress=None, only=None, deadline=None, approach=None, furniture_at=None
+    ):
         (name,) = only
         e = section.elements[name]
         calls.append((name, e.crack_width_limit))
@@ -234,7 +238,9 @@ def test_value_engineering_ideas_and_mixes(tmp_path, monkeypatch):
     assert trials.run_key(p, only_pile, "Deck", None) == trials.run_key(p, s, "Deck", None)
     calls = []
 
-    def fake(settings, section, workbook, progress=None, only=None, deadline=None):
+    def fake(
+        settings, section, workbook, progress=None, only=None, deadline=None, approach=None, furniture_at=None
+    ):
         (name,) = only
         calls.append(name)
         if name == "Deck":

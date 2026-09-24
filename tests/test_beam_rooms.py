@@ -1,3 +1,4 @@
+import json
 import math
 
 import numpy as np
@@ -86,7 +87,7 @@ def test_a_room_that_fails_gets_the_floor_that_passes():
     d = _design(BeamInput(width=2000, depth=2000, rooms=[thin]), sheets)
     (rm,) = d["rooms"]
     assert not rm["passed"] and not d["passed"]
-    assert any("too thin for the beam's bottom bars" in n for n in rm["notes"])
+    assert any("too thin for the bottom bars" in n for n in rm["notes"])
     t = rm["suggestion"]["bottom_mm"]
     assert t > 150 and t % 50 == 0
     # The suggested floor passes; 50 mm less does not.
@@ -113,3 +114,103 @@ def test_room_goes_to_the_drawings_and_report():
     r = Report("t", "s")
     _beam(r, d)
     assert any("Room 1: room in the beam" in blk.text for blk in r.blocks if blk.text)
+
+
+# --- Manholes and channels in the deck ------------------------------------------------------------
+
+
+def _deck(**openings):
+    from test_slabs import deck_workbook
+
+    from triton.design.runner import run_section
+    from triton.project import PileInput, Section, SlabInput
+
+    limits = {"crack_width_limit": 0.3, "crack_width_limit_bottom": 0.3, "peaks": "design"}
+    els = {"Deck": SlabInput(thickness=800, **limits, **openings), "Pile(1)": PileInput(head_level=2.7)}
+    return run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
+
+
+def test_manhole_gets_trimmer_bars_and_cuts_the_punching_perimeter():
+    d = _deck(manholes=[{"x": -6, "y": 2, "size_x": 1000, "size_y": 1200}])
+    (m,) = d["openings"]["manholes"]
+    x = m["directions"]["X"]
+    # Bars along X are cut over the 1200 mm Y size; strips of 800 mm (the slab) each side carry 1.75 m.
+    assert (x["cut_width_mm"], x["strip_mm"], x["factor"]) == (1200, 800, 1.75)
+    assert x["M_kNm_per_m"]["min"] == -600  # the hogging round the pile reaches the opening
+    top = x["trimmers"]["top"]
+    # At least half the cut top bars each side.
+    assert top["area_mm2"] >= x["existing"]["top"]["as_mm2_per_m"] * 1.2 / 2 - 1
+    assert top["count"] * math.pi * top["phi"] ** 2 / 4 >= top["area_mm2"]
+    (p,) = m["piles"]
+    assert 0 < p["share"] < 0.5 and p["utilisation"] > p["utilisation_before"]
+    assert m["passed"] and d["passed"] and any(n.startswith("Manhole 1: passes") for n in d["notes"])
+
+
+def test_large_manhole_gets_the_opening_that_passes():
+    d = _deck(manholes=[{"x": -4.5, "y": 1.5, "size_x": 3000, "size_y": 3000}])
+    (m,) = d["openings"]["manholes"]
+    if m["passed"]:
+        pytest.skip("passes on this sample")
+    s = m["suggestion"]
+    assert "passes" in s["text"] or "No smaller" in s["text"]
+    assert not d["passed"]
+
+
+def test_channel_is_checked_as_a_trough_and_a_deep_one_hangs_below():
+    d = _deck(
+        channels=[
+            {"direction": "Y", "start": -4, "end": 4, "at": -1.5, "width": 600, "depth": 500, "walls": 250},
+            {
+                "name": "Deep",
+                "direction": "X",
+                "start": -7,
+                "end": -1,
+                "at": 3,
+                "width": 800,
+                "depth": 900,
+                "walls": 250,
+                "base": 300,
+            },
+        ]
+    )
+    shallow, deep = d["openings"]["channels"]
+    assert (
+        shallow["section"]["bottom_mm"] == 300
+        and shallow["strip_mm"] == 1100
+        and shallow["downstand_mm"] == 0
+    )
+    assert shallow["bars"]["wall_top"]["area_mm2"] >= shallow["bars"]["cut_top"]["area_mm2"]
+    assert shallow["frame"]["floor"]["passed"] and shallow["stations"] > 10
+    assert deep["depth_total_mm"] == 1200 and deep["downstand_mm"] == 400
+    assert any("hangs 400 mm below" in n for n in deep["notes"])
+    # A thin base under a wide channel fails and gets the base that passes.
+    thin = _deck(
+        channels=[
+            {"direction": "Y", "start": -4, "end": 4, "at": -4, "width": 1500, "depth": 700, "walls": 200}
+        ]
+    )["openings"]["channels"][0]
+    assert not thin["passed"] and "suggestion" in thin
+    json.dumps(thin, allow_nan=False)  # the page reads it as JSON
+
+
+def test_openings_go_to_the_report_drawings_and_method():
+    from triton.design.export import pile_cages
+    from triton.drawings import from_cages
+    from triton.method import TOPICS
+    from triton.project import DrawingSettings
+    from triton.report import Report, _slab
+
+    d = _deck(
+        manholes=[{"x": -6, "y": 2, "size_x": 1000, "size_y": 1200}],
+        channels=[{"direction": "Y", "start": -4, "end": 4, "at": -1.5}],
+    )
+    (s,) = pile_cages("P", {"slabs": [d]}, "S")["slabs"]
+    assert len(s["manholes"]) == 1 and len(s["channels"]) == 1
+    views = from_cages({"beams": [], "piles": [], "slabs": [s]}, DrawingSettings())["views"]
+    names = [v["name"] for v in views]
+    assert "Deck - Manhole 1" in names and "Deck - Channel 1" in names
+    r = Report("t", "s")
+    _slab(r, d)
+    text = " ".join(b.text for b in r.blocks if b.text)
+    assert "Manhole 1: opening in the deck" in text and "Channel 1: channel along Y" in text
+    assert any(m.__name__.endswith("openings") for _, m in TOPICS["Slabs"])

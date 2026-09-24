@@ -13,7 +13,8 @@ Design settings:
   piles' positions along the berth in the workbook (their spacing, a row every s from half a bay
   into each run) unless the spacing and first row are given.
 * A joint keeps a clear distance from every fender, bollard or other item of quay furniture: the
-  section's furniture positions, else the items priced each on the Costing tab, one at each end of
+  positions given for the section, else the Furniture tab's items at their spacing (before they are
+  moved clear of the joints), else the items priced each on the Costing tab, one at each end of
   the berth and evenly spaced between at their spacing.
 * Each corner of a corner berth is a joint (a setting), and so is every joint set by hand.
 
@@ -31,6 +32,7 @@ restraint crack width for every other segment length too.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -332,9 +334,11 @@ def section_joints(
     raw: dict[str, Any],
     parts: list[Any] | None = None,
     along: str = "Y",
+    furniture_at: Callable[[float], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """The joint layout of a section, from its inputs and the piles in the workbook (``raw``: the
-    workbook's elements, as ``ImportResult.elements()``)."""
+    workbook's elements, as ``ImportResult.elements()``). ``furniture_at(berth length)``: the quay
+    furniture's positions along the berth (the Furniture tab), used before the Costing items."""
     rules = settings.joints
     sj: SectionJoints = section.joints
     runs, runs_from = berth_runs(section, parts)
@@ -359,6 +363,8 @@ def section_joints(
     if sj.furniture:
         furniture = [{"name": f.name or "Item", "chainage": f.chainage} for f in sj.furniture]
         furniture_from = "the positions given on the Sections tab"
+    elif furniture_at is not None and (furniture := furniture_at(total)):
+        furniture_from = "the quay furniture at its spacing (Furniture tab)"
     else:
         furniture = furniture_from_costing(section, total)
         furniture_from = "the items priced each on the Costing tab" if furniture else "none"

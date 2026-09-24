@@ -119,6 +119,21 @@ class ProjectStore:
         tmp.replace(path)
         return project
 
+    def duplicate(self, project_id: str, name: str) -> Project:
+        """A new project with ``project_id``'s settings, sections, workbooks, results and trials."""
+        project = self.get(project_id).model_copy(deep=True)
+        project.id = uuid.uuid4().hex[:12]
+        project.info.name = name
+        project.created_at = _now()
+        src, dst = self.root / project_id, self.root / project.id
+        try:
+            if src.is_dir():
+                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("*.tmp", "revisions"))
+            return self.save(project)
+        except BaseException:
+            shutil.rmtree(dst, ignore_errors=True)
+            raise
+
     def delete(self, project_id: str) -> None:
         path = self._path(project_id)
         if not path.exists():

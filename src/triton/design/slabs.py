@@ -1466,7 +1466,7 @@ def design_slab_meshes(
     spacings = sorted({float(v) for v in r.slab_spacings})
     args = (sheets, geometry, elements, axes, pile_sheets, choices, sign)
     if len(spacings) < 2:
-        return design_slab(name, slab, settings, *args)
+        return _with_openings(design_slab(name, slab, settings, *args), slab, settings, sheets, axes, sign)
     runs = {}
     for sp in spacings:
         one = settings.model_copy(update={"reinforcement": r.model_copy(update={"slab_spacings": [sp]})})
@@ -1521,6 +1521,31 @@ def design_slab_meshes(
         d["notes"].insert(
             1, f"The spacing picked ({want:g} mm) is not in Design settings: the lighter is used."
         )
+    return _with_openings(d, slab, settings, sheets, axes, sign)
+
+
+def _with_openings(d: dict, slab: SlabInput, settings: DesignSettings, sheets, axes, sign) -> dict:
+    """The slab's manholes and channels (Openings tab), checked with the slab's bars as designed."""
+    if not (slab.manholes or slab.channels) or not d.get("layers"):
+        return d
+    from .openings import design_slab_openings
+
+    slab = with_project_grades(slab, settings.materials, settings.durability)
+    sag, _ = sag_factor(settings.plate_positive_moment, sign)
+    uls = slab_loads(sheets, axes, sag, qp=False)
+    qp = slab_loads(sheets, axes, sag, qp=True)
+    op = design_slab_openings(slab, settings, uls, qp, d)
+    d["openings"] = op
+    every = op["manholes"] + op["channels"]
+    for o in every:
+        d["notes"].append(
+            f"{o['name']}: "
+            + (f"passes, utilisation {o['utilisation']:.2f}." if o["passed"] else "fails (Openings tab).")
+        )
+    us = [o["utilisation"] for o in every if o.get("utilisation") is not None]
+    if us:
+        d["utilisation"] = round(max([d.get("utilisation") or 0.0, *us]), 3)
+    d["passed"] = bool(d.get("passed")) and all(o["passed"] for o in every)
     return d
 
 
@@ -1534,6 +1559,71 @@ def _spacing_of_bars(labels, spacings: list[float]) -> float | None:
         return None
     fits = [sp for sp in spacings if all(any(abs(g - k * sp) < 1e-6 for k in (0.5, 1, 2)) for g in got)]
     return fits[0] if len(fits) == 1 else None
+
+
+GAP_WHY = {
+    "pile": "over a pile head: the results inside the pile are FE peaks in the connection and are left "
+    "out, so this square shows the worst of the squares round it (the pile faces, where the bars are "
+    "designed)",
+    "no node": "no Plaxis node falls in this square (the Plaxis mesh is coarser than the 1 m grid here), "
+    "so it shows the worst of the squares round it",
+}
+
+
+def gap_cells(
+    have: set[tuple[int, int]],
+    ni: int,
+    nj: int,
+    x0: float,
+    y0: float,
+    size: float,
+    box: dict[str, list[float]],
+    piles: list[tuple[float, float, float]],
+) -> dict[tuple[int, int], tuple[list[tuple[int, int]], str]]:
+    """Squares of the slab's grid with no result of their own, each with the squares it borrows from.
+
+    A square counts when it lies over a pile head, or when it has results on at least three of its four
+    sides along its row and column (a hole in the Plaxis mesh inside the slab or at its edge, not a
+    square beyond the slab's outline, as past the sloped edge of a turned part's corner). It borrows
+    from the nearest ring of squares with results round it.
+    Returns ``{(i, j): (donor squares, "pile" | "no node")}``.
+    """
+    out: dict[tuple[int, int], tuple[list[tuple[int, int]], str]] = {}
+    if not have:
+        return out
+    rows: dict[int, list[int]] = {}
+    cols: dict[int, list[int]] = {}
+    for i, j in have:
+        rows.setdefault(j, []).append(i)
+        cols.setdefault(i, []).append(j)
+    for i in range(ni):
+        for j in range(nj):
+            if (i, j) in have:
+                continue
+            cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
+            if cx > box["X"][1] + 1e-6 or cy > box["Y"][1] + 1e-6:
+                continue
+            over_pile = any(math.hypot(cx - px, cy - py) <= pr + size * 0.75 for px, py, pr in piles)
+            r, c = rows.get(j, []), cols.get(i, [])
+            sides = (
+                any(a < i for a in r) + any(a > i for a in r) + any(b < j for b in c) + any(b > j for b in c)
+            )
+            inside = sides >= 3  # an edge square of the slab has results on three sides
+            if not (over_pile or inside):
+                continue
+            donors: list[tuple[int, int]] = []
+            for ring in range(1, 4):
+                donors = [
+                    (i + di, j + dj)
+                    for di in range(-ring, ring + 1)
+                    for dj in range(-ring, ring + 1)
+                    if max(abs(di), abs(dj)) == ring and (i + di, j + dj) in have
+                ]
+                if donors:
+                    break
+            if donors:
+                out[(i, j)] = (donors, "pile" if over_pile else "no node")
+    return out
 
 
 def design_slab(
@@ -2663,6 +2753,25 @@ def design_slab(
     kg = sum(float(per_cell[layer]["a"].sum()) for layer in LAYERS) * cell_area / 1e6 * STEEL_DENSITY
     used = pd.concat(per_cell.values()).groupby(["i", "j"])["used"].max()
     area_m2 = len(used) * cell_area
+    # The squares over the pile heads and those with no Plaxis node carry bars too: the basic mesh, or
+    # the zone's bars where a zone covers them.
+    ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
+    nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
+    for i, j in gap_cells({(int(a), int(b)) for a, b in used.index}, ni, nj, x0, y0, size, box, piles):
+        cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
+        for layer in LAYERS:
+            lay = layers[layer]
+            a = max(
+                [lay["basic"]["as_mm2_per_m"]]
+                + [
+                    z["as_mm2_per_m"]
+                    for z in lay.get("zones") or []
+                    if z["x"][0] - 1e-6 <= cx <= z["x"][1] + 1e-6
+                    and z["y"][0] - 1e-6 <= cy <= z["y"][1] + 1e-6
+                ]
+            )
+            kg += a * cell_area / 1e6 * STEEL_DENSITY
+        area_m2 += cell_area
     allc = pd.concat([pc.assign(layer=k) for k, pc in per_cell.items()])
     rho_dir = []
     for direction in ("x", "y"):
@@ -2734,21 +2843,18 @@ def design_slab(
         ]
         for (i, j), u in used.items()
     ]
-    # Cells of the slab's grid without a result: over a pile head (left out) or with no Plaxis node.
+    # Squares of the grid with no result of their own: over a pile head (the results inside the pile are
+    # left out) or where the Plaxis mesh has no node (its elements are larger than a cell there). They
+    # take the worst of the squares round them, so the plots and the 3D cover the whole slab.
     ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
     nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
-    have = set(used.index)
-    for i in range(ni):
-        for j in range(nj):
-            if (i, j) in have:
-                continue
-            cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
-            if cx > box["X"][1] + 1e-6 or cy > box["Y"][1] + 1e-6:
-                continue
-            over_pile = any(math.hypot(cx - px, cy - py) <= pr + size * 0.75 for px, py, pr in piles)
-            bands.append(
-                [round(cx, 2), round(cy, 2), round(level, 2), None, size, "pile" if over_pile else "no node"]
-            )
+    have = {(int(i), int(j)) for i, j in used.index}
+    gaps = gap_cells(have, ni, nj, x0, y0, size, box, piles)
+    for (i, j), (donors, why) in gaps.items():
+        cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
+        u = max(float(used.loc[d]) for d in donors) if donors else None
+        u = None if u is None else round(u, 3)
+        bands.append([round(cx, 2), round(cy, 2), round(level, 2), u, size, why])
     crack_cells = pd.concat(per_cell.values()).groupby(["i", "j"])["crack"].max().dropna()
     crack_bands = [
         [
@@ -2760,6 +2866,12 @@ def design_slab(
         ]
         for (i, j), u in crack_cells.items()
     ]
+    crack_have = {(int(i), int(j)) for i, j in crack_cells.index}
+    for (i, j), (donors, why) in gaps.items():
+        vals = [float(crack_cells.loc[d]) for d in donors if d in crack_have]
+        if vals:
+            cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
+            crack_bands.append([round(cx, 2), round(cy, 2), round(level, 2), round(max(vals), 3), size, why])
     punch_u = max(
         [p.get("utilisation_with_links", p["utilisation"]) for p in punch if p.get("passed")], default=0.0
     )
@@ -2847,6 +2959,22 @@ def design_slab(
             for (i, j), r in zip(mc.index, mc.to_numpy(), strict=True)
         ],
     }
+    # Squares with no result of their own: the envelope of the squares round them, marked with why.
+    mc_have = {(int(i), int(j)) for i, j in mc.index}
+    for (i, j), (donors, why) in gap_cells(mc_have, ni, nj, x0, y0, size, box, piles).items():
+        d = mc.loc[[c for c in donors if c in mc_have]]
+        if len(d):
+            moment_cells["cells"].append(
+                [
+                    i,
+                    j,
+                    round(float(d["mx_max"].max())),
+                    round(float(d["mx_min"].min())),
+                    round(float(d["my_max"].max())),
+                    round(float(d["my_min"].min())),
+                    why,
+                ]
+            )
     return {
         **base,
         "moment_cells": moment_cells,
@@ -2876,6 +3004,6 @@ def design_slab(
         "bands": bands,
         "crack_bands": crack_bands,
         "tension": slab_tension(
-            [uls_m, qp_m], [(int(i), int(j)) for i, j in used.index], x0, y0, size, level, h
+            [uls_m, qp_m], [(int(i), int(j)) for i, j in used.index], x0, y0, size, level, h, gaps
         ),
     }

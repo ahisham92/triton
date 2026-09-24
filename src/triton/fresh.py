@@ -30,13 +30,40 @@ _SECTION_OWN = {
     "slab_strips",
     "clashes",
     "checks",
+    "furniture",
     "displacements",
     "joints",
 }
 
 
+def _furniture_spots(project: Project, section: Section) -> list | None:
+    """The quay furniture's positions the joints keep clear of (the joints set the restraint length)."""
+    from .furniture import nominal
+
+    if section.joints.furniture:
+        return None  # positions given for the section, already in its joints
+    berth = sum(section.joints.runs) or section.costing.berth_length or 0.0
+    return nominal(project.furniture, section.furniture, berth) or None
+
+
+# Costing items added to the defaults with the Furniture tab.
+_NEW = {"Ladders", "Storm pins", "Crane stoppers"}
+
+
 def _hash(value: Any) -> str:
     return hashlib.sha1(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:12]
+
+
+APPROACH = "Approach Slab"
+
+
+def names(project: Project, section: Section) -> list[str]:
+    """Every element the section designs: its own, and the project's approach slab when it has one."""
+    return list(section.elements) + ([APPROACH] if project.approach is not None else [])
+
+
+def _rear_beam(section: Section) -> Any:
+    return next((e for e in section.elements.values() if getattr(e, "kind", None) == "rear_beam"), None)
 
 
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
@@ -57,19 +84,28 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         # (or the berth length on the Costing tab when no runs are given) and the furniture priced
         # each. A section with no beam or slab does not use it, so its costing stays out of the design.
         c = section.costing
+        # Items with no berth place nothing; those added to the defaults later then keep earlier hashes.
+        berth = sum(section.joints.runs) or c.berth_length
         parts["expansion joints"] = _hash(
             [
                 joints.model_dump(mode="json"),
                 section.joints.model_dump(mode="json"),
                 None if section.joints.runs else c.berth_length,
-                [i.model_dump(mode="json") for i in c.items if i.unit == "each"],
+                [
+                    i.model_dump(mode="json")
+                    for i in c.items
+                    if i.unit == "each" and (berth or i.name not in _NEW)
+                ],
             ]
+            # Only when the Furniture tab places something, so earlier designs keep their hash.
+            + ([spots] if (spots := _furniture_spots(project, section)) else [])
         )
     for name, element in section.elements.items():
         cage = section.user_cages.get(name) or section.beam_cages.get(name) or section.slab_strips.get(name)
         own = element.model_dump(mode="json")
-        if not own.get("rooms"):
-            own.pop("rooms", None)  # a beam with no rooms keeps the fingerprint it had before rooms
+        for key in ("rooms", "manholes", "channels", "construction_joints"):
+            if not own.get(key):
+                own.pop(key, None)  # none: the fingerprint it had before these existed
         # A corner berth's parts keep their own bars and stations ("Deck · Part 2").
         each = {
             k: v.model_dump(mode="json")
@@ -78,7 +114,17 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
             if k.startswith(f"{name} · ")
         }
         value = own if cage is None else [own, cage.model_dump(mode="json")]
+        if project.approach is not None and getattr(element, "kind", None) == "rear_beam":
+            value = [value, project.approach.model_dump(mode="json")]  # the ledge's load and torque
         parts[name] = _hash([value, sorted(each.items())] if each else value)
+    if project.approach is not None:
+        rear = _rear_beam(section)
+        parts[APPROACH] = _hash(
+            [
+                project.approach.model_dump(mode="json"),
+                rear.model_dump(mode="json") if rear is not None else None,
+            ]
+        )
     return parts
 
 
@@ -118,7 +164,7 @@ def _by_element(results: dict[str, Any], elements: Iterable[str]) -> dict[str, d
     return {n: {**shared, n: then[n]} for n in names if n in then}
 
 
-KINDS = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls")
+KINDS = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
 
 
 def _designed(results: dict[str, Any]) -> list[dict]:
@@ -157,5 +203,5 @@ def changes(results: dict[str, Any], now: dict[str, str]) -> list[str] | None:
 def with_status(project: Project, section: Section, results: dict[str, Any], workbook: dict | None) -> dict:
     """The results with ``changed``: what changed since they were designed ([] = up to date), and
     ``stale``: the elements whose results are out of date."""
-    changed, stale = status(results, fingerprint(project, section, workbook), section.elements)
+    changed, stale = status(results, fingerprint(project, section, workbook), names(project, section))
     return {**results, "changed": changed, "stale": stale}

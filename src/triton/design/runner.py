@@ -16,6 +16,7 @@ from ..importer import SheetData
 from ..joints import restraint_length, section_joints, segment_lengths
 from ..materials import SHEET_PILE_GRADES
 from ..project import (
+    ApproachSlabInput,
     BeamInput,
     CombiWallInput,
     DesignSettings,
@@ -26,8 +27,11 @@ from ..project import (
     _now,
 )
 from ..validation import ImportResult
+from .approach import ELEMENT as APPROACH
+from .approach import design_approach
 from .beams import design_beam
 from .combi import design_combi_wall
+from .construction_joints import add_weights, beam_lines, beam_top, for_beam, for_pile, for_slab
 from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
 from .piles import design_pile
@@ -135,11 +139,15 @@ def run_section(
     progress: Callable[[float, str], None] | None = None,
     only: Collection[str] | None = None,
     deadline: float | None = None,
+    approach: ApproachSlabInput | None = None,
+    furniture_at: Callable[[float], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Design the piles, combi walls and beams of one section; pick the sheet pile wall's governing sets.
     ``progress(fraction, step)`` is told as each element is started. ``only``: design just these
     elements. ``deadline`` (``time.monotonic()``): start no element after it (at least one is done);
-    the rest are listed in ``left``, the ones done in ``designed``."""
+    the rest are listed in ``left``, the ones done in ``designed``. ``approach``: the project's approach
+    slab, designed as the element "Approach Slab" with its ledge on the rear beam, whose load and
+    torque the rear beam takes too."""
     started: list[str] = []
     handled: list[str] = []
     left: list[str] = []
@@ -212,6 +220,7 @@ def run_section(
         out["peaks"] = peaks
         out["positions"] = positions
         out["count"] = count
+        out["construction_joints"] = add_weights(for_pile(name, element, settings, own, out), count)
         steel = out.get("steel") or {}
         if steel.get("total_kg") is not None:
             out["steel"]["element_total_t"] = round(steel["total_kg"] * count / 1000, 2)
@@ -262,7 +271,9 @@ def run_section(
     axes = {a["element"]: a.get("local") for a in found}
     signs = {a["element"]: a for a in found if a["kind"] == "plate"}
     parts, alignment = section_alignment(section, sheets) if plates else ([], {"parts": [], "points": []})
-    joints = section_joints(settings, section, raw, parts, along_axis(section)) if plates else None
+    joints = (
+        section_joints(settings, section, raw, parts, along_axis(section), furniture_at) if plates else None
+    )
     use_joints = bool(joints and joints.get("segments") and settings.joints.use_in_restraint)
 
     def with_joints(element: Any, part: Any) -> tuple[Any, list[float]]:
@@ -304,6 +315,12 @@ def run_section(
                 out.append((part, own, geo, f"{name} · {part.name}" if len(parts) > 1 else name))
         return out
 
+    rear = next(
+        (e for e in section.elements.values() if isinstance(e, BeamInput) and e.kind == "rear_beam"), None
+    )
+    approach_design = None
+    if approach is not None:
+        approach_design = design_approach(approach, settings, rear)
     for name, element in section.elements.items():
         if not isinstance(element, BeamInput) or not take(name):
             continue
@@ -325,12 +342,29 @@ def run_section(
                 section.beam_cages.get(key),
                 signs.get(name),
                 joint_lengths=lengths,
+                ledge=(approach_design or {}).get("ledge") if element.kind == "rear_beam" else None,
             )
             b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
             if lengths and element.restraint_factor is None:
                 b["notes"].append(joint_note(element, placed.joint_spacing))
             if lengths:
                 b["restraint"]["length_from"] = "expansion joints"
+            if element.construction_joints:
+                top = beam_top(section.clashes, name, b.get("level_m") or 0.0, float(b.get("depth_mm") or 0))
+                b["construction_joints"] = add_weights(
+                    for_beam(
+                        name,
+                        element,
+                        settings,
+                        own,
+                        geo,
+                        section.elements,
+                        axes.get(name),
+                        signs.get(name),
+                        b,
+                        top,
+                    )
+                )
             beams.append(b if part is None else tag_part(b, part, parts))
     slabs = []
     for name, element in section.elements.items():
@@ -360,12 +394,21 @@ def run_section(
                 signs.get(name),
             )
             d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+            if element.construction_joints:
+                lines = beam_lines(around, section.elements, axes)
+                d["construction_joints"] = add_weights(
+                    for_slab(name, element, settings, own, axes.get(name), signs.get(name), d, lines)
+                )
             if lengths:
                 if element.restraint_check != "off" and element.restraint_factor is None:
                     d["notes"].append(joint_note(element, placed.joint_spacing))
                 if isinstance(d.get("restraint"), dict):
                     d["restraint"]["length_from"] = "expansion joints"
             slabs.append(d if part is None else tag_part(d, part, parts))
+    approach_slabs = []
+    if approach_design is not None and take(APPROACH):
+        tick(APPROACH)
+        approach_slabs.append(approach_design)
     if missing:
         skipped.append(f"Load multiplier sheets not in the workbook: {', '.join(missing)}.")
     return {
@@ -375,6 +418,7 @@ def run_section(
         "sheet_pile_walls": spws,
         "beams": beams,
         "slabs": slabs,
+        "approach_slabs": approach_slabs,
         "alignment": alignment,
         "joints": joints,
         "skipped": skipped,

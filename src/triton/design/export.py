@@ -59,6 +59,7 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
                 "toe_level_m": p["section"].get("toe_level_m"),
                 "positions": [{"x": x, "y": y} for x, y in p.get("positions", [])],
                 "splice": c.get("splice", "lap"),
+                "construction_joints": joints_for_drawing(p),
                 "user_set": bool(p.get("user_set")),
                 "runs": [
                     {
@@ -101,7 +102,68 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
         "piles": piles,
         "beams": [_beam(b) for b in results.get("beams", []) if b.get("cage")],
         "slabs": [_slab(d) for d in results.get("slabs", []) if d.get("layers")],
+        "approach": [_approach(a) for a in results.get("approach_slabs", []) if a.get("bending")],
     }
+
+
+def _approach(a: dict[str, Any]) -> dict[str, Any]:
+    """The approach slab and its ledge: sizes and bars per metre, for the section drawing."""
+    led = a.get("ledge") or {}
+    return {
+        "element": a["element"],
+        "length_m": a.get("length_m"),
+        "thickness_mm": a.get("thickness_mm"),
+        "cover_top_mm": a.get("cover_top_mm"),
+        "cover_bottom_mm": a.get("cover_bottom_mm"),
+        "joint_mm": a.get("joint_mm"),
+        "bottom": {k: (a["bending"].get("bottom") or {}).get(k) for k in ("bars", "phi", "spacing_mm")},
+        "top": {k: (a["bending"].get("top") or {}).get(k) for k in ("bars", "phi", "spacing_mm")},
+        "distribution": {f: (a.get("distribution") or {}).get(f, {}).get("bars") for f in ("bottom", "top")},
+        "links": (a.get("shear") or {}).get("links_mm2_per_m2"),
+        "links_zone_m": (a.get("shear") or {}).get("links_zone_m"),
+        "ledge": {
+            k: led.get(k)
+            for k in (
+                "projection_mm",
+                "depth_mm",
+                "top_below_beam_top_mm",
+                "cover_mm",
+                "bearing_width_mm",
+                "bearing_thickness_mm",
+                "edge_distance_mm",
+            )
+        }
+        | {
+            "tie": (led.get("tie") or {}).get("bars"),
+            "tie_phi": (led.get("tie") or {}).get("phi"),
+            "links": (led.get("links") or {}).get("bars"),
+            "hanger": (led.get("hanger") or {}).get("bars"),
+        },
+    }
+
+
+def joints_for_drawing(d: dict[str, Any]) -> list[dict[str, Any]]:
+    """An element's construction joints where they are, and the additional bars at each."""
+    out = []
+    for j in d.get("construction_joints") or []:
+        stretches = [s for s in j.get("stretches") or [] if s.get("bars")]
+        extra = [{**s["bars"], "from_m": s["from_m"], "to_m": s["to_m"]} for s in stretches] or (
+            [j["additional"]] if j.get("additional") else []
+        )
+        out.append(
+            {
+                "where": j["where"],
+                "note": j.get("note", ""),
+                "level_m": j.get("level_m"),
+                "at_m": j.get("at_m"),
+                "height_above_soffit_mm": j.get("height_above_soffit_mm"),
+                "line": j.get("line"),
+                "passed": j.get("passed"),
+                "status": j.get("status"),
+                "additional": extra,
+            }
+        )
+    return out
 
 
 def _beam(b: dict[str, Any]) -> dict[str, Any]:
@@ -120,6 +182,7 @@ def _beam(b: dict[str, Any]) -> dict[str, Any]:
         "depth_mm": b.get("depth_mm"),
         "cover_mm": b.get("cover_mm"),
         "user_set": bool(b.get("user_set")),
+        "construction_joints": joints_for_drawing(b),
         "label": cage.get("label"),
         "bars": [{"y_mm": y, "z_mm": z, "diameter_mm": phi} for y, z, phi in cage.get("bars") or []],
         "links": {
@@ -215,6 +278,7 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
         "level_m": d.get("level_m"),
         "box_m": d.get("box"),
         "voids": _voids(d.get("voids")),
+        "construction_joints": joints_for_drawing(d),
         "faces": faces,
         "links": [
             {
@@ -226,6 +290,42 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
             }
             for z in (d.get("shear") or {}).get("links") or []
         ],
+        "manholes": [
+            _manhole(m) for m in (d.get("openings") or {}).get("manholes") or [] if m.get("directions")
+        ],
+        "channels": [
+            {
+                **_room(c),
+                "direction": c["direction"],
+                "at_m": c["at_m"],
+                "strip_mm": c["strip_mm"],
+                "depth_mm": c["depth_total_mm"],
+                "cover_mm": max(d.get("cover_top_mm") or 0, d.get("cover_bottom_mm") or 0),
+            }
+            for c in (d.get("openings") or {}).get("channels") or []
+            if c.get("section")
+        ],
+    }
+
+
+def _manhole(m: dict[str, Any]) -> dict[str, Any]:
+    """An opening in the deck (plan, m) and its trimmer bars: for the bars along X and along Y, per face,
+    the bars each side, their size and length (centred on the opening)."""
+    return {
+        "name": m["name"],
+        "x_m": m["x"],
+        "y_m": m["y"],
+        "size_x_mm": m["size_x_mm"],
+        "size_y_mm": m["size_y_mm"],
+        "through": m["through"],
+        "trimmers": {
+            along: {
+                face: {k: t[k] for k in ("count", "phi", "length_mm")} | {"strip_mm": dd["strip_mm"]}
+                for face, t in dd["trimmers"].items()
+            }
+            for along, dd in m["directions"].items()
+        },
+        "diagonals": m["corners"],
     }
 
 
