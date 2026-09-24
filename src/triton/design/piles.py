@@ -23,6 +23,7 @@ from ..project import DesignSettings, PileInput, UserCage, pile_cover, with_proj
 from .circular import CircularSection, ConcreteLaw, Ring, SteelLaw, hull_indices
 from .governing import qp_loads, station_sets
 from .pile_cracks import pile_crack_widths
+from .tension import pile_tension
 
 MIN_BAR = 16  # mm, EN 1992-1-1 9.8.5(3)
 MIN_BARS = 6  # 9.8.5(3)
@@ -157,6 +158,7 @@ class PileDesign:
     casing: dict | None = None
     cracks: dict | None = None
     bands: list[list[float]] = field(default_factory=list)
+    tension: dict = field(default_factory=dict)
     moments: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     curve: list[list[float]] = field(default_factory=list)
@@ -185,6 +187,7 @@ class PileDesign:
             "casing": self.casing,
             "cracks": self.cracks,
             "bands": self.bands,
+            "tension": self.tension,
             "moments": self.moments,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
             "reinforcement_ratio_pct": round(100 * self.reinforcement_ratio, 3),
@@ -627,6 +630,7 @@ def design_pile(
         casing=casing_check,
         cracks=cracks,
         bands=util_bands(loads),
+        tension=pile_tension(pd.concat([loads, qp_loads(sheets, pile.head_level, above)]), pile.diameter),
         moments=[
             {"z": float(z), "M_kNm": round(float(m), 1)}
             for z, m in loads.groupby(loads["Z"].mul(2).round() / 2)["M"]

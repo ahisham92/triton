@@ -56,6 +56,7 @@ from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, SlabInput, SlabStrips, with_project_grades
 from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restraint_factor
+from .tension import slab_tension
 
 E_S = 200_000.0
 PREMIUM = 0.10  # extra weight per zoned cell when picking the basic mesh
@@ -1496,4 +1497,7 @@ def design_slab(
         ),
         "passed": bool(passed),
         "bands": bands,
+        "tension": slab_tension(
+            [uls_m, qp_m], [(int(i), int(j)) for i, j in used.index], x0, y0, size, level, h
+        ),
     }

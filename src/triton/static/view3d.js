@@ -33,6 +33,39 @@ export function legendHtml() {
     <div class="grey"><i style="background:rgb(${GREY})"></i> not designed yet</div></div>`;
 }
 
+// Tension zones: one colour per state (validated for colour-blind separation; tooltips name the state).
+const TENSION = { none: "#c9e3cf", bottom: "#2563eb", top: "#d9730d", both: "#a3389f", whole: "#9f1d1d" };
+
+// State of a tension code (see triton/design/tension.py): [colour key, words].
+export function tensionState(kind, code, dir = "x") {
+  if (code == null) return null;
+  if (kind === "pile") {
+    if (code & 4) return ["whole", code & 1 ? "whole section in tension in some combinations, one side in others" : "whole section in tension"];
+    if (code & 2) return ["both", "one side in tension; the side changes between combinations"];
+    if (code & 1) return ["bottom", "one side in tension from bending"];
+    return ["none", "all in compression"];
+  }
+  const b = kind === "slab" && dir === "y" ? (code >> 3) & 7 : code & 7;
+  if (b & 4) return ["whole", "whole section in tension (net axial tension)"];
+  if ((b & 3) === 3) return ["both", "bottom in tension in some combinations, top in others"];
+  if (b & 1) return ["bottom", "bottom face in tension"];
+  if (b & 2) return ["top", "top face in tension"];
+  return ["none", "no tension"];
+}
+
+export function tensionLegendHtml() {
+  const row = (k, text) => `<div class="grey"><i style="background:${TENSION[k]}"></i> ${text}</div>`;
+  return `<div class="heat-legend tension-legend"><span>Tension zones</span>
+    ${row("bottom", "Bottom face in tension · piles: one side in tension")}
+    ${row("top", "Top face in tension")}
+    ${row("both", "Bottom in some combinations, top in others · piles: the tension side changes")}
+    ${row("whole", "Whole section in tension (net axial tension)")}
+    ${row("none", "No tension: the whole section is in compression")}
+    <div class="grey"><i style="background:rgb(${GREY})"></i> no result for this combination</div>
+    <p>Stresses of the uncracked concrete, N/A ± M/W, from the ULS and QP results; tension below 0.1 MPa is ignored.
+    Beams show vertical bending; slabs one bar direction at a time.</p></div>`;
+}
+
 const PRESETS = {
   "3D": { yaw: 0.7, pitch: 0.42 },
   Plan: { yaw: 0, pitch: Math.PI / 2 - 1e-4 },
@@ -41,15 +74,21 @@ const PRESETS = {
 };
 
 export class View3D {
-  constructor(host, { height = 460, compact = false } = {}) {
+  constructor(host, { height = 460, compact = false, legend = true } = {}) {
     this.host = host;
+    this.legend = legend;
     this.labels = !compact;
     host.classList.add("view3d");
     host.innerHTML = `<div class="v3d-bar">${Object.keys(PRESETS)
       .map((k) => `<button class="quiet" data-preset="${k}">${k}</button>`)
       .join("")}<button class="quiet" data-fit>Fit view</button>
-      <label class="toggle"><input type="checkbox" data-labels ${this.labels ? "checked" : ""}> Labels</label></div>
-      <canvas style="height:${height}px"></canvas><div class="v3d-tip" hidden></div>`;
+      <label class="toggle"><input type="checkbox" data-labels ${this.labels ? "checked" : ""}> Labels</label>
+      <span class="v3d-mode"><select data-mode aria-label="Colour by"><option value="util">Utilisation</option>
+      <option value="tension">Tension zones</option></select>
+      <select data-combo aria-label="Combination" hidden></select>
+      <select data-dir aria-label="Slab bar direction" hidden><option value="x">Slabs: bars along X (M11)</option>
+      <option value="y">Slabs: bars along Y (M22)</option></select></span></div>
+      <canvas style="height:${height}px"></canvas><div class="v3d-tip" hidden></div><div class="v3d-legend"></div>`;
     this.canvas = host.querySelector("canvas");
     this.tip = host.querySelector(".v3d-tip");
     this.cam = { ...PRESETS["3D"], scale: 1, panX: 0, panY: 0 };
@@ -63,27 +102,84 @@ export class View3D {
       this.labels = e.target.checked;
       this.draw();
     };
+    const prefs = View3D.prefs;
+    for (const key of ["mode", "combo", "dir"]) {
+      host.querySelector(`[data-${key}]`).onchange = (e) => {
+        prefs[key] = e.target.value;
+        this._controls();
+        this._build();
+        this.draw();
+      };
+    }
     this._wire();
     new ResizeObserver(() => this.draw()).observe(this.canvas);
   }
 
   // scene: { elements: [{element, type, kind, lines?, box?}], bands: {element: [[x,y,z,u]]},
   //          selected: name|null, arrows: [{from:[x,y,z], dir:[x,y,z], label}], focus: name|null }
+  //          tension: {element: {kind, points, combinations, codes}} for the "Tension zones" mode
   setScene(scene) {
     this.scene = scene;
+    this._controls();
     this._build();
     this.fit();
   }
 
+  _controls() {
+    const prefs = View3D.prefs;
+    const tz = Object.values(this.scene?.tension || {});
+    const combos = [...new Set(tz.flatMap((t) => t.combinations || []))];
+    if (prefs.combo && !combos.includes(prefs.combo)) prefs.combo = "";
+    const mode = this.host.querySelector("[data-mode]");
+    mode.value = prefs.mode;
+    mode.disabled = !tz.length;
+    mode.title = tz.length ? "" : "Run the design to see the tension zones";
+    const on = prefs.mode === "tension" && tz.length > 0;
+    const combo = this.host.querySelector("[data-combo]");
+    combo.innerHTML = `<option value="">Envelope of all combinations</option>${combos
+      .map((c) => `<option value="${c.replace(/"/g, "&quot;")}">${c.replace(/</g, "&lt;")}</option>`)
+      .join("")}`;
+    combo.value = prefs.combo;
+    combo.hidden = !on;
+    const dir = this.host.querySelector("[data-dir]");
+    dir.value = prefs.dir;
+    dir.hidden = !on || !tz.some((t) => t.kind === "slab");
+    this.tension = on;
+    this.host.querySelector(".v3d-legend").innerHTML = on ? tensionLegendHtml() : this.legend ? legendHtml() : "";
+  }
+
+  // Bands of an element as [x, y, z, value, size?] and how to paint a value.
+  _source(e) {
+    if (!this.tension) {
+      return { bands: this.scene.bands?.[e.element] || [], color: heat, words: null };
+    }
+    const t = this.scene.tension?.[e.element];
+    if (!t) return { bands: [], color: heat, words: null };
+    const { combo, dir } = View3D.prefs;
+    const codes = t.codes?.[combo] ?? null;
+    const bands = t.points.map((p, i) => {
+      const ch = codes ? codes[i] : " ";
+      return [p[0], p[1], p[2], ch && ch !== " " ? ch.charCodeAt(0) - 48 : null, p[3]];
+    });
+    const state = (v) => tensionState(t.kind, v, dir);
+    return {
+      bands,
+      color: (v) => (v == null ? `rgb(${GREY})` : TENSION[state(v)[0]]),
+      words: (v) => (v == null ? "no result" : state(v)[1]) + ` (${combo || "envelope"})`,
+    };
+  }
+
   _build() {
-    const { elements, bands = {}, selected } = this.scene;
+    const { elements, selected } = this.scene;
     const items = [];
     for (const e of elements) {
       const faded = selected && e.element !== selected;
+      const src = this._source(e);
       if (e.lines) {
-        const b = bands[e.element] || [];
+        const b = src.bands;
         const byPos = new Map();
         for (const [x, y, z, u] of b) {
+          if (this.tension && u == null) continue;
           const k = `${x.toFixed(2)},${y.toFixed(2)}`;
           if (!byPos.has(k)) byPos.set(k, []);
           byPos.get(k).push([z, u]);
@@ -102,8 +198,9 @@ export class View3D {
               // A small overlap hides the seams between bands.
               const up = k ? (z + segs[k - 1][0]) / 2 + 0.04 : Math.min(z + 0.25, top);
               const down = k < segs.length - 1 ? (z + segs[k + 1][0]) / 2 - 0.04 : Math.max(z - 0.25, bottom);
-              items.push({ kind: "line", a: [x, y, up], b: [x, y, down], color: heat(u), width, faded, cap: "butt",
-                element: e.element, tip: `${e.element} at X ${x}, Y ${y}, z ${z.toFixed(1)} m: utilisation ${u.toFixed(2)}` });
+              const what = src.words ? src.words(u) : `utilisation ${u.toFixed(2)}`;
+              items.push({ kind: "line", a: [x, y, up], b: [x, y, down], color: src.color(u), width, faded, cap: "butt",
+                element: e.element, tip: `${e.element} at X ${x}, Y ${y}, z ${z.toFixed(1)} m: ${what}` });
             });
             const last = segs[segs.length - 1][0] - 0.25;
             if (last > bottom + 0.01) items.push({ kind: "line", a: [x, y, last], b: [x, y, bottom], color: `rgb(${GREY})`, width, faded, element: e.element });
@@ -124,7 +221,7 @@ export class View3D {
         };
         items.push({ kind: "quad", pts: [at(0, 0), at(1, 0), at(1, 1), at(0, 1)], faded, element: e.element, under: true,
           fill: e.type === "sheet_pile_wall" ? "rgba(120,130,145,0.30)" : "rgba(150,158,168,0.22)" });
-        const b = bands[e.element] || [];
+        const b = src.bands;
         if (b.length && flat === "Z") {
           // Beams: 0.5 m bands along the beam, across its full width.
           const along = Y[1] - Y[0] >= X[1] - X[0] ? "Y" : "X";
@@ -134,8 +231,8 @@ export class View3D {
               // Slabs: square cells of the zone grid.
               const h = size / 2 + 0.01;
               items.push({ kind: "quad", pts: [[x - h, y - h, z], [x + h, y - h, z], [x + h, y + h, z], [x - h, y + h, z]],
-                faded, element: e.element, fill: heat(u), stroke: false,
-                tip: `${e.element} at X ${x}, Y ${y}: bending needs ${Math.round(u * 100)}% of the bars` });
+                faded, element: e.element, fill: src.color(u), stroke: false,
+                tip: `${e.element} at X ${x}, Y ${y}: ${src.words ? src.words(u) : `bending needs ${Math.round(u * 100)}% of the bars`}` });
               continue;
             }
             const s0 = (along === "Y" ? y : x) - 0.27;
@@ -143,8 +240,8 @@ export class View3D {
             const pt = (sv, tv) => (along === "Y" ? [tv, sv, z] : [sv, tv, z]);
             const [t0, t1] = c[across];
             items.push({ kind: "quad", pts: [pt(s0, t0), pt(s1, t0), pt(s1, t1), pt(s0, t1)], faded, element: e.element,
-              fill: heat(u), stroke: false,
-              tip: `${e.element} at ${along} ${(along === "Y" ? y : x).toFixed(1)} m: utilisation ${u.toFixed(2)}` });
+              fill: src.color(u), stroke: false,
+              tip: `${e.element} at ${along} ${(along === "Y" ? y : x).toFixed(1)} m: ${src.words ? src.words(u) : `utilisation ${u.toFixed(2)}`}` });
           }
         }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);
@@ -419,3 +516,6 @@ export function directionArrows(el, finding) {
   }
   return [];
 }
+
+// Shared by every view on the page, so a choice made in one view carries to the next.
+View3D.prefs = { mode: "util", combo: "", dir: "x" };

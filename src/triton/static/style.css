@@ -295,3 +295,6 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .cage-set { margin-top: 12px; }
 .cage-set summary { cursor: pointer; font-weight: 600; }
 .cage-set label { display: inline-flex; gap: 6px; align-items: center; }
+.v3d-mode { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.v3d-mode select { font-size: 13px; padding: 3px 6px; }
+.tension-legend p { margin: 4px 0 0; }

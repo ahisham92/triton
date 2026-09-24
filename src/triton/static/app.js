@@ -1,5 +1,5 @@
 // Triton front end: projects, schema-driven setup forms and the workbook check.
-import { View3D, directionArrows, heat, legendHtml } from "./view3d.js";
+import { View3D, directionArrows, heat } from "./view3d.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -2245,7 +2245,7 @@ function drawResults(res, full = res) {
 // ---------------------------------------------------------------- 3D
 function v3dSlot(name) {
   return `<details class="v3d-details" open><summary>In 3D, with the directions of the actions</summary>
-    <div class="v3d-slot" data-element="${esc(name)}"></div>${legendHtml()}</details>`;
+    <div class="v3d-slot" data-element="${esc(name)}"></div></details>`;
 }
 
 async function sectionGeometry() {
@@ -2260,6 +2260,14 @@ async function sectionGeometry() {
     state.geometry = { section: sec().id, data };
   }
   return state.geometry.data;
+}
+
+function resultTension(res) {
+  const out = {};
+  for (const k of ["piles", "combi_walls", "beams", "slabs"]) {
+    for (const d of res?.[k] || []) if (d.tension?.points?.length) out[d.element] = d.tension;
+  }
+  return out;
 }
 
 function resultBands(res) {
@@ -2280,12 +2288,13 @@ async function mountElementViews(res) {
     return;
   }
   const bands = resultBands(res);
+  const tension = resultTension(res);
   for (const slot of slots) {
     if (!document.body.contains(slot)) continue; // redrawn meanwhile (a design run's new results)
     const name = slot.dataset.element;
     const el = geo.elements.find((e) => e.element === name);
     const view = new View3D(slot, { height: 380, compact: true });
-    view.setScene({ elements: geo.elements, bands, selected: name, focus: name,
+    view.setScene({ elements: geo.elements, bands, tension, selected: name, focus: name,
       arrows: directionArrows(el, geo.axes.find((a) => a.element === name)) });
   }
 }
@@ -2485,7 +2494,7 @@ async function renderCostingTab(host) {
 }
 
 async function renderView3dTab(host) {
-  host.innerHTML = `<div class="v3d-layout"><div><div class="panel" id="v3d-main"></div>${legendHtml()}</div>
+  host.innerHTML = `<div class="v3d-layout"><div><div class="panel" id="v3d-main"></div></div>
     <div class="panel v3d-side" id="v3d-side"><p class="status">Loading…</p></div></div>`;
   const geo = await sectionGeometry();
   if (!geo) {
@@ -2501,6 +2510,7 @@ async function renderView3dTab(host) {
   }
   const view = new View3D(document.getElementById("v3d-main"), { height: 560 });
   const bands = resultBands(res);
+  const tension = resultTension(res);
   const max = {};
   for (const p of res?.piles || []) max[p.element] = p.utilisation;
   for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
@@ -2510,7 +2520,7 @@ async function renderView3dTab(host) {
   state.pick3d = null;
   const show = () => {
     const el = geo.elements.find((e) => e.element === selected);
-    view.setScene({ elements: geo.elements, bands, selected,
+    view.setScene({ elements: geo.elements, bands, tension, selected,
       arrows: selected ? directionArrows(el, geo.axes.find((a) => a.element === selected)) : [] });
     side.querySelectorAll("[data-pick]").forEach((b) => b.classList.toggle("on", b.dataset.pick === selected));
   };

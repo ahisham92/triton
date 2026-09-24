@@ -169,6 +169,7 @@ def run_section(
                 for q in peaks
             ]
             wall["bands"] = combi_bands(wall, positions)
+            wall["tension"] = wall["infill"].get("tension") or {}
             wall["positions"] = wall["infill"]["positions"] = positions
             wall["count"] = wall["infill"]["count"] = count
             if (wall["infill"].get("steel") or {}).get("total_kg") is not None:

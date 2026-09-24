@@ -55,6 +55,7 @@ from .circular import ConcreteLaw, SteelLaw
 from .crack import autogenous_shrinkage, crack_width, restraint_crack, restraint_factor
 from .governing import pick_sets
 from .rect import Bars, RectSection
+from .tension import beam_tension
 from .truss import check_truss, spacing_from_supports
 
 BEAM_TYPES = (ElementType.FRONT_BEAM, ElementType.REAR_BEAM, ElementType.TRANSVERSE_BEAM)
@@ -1218,6 +1219,7 @@ def design_beam(
         "truss": truss,
         "steel": steel,
         "bands": bands,
+        "tension": beam_tension([mom, qp_all], lay.start, BAND, lambda i: _band_at(lay, i), g.b, g.h),
         "profile": _profile(mom, u),
         "governing_sets": sets,
     }
@@ -1234,6 +1236,12 @@ def _profile(mom: pd.DataFrame, u: np.ndarray) -> list[dict]:
         }
         for s, r in f.iterrows()
     ]
+
+
+def _band_at(lay: Layout, i: int) -> list[float]:
+    s = lay.start + (i + 0.5) * BAND
+    x, y = (lay.centre, s) if lay.along == "Y" else (s, lay.centre)
+    return [round(x, 3), round(y, 3), round(lay.level, 2)]
 
 
 def beam_bands(lay: Layout, frame: pd.DataFrame) -> list[list[float]]:
