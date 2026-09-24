@@ -54,7 +54,7 @@ import pandas as pd
 from ..elements import CombinationType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
-from ..project import DesignSettings, PileInput, SlabInput, with_project_grades
+from ..project import DesignSettings, PileInput, SlabInput, SlabStrips, with_project_grades
 from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restraint_factor
 
 E_S = 200_000.0
@@ -253,9 +253,12 @@ def auto_stations(
     return sorted(cuts)
 
 
-def strip_frame(slab: SlabInput, box: dict, piles: list[tuple], beams: list[dict]) -> dict | None:
+def strip_frame(
+    slab: SlabInput, box: dict, piles: list[tuple], beams: list[dict], stations: list[float] | None = None
+) -> dict | None:
     """Where the column and field strips lie: the lines of piles along the strips, the distance along
-    them from the slab edge at the front beam, and the station boundaries."""
+    them from the sea side (the front wall line, the front beam's centre, as the office's stations),
+    and the station boundaries."""
     along = slab.strip_direction
     ai, ci = (0, 1) if along == "X" else (1, 0)
     lines = sorted({round(p[ci], 1) for p in piles})
@@ -265,14 +268,18 @@ def strip_frame(slab: SlabInput, box: dict, piles: list[tuple], beams: list[dict
     front = next((b for b in beams if b.get("type") == "front_beam"), None)
     mid = None if front is None else sum(front["box"][along]) / 2
     from_hi = mid is None or abs(mid - hi) <= abs(mid - lo)
-    origin, sign = (hi, -1.0) if from_hi else (lo, 1.0)
+    edge, sign = (hi, -1.0) if from_hi else (lo, 1.0)
+    origin = edge if mid is None else mid
     length = hi - lo
+    start = round((edge - origin) * sign, 2)
+    end = round(start + length, 2)
     rows = sorted({round((p[ai] - origin) * sign, 2) for p in piles})
-    rows = [r for r in rows if 0 < r < length]
-    if slab.stations:
-        bounds = sorted({0.0, round(length, 2), *(round(b, 2) for b in slab.stations if 0 < b < length)})
+    rows = [r for r in rows if start < r < end]
+    given = slab.stations if stations is None else stations
+    if given:
+        bounds = sorted({start, end, *(round(b, 2) for b in given if start < b < end)})
     else:
-        bounds = auto_stations(rows, length)
+        bounds = [round(start + b, 2) for b in auto_stations([r - start for r in rows], length)]
     return {
         "along": along,
         "across": "Y" if along == "X" else "X",
@@ -284,8 +291,113 @@ def strip_frame(slab: SlabInput, box: dict, piles: list[tuple], beams: list[dict
         "bounds": bounds,
         "column": slab.column_strip_width,
         "field": slab.field_strip_width,
-        "from": "front beam" if front is not None else f"{along} = {origin:g}",
+        "from": "front wall line (front beam centre)" if front is not None else f"{along} = {origin:g}",
+        "start": start,
+        "end": end,
     }
+
+
+def strip_key(layer: str, bounds: list[float], k: tuple) -> str:
+    """'layer|from|to|strip' naming one station and strip kind of a layer."""
+    return f"{layer}|{bounds[k[0]]:g}|{bounds[k[0] + 1]:g}|{'column' if k[1] == 0 else 'field'}"
+
+
+def station_text(stations: list[list[float]], every: list[list[float]]) -> str:
+    """'Station 4 to 8', 'All stations', 'All stations except 4 to 8' or a list."""
+    if len(stations) == len(every):
+        return "All stations"
+
+    def runs(sts: list[list[float]]) -> list[list[float]]:
+        out: list[list[float]] = []
+        for a, b in sorted(sts):
+            if out and abs(out[-1][1] - a) < 1e-6:
+                out[-1][1] = b
+            else:
+                out.append([a, b])
+        return out
+
+    mine, rest = runs(stations), runs([s for s in every if s not in stations])
+    if len(mine) == 1:
+        return f"Station {mine[0][0]:g} to {mine[0][1]:g}"
+    if len(rest) == 1:
+        return f"All stations except {rest[0][0]:g} to {rest[0][1]:g}"
+    return "Stations " + ", ".join(f"{a:g} to {b:g}" for a, b in mine)
+
+
+def strip_table(rows: list[dict], frame: dict) -> list[dict]:
+    """The office's slab table (calc report Table 5-4): for the bars along the strips one row per
+    station and strip; for the bars along the berth, the stations with the same bars together
+    ('Station 4 to 8', 'All stations except 4 to 8'). Each row carries its worst face."""
+    every = [[a, b] for a, b in zip(frame["bounds"][:-1], frame["bounds"][1:], strict=False)]
+    cells: dict[tuple, dict[str, dict]] = {}
+    for r in rows:
+        cells.setdefault((r["moment"], r["layer"].split("_")[1], tuple(r["station"]), r["strip"]), {})[
+            r["face"]
+        ] = r
+    out = []
+    along = frame["along"].lower()
+    moments = sorted({(k[0], k[1]) for k in cells}, key=lambda m: (m[1] != along, m[0]))
+    for moment, direction in moments:
+        mine = {k: v for k, v in cells.items() if k[0] == moment}
+        if direction == along:
+            groups = [[k] for k in sorted(mine, key=lambda k: (k[2], k[3] != "column"))]
+        else:
+            by: dict[tuple, list] = {}
+            for k in sorted(mine, key=lambda k: (k[3] != "column", k[2])):
+                faces = mine[k]
+                by.setdefault(
+                    (k[3], *(faces[f]["bars"] if f in faces else "" for f in ("bottom", "top"))), []
+                ).append(k)
+            groups = list(by.values())
+        for g in groups:
+            faces = [r for k in g for r in mine[k].values()]
+
+            def score(r: dict) -> float:
+                return max(r["ratio"] or 0, (r["wk_mm"] or 0) / r["wk_limit_mm"])
+
+            worst = max(faces, key=score)
+            wk = max(faces, key=lambda r: (r["wk_mm"] or 0) / r["wk_limit_mm"])
+            stations = [list(k[2]) for k in g]
+            out.append(
+                {
+                    "moment": moment,
+                    "along_strips": direction == along,
+                    "strip": g[0][3],
+                    "stations": stations,
+                    "label": station_text(stations, every),
+                    "wk_mm": wk["wk_mm"],
+                    "wk_limit_mm": wk["wk_limit_mm"],
+                    "ratio": worst["ratio"],
+                    "M_kNm_per_m": worst["M_kNm_per_m"],
+                    "MRd_kNm_per_m": worst["MRd_kNm_per_m"],
+                    "combination": worst["combination"],
+                    "face": worst["face"],
+                    "bars": {f: mine[g[0]][f]["bars"] for f in ("bottom", "top") if f in mine[g[0]]},
+                    "additional": {
+                        f: mine[g[0]][f]["additional"] for f in ("bottom", "top") if f in mine[g[0]]
+                    },
+                    "layers": {f: mine[g[0]][f]["layer"] for f in ("bottom", "top") if f in mine[g[0]]},
+                    "keys": {f: [mine[k][f]["key"] for k in g if f in mine[k]] for f in ("bottom", "top")},
+                    "user_set": any(r["user_set"] for r in faces),
+                }
+            )
+    return out
+
+
+def strip_profile(f: pd.DataFrame, loc: dict, size: float, axes: dict[str, str] | None) -> dict[str, list]:
+    """ULS envelope of the moment per metre averaged across each strip, column and field strips, at
+    every cut from the sea side: for the diagram the stations are set on."""
+    out = {}
+    for mcol, ncol in (("Mx", "Nx"), ("My", "Ny")):
+        env = strip_average(f, f[mcol].to_numpy(float), f[ncol].to_numpy(float), loc, size)
+        g = env.groupby(["cut", "kind"])["m"].agg(["max", "min"]).reset_index()
+        rows: dict[int, dict] = {}
+        for r in g.itertuples(index=False):
+            k = "column" if r.kind == 0 else "field"
+            row = rows.setdefault(int(r.cut), {"s": round((r.cut + 0.5) * size, 2)})
+            row[f"{k}_max"], row[f"{k}_min"] = round(float(r.max), 1), round(float(r.min), 1)
+        out[_map(axes)[mcol].replace("_", "")] = [rows[c] for c in sorted(rows)]
+    return out
 
 
 def locate(frame: dict, along: np.ndarray, across: np.ndarray) -> dict[str, np.ndarray]:
@@ -745,8 +857,10 @@ def design_slab(
     elements: dict[str, Any],
     axes: dict[str, str] | None,
     pile_sheets: dict[str, dict[str, SheetData]],
+    choices: SlabStrips | None = None,
 ) -> dict[str, Any]:
     slab = with_project_grades(slab, settings.materials, settings.durability)
+    choices = choices or SlabStrips()
     conc = concrete(slab.concrete)
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     fyd = fyk / settings.partial_factors.gamma_s
@@ -772,7 +886,12 @@ def design_slab(
         + _map(axes)["Mx"].replace("_", "")
         + (" (from the directions check)." if axes else " (assumed: the directions check had no answer)."),
         "Positive plate moments taken as " + settings.plate_positive_moment + " (Design settings).",
-        "Wood–Armer moments from Mx, My and the twisting moment Mxy.",
+        (
+            "Wood–Armer moments from Mx, My and the twisting moment Mxy; "
+            if slab.twisting == "wood_armer"
+            else "Mx and My as they are, without the twisting moment Mxy (slab setting); "
+        )
+        + "bars along X take Mx with Nx only, bars along Y My with Ny only, so no action is counted twice.",
     ]
     if crane_rows:
         notes.append(
@@ -834,13 +953,16 @@ def design_slab(
     if len(qp_m):
         qi, qj = _cells(qp_m["X"].to_numpy(), qp_m["Y"].to_numpy(), x0, y0, size)
         qp_m = qp_m.assign(i=qi, j=qj)
-    wa = wood_armer(uls_m["Mx"].to_numpy(), uls_m["My"].to_numpy(), uls_m["Mxy"].to_numpy())
+    twist = 1.0 if slab.twisting == "wood_armer" else 0.0
+    wa = wood_armer(uls_m["Mx"].to_numpy(), uls_m["My"].to_numpy(), twist * uls_m["Mxy"].to_numpy())
     wq = (
-        wood_armer(qp_m["Mx"].to_numpy(), qp_m["My"].to_numpy(), qp_m["Mxy"].to_numpy())
+        wood_armer(qp_m["Mx"].to_numpy(), qp_m["My"].to_numpy(), twist * qp_m["Mxy"].to_numpy())
         if len(qp_m)
         else None
     )
-    frame = strip_frame(slab, box, piles, beams) if slab.strips == "column_and_field" else None
+    frame = (
+        strip_frame(slab, box, piles, beams, choices.stations) if slab.strips == "column_and_field" else None
+    )
     strips = frame is not None
     if slab.strips == "column_and_field" and not strips:
         notes.append("No piles under the slab to set out the column strips: designed as a uniform slab.")
@@ -1028,7 +1150,24 @@ def design_slab(
                 zz["additional_mm2_per_m"] = round(zz["as_mm2_per_m"] - options[b][0])
         z["basic"]["set_by"] = "user" if forced is not None else "least steel"
         z["mode"] = mode
-        chosen = z.pop("cell_index")  # the bars each cell gets: the mesh, or the mesh with additional bars
+        chosen = np.array(
+            z.pop("cell_index")
+        )  # the bars each cell gets: the mesh, or the mesh with additional bars
+        # Bars the user set for a station and strip: every cell of that strip at that station gets them.
+        user_keys: set = set()
+        if strips:
+            for k, idxs in members.items():
+                key = strip_key(layer, frame["bounds"], k)
+                want = choices.bars.get(key)
+                if want is None:
+                    continue
+                if mode == "mesh_only" or want not in labels and want != "mesh only":
+                    notes.append(
+                        f"Bars set for {key.replace('|', ' ')} ({want}) are not among the options: left out."
+                    )
+                    continue
+                chosen[idxs] = 0 if want == "mesh only" else labels.index(want)
+                user_keys.add(k)
         prov = np.array([o[0] for o in opts])[chosen]
         ratio = req_eff / eff_all[chosen]
         util = ratio.max()
@@ -1060,6 +1199,9 @@ def design_slab(
                 bars = labels[oi] if mode == "mesh_only" or oi == 0 else f"{label(options[b])} + {labels[oi]}"
                 strip_rows.append(
                     {
+                        "key": strip_key(layer, frame["bounds"], k),
+                        "user_set": k in user_keys,
+                        "additional": "mesh only" if oi == 0 else labels[oi],
                         "moment": name_m,
                         "layer": layer,
                         "face": face,
@@ -1082,6 +1224,7 @@ def design_slab(
         z.pop("basic_index")
         layers[layer] = {
             **z,
+            "additional_labels": ["mesh only", *labels[1:]] if mode != "mesh_only" else [],
             "d_mm": round(d),
             "as_min_mm2_per_m": round(a_min),
             "utilisation": round(float(util), 3),
@@ -1287,6 +1430,12 @@ def design_slab(
             if key not in summary or score > summary[key][0]:
                 summary[key] = (score, r)
         strip_design = {
+            "table": strip_table(strip_rows, frame),
+            "profile": strip_profile(uls_m, uloc, size, axes),
+            "start": frame["start"],
+            "end": frame["end"],
+            "origin": frame["origin"],
+            "sign": frame["sign"],
             "along": frame["along"],
             "from": frame["from"],
             "column_width_m": frame["column"],
@@ -1314,8 +1463,22 @@ def design_slab(
         and lay_u <= 1 + 1e-6
         and all(r["passed"] for r in rest.values())
     )
+    mc = uls_m.groupby(["i", "j"]).agg(
+        mx_max=("Mx", "max"), mx_min=("Mx", "min"), my_max=("My", "max"), my_min=("My", "min")
+    )
+    moment_cells = {
+        "size": size,
+        "x0": x0,
+        "y0": y0,
+        "names": {k: _map(axes)[v].replace("_", "") for k, v in (("x", "Mx"), ("y", "My"))},
+        "cells": [
+            [int(i), int(j), *(round(float(v)) for v in r)]
+            for (i, j), r in zip(mc.index, mc.to_numpy(), strict=True)
+        ],
+    }
     return {
         **base,
+        "moment_cells": moment_cells,
         "cover_top_mm": slab.cover_top,
         "cover_bottom_mm": slab.cover_bottom,
         "zone_size_m": size,

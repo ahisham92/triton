@@ -27,7 +27,8 @@ def slab_stations(sd: dict[str, Any], box: dict[str, list[float]]) -> bytes:
     along = sd["along"]
     across = "Y" if along == "X" else "X"
     a0, a1 = box[across]
-    depth = max(sd["stations"][-1] if sd["stations"] else 0.0, 1.0)
+    s0 = sd["stations"][0] if sd["stations"] else 0.0
+    depth = max((sd["stations"][-1] if sd["stations"] else 0.0) - s0, 1.0)
     w, h, left, top, right, bottom = 1600, 900, 110, 90, 60, 90
     sx = (w - left - right) / (a1 - a0)
     sy = (h - top - bottom) / depth
@@ -39,7 +40,7 @@ def slab_stations(sd: dict[str, Any], box: dict[str, list[float]]) -> bytes:
         return ox + (t - a0) * scale
 
     def py(s: float) -> float:
-        return oy + s * scale
+        return oy + (s - s0) * scale
 
     img = Image.new("RGB", (w, h), "white")
     d = ImageDraw.Draw(img)
@@ -48,10 +49,10 @@ def slab_stations(sd: dict[str, Any], box: dict[str, list[float]]) -> bytes:
     half_c, half_f = sd["column_width_m"] / 2, sd["field_width_m"] / 2
     for a, b in zip(lines, lines[1:], strict=False):
         m = (a + b) / 2
-        d.rectangle([px(max(a0, m - half_f)), py(0), px(min(a1, m + half_f)), py(depth)], fill=FIELD)
+        d.rectangle([px(max(a0, m - half_f)), py(s0), px(min(a1, m + half_f)), py(s0 + depth)], fill=FIELD)
     for c in lines:
-        d.rectangle([px(max(a0, c - half_c)), py(0), px(min(a1, c + half_c)), py(depth)], fill=COLUMN)
-    d.rectangle([px(a0), py(0), px(a1), py(depth)], outline=INK, width=3)
+        d.rectangle([px(max(a0, c - half_c)), py(s0), px(min(a1, c + half_c)), py(s0 + depth)], fill=COLUMN)
+    d.rectangle([px(a0), py(s0), px(a1), py(s0 + depth)], outline=INK, width=3)
     for s in sd["stations"]:
         y = py(s)
         for x in range(int(px(a0)), int(px(a1)), 18):
@@ -62,17 +63,17 @@ def slab_stations(sd: dict[str, Any], box: dict[str, list[float]]) -> bytes:
         for c in lines:
             d.ellipse([px(c) - r, py(s) - r, px(c) + r, py(s) + r], outline=INK, width=2, fill="white")
     for a, b in zip(lines, lines[1:], strict=False):
-        d.text((px((a + b) / 2), py(depth) + 12), "field", fill=MUTED, font=small, anchor="mt")
+        d.text((px((a + b) / 2), py(s0 + depth) + 12), "field", fill=MUTED, font=small, anchor="mt")
     for c in lines:
-        d.text((px(c), py(depth) + 12), "column", fill=INK, font=small, anchor="mt")
+        d.text((px(c), py(s0 + depth) + 12), "column", fill=INK, font=small, anchor="mt")
     d.text(
-        (px((a0 + a1) / 2), py(0) - 14),
-        f"{sd['from'].capitalize()} (station 0)",
+        (px((a0 + a1) / 2), py(s0) - 14),
+        f"Sea side: stations from the {sd['from']} (station 0)",
         fill=INK,
         font=f,
         anchor="mb",
     )
-    d.text((px(a0) - 12, py(0) - 30), "Station (m)", fill=STATION, font=small, anchor="rb")
+    d.text((px(a0) - 12, py(s0) - 30), "Station (m)", fill=STATION, font=small, anchor="rb")
     d.text(
         (w / 2, h - 18),
         f"Column strips {sd['column_width_m']:g} m on the pile lines, field strips {sd['field_width_m']:g} m "

@@ -133,17 +133,23 @@ def _how(row: _Row, c: ElementCosting, what: str) -> str:
 def cost_section(project: Project, section: Section, results: dict[str, Any]) -> dict[str, Any]:
     prices = project.prices
     L = model_length(section, results)
-    berth = section.costing.berth_length or L
+    berth = section.costing.berth_length
     notes = []
     if not berth:
         return {
             "section": section.name,
             "section_id": section.id,
             "rows": [],
-            "notes": ["Give the berth length of this section (the model's length could not be found)."],
+            "notes": [
+                "Enter the berth length of this section, e.g. 500 m. It is never taken from the model: "
+                "the model covers only a short piece of the berth."
+            ],
         }
-    if section.costing.berth_length is None:
-        notes.append(f"Berth length taken as the model's length, {berth:.1f} m.")
+    if L:
+        notes.append(
+            f"The model covers {L:.1f} m of berth; each element's count is the berth length over its "
+            "spacing unless you give the number."
+        )
     per_berth = berth / L if L else None
     ec = section.costing.elements
     rows: list[_Row] = []

@@ -39,6 +39,7 @@ def project():
     pr.concrete_slab, pr.concrete_beams, pr.rebar = 4000.0, 5000.0, 60000.0
     pr.piles[0].price_per_m = 30000.0
     pr.piles[0].rebar_included = 150.0
+    p.sections[0].costing.berth_length = 33.6  # the model's length
     return p
 
 
@@ -61,8 +62,19 @@ def test_quantities_scale_from_the_model_to_the_berth():
     assert out["totals"]["complete"] and out["per_m"]["cost"] == round(out["totals"]["cost"] / 67.2)
 
 
+def test_berth_length_is_never_taken_from_the_model():
+    p = project()
+    p.sections[0].costing.berth_length = None
+    out = cost_section(p, p.sections[0], results())
+    assert out["rows"] == [] and "berth length" in out["notes"][0]
+    p.sections[0].costing.berth_length = 500.0
+    rows = {r["element"]: r for r in cost_section(p, p.sections[0], results())["rows"]}
+    assert rows["Pile(1)"]["count"] == math.ceil(500 / 4.2)
+
+
 def test_a_spacing_or_a_number_overrides_the_model():
     p = project()
+    p.sections[0].costing.berth_length = 33.6
     p.sections[0].costing.elements["Pile(1)"] = ElementCosting(spacing=3.0)
     rows = cost_section(p, p.sections[0], results())["rows"]
     assert rows[0]["count"] == 12  # 33.6 / 3.0 = 11.2, rounded up

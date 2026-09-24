@@ -6,8 +6,25 @@ import pytest
 from conftest import PLATE_HEADER, pile_sheet
 
 from triton.design.runner import run_section
-from triton.design.slabs import auto_stations, bar_options, required_as, wood_armer, zones_for
-from triton.project import CraneArea, DesignSettings, PileInput, PunchingDepth, Section, SlabInput, SlabMesh
+from triton.design.slabs import (
+    auto_stations,
+    bar_options,
+    required_as,
+    station_text,
+    strip_frame,
+    wood_armer,
+    zones_for,
+)
+from triton.project import (
+    CraneArea,
+    DesignSettings,
+    PileInput,
+    PunchingDepth,
+    Section,
+    SlabInput,
+    SlabMesh,
+    SlabStrips,
+)
 from triton.validation import import_sheets
 
 
@@ -229,3 +246,65 @@ def test_slab_meshes_at_150_or_200():
     s = DesignSettings()
     s.reinforcement.slab_spacings = []
     assert {o[2] for o in bar_options(s)} > {150.0, 200.0}
+
+
+def test_stations_from_the_front_wall_line_on_the_sea_side():
+    box = {"X": [-23.2, -1.0], "Y": [-16.8, 16.8]}
+    front = {"type": "front_beam", "box": {"X": [-1.0, 1.0], "Y": [-16.8, 16.8]}}
+    piles = [(-7.5, 0.0, 0.6), (-12.0, 0.0, 0.6), (-18.0, 0.0, 0.6)]
+    f = strip_frame(SlabInput(), box, piles, [front])
+    # Station 0 is the front beam's centre line; the slab runs from 1.0 to 23.2 m, rows at 7.5, 12, 18.
+    assert (f["origin"], f["sign"], f["start"], f["end"]) == (0.0, -1.0, 1.0, 23.2)
+    assert f["rows"] == [7.5, 12.0, 18.0]
+    assert f["bounds"] == [1.0, 5.5, 9.75, 14.0, 16.0, 20.0, 23.2]
+    assert strip_frame(SlabInput(), box, piles, [front], [4.0, 8.0])["bounds"] == [1.0, 4.0, 8.0, 23.2]
+
+
+def test_station_labels_as_in_the_report():
+    every = [[2.25, 4.0], [4.0, 8.0], [8.0, 12.0], [12.0, 16.0]]
+    assert station_text(every, every) == "All stations"
+    assert station_text([[4.0, 8.0]], every) == "Station 4 to 8"
+    assert station_text([[2.25, 4.0], [8.0, 12.0], [12.0, 16.0]], every) == "All stations except 4 to 8"
+
+
+def test_report_table_and_bars_set_by_the_user():
+    d = design_deck()
+    sd = d["strip_design"]
+    table = sd["table"]
+    m11 = [r for r in table if r["moment"] == "M11"]
+    assert all(r["along_strips"] and len(r["stations"]) == 1 for r in m11)
+    assert {r["label"] for r in table if r["moment"] == "M22"} <= {"All stations"} | {
+        r["label"] for r in table if r["moment"] == "M22"
+    }
+    assert sd["profile"]["M11"] and {"column_max", "field_min"} <= set(sd["profile"]["M11"][0])
+    assert d["moment_cells"]["cells"] and len(d["moment_cells"]["cells"][0]) == 6
+    row = next(r for r in m11 if r["strip"] == "column" and r["stations"] == [[2.0, 6.0]])
+    labels = d["layers"]["top_x"]["additional_labels"]
+    heavy = labels[-1]
+    els = {
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
+    sec = Section(elements=els)
+    sec.slab_strips["Deck"] = SlabStrips(bars={k: heavy for k in row["keys"]["top"]})
+    mine = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
+    got = next(
+        r
+        for r in mine["strip_design"]["table"]
+        if r["moment"] == "M11" and r["strip"] == "column" and r["stations"] == [[2.0, 6.0]]
+    )
+    assert got["user_set"] and got["additional"]["top"] == heavy
+    assert got["ratio"] < row["ratio"]
+    # Stations set on the Design tab win over the slab's own.
+    sec.slab_strips["Deck"] = SlabStrips(stations=[3.0, 5.0])
+    assert run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]["strip_design"]["stations"] == [
+        0.0,
+        3.0,
+        5.0,
+        8.0,
+    ]
+
+
+def test_twisting_moment_is_left_out_unless_asked():
+    assert any("without the twisting moment" in n for n in design_deck()["notes"])
+    assert any("Wood–Armer" in n for n in design_deck(twisting="wood_armer")["notes"])

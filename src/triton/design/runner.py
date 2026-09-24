@@ -247,7 +247,17 @@ def run_section(
             geometry = section_geometry(workbook)
         own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
         tick(name)
-        d = design_slab(name, element, settings, own, geometry, section.elements, axes.get(name), pile_sheets)
+        d = design_slab(
+            name,
+            element,
+            settings,
+            own,
+            geometry,
+            section.elements,
+            axes.get(name),
+            pile_sheets,
+            section.slab_strips.get(name),
+        )
         d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
         slabs.append(d)
     if missing:

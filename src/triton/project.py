@@ -703,9 +703,17 @@ class SlabInput(_ConcreteSection):
     stations: list[float] = Field(
         default_factory=list,
         title="Station boundaries",
-        description="Distances (m) along the strips from the slab edge at the front beam. Empty: a station "
-        "2 m each side of every row of piles, and the spans between them.",
+        description="Distances (m) from the sea side: from the front wall line (the front beam's centre), "
+        "increasing towards the rear beam. Empty: a station 2 m each side of every row of piles, and the "
+        "spans between them. Stations can also be set on the diagram on the Design tab.",
         json_schema_extra={"unit": "m"},
+    )
+    twisting: Literal["ignore", "wood_armer"] = Field(
+        "ignore",
+        title="Twisting moment Mxy",
+        description="Ignore (the office's method and the AdSec files): M11 with N1 only, M22 with N2 only, "
+        "nothing counted twice. Wood–Armer: Mxy added to both M11 and M22 as design moments, which is safer "
+        "where the slab twists, round the piles.",
     )
     punching_face_beta: Literal["ec2", "office"] = Field(
         "ec2",
@@ -1126,7 +1134,10 @@ class ElementCosting(_Model):
 
 class SectionCosting(_Model):
     berth_length: float | None = _m(
-        "Berth length of this section", None, gt=0, description="Empty: the length of the model."
+        "Berth length of this section",
+        None,
+        gt=0,
+        description="The real berth length (e.g. 500 m), never the model's. Needed for costing.",
     )
     model_length: float | None = _m(
         "Length of berth the model covers",
@@ -1165,6 +1176,22 @@ class UserCage(_Model):
         if self.rows in (1.5, 2.5) and self.count % 2:
             raise ValueError("A half row sits behind every second bar: use an even number of bars.")
         return self
+
+
+class SlabStrips(_Model):
+    """Stations and bars for a slab's column and field strips, set on the Design tab."""
+
+    stations: list[float] | None = Field(
+        None,
+        title="Station boundaries",
+        description="Distances (m) from the sea side. Empty: the slab's own stations.",
+        json_schema_extra={"unit": "m"},
+    )
+    bars: dict[str, str] = Field(
+        default_factory=dict,
+        title="Bars set by the user",
+        description="Additional bars per 'layer|from|to|strip', by label ('mesh only' for none).",
+    )
 
 
 def _short_id() -> str:
@@ -1248,6 +1275,12 @@ class Section(_Model):
         title="Cages set by the user",
         description="Pile or combi wall infill cages set on the Design tab, by element; Check designs "
         "the element with its cage.",
+    )
+    slab_strips: dict[str, SlabStrips] = Field(
+        default_factory=dict,
+        title="Slab stations and bars set by the user",
+        description="By slab: stations and additional bars set on the Design tab; Re-check designs the "
+        "slab with them.",
     )
     combinations: list[str] = Field(
         default_factory=lambda: list(DEFAULT_COMBINATIONS),

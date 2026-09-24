@@ -501,6 +501,7 @@ def _slab_summary(r: Report, s: dict) -> None:
         r.caption(
             f"Table 3-2: Summary of design results for {s['element']} ({s.get('thickness_mm', 0):g} mm)"
         )
+        table = sd.get("table") or []
         r.table(
             [
                 "Slab",
@@ -509,26 +510,31 @@ def _slab_summary(r: Report, s: dict) -> None:
                 "Acting moment (kN.m/m)",
                 "Moment capacity (kN.m/m)",
                 "Governing load combination",
-                "Face, bars",
+                "Bottom bars",
+                "Top bars",
             ],
             [
                 [
-                    _strip_label(s, x),
+                    f"{x['moment']} – {x['label']} – {x['strip'].capitalize()} Strip"
+                    + (" (bars set by the user)" if x.get("user_set") else ""),
                     x.get("wk_mm"),
                     x.get("ratio"),
                     x.get("M_kNm_per_m"),
                     x.get("MRd_kNm_per_m"),
                     _sheet(s["element"], x.get("combination")),
-                    f"{x['face']}, {x['bars']}",
+                    x["bars"].get("bottom", "–"),
+                    x["bars"].get("top", "–"),
                 ]
-                for x in sd["summary"]
+                for x in table
             ],
         )
         r.note(
-            f"Stations are distances along the strips ({sd['along']}) from the slab edge at the {sd['from']}. "
-            f"Column strips are {sd['column_width_m']:g} m wide on the lines of piles, field strips "
+            f"Stations are distances ({sd['along']}) from the {sd['from']}, on the sea side, increasing towards "
+            f"the rear. Column strips are {sd['column_width_m']:g} m wide on the lines of piles, field strips "
             f"{sd['field_width_m']:g} m between them; moments are per metre, averaged across the strip, and every "
-            "column (field) strip is designed together. Each row is the face that governs; Appendix A has both."
+            "column (field) strip along the berth is designed together. Bars along the strips are given per "
+            "station, bars along the berth grouped where they are the same. Each row shows its worst face; "
+            "Appendix A has both."
         )
         return
     rows = []

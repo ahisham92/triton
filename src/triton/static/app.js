@@ -2533,15 +2533,207 @@ async function renderView3dTab(host) {
 const LAYER_NAME = { bottom_x: "Bottom, bars along X", bottom_y: "Bottom, bars along Y", top_x: "Top, bars along X", top_y: "Top, bars along Y" };
 
 function stripTable(d) {
+  // The calc report's slab table (Table 5-4): bars along the strips per station, bars along the berth
+  // grouped where they are the same; each row can take the user's bars and be checked again.
   const sd = d.strip_design;
-  const row = (r) => `<tr><td>${esc(r.moment)} – Station ${fmt(r.station[0], 2)} to ${fmt(r.station[1], 2)} – ${r.strip === "column" ? "Column" : "Field"} strip</td><td>${esc(r.face)}</td>
+  const rows = sd.table || [];
+  const strip = (r) => (r.strip === "column" ? "Column Strip" : "Field Strip");
+  const line = (r, i) => `<tr data-row="${i}"><td>${esc(r.moment)} – ${esc(r.label)} – ${strip(r)}${r.user_set ? '<span class="user-chip">your bars</span>' : ""}</td>
     <td class="cell ${r.wk_mm == null || r.wk_mm <= r.wk_limit_mm ? "ok" : "error"}">${r.wk_mm == null ? "–" : fmt(r.wk_mm, 3)}</td>
-    <td class="cell ${r.ratio != null && r.ratio <= 1 ? "ok" : "error"}">${fmt(r.ratio, 2)}</td><td>${fmt(r.M_kNm_per_m)}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
-    <td>${esc(r.combination)}</td><td>${esc(r.bars)}</td></tr>`;
-  return `<h3 style="margin-top:18px">Column and field strips</h3>
-    <p class="status">Stations are metres along ${esc(sd.along)} from the ${esc(sd.from)}. Column strips ${fmt(sd.column_width_m, 1)} m on the pile lines, field strips ${fmt(sd.field_width_m, 1)} m between them; moments per metre averaged across each strip, all column (field) strips designed together. Governing face per row; the report's appendix lists both faces.</p>
-    <div class="scroll"><table><tr><th>Slab</th><th>Face</th><th>Crack width (mm)</th><th>M / M<sub>Rd</sub></th><th>Acting M (kNm/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bars</th></tr>
-      ${sd.summary.map(row).join("")}</table></div>`;
+    <td class="cell ${r.ratio != null && r.ratio <= 1 ? "ok" : "error"}" title="${esc(r.face)} face">${fmt(r.ratio, 2)}</td><td>${fmt(r.M_kNm_per_m)}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
+    <td>${esc(r.combination)}</td><td>${esc(r.bars.bottom || "–")}</td><td>${esc(r.bars.top || "–")}</td>
+    <td><button class="quiet" data-bars="${i}">Change bars</button></td></tr>`;
+  return `<h3 style="margin-top:18px">Slab design results</h3>
+    <p class="status">As the calc report's slab table. Stations are metres from the ${esc(sd.from)}, on the sea side, increasing towards the rear. Column strips ${fmt(sd.column_width_m, 1)} m on the pile lines, field strips ${fmt(sd.field_width_m, 1)} m between them: every point of the deck is in one station and one strip, all column strips along the berth are designed together, and all field strips. Bars along the strips are given per station; bars along the berth are grouped where they are the same. Each row shows its worst face.</p>
+    <div class="scroll"><table><tr><th>Slab</th><th>Crack width (mm)</th><th>Ultimate M / M<sub>Rd</sub></th><th>Acting M (kNm/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bottom bars</th><th>Top bars</th><th></th></tr>
+      ${rows.map(line).join("")}</table></div>`;
+}
+
+async function saveSlabStrips(name, change, status) {
+  // Stations and bars set on the Design tab live on the section, so they can change while it is locked.
+  const s = sec();
+  s.slab_strips ??= {};
+  const cur = { stations: null, bars: {}, ...(s.slab_strips[name] || {}) };
+  const next = change(cur);
+  if (next.stations == null && !Object.keys(next.bars || {}).length) delete s.slab_strips[name];
+  else s.slab_strips[name] = next;
+  status.textContent = "Saving…";
+  markDirty();
+  await save();
+  if (state.errors?.length) return (status.textContent = state.errors.map((e) => e.msg).join(" "));
+  status.textContent = `Checking ${name}…`;
+  state.runDesign?.([name]);
+}
+
+function wireStripTable(card, d) {
+  const sd = d.strip_design;
+  card.querySelectorAll("[data-bars]").forEach((btn) => (btn.onclick = () => {
+    const i = Number(btn.dataset.bars);
+    const r = sd.table[i];
+    const tr = btn.closest("tr");
+    const open = tr.nextElementSibling?.classList.contains("bars-edit");
+    card.querySelectorAll("tr.bars-edit").forEach((x) => x.remove());
+    if (open) return;
+    const faces = Object.keys(r.layers);
+    const mine = sec().slab_strips?.[d.element]?.bars || {};
+    const hasOwn = faces.some((f) => (r.keys[f] || []).some((k) => k in mine));
+    const edit = document.createElement("tr");
+    edit.className = "bars-edit";
+    edit.innerHTML = `<td colspan="9"><b>${esc(r.moment)} – ${esc(r.label)} – ${r.strip === "column" ? "column" : "field"} strip.</b> Additional bars on the mesh:
+      ${faces.map((f) => `<label>${f === "bottom" ? "Bottom" : "Top"} <select data-face="${f}">${(d.layers[r.layers[f]]?.additional_labels || []).map((o) => `<option ${o === r.additional[f] ? "selected" : ""}>${esc(o)}</option>`).join("")}</select></label>`).join("")}
+      <button data-recheck>Re-check</button>${hasOwn ? ' <button class="quiet" data-auto>Use Triton\'s bars</button>' : ""} <span class="status" data-bars-status></span>
+      <div class="status">Re-check keeps these bars for this row and checks bending and crack widths with them; nothing else changes.</div></td>`;
+    tr.after(edit);
+    const status = edit.querySelector("[data-bars-status]");
+    edit.querySelector("[data-recheck]").onclick = () =>
+      saveSlabStrips(d.element, (cur) => {
+        const bars = { ...(cur.bars || {}) };
+        edit.querySelectorAll("select[data-face]").forEach((sel) => (r.keys[sel.dataset.face] || []).forEach((k) => (bars[k] = sel.value)));
+        return { ...cur, bars };
+      }, status);
+    const auto = edit.querySelector("[data-auto]");
+    if (auto) auto.onclick = () =>
+      saveSlabStrips(d.element, (cur) => {
+        const bars = { ...(cur.bars || {}) };
+        faces.forEach((f) => (r.keys[f] || []).forEach((k) => delete bars[k]));
+        return { ...cur, bars };
+      }, status);
+  }));
+}
+
+function stationEditor(card, d) {
+  // Column and field strip moments across the deck, sea side on the left, with the stations on them:
+  // drag a station to move it, add or delete stations, then design the slab with them.
+  const sd = d.strip_design;
+  const el = card.querySelector('[data-kind="stations"]');
+  const ctl = card.querySelector('[data-kind="station-ctl"]');
+  if (!el || !ctl || !sd.profile) return;
+  const names = Object.keys(sd.profile);
+  let which = (sd.table || []).find((r) => r.along_strips)?.moment || names[0];
+  const start = sd.start ?? sd.stations[0], end = sd.end ?? sd.stations[sd.stations.length - 1];
+  let st = sd.stations.slice();
+  const own = sec().slab_strips?.[d.element]?.stations;
+  ctl.innerHTML = `<div class="legend"><span><i></i>Column strip, largest</span><span><i class="low"></i>Column strip, smallest</span><span><i class="field"></i>Field strip, largest</span><span><i class="field low"></i>Field strip, smallest</span><span>▲ row of piles</span></div>
+    <div class="row">${names.map((n) => `<button class="quiet${n === which ? " on" : ""}" data-m="${esc(n)}">${esc(n)}</button>`).join("")}</div>
+    <p class="status">Drag a station's circle to move it, press × to delete it, or Add station. You can also type the stations. Then Design with these stations. ${own ? "These are your stations." : "These are Triton's stations: 2 m each side of every row of piles."}</p>
+    <div class="row"><input data-st-text style="flex:1;min-width:200px" aria-label="Stations (m from the sea side)"><button class="quiet" data-st-add>Add station</button><button data-st-design>Design with these stations</button>${own ? '<button class="quiet" data-st-auto>Triton\'s stations</button>' : ""}<span class="status" data-st-status></span></div>`;
+  const text = ctl.querySelector("[data-st-text]");
+  const status = ctl.querySelector("[data-st-status]");
+  const round = (v) => Math.round(v * 20) / 20;
+  let c = null;
+  const draw = () => {
+    const prof = sd.profile[which] || [];
+    const vals = prof.flatMap((q) => [q.column_max, q.column_min, q.field_max, q.field_min]).filter((v) => v != null);
+    const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals), pad = (hi - lo) * 0.1 || 1;
+    c = frame(el, { w: 820, h: 360, xDomain: [start, end], yDomain: [lo - pad, hi + pad],
+      xLabel: `Station from the ${sd.from}, sea side (m)`, yLabel: `${which} (kNm/m), sagging +`,
+      title: `${which} across the deck, ULS envelope of each strip's average` });
+    c.svg.classList.add("editing");
+    const path = (k) => prof.filter((q) => q[k] != null).map((q, i) => `${i ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
+    const top = c.m.t, bot = c.h - c.m.b;
+    const rows = (sd.pile_rows_m || []).map((r) => `<path class="pile-row" d="M${c.x(r).toFixed(1)},${bot - 10} l-6,10 h12 z"><title>Row of piles at ${fmt(r, 2)} m</title></path>`).join("");
+    const lines = st.map((s, i) => {
+      const fixed = i === 0 || i === st.length - 1, x = c.x(s).toFixed(1);
+      return `<line class="station" x1="${x}" x2="${x}" y1="${top}" y2="${bot}"/>
+        <circle class="station-grip${fixed ? " fixed" : ""}" cx="${x}" cy="${top + 9}" r="8" data-grip="${i}"><title>Station ${fmt(s, 2)} m${fixed ? " (slab edge)" : ": drag to move"}</title></circle>
+        ${fixed ? "" : `<text class="station-del" x="${Number(x) + 10}" y="${top + 5}" data-del="${i}">×<title>Delete station ${fmt(s, 2)}</title></text>`}
+        <text class="tick" x="${x}" y="${top + 30}" text-anchor="middle">${fmt(s, 2)}</text>`;
+    }).join("");
+    c.g.innerHTML = `<line class="zero" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(0)}" y2="${c.y(0)}"/>
+      <path class="series" d="${path("column_max")}"/><path class="series low" d="${path("column_min")}"/>
+      <path class="series field" d="${path("field_max")}"/><path class="series field low" d="${path("field_min")}"/>${rows}${lines}`;
+    text.value = st.slice(1, -1).map((v) => fmt(v, 2)).join(", ");
+    c.g.querySelectorAll("[data-del]").forEach((t) => (t.onclick = () => { st.splice(Number(t.dataset.del), 1); draw(); }));
+    c.g.querySelectorAll("[data-grip]").forEach((g) => {
+      const i = Number(g.dataset.grip);
+      if (i === 0 || i === st.length - 1) return;
+      g.onpointerdown = (e) => {
+        e.preventDefault();
+        g.setPointerCapture(e.pointerId);
+        g.onpointermove = (ev) => {
+          const r = c.svg.getBoundingClientRect();
+          const x = ((ev.clientX - r.left) / r.width) * c.w;
+          const s = start + ((x - c.m.l) / (c.w - c.m.l - c.m.r)) * (end - start);
+          st[i] = Math.min(st[i + 1] - 0.25, Math.max(st[i - 1] + 0.25, round(s)));
+          const X = c.x(st[i]).toFixed(1);
+          const ln = g.previousElementSibling;
+          ln.setAttribute("x1", X); ln.setAttribute("x2", X);
+          g.setAttribute("cx", X);
+          text.value = st.slice(1, -1).map((v) => fmt(v, 2)).join(", ");
+        };
+        g.onpointerup = () => { g.onpointermove = null; draw(); };
+      };
+    });
+    c.svg.onmousemove = (evt) => {
+      const r = c.svg.getBoundingClientRect();
+      const x = ((evt.clientX - r.left) / r.width) * c.w;
+      const q = prof.reduce((b, p) => (Math.abs(c.x(p.s) - x) < Math.abs(c.x(b.s) - x) ? p : b), prof[0]);
+      if (!q) return;
+      showTip(c, evt, `<b>${fmt(q.s, 1)} m</b><br>Column strip ${fmt(q.column_max)} / ${fmt(q.column_min)} kNm/m<br>Field strip ${fmt(q.field_max)} / ${fmt(q.field_min)} kNm/m`);
+    };
+    c.svg.onmouseleave = () => (c.tip.hidden = true);
+  };
+  text.onchange = () => {
+    const vals = text.value.split(/[,;\s]+/).map(Number).filter((v) => Number.isFinite(v) && v > start + 0.1 && v < end - 0.1);
+    st = [start, ...[...new Set(vals.map(round))].sort((a, b) => a - b), end];
+    draw();
+  };
+  ctl.querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => {
+    which = b.dataset.m;
+    ctl.querySelectorAll("[data-m]").forEach((x) => x.classList.toggle("on", x === b));
+    draw();
+  }));
+  ctl.querySelector("[data-st-add]").onclick = () => {
+    let k = 0;
+    st.forEach((s, i) => { if (i && s - st[i - 1] > st[k + 1] - st[k]) k = i - 1; });
+    st.splice(k + 1, 0, round((st[k] + st[k + 1]) / 2));
+    draw();
+  };
+  ctl.querySelector("[data-st-design]").onclick = () => saveSlabStrips(d.element, (cur) => ({ ...cur, stations: st.slice(1, -1) }), status);
+  const auto = ctl.querySelector("[data-st-auto]");
+  if (auto) auto.onclick = () => saveSlabStrips(d.element, (cur) => ({ ...cur, stations: null }), status);
+  draw();
+}
+
+function momentPlan(card, d) {
+  // Plan of the deck, sea side on the left: the ULS envelope of M11 or M22 per cell, sagging (bottom
+  // face in tension) or hogging (top face in tension), with the strips and stations over it.
+  const mc = d.moment_cells, sd = d.strip_design;
+  const el = card.querySelector('[data-kind="mplan"]'), pick = card.querySelector('[data-kind="mplan-pick"]');
+  if (!mc || !sd || !el || !pick) return;
+  const modes = [["x", 0], ["x", 1], ["y", 0], ["y", 1]];
+  let mode = 0;
+  pick.innerHTML = modes.map(([k, h], i) => `<button class="quiet${i ? "" : " on"}" data-mp="${i}">${esc(mc.names[k])} ${h ? "hogging: top in tension" : "sagging: bottom in tension"}</button>`).join("");
+  const alongX = sd.along === "X";
+  const draw = () => {
+    const [k, hog] = modes[mode];
+    const col = (k === "x" ? 2 : 4) + hog;
+    const cells = mc.cells.map((v) => {
+      const cx = mc.x0 + (v[0] + 0.5) * mc.size, cy = mc.y0 + (v[1] + 0.5) * mc.size;
+      const raw = v[col];
+      return { s: ((alongX ? cx : cy) - sd.origin) * sd.sign, t: alongX ? cy : cx, raw, v: hog ? Math.max(-raw, 0) : Math.max(raw, 0) };
+    });
+    const vmax = Math.max(1, ...cells.map((q) => q.v));
+    const t0 = Math.min(...cells.map((q) => q.t)) - mc.size / 2, t1 = Math.max(...cells.map((q) => q.t)) + mc.size / 2;
+    const s0 = Math.min(sd.start, ...cells.map((q) => q.s - mc.size / 2)), s1 = Math.max(sd.end, ...cells.map((q) => q.s + mc.size / 2));
+    const pad = 44, sc = Math.min((820 - 2 * pad) / (s1 - s0), (560 - 2 * pad) / (t1 - t0));
+    const W = (s1 - s0) * sc + 2 * pad, H = (t1 - t0) * sc + 2 * pad;
+    const X = (s) => pad + (s - s0) * sc, Y = (t) => H - pad - (t - t0) * sc;
+    const hue = hog ? "31,95,160" : "200,52,40";
+    const rects = cells.map((q) => `<rect x="${X(q.s - mc.size / 2).toFixed(1)}" y="${Y(q.t + mc.size / 2).toFixed(1)}" width="${(mc.size * sc).toFixed(1)}" height="${(mc.size * sc).toFixed(1)}" fill="rgba(${hue},${(0.06 + 0.88 * q.v / vmax).toFixed(2)})"><title>${esc(mc.names[k])} ${hog ? "smallest" : "largest"} ${fmt(q.raw)} kNm/m at station ${fmt(q.s, 1)} m, ${alongX ? "Y" : "X"} ${fmt(q.t, 1)}</title></rect>`).join("");
+    const strips = sd.lines.map((L) => `<rect x="${X(s0)}" y="${Y(L + sd.column_width_m / 2)}" width="${(s1 - s0) * sc}" height="${sd.column_width_m * sc}" fill="none" stroke="var(--text)" stroke-dasharray="6 4" stroke-width="1"><title>Column strip on the pile line at ${fmt(L, 1)}</title></rect>`).join("");
+    const stations = sd.stations.map((s) => `<line x1="${X(s)}" x2="${X(s)}" y1="${pad - 6}" y2="${H - pad}" stroke="var(--text)" stroke-width="1.2"/><text class="tick" x="${X(s)}" y="${pad - 10}" text-anchor="middle">${fmt(s, 2)}</text>`).join("");
+    el.innerHTML = `<div class="chart-title">${esc(mc.names[k])}, ULS ${hog ? "hogging (top face in tension)" : "sagging (bottom face in tension)"}: largest ${fmt(vmax)} kNm/m. Sea side on the left.</div>
+      <div class="legend"><span>0</span><i class="ramp" style="background:linear-gradient(90deg,rgba(${hue},.06),rgba(${hue},.94))"></i><span>${fmt(vmax)} kNm/m</span><span>dashed: column strips</span><span>lines: stations (m from the sea side)</span></div>
+      <svg viewBox="0 0 ${W} ${H}" style="max-width:${Math.round(W)}px" role="img" aria-label="Moment plan"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${rects}${strips}${stations}
+      <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text></svg>`;
+  };
+  pick.querySelectorAll("[data-mp]").forEach((b) => (b.onclick = () => {
+    mode = Number(b.dataset.mp);
+    pick.querySelectorAll("[data-mp]").forEach((x) => x.classList.toggle("on", x === b));
+    draw();
+  }));
+  draw();
 }
 
 function slabCard(d) {
@@ -2565,7 +2757,11 @@ function slabCard(d) {
     </div>
     ${(d.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${v3dSlot(d.element)}
-    ${d.strip_design ? stripTable(d) : ""}
+    ${d.strip_design ? `<h3 style="margin-top:18px">Moments across the deck and the stations</h3>
+      <div class="chart wide" data-kind="stations"></div><div data-kind="station-ctl"></div>
+      ${stripTable(d)}
+      <h3 style="margin-top:18px">Moments in plan: where the deck is in tension</h3>
+      <div class="row" data-kind="mplan-pick"></div><div class="chart wide" data-kind="mplan"></div>` : ""}
     <h3 style="margin-top:18px">Bars per metre</h3>
     <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (between the mesh bars)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
       ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)${l.basic.set_by === "user" ? "<br><span class=\"status\">your mesh</span>" : ""}</td>
@@ -2592,6 +2788,11 @@ function slabCard(d) {
       ${Object.entries(d.restraint?.layers || {}).map(([k, r]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td>${fmt(r.wk, 3)} mm</td><td>${fmt(r.limit, 2)} mm</td><td>ε<sub>r</sub> ${fmt(r.eps_r)} µε, s<sub>r,max</sub> ${fmt(r.sr_max)} mm</td><td>${ok(r.passed)}</td></tr>`).join("")}
     </table></div>
     <p class="status">${fmt(d.restraint?.length_m)} m between joints, R = ${fmt(d.restraint?.R, 2)} (${esc(d.restraint?.R_from || "")}).</p>`;
+  if (d.strip_design) {
+    stationEditor(card, d);
+    wireStripTable(card, d);
+    momentPlan(card, d);
+  }
   const plan = card.querySelector('[data-kind="plan"]');
   const draw = (k) => slabPlan(plan, d, k);
   card.querySelectorAll("[data-layer]").forEach((b) => (b.onclick = () => {
@@ -2677,17 +2878,19 @@ function slabPlan(el, d, key) {
   const W = 820, pad = 30;
   const sc = (W - 2 * pad) / (x1 - x0);
   const H = (y1 - y0) * sc + 2 * pad;
-  const X = (x) => pad + (x - x0) * sc, Y = (y) => H - pad - (y - y0) * sc;
+  const flip = d.strip_design?.along === "X" && d.strip_design.sign < 0; // sea side on the left
+  const X = (x) => pad + (flip ? x1 - x : x - x0) * sc, Y = (y) => H - pad - (y - y0) * sc;
+  const L = (a, b) => Math.min(X(a), X(b)); // left edge of a span in plan
   const labels = [...new Set(l.zones.map((z) => z.label))].sort((a, b) => l.zones.find((z) => z.label === a).as_mm2_per_m - l.zones.find((z) => z.label === b).as_mm2_per_m);
   const shade = (lab) => `rgba(214,48,39,${0.25 + 0.6 * (labels.indexOf(lab) + 1) / Math.max(labels.length, 1)})`;
-  const zones = l.zones.map((z) => `<rect x="${X(z.x[0])}" y="${Y(z.y[1])}" width="${(z.x[1] - z.x[0]) * sc}" height="${(z.y[1] - z.y[0]) * sc}" fill="${shade(z.label)}"><title>Additional ${esc(z.label)} (${fmt(z.additional_mm2_per_m ?? z.as_mm2_per_m)} mm²/m, ${fmt(z.as_mm2_per_m)} mm²/m with the mesh), X ${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}, Y ${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</title></rect>`).join("");
+  const zones = l.zones.map((z) => `<rect x="${L(z.x[0], z.x[1])}" y="${Y(z.y[1])}" width="${(z.x[1] - z.x[0]) * sc}" height="${(z.y[1] - z.y[0]) * sc}" fill="${shade(z.label)}"><title>Additional ${esc(z.label)} (${fmt(z.additional_mm2_per_m ?? z.as_mm2_per_m)} mm²/m, ${fmt(z.as_mm2_per_m)} mm²/m with the mesh), X ${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}, Y ${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</title></rect>`).join("");
   const piles = (d.punching || []).map((q) => `<circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.r_u1_mm / 1000) * sc}" class="${q.needs_reinforcement ? "pp-out" : "pp-u1"}"><title>${esc(q.pile)}: u1 at 2d${q.needs_reinforcement ? ", needs punching links" : ""}</title></circle>
     <circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.D_mm / 2000) * sc}" fill="none" stroke="var(--text)" stroke-width="1.5"><title>${esc(q.pile)}</title></circle>`).join("");
   el.innerHTML = `<div class="chart-title">${esc(LAYER_NAME[key] || key)}: mesh ${esc(l.basic.label)} everywhere${labels.length ? `, plus additional ${esc(labels.join(", "))} in the shaded zones` : ""}</div>
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Slab plan of ${esc(key)}">
-      <rect x="${X(x0)}" y="${Y(y1)}" width="${(x1 - x0) * sc}" height="${(y1 - y0) * sc}" fill="var(--miss-bg)" stroke="var(--muted)"/>
+      <rect x="${L(x0, x1)}" y="${Y(y1)}" width="${(x1 - x0) * sc}" height="${(y1 - y0) * sc}" fill="var(--miss-bg)" stroke="var(--muted)"/>
       ${zones}${piles}
-      <text class="tick" x="${X(x0)}" y="${H - 8}">X ${fmt(x0, 1)}</text><text class="tick" x="${X(x1)}" y="${H - 8}" text-anchor="end">X ${fmt(x1, 1)}</text>
+      <text class="tick" x="${pad}" y="${H - 8}">X ${fmt(flip ? x1 : x0, 1)}${flip ? " (sea side)" : ""}</text><text class="tick" x="${W - pad}" y="${H - 8}" text-anchor="end">X ${fmt(flip ? x0 : x1, 1)}</text>
       <text class="tick" x="${pad - 4}" y="${Y(y1) + 4}" text-anchor="end">Y ${fmt(y1, 0)}</text><text class="tick" x="${pad - 4}" y="${Y(y0)}" text-anchor="end">${fmt(y0, 0)}</text>
     </svg>`;
 }
