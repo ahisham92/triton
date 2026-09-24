@@ -30,6 +30,16 @@ def test_repeated_rows_are_kept_until_the_removal_is_accepted():
     removed = apply_section(raw, decisions={dup: "accept"})
     assert len(removed.elements()["Pile(1)"]["QP"].frame) == 5
 
+    # Excel's own row numbers: the header is row 1, so the repeat (the last row) is row 7 and it
+    # repeats row 2. The message says whether the rows are kept or removed.
+    (issue,) = [i for s in kept.sheets for i in s.issues if i.code == "duplicate_rows_removed"]
+    assert issue.rows == [7] and issue.notes == {7: "Repeats row 2."}
+    assert "row 7 repeats row 2" in issue.message and issue.message.endswith(
+        "Kept until you accept removing them."
+    )
+    (issue,) = [i for s in removed.sheets for i in s.issues if i.code == "duplicate_rows_removed"]
+    assert issue.message.endswith("Removed, as you accepted.")
+
 
 def test_a_sheet_with_unreadable_rows_is_used_once_leaving_them_out_is_accepted():
     rows = pile_sheet()

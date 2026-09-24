@@ -25,7 +25,7 @@ RULES: dict[str, tuple[str, str | None, str]] = {
     "missing_values": ("Leave these rows out and use the rest of the sheet", _LEAVE_OUT, "pending"),
     "node_coordinates_differ": ("Leave these nodes out and use the rest of the sheet", _LEAVE_OUT, "pending"),
     "content_above_header": (_USE, _LEAVE_OUT, "applied"),
-    "unnamed_columns": (_USE, _LEAVE_OUT, "applied"),
+    "unnamed_columns": ("Read only the columns with a header", None, "auto"),
     "node_values_differ": (_USE, _LEAVE_OUT, "applied"),
     "outside_envelope": (_USE, _LEAVE_OUT, "applied"),
     "unexpected_units": (_USE, _LEAVE_OUT, "applied"),

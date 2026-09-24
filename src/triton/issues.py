@@ -24,6 +24,7 @@ class Issue:
     combination: str | None = None
     rows: list[int] = field(default_factory=list)  # Excel row numbers (1-based), truncated
     decision: str | None = None  # "accept" or "reject", from the section's review of its warnings
+    notes: dict[int, str] | None = None  # a word on some of the rows, e.g. which row one repeats
 
     MAX_ROWS = 200
 
@@ -46,4 +47,5 @@ class Issue:
         d["severity"] = self.severity.value
         d["id"] = self.id
         d["decision"] = getattr(self, "decision", None)
+        d["notes"] = {str(k): v for k, v in (getattr(self, "notes", None) or {}).items()}
         return d

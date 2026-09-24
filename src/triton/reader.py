@@ -99,11 +99,18 @@ def _read_openpyxl(path: Path, progress: Progress | None = None) -> dict[str, li
         tick = _Tracker(path, [ws.title for ws in wb.worksheets], progress)
         sheets: dict[str, list[Row]] = {}
         for ws in wb.worksheets:
-            sheets[ws.title] = [list(r) for r in ws.iter_rows(values_only=True)]
+            sheets[ws.title] = _openpyxl_rows(ws)
             tick(ws.title)
         return sheets
     finally:
         wb.close()
+
+
+def _openpyxl_rows(ws: Any) -> list[Row]:
+    """Every row from Excel row 1 on. The size a file records for a sheet can be wrong (some
+    programs write it stale), and read-only openpyxl stops at it, so it is ignored."""
+    ws.reset_dimensions()
+    return [list(r) for r in ws.iter_rows(values_only=True)]
 
 
 # --- A few sheets at a time -------------------------------------------------------------------
@@ -157,6 +164,6 @@ def read_sheets(path: str | Path, names: list[str]) -> Iterator[tuple[str, list[
     wb = load_workbook(str(path), read_only=True, data_only=True)
     try:
         for name in names:
-            yield name, [list(r) for r in wb[name].iter_rows(values_only=True)]
+            yield name, _openpyxl_rows(wb[name])
     finally:
         wb.close()

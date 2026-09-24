@@ -104,7 +104,11 @@ def build(
             width = max(len(rows[n - 1]) if 0 < n <= len(rows) else 1, 1)
             for col in range(1, width + 1):
                 out.cell(n, col).fill = fill
-            note = "\n".join(dict.fromkeys(f"{x['severity'].upper()}: {x['message']}" for x in found))
+            said = [
+                f"{x['severity'].upper()}: {(x.get('notes') or {}).get(str(n)) or x['message']}"
+                for x in found
+            ]
+            note = "\n".join(dict.fromkeys(said))
             out.cell(n, 1).comment = Comment(note, "Triton", width=320, height=120)
         widest = max((len(r) for r in rows), default=0)
         for col in range(1, widest + 1):

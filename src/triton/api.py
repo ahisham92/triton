@@ -643,7 +643,7 @@ def workbook_sheet(project_id: str, section_id: str, name: str, start: int | Non
                 {
                     "id": i.id,
                     "severity": i.severity.value,
-                    "message": i.message,
+                    "message": " ".join(filter(None, [i.message, (getattr(i, "notes", None) or {}).get(r)])),
                     "decision": section.review.get(i.id),
                 }
             )

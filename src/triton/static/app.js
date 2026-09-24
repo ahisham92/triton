@@ -1383,8 +1383,34 @@ function renderFactors(data) {
 }
 
 const LABEL = { ok: "OK", warning: "Check", error: "Error", missing: "—" };
+// Readable names for the kinds of findings.
+const ISSUE_TITLE = {
+  duplicate_rows_removed: "Repeated rows",
+  blank_rows_removed: "Blank rows",
+  repeated_header_removed: "Stacked tables",
+  unnamed_columns: "Columns without a header",
+  empty_sheet: "Empty sheets",
+  non_numeric: "Text where a number should be",
+  missing_values: "Empty cells",
+  node_coordinates_differ: "Node at two places",
+  node_values_differ: "Node with two sets of forces",
+  content_above_header: "Rows above the header",
+  outside_envelope: "Values outside their min and max",
+  unexpected_units: "Unexpected units",
+  identical_combinations: "Identical combinations",
+  node_set_differs: "Different nodes between combinations",
+  point_count_differs: "Unusual number of points",
+  missing_combination: "Missing combinations",
+  missing_qp: "No QP combination",
+};
+const issueTitle = (code) => ISSUE_TITLE[code] || pretty(code);
+// A tidy-up done without asking (blank rows, stacked tables); findings that wait for a decision are
+// reviewed, not listed as done.
+const isCleanup = (i) => i.severity === "info" && (!i.choices || i.choices.before === "auto");
+
 function renderReport(d) {
-  for (const k of ["error", "warning", "info"]) document.getElementById("n-" + k).textContent = d.counts[k];
+  for (const k of ["error", "warning"]) document.getElementById("n-" + k).textContent = d.counts[k];
+  document.getElementById("n-info").textContent = d.issues.filter(isCleanup).length;
   const combos = d.combinations.map((c) => c.name);
   let h = "<tr><th>Element</th>" + combos.map((c) => `<th>${esc(c)}</th>`).join("") + "</tr>";
   for (const e of d.elements) {
@@ -1400,9 +1426,9 @@ function renderReport(d) {
     return `<tr><td><span class="sev ${i.severity}">${i.severity}</span></td><td>${esc(where)}</td><td>${esc(i.message)}${rows}</td></tr>`;
   };
   const head = "<tr><th></th><th>Sheet</th><th>What was found</th></tr>";
-  const problems = d.issues.filter((i) => i.severity !== "info");
+  const problems = d.issues.filter((i) => !isCleanup(i));
   document.getElementById("problems").innerHTML = problems.length ? head + problems.map(row).join("") : "<tr><td>No problems found.</td></tr>";
-  document.getElementById("cleanups").innerHTML = head + d.issues.filter((i) => i.severity === "info").map(row).join("");
+  document.getElementById("cleanups").innerHTML = head + d.issues.filter(isCleanup).map(row).join("");
   const axes = d.axes || [];
   document.getElementById("axes-block").hidden = !axes.length;
   document.getElementById("axes").innerHTML = "<tr><th>Element</th><th></th><th>Finding</th></tr>" + axes
@@ -1450,7 +1476,7 @@ function renderReview(data, refresh, url) {
       .map((code) => {
         const items = list.filter((i) => i.code === code);
         const c = items[0].choices;
-        const head = `<tr class="kind"><th colspan="3">${esc(code.replaceAll("_", " "))} (${items.length})
+        const head = `<tr class="kind"><th colspan="3">${esc(issueTitle(code))} (${items.length})
           ${c ? `<span class="status">Accept: ${esc(c.accept)}${c.reject ? ` · Reject: ${esc(c.reject)}` : ""}</span>` : '<span class="status">Fix it in the workbook, the sheet mapping or the load combinations.</span>'}</th>
           <th>${c ? `<button class="quiet" data-all="${esc(code)}" data-d="accept">Accept all</button>${c.reject ? ` <button class="quiet" data-all="${esc(code)}" data-d="reject">Reject all</button>` : ""}` : ""}</th></tr>`;
         const shown = items.length > 5 && !expanded.has(code) ? items.slice(0, 3) : items;

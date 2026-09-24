@@ -123,3 +123,32 @@ def test_unexpected_units():
     header[6] = "N_1 [MN/m]"
     s = clean_sheet("SPW-QP", [header] + plate_sheet()[1:])
     assert "unexpected_units" in codes(s, "warning")
+
+
+def test_values_in_columns_without_a_header_are_a_quiet_note_naming_the_column():
+    rows = [PLATE_HEADER, plate_row(1), plate_row(2) + [None, "max"], plate_row(3)]
+    s = clean_sheet("Deck-QP", rows)
+    (i,) = [i for i in s.issues if i.code == "unnamed_columns"]
+    assert i.severity.value == "info" and i.rows == [3]
+    from openpyxl.utils import get_column_letter
+
+    assert f"Column(s) {get_column_letter(len(PLATE_HEADER) + 2)} (e.g. 'max')" in i.message
+    assert len(s.frame) == 3
+
+
+def test_xlsx_rows_count_from_excel_row_1_whatever_size_the_file_records(tmp_path):
+    from openpyxl import Workbook
+
+    from triton.reader import read_workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Deck-QP"
+    for n, r in enumerate([PLATE_HEADER, plate_row(1), plate_row(2)], start=3):
+        for c, v in enumerate(r, start=1):
+            ws.cell(n, c, v)
+    path = tmp_path / "w.xlsx"
+    wb.save(path)
+    rows = read_workbook(path)["Deck-QP"]
+    assert rows[2][: len(PLATE_HEADER)] == PLATE_HEADER  # Excel row 3
+    assert not any(rows[0]) and not any(rows[1])

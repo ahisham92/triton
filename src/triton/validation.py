@@ -341,6 +341,17 @@ def _rejected(sheet: str, i: Issue) -> Issue:
     )
 
 
+def _as_decided(i: Issue, decision: str | None) -> str:
+    """Repeated rows say whether they are kept (until accepted) or were removed."""
+    if i.code != "duplicate_rows_removed":
+        return i.message
+    state = {
+        "accept": " Removed, as you accepted.",
+        "reject": " Kept, as you chose.",
+    }.get(decision or "", " Kept until you accept removing them.")
+    return i.message + state
+
+
 def review_sheet(s: SheetData, decisions: dict[str, str]) -> SheetData:
     """One sheet with the user's decisions on its own warnings applied: repeated rows removed only
     once accepted, unreadable rows left out (and the sheet used) once accepted, and the sheet left
@@ -354,7 +365,7 @@ def review_sheet(s: SheetData, decisions: dict[str, str]) -> SheetData:
         if rule is None or rule["before"] == "auto" or i.code in _SHEET_CHECKS:
             issues.append(i)
             continue
-        issues.append(replace(i, decision=d))
+        issues.append(replace(i, decision=d, message=_as_decided(i, d)))
         if d == "reject" and rule["reject"] and i.code != "duplicate_rows_removed":
             rejected.append(i)
         if d != "accept":

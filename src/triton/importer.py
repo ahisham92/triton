@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from openpyxl.utils import get_column_letter
 
 from .elements import (
     BEAM_ACTIONS,
@@ -184,6 +185,7 @@ def clean_sheet(name: str, rows: list[Row]) -> SheetData:
     records: list[dict[str, Any]] = []
     bad_rows: list[int] = []
     unnamed_rows: list[int] = []
+    unnamed: dict[int, Any] = {}  # column -> the first value found in it
     blank = 0
     numeric_cols = [c for c in columns.values() if c not in (LABEL,)]
     for i in range(first + 1, len(rows)):
@@ -200,6 +202,7 @@ def clean_sheet(name: str, rows: list[Row]) -> SheetData:
             if col_name is None:
                 if not _is_empty_cell(value):
                     unnamed_rows.append(i + 1)
+                    unnamed.setdefault(col, value)
                 continue
             if col_name == LABEL:
                 rec[LABEL] = str(value).strip().replace("\\_", "_") if value is not None else ""
@@ -223,11 +226,14 @@ def clean_sheet(name: str, rows: list[Row]) -> SheetData:
             bad_rows,
         )
     if unnamed_rows:
+        # Values beside the table, under no header (notes, a helper column): not Plaxis results.
+        found = sorted(unnamed.items())[:4]
+        cols = ", ".join(f"{get_column_letter(c + 1)} (e.g. {str(v).strip()[:20]!r})" for c, v in found)
         issue(
-            Severity.WARNING,
+            Severity.INFO,
             "unnamed_columns",
-            f"{len(set(unnamed_rows))} row(s) have values in columns without a header; "
-            "those values were ignored.",
+            f"Column(s) {cols} have no header, so their values in {len(set(unnamed_rows))} row(s) are not "
+            "Plaxis results and were not read.",
             unnamed_rows,
         )
 
@@ -300,12 +306,26 @@ def _drop_duplicates(sheet: SheetData, issue) -> None:
     sheet.duplicate_rows = before - len(f)
     sheet.frame = f
     if sheet.duplicate_rows:
+        # Each repeat and the row it repeats (Plaxis lists a node shared by two elements twice).
+        cols = _design_columns(sheet)
+        first = sheet.duplicates.merge(
+            pd.DataFrame(f[cols + [EXCEL_ROW]]).rename(columns={EXCEL_ROW: "_first"}), on=cols, how="left"
+        )
+        twins = dict(zip(first[EXCEL_ROW].astype(int), first["_first"], strict=True))
+        rows = sheet.duplicates[EXCEL_ROW].astype(int).tolist()
+        shown = [f"row {r} repeats row {int(twins[r])}" for r in rows[:3] if pd.notna(twins.get(r))]
+        issues_before = len(sheet.issues)
         issue(
             Severity.INFO,
             "duplicate_rows_removed",
-            f"{sheet.duplicate_rows} repeated row(s) (same node, same forces).",
-            sheet.duplicates[EXCEL_ROW].astype(int).tolist(),
+            f"{sheet.duplicate_rows} repeated row(s): the same node with the same forces as an earlier row"
+            + (f" ({', '.join(shown)})" if shown else "")
+            + ".",
+            rows,
         )
+        sheet.issues[issues_before].notes = {
+            r: f"Repeats row {int(twins[r])}." for r in rows[: Issue.MAX_ROWS] if pd.notna(twins.get(r))
+        }
 
 
 def _check_nodes(sheet: SheetData, issue) -> None:
