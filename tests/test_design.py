@@ -340,21 +340,23 @@ def test_design_endpoints(client):
     step = ("designed", "left", "locked")
     assert client.get(f"{url}/design").json() == {k: v for k, v in r.json().items() if k not in step}
 
-    # Designing locked the model; unlocked to edit, a new workbook keeps the old results, flagged as
-    # out of date.
+    # Designing locked the model. Unlocked to edit, results are deleted as soon as their inputs
+    # change (a new workbook changes them all); the workbook and inputs stay.
     assert client.post(f"{url}/workbook", files={"file": ("s2.xlsx", data)}).status_code == 409
     project = client.get(f"/api/projects/{p['id']}").json()
     assert project["locked"]
+    used = client.get(f"/api/projects/{p['id']}/storage").json()
+    assert used["results"] > 0 and used["sections"][0]["workbook"] > 0
     project["locked"] = False
     assert client.put(f"/api/projects/{p['id']}", json=project).status_code == 200
+    assert client.get(f"{url}/design").status_code == 200  # nothing changed yet
     client.post(f"{url}/workbook", files={"file": ("s2.xlsx", data)})
-    assert client.get(f"{url}/design").json()["changed"] == ["workbook"]
-
-    # So does a changed element, and the report says so.
+    assert client.get(f"{url}/design").status_code == 404
+    used = client.get(f"/api/projects/{p['id']}/storage").json()
+    assert used["results"] == 0 and used["sections"][0]["workbook"] > 0
     project = client.get(f"/api/projects/{p['id']}").json()
     project["sections"][0]["elements"]["Pile(1)"]["diameter"] = 1500
     assert client.put(f"/api/projects/{p['id']}", json=project).status_code == 200
-    assert client.get(f"{url}/design").json()["changed"] == ["workbook", "Pile(1)"]
     client.post(f"{url}/design")
     assert client.get(f"{url}/design").json()["changed"] == []
 
@@ -385,11 +387,29 @@ def test_a_second_upload_replaces_or_adds_tabs(client):
     assert [s["name"] for s in r["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile(1)-QP", "Pile(2)-QP"]
     assert r["file"] == "a.xlsx + b.xlsx"
 
-    # Update: a tab holding the same element and combination replaces the old one, whatever its name.
+    # A multiplier on a tab: Triton stamps when it was applied.
+    project = client.get(f"/api/projects/{p['id']}").json()
+    project["sections"][0]["load_factors"] = [{"factor": 1.35, "sheets": ["Pile(1)-QP"], "note": "Set B"}]
+    project = client.put(f"/api/projects/{p['id']}", json=project).json()
+    stamp = project["sections"][0]["load_factors"][0]["applied_at"]
+    assert stamp
+
+    # Update: a tab holding the same element and combination replaces the old one, whatever its name,
+    # and keeps its multiplier under the new name (so it is multiplied once, as before).
     fix = xlsx_bytes({"Pile 1 - QP": pile_sheet(scale=0.9)})
     r = client.post(f"{url}/workbook?mode=update", files={"file": ("c.xlsx", fix)}).json()
     assert r["merged"]["replaced"] == ["Pile(1)-QP → Pile 1 - QP"] and not r["merged"]["added"]
+    assert r["merged"]["renamed"] == ["Pile(1)-QP → Pile 1 - QP: ×1.35 kept"]
     assert [s["name"] for s in r["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile 1 - QP", "Pile(2)-QP"]
+    (rule,) = client.get(f"/api/projects/{p['id']}").json()["sections"][0]["load_factors"]
+    assert rule["sheets"] == ["Pile 1 - QP"] and rule["applied_at"] == stamp
+    # Each tab says which upload it came from, and its largest moment as uploaded.
+    assert {n: x["file"] for n, x in r["sources"].items()} == {
+        "Pile(1)-PT-B-Apron": "a.xlsx",
+        "Pile 1 - QP": "c.xlsx",
+        "Pile(2)-QP": "b.xlsx",
+    }
+    assert all(s["peak_moment"]["value"] > 0 for s in r["sheets"])
 
     # Matching only: tabs that match replace theirs, new ones are left out.
     fix = xlsx_bytes({"Pile(2)-QP": pile_sheet(scale=0.8), "Pile(3)-QP": pile_sheet()})
@@ -425,25 +445,25 @@ def test_design_chosen_elements_and_in_steps(client):
     assert r["designed"] == ["Pile(2)"] and r["left"] == [] and r["changed"] == []
     assert [x["element"] for x in r["piles"]] == ["Pile(1)", "Pile(2)"]
 
-    # One element changed: only it is out of date, and designing it alone keeps the other's results.
+    # One element changed: only its results are deleted, and designing it alone keeps the other's.
     first = client.get(f"{url}/design").json()
     project = client.get(f"/api/projects/{pid}").json()
     project["locked"] = False
     project["sections"][0]["elements"]["Pile(2)"]["diameter"] = 1500
     assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
     now = client.get(f"{url}/design").json()
-    assert now["changed"] == ["Pile(2)"] and now["stale"] == ["Pile(2)"]
+    assert [x["element"] for x in now["piles"]] == ["Pile(1)"] and now["stale"] == ["Pile(2)"]
     r = client.post(f"{url}/design", json={"elements": ["Pile(2)"]}).json()
     assert r["designed"] == ["Pile(2)"] and r["changed"] == [] and r["stale"] == []
     piles = {x["element"]: x for x in r["piles"]}
     assert piles["Pile(1)"] == next(x for x in first["piles"] if x["element"] == "Pile(1)")
 
-    # A change shared by every element (a design setting) puts both out of date.
+    # A change shared by every element (a design setting) deletes them all.
     project = client.get(f"/api/projects/{pid}").json()
     project["locked"] = False
     project["design"]["results_into_connection"] = 50
     client.put(f"/api/projects/{pid}", json=project)
-    assert client.get(f"{url}/design").json()["stale"] == ["Pile(1)", "Pile(2)"]
+    assert client.get(f"{url}/design").status_code == 404
 
 
 def test_lock_blocks_changes_until_unlocked(client):
@@ -482,9 +502,8 @@ def test_delete_some_or_all_tabs(client):
     assert [s["name"] for s in r.json()["workbook"]["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile(1)-QP"]
     assert client.get(f"{url}/workbook/sheet", params={"name": "Pile(2)-QP"}).status_code == 404
     assert client.get(f"{url}/workbook/sheet", params={"name": "Pile(1)-QP"}).json()["editable"]
-    assert client.get(f"{url}/design").json()["changed"] == ["workbook"]
+    assert client.get(f"{url}/design").status_code == 404  # results of the old workbook are deleted
     assert client.post(f"{url}/workbook/delete", json={"sheets": ["Nope"]}).status_code == 404
 
     assert client.delete(f"{url}/workbook").status_code == 204
     assert client.get(f"{url}/workbook").status_code == 404
-    assert client.get(f"{url}/design").json()["changed"] == ["workbook"]  # results kept, out of date

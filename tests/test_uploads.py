@@ -9,7 +9,8 @@ from conftest import plate_sheet
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from triton.api import UPLOAD_MAX_AGE, app
+from triton.api import app
+from triton.store import UPLOAD_MAX_AGE
 
 client = TestClient(app)
 
@@ -94,7 +95,8 @@ def test_a_bad_workbook_is_reported_and_cleaned_up(data_dir):
 def test_abandoned_uploads_are_cleared(data_dir):
     stale = client.post("/api/uploads", json={"filename": "w.xlsx"}).json()["id"]
     old = time.time() - UPLOAD_MAX_AGE - 60
-    os.utime(data_dir / "uploads" / stale, (old, old))
+    for f in [data_dir / "uploads" / stale, *(data_dir / "uploads" / stale).iterdir()]:
+        os.utime(f, (old, old))
     client.post("/api/uploads", json={"filename": "w.xlsx"})
     assert not (data_dir / "uploads" / stale).exists()
 

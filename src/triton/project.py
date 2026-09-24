@@ -1156,6 +1156,9 @@ class LoadFactor(_Model):
         description="Workbook sheets whose straining actions are multiplied. X, Y and Z are not changed.",
     )
     note: str = Field("", title="Note", description="e.g. Set B actions to design values")
+    applied_at: str | None = Field(
+        None, title="Applied", description="When this multiplier last changed (set by Triton)."
+    )
 
 
 class UserCage(_Model):

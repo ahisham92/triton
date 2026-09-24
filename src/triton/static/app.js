@@ -167,6 +167,12 @@ async function projectPage(id, tab, sectionId) {
     const prices = renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)");
     prices.dataset.free = ""; // not a design input: open while the model is locked
     host.append(prices);
+    const used = document.createElement("div");
+    used.className = "panel";
+    used.dataset.free = "";
+    used.innerHTML = '<h2>Storage</h2><p class="status">Working out…</p>';
+    host.append(used);
+    storagePanel(used, id);
   }
   else if (tab === "settings") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
   else if (tab === "design") renderDesignTab(host);
@@ -179,6 +185,27 @@ async function projectPage(id, tab, sectionId) {
   showErrors();
   applyLock();
   drawJobs();
+}
+
+// Space each section takes on the server, so it is clear where it goes.
+async function storagePanel(box, id) {
+  let d;
+  try {
+    d = await api(`${ROOT}/api/projects/${id}/storage`);
+  } catch (e) {
+    box.innerHTML = `<h2>Storage</h2><p class="status">${esc(e.message)}</p>`;
+    return;
+  }
+  const mb = (b) => (b >= 1e6 ? `${fmt(b / 1e6, 1)} MB` : b ? `${fmt(b / 1e3, 0)} kB` : "—");
+  box.innerHTML = `<h2>Storage</h2>
+    <p class="status" style="margin-top:0">This project uses <strong>${mb(d.total)}</strong>. The workbook is kept compressed, with its rows as uploaded
+      for editing; results are deleted when the inputs they came from change, and deleting a section or the project frees all of it.
+      Upload leftovers and temporary files are cleared on their own.</p>
+    <div class="scroll"><table class="factor-sheets"><thead><tr><th>Section</th><th class="num">Workbook</th><th class="num">Rows kept for editing</th>
+      <th class="num">Design results</th><th class="num">Total</th></tr></thead><tbody>
+      ${d.sections.map((x) => `<tr><td>${esc(x.name)}</td><td class="num">${mb(x.workbook)}</td><td class="num">${mb(x.rows)}</td>
+        <td class="num">${mb(x.results)}</td><td class="num"><strong>${mb(x.total)}</strong></td></tr>`).join("")}
+    </tbody></table></div>`;
 }
 
 // ---------------------------------------------------------------- lock
@@ -199,6 +226,12 @@ function applyLock() {
   const unlock = document.getElementById("unlock");
   if (unlock)
     unlock.onclick = async () => {
+      const ok = confirm(
+        "Unlock to edit?\n\nAs you change an input, the design results it affects are deleted (a shared input such as a " +
+          "design setting or the workbook deletes the whole section's), so no out-of-date results are kept. Results of " +
+          "elements you don't touch stay. Files you already downloaded are not affected.",
+      );
+      if (!ok) return;
       state.project.locked = false;
       state.dirty = true;
       await save();
@@ -1461,14 +1494,14 @@ function renderFactors(data) {
       const which = cs.length && cs.length <= 3 ? ` ${cs.join(", ")}` : "";
       return `×${r.factor} on ${r.sheets.length}${which} sheet${r.sheets.length === 1 ? "" : "s"}${r.note ? ` (${r.note})` : ""}`;
     });
-    return `Applied: ${parts.join("; ")}. Designed results that use these sheets now show as out of date until designed again.`;
+    return `Applied: ${parts.join("; ")}. Results designed with these sheets were deleted: design again.`;
   };
   const draw = () => {
     const taken = (i) => new Set(draft.flatMap((r, j) => (j === i ? [] : r.sheets)));
     box.innerHTML = `<h2>Load multipliers</h2>
       <p class="status" style="margin-top:0">Multiply the straining actions of chosen sheets, e.g. 1.35 on the Set B sheets. X, Y and Z are not changed.
         Press Apply multiplier to use your changes (Apply decisions is only for the warnings). It is used when you design and in the
-        sheet pile wall export; the stored workbook and the sheet view keep the uploaded values. Changing it marks designed results out of date.</p>
+        sheet pile wall export; the stored workbook and the sheet view keep the uploaded values. Changing it deletes the results designed with those sheets.</p>
       ${draft
         .map((r, i) => {
           const other = taken(i);
@@ -1493,7 +1526,8 @@ function renderFactors(data) {
         .join("")}
       <div class="row"><button class="quiet" id="add-factor">Add multiplier</button>
         <button id="factor-apply">Apply multiplier</button><button class="quiet" id="factor-undo" hidden>Discard changes</button>
-        <span class="status" id="factor-status"></span></div>`;
+        <span class="status" id="factor-status"></span></div>
+      ${factorSheetTable(data, sheets, p.load_factors)}`;
     box.querySelectorAll("details[data-rule]").forEach((d) => (d.ontoggle = () => {
       const i = Number(d.dataset.rule);
       if (d.open) open.add(i);
@@ -1554,6 +1588,49 @@ function renderFactors(data) {
     showState();
   };
   draw();
+}
+
+// Sheet by sheet: which tabs the design multiplies (applied multipliers only), set against the values
+// as uploaded, and tabs to check: uploaded after their multiplier was applied, or left out while the
+// other tabs of their combination are multiplied.
+function factorSheetTable(data, sheets, rules) {
+  if (!sheets.length) return "";
+  const ruleOf = new Map();
+  for (const r of rules || []) for (const n of r.sheets) ruleOf.set(n, r);
+  const multiplied = new Map(); // combination -> factors used on it
+  for (const x of sheets) {
+    const r = ruleOf.get(x.name);
+    if (r && Number(r.factor) !== 1) multiplied.set(x.combination, [...(multiplied.get(x.combination) || []), r.factor]);
+  }
+  const ms = (t) => (t ? Date.parse(t) : NaN);
+  const rows = sheets.map((x) => {
+    const r = ruleOf.get(x.name);
+    const f = r ? Number(r.factor) : 1;
+    const src = data.sources?.[x.name] ?? (data.file ? { file: data.file, at: data.uploaded_at, guess: true } : null);
+    const peak = x.peak_moment;
+    const flags = [];
+    if (r && f !== 1 && src && !src.guess && ms(src.at) > ms(r.applied_at))
+      flags.push(`Uploaded after ×${f} was applied: check this tab is not already multiplied in the Excel.`);
+    if (f === 1 && multiplied.has(x.combination))
+      flags.push(`Not multiplied, while other ${x.combination} tabs are ×${multiplied.get(x.combination)[0]}.`);
+    const used = peak ? `${fmt(peak.value * f, 0)}` : "—";
+    return `<tr${flags.length ? ' class="flag"' : ""}><td>${esc(x.name)}</td><td>${esc(x.combination)}</td>
+      <td>${src ? `${esc(src.file)}<br><span class="status">${esc(when(src.at))}</span>` : "—"}</td>
+      <td>${f !== 1 ? `<strong>×${f}</strong>` : "as uploaded"}</td>
+      <td class="num">${peak ? `${fmt(peak.value, 0)} <span class="status">${esc(peak.action.replace("_", ""))}</span>` : "—"}</td>
+      <td class="num">${f !== 1 ? `<strong>${used}</strong>` : used}</td>
+      <td>${flags.map(esc).join("<br>") || (f !== 1 ? "Multiplied once, at design" : "")}</td></tr>`;
+  });
+  const n = sheets.filter((x) => (ruleOf.get(x.name)?.factor ?? 1) !== 1).length;
+  const flagged = rows.filter((r) => r.startsWith('<tr class="flag"')).length;
+  return `<details class="factor-detail" ${flagged ? "open" : ""}><summary><strong>Sheet by sheet:</strong> ${n} of ${sheets.length} tabs multiplied at design${
+    flagged ? `, <strong>${flagged} to check</strong>` : ""}</summary>
+    <p class="status">${n} of ${sheets.length} tabs are multiplied at design, as applied above. The stored workbook keeps the Excel's own values,
+      so the largest moment here is the one in your Excel, and "Used in design" is it times the multiplier. A tab replaced later keeps its multiplier and is never multiplied twice.
+      ${flagged ? `<strong>${flagged} tab(s) to check</strong> are highlighted.` : ""}</p>
+    <div class="scroll"><table class="factor-sheets"><thead><tr><th>Tab</th><th>Combination</th><th>Uploaded from</th><th>Multiplier</th>
+      <th class="num">Largest |M| in the Excel</th><th class="num">Used in design</th><th>Check</th></tr></thead>
+      <tbody>${rows.join("")}</tbody></table></div></details>`;
 }
 
 const LABEL = { ok: "OK", warning: "Check", error: "Error", missing: "—" };

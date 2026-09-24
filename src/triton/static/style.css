@@ -298,3 +298,8 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .v3d-mode { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .v3d-mode select { font-size: 13px; padding: 3px 6px; }
 .tension-legend p { margin: 4px 0 0; }
+.factor-sheets { width: 100%; border-collapse: collapse; font-size: 13px; }
+.factor-sheets th, .factor-sheets td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.factor-sheets .num { text-align: right; white-space: nowrap; }
+.factor-sheets tr.flag td { background: var(--warn-bg); }
+.factor-detail { margin-top: 16px; } .factor-detail summary { cursor: pointer; }

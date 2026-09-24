@@ -112,7 +112,23 @@ def _sheet_summary(s: SheetData) -> dict[str, Any]:
         "duplicate_rows": s.duplicate_rows,
         "empty": s.empty,
         "state": _cell_state(s),
+        "peak_moment": _peak_moment(s),
     }
+
+
+def _peak_moment(s: SheetData) -> dict[str, Any] | None:
+    """The largest moment in the sheet as uploaded (before any load multiplier), to set against the Excel."""
+    cols = (
+        [c for c in s.frame.columns if str(c).startswith("M_") and not str(c).endswith(("min", "max"))]
+        if not s.frame.empty
+        else []
+    )
+    best = None
+    for c in cols:
+        v = pd.to_numeric(s.frame[c], errors="coerce").abs().max()
+        if pd.notna(v) and (best is None or v > best[1]):
+            best = (c, float(v))
+    return {"action": best[0], "value": round(best[1], 1)} if best else None
 
 
 def _element_sort_key(e: str) -> tuple[int, str]:

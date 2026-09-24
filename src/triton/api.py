@@ -39,13 +39,14 @@ from .project import (
     ProjectInfo,
     Section,
     SheetPileInput,
+    _now,
     with_project_grades,
 )
 from .reader import UnsupportedWorkbook
 from .report import RENDERERS, build_report
 from .review import choices
 from .stepped import assemble, is_read, read_step
-from .store import ProjectNotFound, ProjectStore
+from .store import UPLOAD_ID, ProjectNotFound, ProjectStore, housekeeping
 from .suggest import suggest
 from .validation import (
     MERGE_MODES,
@@ -151,6 +152,7 @@ def _section(project: Project, section_id: str) -> Section:
 
 @app.get("/api/projects")
 def list_projects() -> list[ProjectSummary]:
+    housekeeping()
     return [
         ProjectSummary(
             id=p.id,
@@ -204,12 +206,64 @@ def update_project(project_id: str, body: Project) -> Project:
     if existing.locked and body.locked and _model(body) != _model(existing):
         raise HTTPException(409, LOCKED)
     body.created_at = existing.created_at
+    _stamp_multipliers(existing, body)
     saved = store().save(body)
     kept = {s.id for s in saved.sections}
     for s in existing.sections:
         if s.id not in kept:
             store().delete_section_files(project_id, s.id)
+    if not saved.locked:
+        _drop_stale(project_id, saved)
     return saved
+
+
+def _stamp_multipliers(existing: Project, body: Project) -> None:
+    """Each load multiplier remembers when it last changed, so tabs uploaded after it show up."""
+    before = {s.id: s for s in existing.sections}
+    now = _now()
+    for section in body.sections:
+        old = before.get(section.id)
+        kept = {(r.factor, tuple(r.sheets), r.note): r.applied_at for r in old.load_factors} if old else {}
+        for rule in section.load_factors:
+            key = (rule.factor, tuple(rule.sheets), rule.note)
+            rule.applied_at = kept[key] if key in kept else now
+
+
+def _drop_stale(project_id: str, project: Project) -> None:
+    """Unlocked to edit, results that no longer match their inputs are deleted rather than kept out of
+    date: only what a change affects goes (all of a section's for a shared input), so the others can
+    still be used and the changed elements designed on their own."""
+    for section in project.sections:
+        results = store().load_results(project_id, section.id)
+        if not results:
+            continue
+        now = fresh.fingerprint(project, section, store().workbook_summary(project_id, section.id))
+        changed, stale = fresh.status(results, now, section.elements)
+        designed = {e["element"] for e in fresh._designed(results)}
+        gone = designed & set(stale)
+        if changed is None or not gone:
+            continue
+        if gone == designed:
+            store().delete_results(project_id, section.id)
+            continue
+        for kind in fresh.KINDS:
+            results[kind] = [e for e in results.get(kind) or [] if e["element"] not in gone]
+        for name in gone:
+            (results.get("element_inputs") or {}).pop(name, None)
+        store().save_results(project_id, section.id, results)
+
+
+@app.get("/api/projects/{project_id}/storage")
+def project_storage(project_id: str) -> dict:
+    """Space each section takes: workbook, rows kept for editing, design results."""
+    project = _get(project_id)
+    used = store().usage(project_id, [s.id for s in project.sections])
+    sections = [{"id": s.id, "name": s.name, **used[s.id]} for s in project.sections]
+    return {
+        "sections": sections,
+        "total": sum(x["total"] for x in sections),
+        "results": sum(x["results"] for x in sections),
+    }
 
 
 @app.delete("/api/projects/{project_id}", status_code=204)
@@ -387,9 +441,6 @@ def progress(key: str) -> dict:
 # workbook can be larger. The browser sends it in pieces to /api/uploads/{id}, then asks for it
 # to be checked or kept by that id. A finished or abandoned upload is deleted.
 
-UPLOAD_ID = re.compile(r"[0-9a-f]{32}")
-UPLOAD_MAX_AGE = 24 * 3600
-
 
 def _uploads() -> Path:
     root = Path(os.environ.get("TRITON_DATA_DIR", "data")) / "uploads"
@@ -412,9 +463,7 @@ class NewUpload(BaseModel):
 @app.post("/api/uploads", status_code=201)
 def start_upload(body: NewUpload) -> dict:
     suffix = _suffix(body.filename)
-    for old in _uploads().iterdir():  # abandoned uploads
-        if time.time() - old.stat().st_mtime > UPLOAD_MAX_AGE:
-            shutil.rmtree(old, ignore_errors=True)
+    housekeeping(force=True)  # abandoned uploads and the like
     upload_id = secrets.token_hex(16)
     d = _uploads() / upload_id
     d.mkdir()
@@ -514,10 +563,35 @@ def _keeper(project_id: str, section_id: str, mode: str) -> Callable[[str, Impor
         mapping = {k: v.model_dump() for k, v in section.sheet_map.items()}
         merged, what = merge_workbooks(old, result, mode, mapping)
         before = (store().workbook_summary(project_id, section_id) or {}).get("file") or "workbook"
-        store().save_workbook(project_id, section_id, f"{before} + {filename}", merged, replace=False)
-        return {**section_workbook(project_id, section_id), "merged": what}
+        new = [r.split(" → ")[-1] for r in what["replaced"]] + list(what["added"])
+        store().save_workbook(
+            project_id, section_id, f"{before} + {filename}", merged, replace=False, new_sheets=new
+        )
+        renamed = _carry_renamed_sheets(project_id, section_id, what["replaced"])
+        merged_what = {**what, "renamed": renamed} if renamed else what
+        return {**section_workbook(project_id, section_id), "merged": merged_what}
 
     return keep
+
+
+def _carry_renamed_sheets(project_id: str, section_id: str, replaced: list[str]) -> list[str]:
+    """A tab replaced by one of another name ("old → new") keeps its load multiplier and its
+    mapping under the new name, so it is multiplied once, as before."""
+    pairs = [r.split(" → ") for r in replaced if " → " in r]
+    if not pairs:
+        return []
+    project = _get(project_id)
+    section = _section(project, section_id)
+    out = []
+    for old, new in pairs:
+        for rule in section.load_factors:
+            if old in rule.sheets:
+                rule.sheets = [new if n == old else n for n in rule.sheets]
+                out.append(f"{old} → {new}: ×{rule.factor:g} kept")
+        if old in section.sheet_map and new not in section.sheet_map:
+            section.sheet_map[new] = section.sheet_map.pop(old)
+    store().save(project)
+    return out
 
 
 class SheetNames(BaseModel):
@@ -526,7 +600,7 @@ class SheetNames(BaseModel):
 
 @app.delete(SECTION + "/workbook", status_code=204)
 def delete_workbook(project_id: str, section_id: str) -> Response:
-    """Delete the section's whole workbook, back to a blank section. Its results stay, out of date."""
+    """Delete the section's whole workbook and its results, back to a blank section."""
     _section(_unlocked(_get(project_id)), section_id)
     store().delete_workbook(project_id, section_id)
     return Response(status_code=204)
