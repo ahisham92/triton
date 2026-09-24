@@ -1,5 +1,6 @@
 // Triton front end: projects, schema-driven setup forms and the workbook check.
 import { View3D, directionArrows, heat } from "./view3d.js";
+import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -2347,6 +2348,15 @@ function resultTension(res) {
   return out;
 }
 
+// wk / limit bands for the 3D view's "Crack width" mode.
+function resultCracks(res) {
+  const out = {};
+  for (const p of res?.piles || []) if (p.cracks?.bands?.length) out[p.element] = p.cracks.bands;
+  for (const w of res?.combi_walls || []) if (w.infill?.cracks?.bands?.length) out[w.element] = w.infill.cracks.bands;
+  for (const k of ["beams", "slabs"]) for (const d of res?.[k] || []) if (d.crack_bands?.length) out[d.element] = d.crack_bands;
+  return out;
+}
+
 function resultBands(res) {
   const bands = {};
   for (const p of res?.piles || []) bands[p.element] = p.bands || [];
@@ -2366,12 +2376,13 @@ async function mountElementViews(res) {
   }
   const bands = resultBands(res);
   const tension = resultTension(res);
+  const crack = resultCracks(res);
   for (const slot of slots) {
     if (!document.body.contains(slot)) continue; // redrawn meanwhile (a design run's new results)
     const name = slot.dataset.element;
     const el = geo.elements.find((e) => e.element === name);
     const view = new View3D(slot, { height: 380, compact: true });
-    view.setScene({ elements: geo.elements, bands, tension, selected: name, focus: name,
+    view.setScene({ elements: geo.elements, bands, tension, crack, selected: name, focus: name,
       arrows: directionArrows(el, geo.axes.find((a) => a.element === name)) });
   }
 }
@@ -2588,6 +2599,7 @@ async function renderView3dTab(host) {
   const view = new View3D(document.getElementById("v3d-main"), { height: 560 });
   const bands = resultBands(res);
   const tension = resultTension(res);
+  const crack = resultCracks(res);
   const max = {};
   for (const p of res?.piles || []) max[p.element] = p.utilisation;
   for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
@@ -2597,7 +2609,7 @@ async function renderView3dTab(host) {
   state.pick3d = null;
   const show = () => {
     const el = geo.elements.find((e) => e.element === selected);
-    view.setScene({ elements: geo.elements, bands, tension, selected,
+    view.setScene({ elements: geo.elements, bands, tension, crack, selected,
       arrows: selected ? directionArrows(el, geo.axes.find((a) => a.element === selected)) : [] });
     side.querySelectorAll("[data-pick]").forEach((b) => b.classList.toggle("on", b.dataset.pick === selected));
   };
@@ -2848,7 +2860,8 @@ function slabCard(d) {
       <div class="chart wide" data-kind="stations"></div><div data-kind="station-ctl"></div>
       ${stripTable(d)}
       <h3 style="margin-top:18px">Moments in plan: where the deck is in tension</h3>
-      <div class="row" data-kind="mplan-pick"></div><div class="chart wide" data-kind="mplan"></div>` : ""}
+      <div class="row" data-kind="mplan-pick"></div><div class="chart wide" data-kind="mplan"></div>
+      ${crackPicturesHtml(slabCrackItems(d), "Crack pictures (QP, per strip and station)")}` : ""}
     <h3 style="margin-top:18px">Bars per metre</h3>
     <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (between the mesh bars)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
       ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)${l.basic.set_by === "user" ? "<br><span class=\"status\">your mesh</span>" : ""}</td>
@@ -2876,6 +2889,7 @@ function slabCard(d) {
     </table></div>
     <p class="status">${fmt(d.restraint?.length_m)} m between joints, R = ${fmt(d.restraint?.R, 2)} (${esc(d.restraint?.R_from || "")}).</p>`;
   if (d.strip_design) {
+    mountCrackPictures(card, slabCrackItems(d));
     stationEditor(card, d);
     wireStripTable(card, d);
     momentPlan(card, d);
@@ -3033,6 +3047,7 @@ function beamCard(b) {
       ${Object.entries(r.faces || {}).map(([f, x]) => `<tr><td>Restraint</td><td>${f}</td><td>${isFinite(x.wk) ? `${fmt(x.wk, 3)} mm` : "–"}</td><td>${fmt(x.limit, 2)} mm</td>
         <td>${x.note ? esc(x.note) : `ε<sub>r</sub> ${fmt(x.eps_r)} µε, crack strain ${fmt(x.eps_cr)} µε, s<sub>r,max</sub> ${fmt(x.sr_max)} mm`}</td><td>${ok(x.passed)}</td></tr>`).join("")}
     </table></div>
+    ${crackPicturesHtml(beamCrackItems(b))}
     ${r.faces ? `<p class="status">Restraint: ${fmt(r.length_m)} m between joints, R = ${fmt(r.R, 2)} (${esc(r.R_from)}), K1 = ${fmt(r.K1, 2)}, T1 = ${fmt(r.T1)} °C, T2 = ${fmt(r.T2)} °C, plus autogenous shrinkage (EN 1992-3 Annex M, CIRIA C660).</p>` : ""}
     ${sh.link ? `<h3 style="margin-top:18px">Links ${ok(sh.passed)}</h3>
     <p><b>${esc(sh.link.label)}</b>, ${fmt(sh.link.kg_per_m, 1)} kg/m, one arrangement for the whole beam (largest spacing ${fmt(sh.max_spacing_mm)} mm).
@@ -3052,6 +3067,7 @@ function beamCard(b) {
         <td class="cell ${c.utilisation <= 1 ? "ok" : "error"}">${fmt(c.utilisation, 2)}</td></tr>`).join("")}</table></div>
     <p class="status">${esc(b.truss.method)}</p>` : b.truss?.note ? `<p class="status">${esc(b.truss.note)}</p>` : ""}
     ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}`;
+  mountCrackPictures(card, beamCrackItems(b));
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
   if (b.profile?.length) {
     beamMoments(card.querySelector('[data-kind="moments"]'), b.profile);
@@ -3263,6 +3279,7 @@ function pileCard(p) {
     ${casingBlock(p.casing)}
     ${connectionBlock(p.connection)}
     ${pileCrackBlock(p.cracks)}
+    ${crackPicturesHtml(pileCrackItems(p))}
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
     ${p.moments?.length ? `<div class="charts"><div class="chart" data-kind="moments"></div><div data-kind="peaks"></div></div>` : ""}
     ${setsBlock(p.governing_sets)}
@@ -3271,6 +3288,7 @@ function pileCard(p) {
       ${p.alternatives.map((x) => `<tr${x.chosen ? ' style="font-weight:600"' : ""}><td>${esc(x.label)}${x.chosen ? " (chosen)" : ""}</td><td>${x.rows}</td><td>${fmt(x.area_mm2)}</td><td>${fmt(x.utilisation, 3)}</td><td>${fmt(x.steel_ratio_kg_m3)}</td><td>${fmt(x.clear_spacing_mm)}</td></tr>`).join("")}
     </table></div></details>`;
   wireCageSet(card, p);
+  mountCrackPictures(card, pileCrackItems(p));
   if (a?.rings) sectionDrawing(card.querySelector('[data-kind="section"]'), p);
   if (p.curtailment?.runs?.length) elevationDrawing(card.querySelector('[data-kind="elevation"]'), p.curtailment);
   if (p.curve.length) {
@@ -3282,6 +3300,43 @@ function pileCard(p) {
     peaksBlock(card.querySelector('[data-kind="peaks"]'), p.peaks || []);
   }
   return card;
+}
+
+// The QP sets of each station as crack pictures (see cracks.js).
+function pileCrackItems(p) {
+  const D = p.section?.diameter_mm;
+  const many = (p.governing_sets || []).length > 1;
+  return (p.governing_sets || []).flatMap((st) =>
+    (st.qp || []).filter((r) => r.crack).map((r) => ({
+      label: `${many ? `${fmt(st.top, 2)} to ${fmt(st.bottom, 2)} m, ` : ""}${r.case} (${r.combination}, z ${fmt(r.z, 2)} m)`,
+      set: r,
+      geom: { shape: "circle", D, rings: st.rings },
+      forces: `${r.combination} at z ${fmt(r.z, 2)} m: N = ${fmt(r.N_kN)} kN (compression +), M2 = ${fmt(r.M2_kNm)} kNm, M3 = ${fmt(r.M3_kNm)} kNm, resultant ${fmt(Math.hypot(r.M2_kNm, r.M3_kNm))} kNm, with ${st.cage}`,
+    }))
+  );
+}
+
+function beamCrackItems(b) {
+  return (b.governing_sets || []).flatMap((st) =>
+    (st.qp || []).filter((r) => r.crack).map((r) => ({
+      label: `${r.case} (${r.combination}, ${fmt(r.z, 1)} m along)`,
+      set: r,
+      geom: { shape: "rect", b: b.width_mm, h: b.depth_mm, bars: b.cage?.bars || [] },
+      forces: `${r.combination} at ${fmt(r.z, 2)} m along the beam: N = ${fmt(r.N_kN)} kN (compression +), M vertical = ${fmt(r.M3_kNm)} kNm (sagging +), M horizontal = ${fmt(r.M2_kNm)} kNm (not in the crack check)`,
+    }))
+  );
+}
+
+function slabCrackItems(d) {
+  const rows = d.strip_design?.rows || [];
+  return rows.flatMap((r) =>
+    (r.sets?.qp || []).filter((q) => q.crack).map((q) => ({
+      label: `${r.moment} ${r.face} bars, ${r.strip} strip, ${fmt(r.station[0], 2)} to ${fmt(r.station[1], 2)} m, ${q.combination}`,
+      set: q,
+      geom: { shape: "strip" },
+      forces: `${q.combination}: M = ${fmt(q.M_kNm_per_m)} kNm/m, N = ${fmt(q.N_kN_per_m)} kN/m (compression +), strip averaged, with ${r.bars}`,
+    }))
+  );
 }
 
 function pileCrackBlock(c) {

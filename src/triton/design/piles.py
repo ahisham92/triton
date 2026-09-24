@@ -708,6 +708,13 @@ def crack_summary(pile: PileInput, settings: DesignSettings, qp: pd.DataFrame, s
             for z, v in f.groupby(f["Z"].mul(2).round() / 2)["wk"].max().sort_index(ascending=False).items()
         ],
     }
+    if {"X", "Y"} <= set(f.columns):
+        # wk / limit per pile position and 0.5 m band, for the 3D view's "Crack width" mode.
+        g = f.groupby([f["X"].round(2), f["Y"].round(2), f["Z"].mul(2).round() / 2])["wk"].max()
+        lim = pile.crack_width_limit
+        out["bands"] = [
+            [float(x), float(y), float(z), round(float(w) / lim, 3)] for (x, y, z), w in g.items()
+        ]
     return out
 
 

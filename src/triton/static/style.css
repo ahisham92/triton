@@ -303,3 +303,22 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .factor-sheets .num { text-align: right; white-space: nowrap; }
 .factor-sheets tr.flag td { background: var(--warn-bg); }
 .factor-detail { margin-top: 16px; } .factor-detail summary { cursor: pointer; }
+
+/* Crack pictures (cracks.js) and the 3D crack marks' legend. */
+.crack-pick select { max-width: 100%; margin-left: 6px; }
+.crack-figs { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+.crack-figs figure { margin: 0; flex: 1 1 280px; max-width: 420px; }
+.crack-figs figcaption { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.crack-svg { width: 100%; height: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.crack-svg .cz { fill: var(--line); opacity: 0.7; }
+.crack-svg .tz { fill: var(--warn-bg); }
+.crack-svg .outline circle, .crack-svg .outline rect, .crack-svg .outline-r { fill: none; stroke: var(--text); stroke-width: 1.2; }
+.crack-svg .bar { fill: var(--muted); }
+.crack-svg .bar.t { fill: var(--text); }
+.crack-svg .crack { fill: var(--text); }
+.crack-svg .na { stroke: var(--text); stroke-width: 1; stroke-dasharray: 5 3; }
+.crack-svg .barline { stroke: var(--muted); stroke-width: 2; stroke-dasharray: 2 3; }
+.crack-svg .dim { stroke: var(--muted); stroke-width: 1; marker-start: none; }
+.crack-svg .lbl { font: 10px system-ui, sans-serif; fill: var(--muted); }
+.crack-mark path { fill: none; stroke: var(--text); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.crack-svg .halo { paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }

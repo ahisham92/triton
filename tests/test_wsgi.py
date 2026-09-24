@@ -39,6 +39,8 @@ def data_dir(tmp_path, monkeypatch):
 def test_mounted_under_a_prefix():
     status, _, page = call(application, "/", root="/triton")
     assert status == 200 and b'src="static/app.js?v=' in page  # relative, so it works under /triton/
+    # The modules app.js imports get versioned addresses too, so no browser keeps an old one.
+    assert b'<script type="importmap">' in page and b'"./static/view3d.js": "./static/view3d.js?v=' in page
     status, _, _ = call(application, "/static/app.js", root="/triton")
     assert status == 200
     body = json.dumps({"info": {"name": "Online"}}).encode()

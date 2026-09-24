@@ -182,6 +182,12 @@ def test_design_beam_with_supports_and_export():
     assert d["steel"]["kg_per_m3"] > 0
     assert d["truss"]["spacing_m"] == 6.0 and d["truss"]["spacing_from"] == "workbook"
     assert len(d["governing_sets"][0]["uls"]) == 7 and len(d["governing_sets"][0]["qp"]) == 7
+    # Crack view: each QP set with its crack at its tension face; bands of wk / limit along the beam.
+    qp = d["governing_sets"][0]["qp"]
+    assert max(r["crack"]["wk_mm"] for r in qp) == pytest.approx(d["cracks"]["bottom"]["wk"], abs=2e-3)
+    assert all(r["crack"]["face"] == ("bottom" if r["M3_kNm"] >= 0 else "top") for r in qp)
+    worst = d["cracks"]["bottom"]["wk"] / d["cracks"]["bottom"]["limit"]
+    assert max(b[3] for b in d["crack_bands"]) == pytest.approx(worst, abs=2e-3)
 
     res = run_section(DesignSettings(), Section(elements=els), wb)
     assert [b["element"] for b in res["beams"]] == ["Front Beam"]

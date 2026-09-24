@@ -28,6 +28,7 @@ sign.
 
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 from typing import Any
 
@@ -128,6 +129,11 @@ def station_sets(
             q_rows = q_rows[(q_rows["Z"] > c.top_level + 1e-9) | (q_rows["Z"] < c.bottom_level - 1e-9)]
         no_crack = cased(pile, top, bottom) or (pile.casing is not None and q_rows.empty)
         util = _utilisation(pile, arrangement, settings, u_rows) if len(u_rows) else None
+        qp_sets = placeholder_sets()
+        if not no_crack:
+            qp_sets = pile_set_cracks(
+                pile, settings, arrangement, pick_sets(q_rows, None, "largest resultant M")
+            )
         out.append(
             {
                 "top": top,
@@ -136,10 +142,47 @@ def station_sets(
                 "rings": cage["rings"],
                 "governing": _governing(pile, settings, arrangement, u_rows, util),
                 "uls": pick_sets(u_rows, util, "most utilised"),
-                "qp": placeholder_sets() if no_crack else pick_sets(q_rows, None, "largest resultant M"),
+                "qp": qp_sets,
             }
         )
     return out
+
+
+def pile_set_cracks(pile: PileInput, settings: DesignSettings, arrangement, rows: list[dict]) -> list[dict]:
+    """Each QP set with its crack width and the terms that draw it (7.3.4 at the extreme bar)."""
+    from .piles import crack_widths
+
+    if not rows:
+        return rows
+    n = np.array([r["N_kN"] for r in rows], float)
+    m2 = np.array([r["M2_kNm"] for r in rows], float)
+    m3 = np.array([r["M3_kNm"] for r in rows], float)
+    w = crack_widths(pile, arrangement, settings, pd.DataFrame({"N": n, "M": np.hypot(m2, m3)}))
+    limit = pile.crack_width_limit
+    for r, t, a2, a3 in zip(rows, w.itertuples(index=False), m2, m3, strict=True):
+        r["crack"] = crack_terms(t.wk, limit, t.sigma_s, t.sr_max, t.x, pile.diameter)
+        # The direction of the moment vector, from the M3 axis towards M2 (degrees).
+        r["crack"]["angle_deg"] = round(math.degrees(math.atan2(a2, a3)), 1)
+    return rows
+
+
+def crack_terms(wk, limit, sigma_s, sr_max, x, h) -> dict:
+    """What a crack picture needs: wk against its limit, the bar stress, the crack spacing and the
+    compressed depth x (0 all in tension, h all in compression) of a section h deep (mm)."""
+
+    def num(v, nd=0):
+        return None if v is None or not np.isfinite(v) else round(float(v), nd) if nd else round(float(v))
+
+    wk = float(wk or 0.0)
+    return {
+        "wk_mm": round(wk, 3),
+        "limit_mm": limit,
+        "util": round(wk / limit, 3) if limit else None,
+        "sigma_s_MPa": num(sigma_s, 1),
+        "sr_max_mm": num(sr_max) if wk > 0 else None,
+        "x_mm": num(x),
+        "h_mm": num(h),
+    }
 
 
 def _governing(

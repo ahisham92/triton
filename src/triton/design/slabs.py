@@ -56,6 +56,7 @@ from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, SlabInput, SlabStrips, with_project_grades
 from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restraint_factor
+from .governing import crack_terms
 from .tension import slab_tension
 
 E_S = 200_000.0
@@ -211,8 +212,11 @@ def crack_widths(
     c: float,
     conc,
     e_eff: float,
-) -> np.ndarray:
-    """7.3.4 crack widths (mm) of QP loads (kNm/m, kN/m) at one face with Ø at spacing s."""
+    terms: bool = False,
+):
+    """7.3.4 crack widths (mm) of QP loads (kNm/m, kN/m) at one face with Ø at spacing s.
+
+    With ``terms`` it returns (wk, σs, sr,max, x) instead of wk alone."""
     rho = area / (1000 * d)
     ae = E_S / e_eff
     k = math.sqrt(2 * ae * rho + (ae * rho) ** 2) - ae * rho
@@ -224,6 +228,8 @@ def crack_widths(
     rp = area / (1000 * hc)
     strain = np.maximum((sigma - KT * conc.fctm / rp * (1 + E_S / conc.ecm * rp)) / E_S, 0.6 * sigma / E_S)
     sr = 1.3 * (h - x) if s > 5 * (c + phi / 2) else K3 * c + K1 * 0.5 * K4 * phi / rp
+    if terms:
+        return sr * strain, sigma, sr, x
     return sr * strain
 
 
@@ -1203,6 +1209,33 @@ def design_slab(
                 f"{LAYER_TEXT[layer].capitalize()}: the heaviest bars ({labels[-1]}) are not enough "
                 f"at X {wx:.1f}, Y {wy:.1f} ({util:.2f}): a thicker slab or a haunch is needed there."
             )
+        # wk / limit per cell with the bars it gets, for the 3D view's "Crack width" mode.
+        crack_u = np.full(len(cell), np.nan)
+        if wq is not None:
+            d_all = [
+                h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
+                for o, f in zip(opts, dphis, strict=True)
+            ]
+            for oi in np.unique(chosen):
+                o, d_o = opts[int(oi)], d_all[int(oi)]
+                if strips:
+                    for k, (qm, qn, _) in qgroups.items():
+                        idxs = [c for c in members.get(k, []) if chosen[c] == oi]
+                        if idxs:
+                            w = crack_widths(qm, qn, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+                            crack_u[idxs] = np.fmax(crack_u[idxs], float(w.max()) / limits[face])
+                    continue
+                rows = (pos >= 0) & (chosen[np.maximum(pos, 0)] == oi)
+                if rows.any():
+                    w = crack_widths(
+                        wq[layer][rows], nq[rows], o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff
+                    )
+                    at = pos[rows]
+                    vals = np.zeros(len(cell))
+                    np.maximum.at(vals, at, w / limits[face])
+                    hit = np.zeros(len(cell), bool)
+                    hit[at] = True
+                    crack_u[hit] = np.fmax(crack_u[hit], vals[hit])
         if strips:
             eff_c = eff_all[chosen]
             name_m = _map(axes)["Mx" if direction == "x" else "My"].replace("_", "")
@@ -1221,6 +1254,28 @@ def design_slab(
                     w = crack_widths(qm, qn, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
                     wi = int(np.argmax(w))
                     wk, qcomb = round(float(w[wi]), 3), str(qc[wi])
+                strip_sets = sets.get(k, {"uls": [], "qp": []})
+                for q in strip_sets["qp"]:
+                    t = crack_widths(
+                        np.array([q["M_kNm_per_m"]]),
+                        np.array([q["N_kN_per_m"]]),
+                        o[0],
+                        o[1],
+                        o[2],
+                        h,
+                        d_o,
+                        covers[face],
+                        conc,
+                        e_eff,
+                        terms=True,
+                    )
+                    q["crack"] = {
+                        **crack_terms(t[0][0], limits[face], t[1][0], t[2], t[3], h),
+                        "face": face,
+                        "d_mm": round(d_o),
+                        "phi_mm": o[1],
+                        "spacing_mm": o[2],
+                    }
                 bars = labels[oi] if mode == "mesh_only" or oi == 0 else f"{label(options[b])} + {labels[oi]}"
                 mesh_o = opts[oi] if mode == "mesh_only" else options[b]
                 strip_rows.append(
@@ -1246,7 +1301,7 @@ def design_slab(
                         "qp_combination": qcomb,
                         "mesh": {"phi": mesh_o[1], "spacing_mm": mesh_o[2], "layers": mesh_o[3]},
                         "additional_bars": None if mode == "mesh_only" or oi == 0 else labels[oi],
-                        "sets": sets.get(k, {"uls": [], "qp": []}),
+                        "sets": strip_sets,
                     }
                 )
         crack_gov = int((areas[cell["idx"].to_numpy()] > areas[cell["uidx"].to_numpy()] + 1e-6).sum())
@@ -1265,6 +1320,7 @@ def design_slab(
                 "j": cell["j"],
                 "a": prov,
                 "used": ratio,  # bending steel needed over provided; cracking can need more
+                "crack": crack_u,
             }
         )
     if worst_k > K_BAL:
@@ -1446,6 +1502,17 @@ def design_slab(
         ]
         for (i, j), u in used.items()
     ]
+    crack_cells = pd.concat(per_cell.values()).groupby(["i", "j"])["crack"].max().dropna()
+    crack_bands = [
+        [
+            round(x0 + (i + 0.5) * size, 2),
+            round(y0 + (j + 0.5) * size, 2),
+            round(level, 2),
+            round(float(u), 3),
+            size,
+        ]
+        for (i, j), u in crack_cells.items()
+    ]
     punch_u = max(
         [p.get("utilisation_with_links", p["utilisation"]) for p in punch if p.get("passed")], default=0.0
     )
@@ -1525,6 +1592,7 @@ def design_slab(
         ),
         "passed": bool(passed),
         "bands": bands,
+        "crack_bands": crack_bands,
         "tension": slab_tension(
             [uls_m, qp_m], [(int(i), int(j)) for i, j in used.index], x0, y0, size, level, h
         ),

@@ -24,13 +24,21 @@ export function heat(u) {
   return `rgb(${HEAT[HEAT.length - 1][1]})`;
 }
 
-export function legendHtml() {
+export function legendHtml(title = "Utilisation", extra = "") {
   const stops = HEAT.map(([u, c]) => `rgb(${c}) ${u * 90}%`).join(", ");
-  return `<div class="heat-legend"><span>Utilisation</span>
+  return `<div class="heat-legend"><span>${title}</span>
     <div class="bar" style="background:linear-gradient(90deg, ${stops}, rgb(${UNSAFE}) 91%, rgb(${UNSAFE}))"></div>
     <div class="ticks"><span>0</span><span style="left:45%">0.5</span><span style="left:67.5%">0.75</span><span style="left:90%">1.0</span></div>
     <div class="grey"><i style="background:rgb(${UNSAFE})"></i> above 1.0: unsafe</div>
-    <div class="grey"><i style="background:rgb(${GREY})"></i> not designed yet</div></div>`;
+    <div class="grey"><i style="background:rgb(${GREY})"></i> ${extra ? "no crack check here (inside a steel casing) or not designed yet" : "not designed yet"}</div>${extra}</div>`;
+}
+
+export function crackLegendHtml() {
+  return legendHtml(
+    "Crack width w<sub>k</sub> / limit (QP)",
+    `<div class="grey"><svg class="crack-mark" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M5 1 L9 5 L5 9 L8 13"/></svg> w<sub>k</sub> over half the limit</div>
+    <p>Worst of the QP combinations at each point, with the bars designed there (EN 1992-1-1 7.3.4). Beams: the tension face in vertical bending; slabs: the worst of the four bar layers. Open an element to see its crack pictures.</p>`
+  );
 }
 
 // Tension zones: one colour per state (validated for colour-blind separation; tooltips name the state).
@@ -84,7 +92,7 @@ export class View3D {
       .join("")}<button class="quiet" data-fit>Fit view</button>
       <label class="toggle"><input type="checkbox" data-labels ${this.labels ? "checked" : ""}> Labels</label>
       <span class="v3d-mode"><select data-mode aria-label="Colour by"><option value="util">Utilisation</option>
-      <option value="tension">Tension zones</option></select>
+      <option value="tension">Tension zones</option><option value="crack">Crack width (QP)</option></select>
       <select data-combo aria-label="Combination" hidden></select>
       <select data-dir aria-label="Slab bar direction" hidden><option value="x">Slabs: bars along X (M11)</option>
       <option value="y">Slabs: bars along Y (M22)</option></select></span></div>
@@ -118,6 +126,7 @@ export class View3D {
   // scene: { elements: [{element, type, kind, lines?, box?}], bands: {element: [[x,y,z,u]]},
   //          selected: name|null, arrows: [{from:[x,y,z], dir:[x,y,z], label}], focus: name|null }
   //          tension: {element: {kind, points, combinations, codes}} for the "Tension zones" mode
+  //          crack: {element: [[x,y,z,wk/limit,size?]]} for the "Crack width" mode
   setScene(scene) {
     this.scene = scene;
     this._controls();
@@ -130,11 +139,15 @@ export class View3D {
     const tz = Object.values(this.scene?.tension || {});
     const combos = [...new Set(tz.flatMap((t) => t.combinations || []))];
     if (prefs.combo && !combos.includes(prefs.combo)) prefs.combo = "";
+    const ck = Object.values(this.scene?.crack || {}).filter((b) => b?.length);
+    const has = { util: true, tension: tz.length > 0, crack: ck.length > 0 };
     const mode = this.host.querySelector("[data-mode]");
-    mode.value = prefs.mode;
-    mode.disabled = !tz.length;
-    mode.title = tz.length ? "" : "Run the design to see the tension zones";
-    const on = prefs.mode === "tension" && tz.length > 0;
+    for (const o of mode.options) o.disabled = !has[o.value];
+    mode.disabled = !has.tension && !has.crack;
+    mode.title = mode.disabled ? "Run the design to see the tension zones and crack widths" : "";
+    this.view = has[prefs.mode] ? prefs.mode : "util";
+    mode.value = this.view;
+    const on = this.view === "tension";
     const combo = this.host.querySelector("[data-combo]");
     combo.innerHTML = `<option value="">Envelope of all combinations</option>${combos
       .map((c) => `<option value="${c.replace(/"/g, "&quot;")}">${c.replace(/</g, "&lt;")}</option>`)
@@ -144,13 +157,22 @@ export class View3D {
     const dir = this.host.querySelector("[data-dir]");
     dir.value = prefs.dir;
     dir.hidden = !on || !tz.some((t) => t.kind === "slab");
-    this.tension = on;
-    this.host.querySelector(".v3d-legend").innerHTML = on ? tensionLegendHtml() : this.legend ? legendHtml() : "";
+    this.host.querySelector(".v3d-legend").innerHTML = on
+      ? tensionLegendHtml()
+      : this.view === "crack"
+        ? crackLegendHtml()
+        : this.legend
+          ? legendHtml()
+          : "";
   }
 
   // Bands of an element as [x, y, z, value, size?] and how to paint a value.
   _source(e) {
-    if (!this.tension) {
+    if (this.view === "crack") {
+      const pct = (u) => `crack width ${Math.round(u * 100)}% of the limit (worst QP combination)`;
+      return { bands: this.scene.crack?.[e.element] || [], color: heat, words: pct };
+    }
+    if (this.view !== "tension") {
       return { bands: this.scene.bands?.[e.element] || [], color: heat, words: null };
     }
     const t = this.scene.tension?.[e.element];
@@ -179,7 +201,7 @@ export class View3D {
         const b = src.bands;
         const byPos = new Map();
         for (const [x, y, z, u] of b) {
-          if (this.tension && u == null) continue;
+          if (this.view !== "util" && u == null) continue;
           const k = `${x.toFixed(2)},${y.toFixed(2)}`;
           if (!byPos.has(k)) byPos.set(k, []);
           byPos.get(k).push([z, u]);
@@ -246,6 +268,20 @@ export class View3D {
         }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);
         items.push({ kind: "label", at: mid, text: e.element, faded, element: e.element });
+      }
+    }
+    if (this.view === "crack") {
+      for (const e of elements) {
+        const faded = selected && e.element !== selected;
+        // Slab cells are small and many: one mark per 3 m block, at its widest crack.
+        const blocks = new Map();
+        for (const [x, y, z, u, size] of this.scene.crack?.[e.element] || []) {
+          if (!(u >= 0.5)) continue;
+          const key = size ? `${Math.floor(x / 3)},${Math.floor(y / 3)}` : `${x},${y},${z}`;
+          const was = blocks.get(key);
+          if (!was || u > was.u) blocks.set(key, { u, at: [x, y, z] });
+        }
+        for (const { at, u } of blocks.values()) items.push({ kind: "mark", at, u, faded, element: e.element });
       }
     }
     for (const a of this.scene.arrows || []) items.push({ kind: "arrow", ...a });
@@ -353,6 +389,32 @@ export class View3D {
         ctx.stroke();
         if (d.it.tip && !d.it.faded) this.hits.push(d);
       }
+    }
+    // Crack marks on top: a small zigzag where wk is over half the limit.
+    ctx.lineCap = ctx.lineJoin = "round";
+    const marked = [];
+    const marks = this.items.filter((it) => it.kind === "mark").sort((p, q) => (p.faded - q.faded) || q.u - p.u);
+    for (const it of marks) {
+      const [px, py] = this._project(it.at);
+      // Marks closer than 18 px on screen would pile up: the first one stands for them.
+      if (marked.some(([mx, my]) => Math.abs(mx - px) < 18 && Math.abs(my - py) < 18)) continue;
+      marked.push([px, py]);
+      ctx.globalAlpha = it.faded ? 0.18 : 1;
+      const zig = () => {
+        ctx.beginPath();
+        ctx.moveTo(px - 2, py - 6);
+        ctx.lineTo(px + 2, py - 2);
+        ctx.lineTo(px - 2, py + 2);
+        ctx.lineTo(px + 1, py + 6);
+      };
+      zig();
+      ctx.strokeStyle = "rgba(255,255,255,0.9)";
+      ctx.lineWidth = 3.5;
+      ctx.stroke();
+      zig();
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
     }
     ctx.globalAlpha = 1;
     ctx.font = "12px system-ui, sans-serif";

@@ -236,8 +236,17 @@ def test_column_and_field_strips_by_station():
     assert {(r["moment"], r["strip"]) for r in sd["summary"]} == {
         (m, s) for m in ("M11", "M22") for s in ("column", "field")
     }
+    # Each strip's QP sets carry the crack terms of the bars the strip gets, as its crack check.
+    sag = rows[("bottom_x", (2.0, 6.0), "column")]
+    q = sag["sets"]["qp"][0]["crack"]
+    assert q["wk_mm"] == pytest.approx(sag["wk_mm"], abs=1e-3) and q["face"] == "bottom"
+    assert q["util"] == pytest.approx(q["wk_mm"] / q["limit_mm"], abs=5e-3) and 0 < q["x_mm"] < q["h_mm"]
+    # The 3D crack view: wk / limit per cell, the column strip's cells at its crack width.
+    worst = max(r["wk_mm"] / r["wk_limit_mm"] for r in sd["rows"] if r["wk_mm"] is not None)
+    assert max(b[3] for b in d["crack_bands"]) == pytest.approx(worst, abs=5e-3)
     assert design_deck(stations=[3.0, 5.0])["strip_design"]["stations"] == [0.0, 3.0, 5.0, 8.0]
-    assert design_deck(strips="uniform")["strip_design"] is None
+    uniform = design_deck(strips="uniform")
+    assert uniform["strip_design"] is None and uniform["crack_bands"]
 
 
 def test_slab_meshes_at_150_or_200():

@@ -78,6 +78,14 @@ def index() -> HTMLResponse:
     # A new version of a file gets a new address, so no browser keeps running an old one.
     for name in ("app.js", "style.css"):
         page = page.replace(f"static/{name}", f"static/{name}?v={int((STATIC / name).stat().st_mtime)}")
+    # The modules app.js imports get new addresses too, through an import map.
+    modules = {
+        f"./static/{f.name}": f"./static/{f.name}?v={int(f.stat().st_mtime)}"
+        for f in sorted(STATIC.glob("*.js"))
+        if f.name != "app.js"
+    }
+    imports = f'<script type="importmap">{json.dumps({"imports": modules})}</script>\n'
+    page = page.replace('<script type="module"', imports + '<script type="module"', 1)
     home = os.environ.get("TRITON_HOME_URL")
     if home:
         # Hosted inside another site (e.g. Project Control): a way back to it in the header.

@@ -53,7 +53,7 @@ from ..project import BeamInput, CombiWallInput, DesignSettings, PileInput, with
 from .bollard import check_bollard
 from .circular import ConcreteLaw, SteelLaw
 from .crack import autogenous_shrinkage, crack_width, restraint_crack, restraint_factor
-from .governing import pick_sets
+from .governing import crack_terms, pick_sets
 from .rect import Bars, RectSection
 from .tension import beam_tension
 from .truss import check_truss, spacing_from_supports
@@ -1207,6 +1207,10 @@ def design_beam(
     uniform = max([c for c in checks[1:] if c is not None and math.isfinite(c)], default=0.0)
     bands = beam_bands(lay, mom.assign(u=np.maximum(u, uniform)))
     sets = beam_sets(cage.label, mom, u, qp_all)
+    crack_sec = section(cage)  # all the bars: the crack check takes no torsion steel out
+    for st in sets:
+        for r in st["qp"]:
+            r["crack"] = beam_crack_terms(crack_sec, g, cage, r["N_kN"], r["M3_kNm"], e_eff, conc, limits)
     faces = [
         {
             "face": f,
@@ -1242,6 +1246,7 @@ def design_beam(
         "steel": steel,
         "bands": bands,
         "tension": beam_tension([mom, qp_all], lay.start, BAND, lambda i: _band_at(lay, i), g.b, g.h),
+        "crack_bands": beam_crack_bands(crack_sec, g, cage, qp_all, e_eff, conc, limits, lay),
         "profile": _profile(mom, u),
         "governing_sets": sets,
     }
@@ -1258,6 +1263,31 @@ def _profile(mom: pd.DataFrame, u: np.ndarray) -> list[dict]:
         }
         for s, r in f.iterrows()
     ]
+
+
+def beam_crack_terms(sec, g: Geometry, cage: Cage, n: float, mv: float, e_eff: float, conc, limits) -> dict:
+    """A QP set's crack width at its tension face (vertical bending, as the crack check)."""
+    face = "bottom" if mv >= 0 else "top"
+    c = face_crack(sec, g, getattr(cage, face), float(n), float(mv), e_eff, conc)
+    out = crack_terms(c["wk"], limits[face], c["sigma_s"], c["sr_max"], c["x_mm"], g.h)
+    return {**out, "face": face, "b_mm": g.b}
+
+
+def beam_crack_bands(sec, g, cage, qp: pd.DataFrame, e_eff, conc, limits, lay: Layout) -> list[list[float]]:
+    """[x, y, z, wk / limit] per 0.5 m band, the worst QP row of each band at its tension face."""
+    if qp is None or qp.empty:
+        return []
+    k = np.floor((qp["s"].to_numpy(float) - lay.start) / BAND).astype(int)
+    z = (g.h - g.inner(25)) * 0.9 / 1000
+    out = []
+    for i, rows in qp.assign(k=k).groupby("k"):
+        worst = 0.0
+        for _, r in crack_candidates(rows, z, 2).iterrows():
+            face = "bottom" if r["Mv"] >= 0 else "top"
+            c = face_crack(sec, g, getattr(cage, face), float(r["N"]), float(r["Mv"]), e_eff, conc)
+            worst = max(worst, c["wk"] / limits[face])
+        out.append([*_band_at(lay, int(i)), round(worst, 3)])
+    return out
 
 
 def _band_at(lay: Layout, i: int) -> list[float]:
