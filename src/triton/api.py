@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
-from . import adsec, durability
+from . import adsec, durability, fresh
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
 from .design.runner import factored_elements, run_section
@@ -471,18 +471,27 @@ def design_section(project_id: str, section_id: str) -> dict:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
     with _Progress(f"design-{project_id}-{section_id}") as tell:
         results = run_section(project.design, section, workbook, tell)
+        summary = store().workbook_summary(project_id, section_id)
+        results["inputs"] = fresh.fingerprint(project, section, summary)
         tell(0.97, "Saving")
         store().save_results(project_id, section_id, results)
-    return results
+    return {**results, "changed": []}
+
+
+def _results(project_id: str, section_id: str) -> tuple[Project, Section, dict]:
+    """A designed section's results, with what changed in its inputs since the design."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    results = store().load_results(project_id, section_id)
+    if results is None:
+        raise HTTPException(404, "This section has not been designed yet.")
+    summary = store().workbook_summary(project_id, section_id)
+    return project, section, fresh.with_status(project, section, results, summary)
 
 
 @app.get(SECTION + "/design")
 def section_results(project_id: str, section_id: str) -> dict:
-    _section(_get(project_id), section_id)
-    results = store().load_results(project_id, section_id)
-    if results is None:
-        raise HTTPException(404, "This section has not been designed yet.")
-    return results
+    return _results(project_id, section_id)[2]
 
 
 @app.get(SECTION + "/design/cages.json")
@@ -555,11 +564,7 @@ def design_report(project_id: str, section_id: str, fmt: str, detail: str = "sum
         raise HTTPException(404, "Reports are Word (.docx), PDF (.pdf) or Excel (.xlsx).")
     if detail not in ("summary", "detailed"):
         raise HTTPException(422, "detail is 'summary' or 'detailed'.")
-    project = _get(project_id)
-    section = _section(project, section_id)
-    results = store().load_results(project_id, section_id)
-    if results is None:
-        raise HTTPException(404, "This section has not been designed yet.")
+    project, section, results = _results(project_id, section_id)
     rep = build_report(project, section, results, detail)
     name = (
         re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name} {detail}").strip("_")

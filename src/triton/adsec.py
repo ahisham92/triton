@@ -30,6 +30,7 @@ import zipfile
 from datetime import datetime
 from typing import Any
 
+from . import clock
 from .adsec_template import STATIC
 
 END = b"####@@@@"
@@ -218,7 +219,7 @@ def pile_file(
     when: datetime | None = None,
 ) -> bytes:
     """One .ads file: the section, its QP loads as SLS cases and its ULS loads as ULS cases."""
-    when = when or datetime.now()
+    when = when or clock.now()
     grade = rebar_grade(rebar)
     rows = [("QP", r) for r in qp] + [("ULS", r) for r in uls]
     records = [

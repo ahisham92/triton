@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from . import clock
 from .durability import bs6349_corrosion, bs6349_covers
 from .elements import ElementType, parse_sheet_name
 from .materials import (
@@ -980,7 +980,7 @@ def default_element(name: str) -> ElementInput | None:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return clock.stamp()
 
 
 class LoadFactor(_Model):

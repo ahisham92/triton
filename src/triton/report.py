@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
+from . import clock
 from .figures import slab_stations
 from .project import DesignSettings, Project, Section
 
@@ -100,7 +100,7 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     calculation of each element.
     """
     info = project.info
-    run_at = str(results.get("run_at", ""))[:16].replace("T", " ")
+    run_at = clock.show(results.get("run_at", ""))
     r = Report(
         f"{info.name}: {section.name}",
         f"{'Detailed structural calculations' if detail == 'detailed' else 'Structural design summary'}, "
@@ -115,9 +115,15 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             ("Section", section.name),
             ("Designed by", info.designer),
             ("Checked by", info.checker),
-            ("Report printed", datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
         ]
     )
+    if results.get("changed"):
+        r.p(
+            "OUT OF DATE: these results were designed before the following inputs changed: "
+            + ", ".join(results["changed"])
+            + ". Design the section again for results that match its inputs."
+        )
     _introduction(r, project, section, results, detail)
     _criteria(r, project.design, section, results)
     _sections(r, section, results)

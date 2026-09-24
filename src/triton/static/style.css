@@ -162,3 +162,13 @@ table.punch tr.on td { background: var(--accent-bg); }
 .chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border: 1px solid var(--line);
         border-radius: 999px; font-size: 13px; cursor: pointer; }
 .chip:has(input:checked) { background: var(--accent-bg); border-color: var(--accent); }
+
+.stale {
+  border: 1px solid #d08a00;
+  background: #fff4dc;
+  color: #5a3b00;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+}
+@media (prefers-color-scheme: dark) { .stale { background: #3a2a05; color: #ffe2a8; border-color: #b07400; } }

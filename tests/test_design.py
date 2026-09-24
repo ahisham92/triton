@@ -333,8 +333,17 @@ def test_design_endpoints(client):
     assert r.status_code == 200, r.text
     (pile,) = r.json()["piles"]
     assert pile["element"] == "Pile(1)" and pile["passed"]
+    assert r.json()["changed"] == []
     assert client.get(f"{url}/design").json() == r.json()
 
-    # A new workbook makes the old results stale.
+    # A new workbook keeps the old results, flagged as out of date.
     client.post(f"{url}/workbook", files={"file": ("s2.xlsx", data)})
-    assert client.get(f"{url}/design").status_code == 404
+    assert client.get(f"{url}/design").json()["changed"] == ["workbook"]
+
+    # So does a changed element, and the report says so.
+    project = client.get(f"/api/projects/{p['id']}").json()
+    project["sections"][0]["elements"]["Pile(1)"]["diameter"] = 1500
+    assert client.put(f"/api/projects/{p['id']}", json=project).status_code == 200
+    assert client.get(f"{url}/design").json()["changed"] == ["workbook", "Pile(1)"]
+    client.post(f"{url}/design")
+    assert client.get(f"{url}/design").json()["changed"] == []

@@ -6,9 +6,11 @@ import json
 import os
 import pickle
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
+from . import clock
 from .project import Project, _now
 from .validation import ImportResult
 
@@ -29,7 +31,7 @@ class ProjectStore:
 
     def list(self) -> list[Project]:
         projects = [Project.model_validate_json(p.read_text("utf-8")) for p in self.root.glob("*.json")]
-        return sorted(projects, key=lambda p: p.updated_at, reverse=True)
+        return sorted(projects, key=lambda p: clock.order(p.updated_at), reverse=True)
 
     def get(self, project_id: str) -> Project:
         path = self._path(project_id)
@@ -73,9 +75,9 @@ class ProjectStore:
         with (d / "workbook.pkl.tmp").open("wb") as f:
             pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
         (d / "workbook.pkl.tmp").replace(d / "workbook.pkl")
-        summary = {"file": filename, "uploaded_at": _now(), **result.summary()}
+        summary = {"file": filename, "uploaded_at": _now(), "version": uuid.uuid4().hex, **result.summary()}
         self._write_json(d / "workbook.json", summary)
-        (d / "results.json").unlink(missing_ok=True)  # results belong to the old workbook
+        # The results stay, flagged as out of date (the workbook is part of their fingerprint).
         return summary
 
     def workbook_summary(self, project_id: str, section_id: str) -> dict[str, Any] | None:

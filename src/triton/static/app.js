@@ -61,11 +61,11 @@ async function projectsPage() {
     return;
   }
   el.innerHTML =
-    `<table><tr><th>Name</th><th>Number</th><th>Sections</th><th>Elements</th><th>Last saved</th></tr>` +
+    `<table><tr><th>Name</th><th>Number</th><th>Sections</th><th>Elements</th><th>Last saved (Cairo)</th></tr>` +
     list
       .map(
         (p) => `<tr class="link" data-id="${esc(p.id)}"><td>${esc(p.name)}</td><td>${esc(p.number)}</td>
-        <td>${p.sections}</td><td>${p.elements}</td><td>${esc(p.updated_at.replace("T", " ").slice(0, 16))}</td></tr>`
+        <td>${p.sections}</td><td>${p.elements}</td><td>${esc(when(p.updated_at))}</td></tr>`
       )
       .join("") +
     `</table>`;
@@ -701,7 +701,7 @@ async function renderWorkbookTab(host) {
     the section so its elements can be designed without uploading it again.</p>` + checkerHtml();
   const onReport = (data) => {
     document.getElementById("wb-note").textContent =
-      `Workbook in use: ${data.file}, uploaded ${String(data.uploaded_at || "").replace("T", " ").slice(0, 16)}. Upload again to replace it.`;
+      `Workbook in use: ${data.file}, uploaded ${when(data.uploaded_at)} (Cairo time). Upload again to replace it.`;
     renderFactors(data);
     renderMapping(data, async () => {
       const fresh = await api(`${url}/workbook`);
@@ -959,6 +959,13 @@ function renderReport(d) {
 }
 
 // ---------------------------------------------------------------- design tab
+// Results designed before their inputs changed say so, naming what changed.
+function staleHtml(res) {
+  if (!res?.changed?.length) return "";
+  return `<div class="stale"><strong>Inputs updated since this design:</strong> ${esc(res.changed.join(", "))}.
+    These results are out of date. Press <em>Design the elements</em> to redesign.</div>`;
+}
+
 const DESIGNED = new Set(["pile", "combi_wall", "front_beam", "rear_beam", "transverse_beam", "slab"]);
 
 async function renderDesignTab(host) {
@@ -1006,6 +1013,16 @@ async function renderDesignTab(host) {
   }
 }
 
+// Every time is shown in Cairo, whatever the browser's own zone; stamps carry their offset.
+const CAIRO = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const when = (iso) => {
+  if (!iso) return "";
+  const text = String(iso);
+  const d = new Date(/[zZ]|[+-]\d\d:\d\d$/.test(text) ? text : text + "Z");
+  if (isNaN(d)) return text.replace("T", " ").slice(0, 16);
+  const p = Object.fromEntries(CAIRO.formatToParts(d).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+};
 const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : (Math.abs(v) < 0.5 * 10 ** -d ? 0 : Number(v)).toLocaleString("en-GB", { maximumFractionDigits: d, minimumFractionDigits: d }));
 
 // The results of the elements picked in the "Show" row (all by default); the exports always cover
@@ -1079,7 +1096,7 @@ function drawResults(res, full = res) {
         <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(kg)}</td></tr>`;
     })
     .join("");
-  out.innerHTML = `<p class="status">Designed ${esc(res.run_at.replace("T", " ").slice(0, 16))}.</p>
+  out.innerHTML = `${staleHtml(full)}<p class="status">Designed ${esc(when(res.run_at))} (Cairo time).</p>
     ${res.skipped.map((s) => `<p class="status">${esc(s)}</p>`).join("")}
     ${(() => {
       const list = alerts(res).filter((a) => a.level !== "safe");
@@ -1267,7 +1284,7 @@ async function renderView3dTab(host) {
   };
   const side = document.getElementById("v3d-side");
   const list = alerts(res || {});
-  side.innerHTML = `<h3 style="margin-top:0">Alerts</h3>
+  side.innerHTML = `${staleHtml(res)}<h3 style="margin-top:0">Alerts</h3>
     ${res ? "" : '<p class="status">Not designed yet: run the design on the Design tab to colour the elements.</p>'}
     ${list.length ? alertsHtml(list) : res ? '<p class="status">Nothing unsafe or close to the limit.</p>' : ""}
     <h3>Elements</h3><p class="status">Pick one to see it alone with the directions of its actions.</p>
