@@ -464,6 +464,23 @@ def face_crack(sec: RectSection, g: Geometry, face: Face, n: float, m: float, e_
     return out
 
 
+def crack_candidates(qp: pd.DataFrame, z: float, k: int = 8) -> pd.DataFrame:
+    """The QP rows that can give the widest crack at each face: the largest moments, the largest
+    tensions and the largest steel force estimate |M|/z − N/2 (z in m), per face. The crack width
+    grows with each, so the worst row is among them."""
+    if len(qp) <= 4 * k:
+        return qp
+    keep = set()
+    for side in (qp["Mv"] >= 0, qp["Mv"] < 0):
+        f = qp[side]
+        if f.empty:
+            continue
+        m = f["Mv"].abs()
+        for score in (m, -f["N"], m / z - f["N"] / 2):
+            keep.update(score.nlargest(k).index)
+    return qp.loc[sorted(keep)]
+
+
 def crack_check(sec, g, cage: Cage, qp: pd.DataFrame, e_eff: float, conc) -> dict[str, dict]:
     """Worst QP crack width at the top and bottom faces over the QP stations."""
     worst: dict[str, dict] = {}
@@ -899,6 +916,8 @@ def design_beam(
             "Supports are closer than 2 × (radius + d): shear is checked at the station midway between them."
         )
     qp_m = qp[moment_stations(qp["s"].to_numpy(float), supports)] if len(qp) else qp
+    qp_all = qp_m
+    qp_m = crack_candidates(qp_m, 0.9 * d_est) if len(qp_m) else qp_m
 
     tops = face_candidates(g, settings, g.b)
     if not tops:
@@ -934,8 +953,8 @@ def design_beam(
                 full = RectSection(
                     g.b, g.h, cage_bars(g, cage, dg), cl, sl, deduct=settings.partial_factors.deduct_bar_area
                 )
-            cracks = crack_check(full, g, cage, qp_m, e_eff, conc)
             restr = restraint_check(beam, settings, g, cage, conc)
+            cracks = None  # the slow check, left to last
             grow = None
             if u.max() > 1:
                 j = int(np.argmax(u))
@@ -950,17 +969,23 @@ def design_beam(
                 if n[j] > 0 and abs(mv[j]) < 1e-6 and abs(mh[j]) < 1e-6:
                     grow = "top"
             if grow is None:
-                for face in ("top", "bottom"):
-                    if face in cracks and cracks[face]["wk"] > limits[face] + 1e-9:
-                        grow = face
-                        break
-            if grow is None:
                 for face in ("top", "bottom", "side"):
                     if restr["faces"][face]["wk"] > limits[face] + 1e-9:
                         grow = face
                         break
-            if grow is None and use_truss and ((truss_for(cage) or {}).get("utilisation") or 0.0) > 1:
-                grow = "bottom"
+            jump = None
+            if grow is None and use_truss:
+                tr = truss_for(cage) or {}
+                if (tr.get("utilisation") or 0.0) > 1:
+                    grow = "bottom"
+                    need = max(c["As_req_mm2"] for c in tr["cases"])
+                    jump = next((i for i in range(bi + 1, len(tops)) if tops[i].area >= need), None)
+            if grow is None:
+                cracks = crack_check(full, g, cage, qp_m, e_eff, conc)
+                for face in ("top", "bottom"):
+                    if face in cracks and cracks[face]["wk"] > limits[face] + 1e-9:
+                        grow = face
+                        break
             if grow is None:
                 break
             if grow == "side":
@@ -979,9 +1004,11 @@ def design_beam(
                 if bi + 1 >= len(tops):
                     status = "bottom bars exhausted"
                     break
-                bi += 1
+                bi = jump if jump is not None else bi + 1
                 sides = side_candidates(g, settings, tops[ti], tops[bi])
                 si = min(si, len(sides) - 1)
+        if cracks is None:
+            cracks = crack_check(full, g, cage, qp_m, e_eff, conc)
         return cage, sec, u, cracks, restr, status
 
     def section(cage: Cage, asl: float = 0.0) -> RectSection:
@@ -1135,6 +1162,7 @@ def design_beam(
     }
     checks = [bending["utilisation"], links.get("utilisation"), trans.get("utilisation")]
     checks += [c["wk"] / c["limit"] for c in crack_out.values()]
+    checks += [c["wk"] / c["limit"] for c in (trans.get("cracks") or {}).values() if c.get("limit")]
     checks += [c["wk"] / c["limit"] for c in restr["faces"].values() if math.isfinite(c["wk"])]
     bollard = check_bollard(beam.bollard, beam.concrete, settings) if beam.bollard is not None else None
     if bollard is not None:
@@ -1156,7 +1184,7 @@ def design_beam(
     # Links and restraint are one arrangement for the whole beam, so they colour every band.
     uniform = max([c for c in checks[1:] if c is not None and math.isfinite(c)], default=0.0)
     bands = beam_bands(lay, mom.assign(u=np.maximum(u, uniform)))
-    sets = beam_sets(cage.label, mom, u, qp_m)
+    sets = beam_sets(cage.label, mom, u, qp_all)
     faces = [
         {
             "face": f,
