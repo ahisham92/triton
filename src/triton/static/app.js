@@ -302,6 +302,61 @@ function checkingPanel(names, runAt) {
   );
 }
 
+// Displacements come by email from the geotechnical team: typed in per section with their limits.
+function displacementsPanel(box) {
+  const s = sec();
+  s.displacements ??= [];
+  const rows = s.displacements;
+  const fails = rows.filter((d) => d.limit != null && Math.abs(d.value) > d.limit).length;
+  const state_ = (d) =>
+    d.limit == null ? `<span class="status">No limit</span>` : Math.abs(d.value) <= d.limit ? `<span class="chip ok-chip">OK</span>` : `<span class="chip fail-chip">Not OK</span>`;
+  box.innerHTML = `<h3>Displacements <span class="status">${
+    rows.length ? (fails ? `${fails} over the limit` : "all within their limits") : "as received from the geotechnical team"
+  }</span></h3>
+    ${
+      rows.length
+        ? `<table class="disp-table"><tr><th>What</th><th>Combination or phase</th><th>Displacement (mm)</th><th>Limit (mm)</th><th>Check</th><th>Source</th><th></th></tr>
+      ${rows
+        .map(
+          (d, i) => `<tr data-i="${i}"><td><input data-f="what" value="${esc(d.what)}" placeholder="Front beam, horizontal"></td>
+          <td><input data-f="combination" value="${esc(d.combination)}" placeholder="SLS"></td>
+          <td><input data-f="value" type="number" step="any" value="${d.value ?? ""}" style="width:7em"></td>
+          <td><input data-f="limit" type="number" step="any" min="0" value="${d.limit ?? ""}" style="width:7em"></td>
+          <td>${state_(d)}</td>
+          <td><input data-f="source" value="${esc(d.source)}" placeholder="Email of 24 Sep"></td>
+          <td><button class="quiet small" data-del title="Remove this row">✕</button></td></tr>`
+        )
+        .join("")}</table>`
+        : ""
+    }
+    <button class="quiet small" id="disp-add">Add a displacement</button>`;
+  box.querySelector("#disp-add").onclick = () => {
+    rows.push({ what: "", value: 0, limit: null, combination: "", source: "" });
+    markDirty();
+    displacementsPanel(box);
+    box.querySelector('tr:last-child input[data-f="what"]')?.focus();
+  };
+  box.querySelectorAll("tr[data-i]").forEach((tr) => {
+    const d = rows[+tr.dataset.i];
+    tr.querySelectorAll("[data-f]").forEach(
+      (inp) =>
+        (inp.onchange = () => {
+          const f = inp.dataset.f;
+          if (f === "value") d.value = inp.value === "" ? 0 : +inp.value;
+          else if (f === "limit") d.limit = inp.value === "" ? null : +inp.value;
+          else d[f] = inp.value;
+          markDirty();
+          displacementsPanel(box);
+        })
+    );
+    tr.querySelector("[data-del]").onclick = () => {
+      rows.splice(+tr.dataset.i, 1);
+      markDirty();
+      displacementsPanel(box);
+    };
+  });
+}
+
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
@@ -2366,7 +2421,8 @@ async function renderDesignTab(host) {
       ${Object.values(section.elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
       </div>
       <div data-slot="design-${esc(section.id)}"></div>
-    </div><div id="design-out"></div>`;
+    </div><div class="panel" id="displacements" data-free></div><div id="design-out"></div>`;
+  displacementsPanel(document.getElementById("displacements"));
   let stale = [];
   const run = document.getElementById("run-design");
   const drawPick = () => {

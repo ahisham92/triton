@@ -326,6 +326,7 @@ def _model(p: Project) -> dict:
     for s in d["sections"]:
         s.pop("costing", None)
         s.pop("checks", None)  # the checker's status is not a design input
+        s.pop("displacements", None)  # typed in as received, checked as they are
         s.pop("user_cages", None)  # set on the Design tab, then checked
         s.pop("beam_cages", None)
         s.pop("slab_strips", None)

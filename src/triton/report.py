@@ -145,6 +145,7 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     _introduction(r, project, section, results, detail)
     _criteria(r, project.design, section, results)
     _sections(r, section, results)
+    _displacements(r, section)
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
         for p in results.get("piles", []):
@@ -777,6 +778,30 @@ def _steel_summary(r: Report, res: dict) -> None:
             "Overall ρ is the main bars' volume over the whole element's concrete, laps included; the "
             "ratio at the pile head, where the cage is heaviest, is in each pile's calculation."
         )
+
+
+def _displacements(r: Report, section: Section) -> None:
+    """The displacements typed in as received from the geotechnical team, against their limits."""
+    rows = [
+        [
+            d.what,
+            d.combination,
+            d.value,
+            "–" if d.limit is None else d.limit,
+            "No limit" if d.passed is None else "OK" if d.passed else "NOT OK",
+            d.source,
+        ]
+        for d in section.displacements
+    ]
+    if not rows:
+        return
+    r.h(2, "3.5 Displacements")
+    r.p(
+        "Displacements of the section as received from the geotechnical team, checked against their limits "
+        "(the value's magnitude against the limit)."
+    )
+    r.caption("Table 3-7: Displacements")
+    r.table(["What", "Combination or phase", "Displacement (mm)", "Limit (mm)", "Check", "Source"], rows)
 
 
 def _sets(r: Report, sets: list[dict], title: str) -> None:

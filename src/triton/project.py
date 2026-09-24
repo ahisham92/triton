@@ -1733,6 +1733,20 @@ class ClashSettings(_Model):
     whatifs: list[WhatIf] = Field(default_factory=list, title="Bars taken out (what if)")
 
 
+class Displacement(_Model):
+    """A displacement of the section as received from the geotechnical team, and its limit."""
+
+    what: str = Field("", title="What", description="e.g. Front beam, horizontal; Crane rail, vertical.")
+    value: float = _mm("Displacement", 0.0)
+    limit: float | None = _mm("Limit", None, ge=0, description="Empty: no limit, shown only.")
+    combination: str = Field("", title="Combination or phase")
+    source: str = Field("", title="Source", description="e.g. Geotechnical email of 24 September.")
+
+    @property
+    def passed(self) -> bool | None:
+        return None if self.limit is None else abs(self.value) <= self.limit + 1e-9
+
+
 class ElementCheck(_Model):
     """The checker's word on one element's design."""
 
@@ -1796,6 +1810,12 @@ class Section(_Model):
         title="Slab stations and bars set by the user",
         description="By slab: stations and additional bars set on the Design tab; Re-check designs the "
         "slab with them.",
+    )
+    displacements: list[Displacement] = Field(
+        default_factory=list,
+        title="Displacements",
+        description="Values received from the geotechnical team (not read from the workbook), each with its "
+        "limit; checked as typed, so they are open while the model is locked.",
     )
     checks: dict[str, ElementCheck] = Field(
         default_factory=dict,
