@@ -46,5 +46,7 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # Report prose: sentences are kept whole in f-strings.
 "src/triton/report.py" = ["E501"]
+"src/triton/clashes.py" = ["E501"]
+"src/triton/clash_report.py" = ["E501"]
 # The slab design's helpers are closures over one layer, called within that layer's loop.
 "src/triton/design/slabs.py" = ["B023"]
