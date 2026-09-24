@@ -978,6 +978,15 @@ function renderReport(d) {
 }
 
 // ---------------------------------------------------------------- design tab
+// The main bars' volume over the element's concrete in %, not the heaviest section's ratio.
+function overallRatio(st) {
+  if (!st) return null;
+  if (st.ratio_pct != null) return st.ratio_pct;
+  if (st.longitudinal_kg && st.concrete_m3) return (100 * st.longitudinal_kg) / 7850 / st.concrete_m3;
+  if (st.kg_per_m3 != null && st.links_kg_per_m == null && st.longitudinal_kg_per_m == null) return (100 * st.kg_per_m3) / 7850;
+  return null;
+}
+
 // Results designed before their inputs changed say so, naming what changed.
 function staleHtml(res) {
   if (!res?.changed?.length) return "";
@@ -1112,7 +1121,7 @@ function drawResults(res, full = res) {
         <td>${sh ? esc(sh.zones[0].link) : "–"}</td>
         <td class="cell ${sh ? (sh.passed ? "ok" : "error") : ""}">${sh ? fmt(sh.utilisation, 2) : "–"}</td>
         <td class="cell ${p.cracks?.wk_mm == null ? "" : p.cracks.passed ? "ok" : "error"}">${p.cracks?.wk_mm == null ? "–" : `${fmt(p.cracks.wk_mm, 2)} / ${fmt(p.cracks.limit_mm, 2)}`}</td>
-        <td>${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(kg)}</td></tr>`;
+        <td>${fmt(overallRatio(p.steel), 2)}%</td><td class="muted">${fmt(p.reinforcement_ratio_pct, 2)}%</td><td>${fmt(kg)}</td></tr>`;
     })
     .join("");
   out.innerHTML = `${staleHtml(full)}<p class="status">Designed ${esc(when(res.run_at))} (Cairo time).</p>
@@ -1121,12 +1130,12 @@ function drawResults(res, full = res) {
       const list = alerts(res).filter((a) => a.level !== "safe");
       return list.length ? `<div class="panel"><h3 style="margin-top:0">To look at</h3>${alertsHtml(list)}</div>` : "";
     })()}
-    ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>Crack mm</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
+    ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>N–M</th><th>Links at head</th><th>Shear</th><th>Crack mm</th><th title="Main bars over the whole pile, laps included">ρ overall</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
     <div id="pile-cards"></div><div id="combi-cards"></div>
-    ${beams.length ? `<h2>Beams</h2><div class="panel scroll"><table><tr><th>Element</th><th>b × h</th><th>Longitudinal bars</th><th>Links</th><th>Transverse bars (top / bottom)</th><th>Max util.</th><th>kg/m³</th></tr>
+    ${beams.length ? `<h2>Beams</h2><div class="panel scroll"><table><tr><th>Element</th><th>b × h</th><th>Longitudinal bars</th><th>Links</th><th>Transverse bars (top / bottom)</th><th>Max util.</th><th>ρ overall</th><th>kg/m³</th></tr>
       ${beams.map((b) => `<tr><td>${esc(b.element)}</td><td>${fmt(b.width_mm)} × ${fmt(b.depth_mm)}</td><td>${b.cage ? esc(b.cage.label) : "–"}</td>
         <td>${b.shear?.link ? esc(b.shear.link.label) : "–"}</td><td>${b.transverse ? `${esc(b.transverse.top.label)} / ${esc(b.transverse.bottom.label)}` : "–"}</td>
-        <td class="cell ${b.passed ? "ok" : "error"}">${fmt(b.utilisation, 2)}</td><td>${fmt(b.steel?.kg_per_m3)}</td></tr>`).join("")}</table></div>` : ""}
+        <td class="cell ${b.passed ? "ok" : "error"}">${fmt(b.utilisation, 2)}</td><td>${fmt(overallRatio(b.steel), 2)}%</td><td>${fmt(b.steel?.kg_per_m3)}</td></tr>`).join("")}</table></div>` : ""}
     <div id="beam-cards"></div>
     ${slabs.length ? "<h2>Slab</h2>" : ""}<div id="slab-cards"></div>
     ${spws.length ? `<h2>Sheet pile wall</h2>${spws.map((w) => `<div class="panel"><h3>${esc(w.element)}</h3><p class="status">Designed in the sheet pile program; these are its straining actions.</p>${steelSetsBlock(w.governing_sets, "kN/m, kNm/m", true)}</div>`).join("")}` : ""}`;
@@ -1345,6 +1354,7 @@ function slabCard(d) {
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(d.utilisation, 2)}</b>max utilisation</div>
       <div class="count"><b>${fmt(st.kg_per_m3)}</b>kg/m³ (${fmt(st.kg_per_m2, 1)} kg/m², links not included)</div>
+      <div class="count"><b>${fmt(overallRatio(st), 2)}%</b>overall ρ</div>
       <div class="count"><b>${fmt(st.total_t, 1)} t</b>bars over ${fmt(st.area_m2)} m²</div>
       <div class="count"><b>${needs.length} of ${punch.length}</b>piles need punching links</div>
       <div class="count"><b>${sh.cells_needing_links ?? 0}</b>${fmt(d.zone_size_m, 1)} m cells need shear links</div>

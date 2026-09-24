@@ -333,6 +333,8 @@ def test_design_endpoints(client):
     assert r.status_code == 200, r.text
     (pile,) = r.json()["piles"]
     assert pile["element"] == "Pile(1)" and pile["passed"]
+    st = pile["steel"]
+    assert st["ratio_pct"] == round(100 * st["longitudinal_kg"] / 7850 / st["concrete_m3"], 2) > 0
     assert r.json()["changed"] == []
     assert client.get(f"{url}/design").json() == r.json()
 

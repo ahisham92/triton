@@ -12,6 +12,7 @@ from typing import Any
 
 from . import clock
 from .figures import slab_stations
+from .materials import STEEL_DENSITY
 from .project import DesignSettings, Project, Section
 
 
@@ -648,26 +649,53 @@ def _punching_summary(r: Report, res: dict) -> None:
         )
 
 
+def overall_ratio(steel: dict) -> float | None:
+    """The main bars' volume over the element's concrete, in %; worked out for older results."""
+    if steel.get("ratio_pct") is not None:
+        return steel["ratio_pct"]
+    if steel.get("longitudinal_kg") and steel.get("concrete_m3"):
+        return round(100 * steel["longitudinal_kg"] / STEEL_DENSITY / steel["concrete_m3"], 2)
+    return None
+
+
 def _steel_summary(r: Report, res: dict) -> None:
     rows = []
     for p in res.get("piles", []):
         st = p.get("steel") or {}
         rows.append(
-            [p["element"], st.get("kg_per_m3", p.get("steel_ratio_kg_m3")), st.get("element_total_t")]
+            [
+                p["element"],
+                overall_ratio(st),
+                st.get("kg_per_m3", p.get("steel_ratio_kg_m3")),
+                st.get("element_total_t"),
+            ]
         )
     for w in res.get("combi_walls", []):
         st = (w.get("infill") or {}).get("steel") or {}
-        rows.append([f"{w['element']} infill", st.get("kg_per_m3"), st.get("element_total_t")])
+        rows.append(
+            [f"{w['element']} infill", overall_ratio(st), st.get("kg_per_m3"), st.get("element_total_t")]
+        )
     for b in res.get("beams", []):
         st = b.get("steel") or {}
-        rows.append([b["element"], st.get("kg_per_m3"), st.get("total_t")])
+        rows.append(
+            [
+                b["element"],
+                overall_ratio(st),
+                st.get("kg_per_m3"),
+                st.get("element_total_t", st.get("total_t")),
+            ]
+        )
     for s in res.get("slabs", []):
         st = s.get("steel") or {}
-        rows.append([s["element"], st.get("kg_per_m3"), st.get("total_t")])
+        rows.append([s["element"], overall_ratio(st), st.get("kg_per_m3"), st.get("total_t")])
     if rows:
         r.h(2, "3.4 Reinforcement quantities")
         r.caption("Table 3-6: Reinforcement per element")
-        r.table(["Element", "kg/m³", "Total (t)"], rows)
+        r.table(["Element", "Overall ρ, main bars (%)", "kg/m³ incl. links", "Total (t)"], rows)
+        r.note(
+            "Overall ρ is the main bars' volume over the whole element's concrete, laps included; the "
+            "ratio at the pile head, where the cage is heaviest, is in each pile's calculation."
+        )
 
 
 def _sets(r: Report, sets: list[dict], title: str) -> None:

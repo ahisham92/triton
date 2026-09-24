@@ -1260,6 +1260,7 @@ def design_slab(
     steel = {
         "kg_per_m2": round(kg / area_m2, 1) if area_m2 else None,
         "kg_per_m3": round(kg / area_m2 / (h / 1000)) if area_m2 else None,
+        "ratio_pct": round(100 * kg / STEEL_DENSITY / (area_m2 * h / 1000), 2) if area_m2 else None,
         "area_m2": round(area_m2, 1),
         "total_t": round(kg / 1000, 2),
     }

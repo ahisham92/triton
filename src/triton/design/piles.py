@@ -782,6 +782,8 @@ def _shear_and_steel(pile, settings, loads, chosen, curtailment, geom) -> tuple[
         "links_kg": shear["links_kg"],
         "total_kg": round(total, 1),
         "kg_per_m3": round(total / volume, 1),
+        # Over the whole pile, bars with their laps, not the head section alone.
+        "ratio_pct": round(100 * longitudinal / STEEL_DENSITY / volume, 2),
         "concrete_m3": round(volume, 2),
     }
     return shear, steel

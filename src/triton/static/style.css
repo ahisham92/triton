@@ -163,12 +163,6 @@ table.punch tr.on td { background: var(--accent-bg); }
         border-radius: 999px; font-size: 13px; cursor: pointer; }
 .chip:has(input:checked) { background: var(--accent-bg); border-color: var(--accent); }
 
-.stale {
-  border: 1px solid #d08a00;
-  background: #fff4dc;
-  color: #5a3b00;
-  border-radius: 6px;
-  padding: 10px 12px;
-  margin: 0 0 12px;
-}
-@media (prefers-color-scheme: dark) { .stale { background: #3a2a05; color: #ffe2a8; border-color: #b07400; } }
+.stale { border: 1px solid var(--warn); background: var(--warn-bg); color: var(--text);
+         border-radius: 6px; padding: 10px 12px; margin: 0 0 12px; }
+td.muted { color: var(--muted); }

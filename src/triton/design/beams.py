@@ -1022,6 +1022,7 @@ def design_beam(
         "transverse_kg_per_m": trans["kg_per_m"],
         "kg_per_m": round(kg_m, 1),
         "kg_per_m3": round(kg_m / vol),
+        "ratio_pct": round(100 * cage.to_dict(g.b, g.h)["kg_per_m"] / STEEL_DENSITY / vol, 2),
         "length_m": round(length, 2),
         "total_kg": round(kg_m * length),
         "element_total_t": round(kg_m * length / 1000, 2),
