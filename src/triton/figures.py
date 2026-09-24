@@ -91,3 +91,48 @@ def slab_stations(sd: dict[str, Any], box: dict[str, list[float]]) -> bytes:
     out = io.BytesIO()
     img.save(out, "PNG", optimize=True)
     return out.getvalue()
+
+
+SERIES = [(31, 119, 180), (214, 110, 40)]
+
+
+def deflected_shape(entry: dict[str, Any]) -> bytes:
+    """An element's estimated displacement (mm) against level, one line per direction, with the
+    undeformed member as a dashed line at zero."""
+    curves = [c for c in entry.get("directions") or [] if c.get("stations")]
+    zs = [s for c in curves for s, _ in c["stations"]]
+    ws = [w for c in curves for _, w in c["stations"]] + [0.0]
+    z0, z1 = min(zs), max(zs)
+    span = max(max(ws) - min(ws), 1.0)
+    w0, w1 = min(ws) - 0.08 * span, max(ws) + 0.08 * span
+    w, h, left, top, right, bottom = 900, 900, 120, 70, 50, 150
+    img = Image.new("RGB", (w, h), "white")
+    d = ImageDraw.Draw(img)
+    f, small = _font(22), _font(18)
+
+    def px(v: float) -> float:
+        return left + (v - w0) / (w1 - w0) * (w - left - right)
+
+    def py(z: float) -> float:
+        return top + (z1 - z) / max(z1 - z0, 1e-9) * (h - top - bottom)
+
+    d.rectangle([left, top, w - right, h - bottom], outline=MUTED, width=1)
+    for y in range(top, h - bottom, 16):
+        d.line([px(0), y, px(0), min(y + 8, h - bottom)], fill=MUTED, width=2)
+    for z in (z0, z1):
+        d.text((left - 10, py(z)), f"{z:.1f}", fill=INK, font=small, anchor="rm")
+    for v in (w0, 0.0, w1):
+        d.text((px(v), h - bottom + 10), f"{v:.0f}", fill=INK, font=small, anchor="mt")
+    for i, c in enumerate(curves):
+        pts = [(px(v), py(z)) for z, v in c["stations"]]
+        d.line(pts, fill=SERIES[i % 2], width=4, joint="curve")
+        y = h - bottom + 54 + 28 * i
+        d.line([left, y, left + 36, y], fill=SERIES[i % 2], width=4)
+        d.text((left + 46, y), c["label"], fill=SERIES[i % 2], font=small, anchor="lm")
+    d.text(
+        (w / 2, top - 20), f"{entry['element']}: estimated displacement (mm)", fill=INK, font=f, anchor="mb"
+    )
+    d.text((left - 10, top - 20), "Level (m)", fill=INK, font=small, anchor="rb")
+    out = io.BytesIO()
+    img.save(out, "PNG", optimize=True)
+    return out.getvalue()

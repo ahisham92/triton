@@ -39,6 +39,7 @@ from . import (
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
+from .design.deflection import estimate as estimate_deflections
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
 from .design.runner import along_axis, factored_elements, run_section, section_alignment
@@ -328,6 +329,7 @@ def _model(p: Project) -> dict:
         s.pop("costing", None)
         s.pop("checks", None)  # the checker's status is not a design input
         s.pop("displacements", None)  # typed in as received, checked as they are
+        s.pop("deflection", None)  # how the Design tab estimates displacements
         s.pop("user_cages", None)  # set on the Design tab, then checked
         s.pop("beam_cages", None)
         s.pop("slab_strips", None)
@@ -1617,6 +1619,9 @@ def design_report(
         raise HTTPException(422, "detail is 'summary' or 'detailed'.")
     project, section, results = _results(project_id, section_id)
     section, results, suffix = _picked(section, results, elements)
+    wb = _workbook(project_id, section)
+    if wb is not None:
+        results = {**results, "deflections": estimate_deflections(project.design, section, wb, results)}
     rep = build_report(project, section, results, detail)
     name = _file_name(project.info.name, section.name + suffix, detail)
     render, media = RENDERERS[fmt]
@@ -1625,6 +1630,19 @@ def design_report(
         media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'},
     )
+
+
+@app.get(SECTION + "/deflections")
+def section_deflections(project_id: str, section_id: str) -> dict:
+    """Displacements estimated from the straining actions (no Plaxis displacement run), with the
+    section's settings for them. Worked out from the stored workbook each time, so they never make
+    the design out of date; the cracked stiffness uses the designed pile cages where there are some."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    wb = _workbook(project_id, section)
+    if wb is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    return estimate_deflections(project.design, section, wb, store().load_results(project_id, section_id))
 
 
 # --- Clashes -------------------------------------------------------------------------------------------

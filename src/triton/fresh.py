@@ -31,6 +31,7 @@ _SECTION_OWN = {
     "clashes",
     "checks",
     "displacements",
+    "deflection",
     "joints",
 }
 

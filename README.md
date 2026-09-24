@@ -363,6 +363,31 @@ modules' own descriptions, so it always matches the code), with every choice of 
 settings and on each element: the one in use and the others. The slab's pile-face methods are set
 out side by side at the top.
 
+## Estimated displacements (no Plaxis displacement run)
+
+On the Design tab, under the displacements typed in from the geotechnical team, **Estimated
+displacements** works out the deflected shape of each element from the straining actions alone
+(`GET …/deflections`): the curvature M / EI from the workbook moments is integrated twice along the
+member (exact for moments that are straight lines between the nodes, so a tip load on a cantilever
+gives P L³ / 3EI). It shows each element's head (top) displacement, the largest and where it is, and a
+deflected-shape diagram, labelled as an estimate; the report adds it as 3.7 with its assumptions.
+
+* Piles and the combi wall: both ways down the member (M3 across the quay, M2 along), the pile or
+  king pile that moves most. Sheet pile wall: M11 in 1 m strips with the AZ section's EI. Slabs and
+  beams: a simple 1 m strip estimate, vertical, relative to the piles under the strip.
+* Loads: the QP combination where there is one, else the element's governing phase (ULS moments are
+  factored, so that is on the high side), or a combination picked on the panel. Load multipliers are
+  not applied; the working zone is.
+* Toe: fixed (no displacement, no rotation) by default; or held at the toe and at the firm soil level.
+* Stiffness: gross E·I by default (Ecm; the combi wall's corroded tube plus infill, the E·I split its
+  design uses; AZ catalogue inertia). Cracked: EN 1992-1-1 7.4.3 for the piles with the designed cage,
+  0.6 Ecm·Ic for the combi infill. Long term: Ecm / (1 + φ).
+
+The settings are kept per section and are not a design input: changing them never makes a design out
+of date and is open while the model is locked. The estimate is the members' own bending: it leaves out
+the soil springs, the toe moving in the ground and second-order effects, and it is only as good as the
+Plaxis moments.
+
 ## Calculation reports
 
 **Report** on the Design tab: Summary or Detailed, as Word, PDF or Excel

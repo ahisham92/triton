@@ -23,6 +23,7 @@ from .design import (
     combi,
     crack,
     curtailment,
+    deflection,
     ductility,
     governing,
     openings,
@@ -98,6 +99,7 @@ GENERAL = [
     ("Over-reinforced sections (slabs and beams)", ductility),
     ("Reinforcement clashes at the pile heads", clashes),
     ("AdSec load sets and signs", governing),
+    ("Estimated displacements from the straining actions", deflection),
 ]
 
 # Methods of the slab's moments at the pile faces, in the order the options are offered.
