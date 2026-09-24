@@ -8,7 +8,7 @@ Moments. Wood–Armer design moments from Mx, My and the twisting moment Mxy, bo
 (sagging +) and top (hogging -), at every node. Nodes inside a pile are FE peaks in
 the connection and are left out (bending at the pile face); for shear, nodes within d
 (or 2d) of a pile face are left out too. The moments just outside each pile are then used as
-they are or averaged, by the slab's "Moments at the pile faces" method (``PEAK_METHODS``).
+they are or averaged, by the slab's "Moments at the pile faces" method (Method tab).
 
 Bars per metre, EN 1992-1-1, for each face and direction:
 
