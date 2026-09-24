@@ -695,6 +695,7 @@ def bar_layers(mesh: tuple, spec: list, cover: float, shift: float = 0.0) -> lis
                 ),
                 "from_face_mm": round(at),
                 "as_mm2_per_m": round(area),
+                "bars": [{"diameter_mm": b[0], "spacing_mm": b[1], "kind": b[2]} for b in r["bars"]],
                 "_area": area,
             }
         )
@@ -1969,6 +1970,15 @@ def design_slab(
         crack_gov = int((a_first > s_first).sum())
         z.pop("basic_index")
         mesh_o = options[b] if mode != "mesh_only" else opts[int(chosen[0])]
+        if mode != "mesh_only":
+            # Each zone's bars layer by layer (for drawing tools): the mesh and the added bars.
+            shift = mesh_o[1] if direction == "y" else 0
+            for zz in z["zones"]:
+                if zz.get("label") in labels:
+                    zz["bar_layers"] = [
+                        {k: v for k, v in r.items() if k != "_area"}
+                        for r in bar_layers(mesh_o, specs[labels.index(zz["label"])], covers[face], shift)
+                    ]
         layers[layer] = {
             **z,
             "additional_labels": ["mesh only", *labels[1:n_std]] if mode != "mesh_only" else [],

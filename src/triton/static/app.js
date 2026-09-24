@@ -2027,7 +2027,7 @@ async function renderDesignTab(host) {
       <div class="row pick-row" id="design-pick"></div>
       <div class="row">
       <button id="run-design" ${units.length ? "" : "disabled"}>Design</button>
-      <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
+      <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download bars for Revit (JSON: pile and infill cages, beams, slab)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
       <span class="reports" id="reports" hidden>Report:
@@ -2263,7 +2263,7 @@ function drawResults(res, full = res) {
   const spws = res.sheet_pile_walls || [];
   const beams = res.beams || [];
   const slabs = res.slabs || [];
-  const anyCages = full.piles.length || (full.combi_walls || []).length;
+  const anyCages = full.piles.length || (full.combi_walls || []).length || (full.beams || []).length || (full.slabs || []).length;
   const link = document.getElementById("cages");
   if (link) link.hidden = !anyCages;
   const ads = document.getElementById("ads");
@@ -2280,7 +2280,7 @@ function drawResults(res, full = res) {
     setLinks();
   }
   const sets = document.getElementById("sets");
-  if (sets) sets.hidden = !anyCages && !(full.sheet_pile_walls || []).length && !(full.beams || []).length;
+  if (sets) sets.hidden = !anyCages && !(full.sheet_pile_walls || []).length;
   const rows = res.piles
     .map((p) => {
       const a = p.arrangement;
@@ -2365,6 +2365,15 @@ function resultBands(res) {
   for (const w of res?.combi_walls || []) bands[w.element] = w.bands || [];
   for (const b of res?.beams || []) bands[b.element] = b.bands || [];
   for (const d of res?.slabs || []) bands[d.element] = d.bands || [];
+  for (const w of res?.sheet_pile_walls || []) {
+    // The wall's largest Uf per level, in 0.5 m bands (the same all along the wall).
+    const by = new Map();
+    for (const [z, u] of w.design?.profile || []) {
+      const k = Math.round(z * 2) / 2;
+      by.set(k, Math.max(by.get(k) ?? 0, u));
+    }
+    bands[w.element] = [...by].map(([z, u]) => [0, 0, z, u]);
+  }
   return bands;
 }
 
@@ -2618,6 +2627,7 @@ async function renderView3dTab(host) {
   for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
   for (const b of res?.beams || []) max[b.element] = b.utilisation;
   for (const d of res?.slabs || []) max[d.element] = d.utilisation;
+  for (const w of res?.sheet_pile_walls || []) if (w.design?.uf != null) max[w.element] = w.design.uf;
   let selected = state.pick3d && geo.elements.some((e) => e.element === state.pick3d) ? state.pick3d : null;
   state.pick3d = null;
   const show = () => {

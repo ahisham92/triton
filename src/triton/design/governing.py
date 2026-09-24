@@ -275,6 +275,7 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
 
     ``Concrete``: for each pile, combi wall infill and beam (and each station where the cage
     changes down the element), its name, then 7 QP rows and 7 ULS rows underneath.
+    ``Slabs``: for each strip or zone of the slab's strip table, its QP and ULS sets per metre.
     ``Steel``: for each combi wall tube and sheet pile wall, its name and 10 ULS rows.
     """
     import io
@@ -328,9 +329,46 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
                     )
     _widths(ws, (26, 10, 10, 10, 16, 8, 9, 11))
 
+    slabs = [d for d in results.get("slabs", []) if (d.get("strip_design") or {}).get("table")]
+    if slabs:
+        sl = wb.create_sheet("Slabs")
+        sl.append([f"{project} · {section} · slabs, per metre width (as the slab .ads files)"])
+        sl.append(["N compression +, M sagging + (bottom in tension); each strip's QP and ULS sets."])
+        for d in slabs:
+            sd = d["strip_design"]
+            by_key = {r["key"]: r for r in sd.get("rows") or [] if r.get("sets") is not None}
+            for row in sd["table"]:
+                sl.append([])
+                strip = {"column": "column strip", "field": "field strip"}.get(row["strip"], "")
+                sl.append([" · ".join(x for x in (d["element"], row["moment"], row["label"], strip) if x)])
+                sl.cell(sl.max_row, 1).font = bold
+                sl.append(["Set", "N kN/m", "M kNm/m", "Combination", "Face"])
+                for c in sl[sl.max_row]:
+                    c.font = bold
+                for state, kind in (("QP", "qp"), ("ULS", "uls")):
+                    seen = set()
+                    for face in ("bottom", "top"):
+                        for k in row["keys"].get(face, []):
+                            r = by_key.get(k)
+                            for x in (r or {}).get("sets", {}).get(kind, []):
+                                key = (x["combination"], x["N_kN_per_m"], x["M_kNm_per_m"])
+                                if key in seen:
+                                    continue
+                                seen.add(key)
+                                sl.append(
+                                    [
+                                        f"{state} {'sagging' if face == 'bottom' else 'hogging'}",
+                                        x["N_kN_per_m"],
+                                        x["M_kNm_per_m"],
+                                        x["combination"],
+                                        face,
+                                    ]
+                                )
+        _widths(sl, (30, 10, 10, 16, 8))
+
     ss = wb.create_sheet("Steel")
     ss.append([f"{project} · {section} · steel elements"])
-    ss.append(["Plaxis signs (N not multiplied by −1). Not designed in Triton: max and min of each action."])
+    ss.append(["Plaxis signs (N not multiplied by −1): max and min of each action along the element."])
     steel = [
         (f"{w['element']} tube", "kN, kNm", (w.get("tube") or {}).get("governing_sets"))
         for w in results.get("combi_walls", [])

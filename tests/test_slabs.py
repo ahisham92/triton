@@ -363,3 +363,31 @@ def test_bar_layers_set_by_the_user_and_the_mesh_across():
     assert mine["layers"]["top_y"]["basic"]["label"] == "Ø20 @ 150"
     whole = next(r for r in mine["strip_design"]["table"] if r["label"] == "Whole deck, basic mesh")
     assert whole["set_by"]["top"] == "your mesh" and whole["user_set"]
+
+
+def test_slab_sets_in_the_adsec_force_set_workbook():
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from triton.design.governing import workbook
+
+    d = design_deck()
+    ws = load_workbook(BytesIO(workbook("P", "S", {"slabs": [d]})))["Slabs"]
+    rows = [r for r in ws.iter_rows(values_only=True) if r[0]]
+    titles = [r[0] for r in rows if r[0].startswith("Deck · ")]
+    assert len(titles) == len(d["strip_design"]["table"])
+    sets = [r for r in rows if r[0].startswith(("QP ", "ULS "))]
+    assert sets and all(r[4] in ("bottom", "top") for r in sets)
+    assert {r[0].split()[0] for r in sets} == {"QP", "ULS"}
+
+
+def test_slab_bars_in_the_drawing_file():
+    from triton.design.export import pile_cages
+
+    d = design_deck()
+    (js,) = pile_cages("P", {"slabs": [d]})["slabs"]
+    assert {f["face"] + f["bars_along"] for f in js["faces"]} == {"bottomX", "bottomY", "topX", "topY"}
+    zones = [z for f in js["faces"] for z in f["zones"]]
+    assert zones and all(z["layers"] and z["layers"][0]["bars"][0]["kind"] == "mesh" for z in zones)
+    assert all(f["mesh"]["layers"][0]["from_face_mm"] > f["cover_mm"] for f in js["faces"])

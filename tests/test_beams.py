@@ -211,6 +211,11 @@ def test_design_beam_with_supports_and_export():
     ws = load_workbook(BytesIO(workbook("P", "S", res)))["Concrete"]
     titles = [r[0] for r in ws.iter_rows(values_only=True) if r[0] and str(r[0]).startswith("Front Beam")]
     assert titles and "M3 vertical" in titles[0]
+    from triton.design.export import pile_cages
+
+    (jb,) = pile_cages("P", res, "S")["beams"]
+    assert jb["element"] == "Front Beam" and len(jb["bars"]) == len(res["beams"][0]["cage"]["bars"])
+    assert jb["links"]["spacing_mm"] > 0 and {"top", "bottom"} <= set(jb["transverse"])
 
 
 def test_bollard_ties_as_the_office_drawing():

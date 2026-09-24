@@ -154,6 +154,38 @@ class Tube:
             "sigma_Rd_MPa": round(chi * self.fy / GAMMA_M1, 1),
         }
 
+    def shear_buckling(self, length: float, gamma_m1: float = GAMMA_M1) -> dict[str, float]:
+        """EN 1993-1-6 D.1.4: shear buckling of a cylinder of ``length`` (mm) between restraints."""
+        r = (self.d - self.t) / 2
+        omega = length / math.sqrt(r * self.t)
+        if omega <= 10:
+            c_tau = math.sqrt(1 + 42 / omega**3)
+        elif omega <= 8.7 * r / self.t:
+            c_tau = 1.0
+        else:
+            c_tau = math.sqrt(omega * self.t / r) / 3
+        tau_cr = 0.75 * E_STEEL * c_tau * math.sqrt(1 / omega) * self.t / r
+        q = Q_FABRICATION[self.fabrication_class]
+        alpha = 0.65 / (1 + 1.91 * (math.sqrt(r / self.t) / q) ** 1.44)
+        lam = math.sqrt(self.fy / math.sqrt(3) / tau_cr)
+        lam0, beta = 0.4, 0.6
+        lam_p = math.sqrt(alpha / (1 - beta))
+        if lam <= lam0:
+            chi = 1.0
+        elif lam < lam_p:
+            chi = 1 - beta * (lam - lam0) / (lam_p - lam0)
+        else:
+            chi = alpha / lam**2
+        return {
+            "omega": omega,
+            "C_tau": c_tau,
+            "tau_cr_MPa": tau_cr,
+            "alpha": alpha,
+            "slenderness": lam,
+            "chi": chi,
+            "tau_Rd_MPa": chi * self.fy / math.sqrt(3) / gamma_m1,
+        }
+
     def resistances(self, gamma_m0: float = GAMMA_M0) -> dict[str, float]:
         fy = self.fy
         return {
@@ -352,13 +384,16 @@ def _office(
     v_pl = get("V_pl")
     rho = np.where(v >= 0.5 * v_pl, (2 * v / v_pl - 1) ** 2, 0.0)
     u_mv = np.where(rho > 0, u_m / np.clip(1 - rho, 1e-9, None), 0.0)
-    stack = np.vstack([u_tau, u_nm, u_sig, u_mv])
+    tau_rd = np.array([cols[j]["tau_Rd_shell"] or np.inf for j in seg_of], float)
+    u_shell = tau / tau_rd
+    stack = np.vstack([u_tau, u_nm, u_sig, u_mv, u_shell])
     names = np.array(
         [
             "shear τ = V·S/(I·2t)",
             "column buckling N + M (office sheet)",
             "σ = N/A + M/Wel ≤ fy",
             "bending with shear",
+            "shell buckling in shear (EN 1993-1-6 D.1.4)",
         ]
     )
     u_more = stack.max(axis=0)
@@ -493,7 +528,10 @@ def check_tube(
         for p in prof.itertuples()
     ]
     notes.append(
-        "Shell buckling under shear and the forces from the secondary sheet piles are not included yet."
+        "Shell buckling in shear is checked below the infill (EN 1993-1-6 D.1.4, office check); the "
+        "forces from the secondary sheet piles are not included yet."
+        if method == "office"
+        else "Shell buckling under shear and the forces from the secondary sheet piles are not included yet."
     )
     first = zones[0][2]
     u_max = float(u[i])
@@ -678,6 +716,11 @@ def office_sheet(
         mn_rd = m_rd * max(1 - nn**1.7, 0.0) if cls <= 2 else None
         sigma = n * 1e3 / c["A"] + m * 1e6 / c["W_el"]
         sigma_eff = n * 1e3 / (c["A_eff"] if cls == 4 else c["A"]) + m * 1e6 / c["W_eff"]
+        shell = (
+            c["seg"].tube.shear_buckling(c["seg"].length * 1e3, max(gamma_m1, GAMMA_M1))
+            if cls == 4 and not c["seg"].filled
+            else None
+        )
         lam = math.sqrt(c["Npl_Rk"] / ncr)
         phi, chi = _chi(lam, alpha)
         nb_rd = chi * npl_w / gamma_m1 / 1e3
@@ -694,6 +737,9 @@ def office_sheet(
             u_M=u_m,
             tau=tau,
             u_tau=tau / (fy / math.sqrt(3) / gamma_m0),
+            tau_Rd_shell=shell["tau_Rd_MPa"] if shell else None,
+            chi_tau=shell["chi"] if shell else None,
+            u_tau_shell=tau / shell["tau_Rd_MPa"] if shell else None,
             V_pl=v_pl,
             u_V=v / v_pl,
             rho=rho,
@@ -717,6 +763,7 @@ def office_sheet(
             "compression / tension": c["u_N"],
             "bending": u_m,
             "shear": c["u_tau"],
+            "shell buckling in shear (EN 1993-1-6 D.1.4)": c["u_tau_shell"],
             "bending with shear": c["u_MV"],
             (
                 "bending with axial force (plastic)"
@@ -826,6 +873,18 @@ def sheet_table(sheet: dict[str, Any], ecm: float, fck: float) -> dict[str, Any]
                 row("MRd (Wpl, Wel or Weff)·fy/γM0", "kNm", "M_Rd"),
                 row("MEd / MRd", "%", "u_M", "pct", True),
                 row("τEd / (fy/√3/γM0)", "%", "u_tau", "pct", True),
+                row(
+                    "τRd, shell buckling in shear (EN 1993-1-6 D.1.4), unfilled class 4",
+                    "MPa",
+                    lambda c: c["tau_Rd_shell"] if c["tau_Rd_shell"] is not None else "Not applicable",
+                ),
+                row(
+                    "τEd / τRd (shell buckling in shear)",
+                    "%",
+                    lambda c: c["u_tau_shell"] if c["u_tau_shell"] is not None else "Not applicable",
+                    "pct",
+                    True,
+                ),
                 row(
                     "MEd / MV,Rd (bending with shear)",
                     "%",

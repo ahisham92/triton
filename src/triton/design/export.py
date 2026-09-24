@@ -11,6 +11,15 @@ have to repeat any design logic:
   the other bars follow at equal steps) and the top and bottom level of the
   bars, including the lap below the run.
 
+Beams (``beams``): the straight cage between the beam's ends along global X or
+Y, each longitudinal bar at its place in the section (y across from the
+centreline, z up from mid-depth, mm), the links, and the transverse bars of the
+top and bottom faces per metre. ``level_m`` is the plate's level in the model.
+
+Slabs (``slabs``): per face and direction, the basic mesh and each zone of
+added bars (a plan rectangle), layer by layer with the distance of each layer
+from its face (mm), and the shear link zones.
+
 Coordinates stay in the Plaxis model system; the script maps them to the
 Revit project base point.
 """
@@ -86,6 +95,89 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
         "section": section,
         "run_at": results.get("run_at"),
         "piles": piles,
+        "beams": [_beam(b) for b in results.get("beams", []) if b.get("cage")],
+        "slabs": [_slab(d) for d in results.get("slabs", []) if d.get("layers")],
+    }
+
+
+def _beam(b: dict[str, Any]) -> dict[str, Any]:
+    cage = b["cage"]
+    link = (b.get("shear") or {}).get("link") or {}
+    trans = b.get("transverse") or {}
+    return {
+        "element": b["element"],
+        "kind": b.get("kind"),
+        "along": b.get("along"),
+        "start_m": b.get("start_m"),
+        "end_m": b.get("end_m"),
+        "centre_m": b.get("centre_m"),
+        "level_m": b.get("level_m"),
+        "width_mm": b.get("width_mm"),
+        "depth_mm": b.get("depth_mm"),
+        "cover_mm": b.get("cover_mm"),
+        "user_set": bool(b.get("user_set")),
+        "label": cage.get("label"),
+        "bars": [{"y_mm": y, "z_mm": z, "diameter_mm": phi} for y, z, phi in cage.get("bars") or []],
+        "links": {
+            "diameter_mm": link.get("phi"),
+            "legs": link.get("legs"),
+            "spacing_mm": link.get("spacing_mm"),
+        }
+        if link
+        else None,
+        "transverse": {
+            face: {
+                "diameter_mm": t.get("phi"),
+                "spacing_mm": t.get("spacing_mm"),
+                "layers": t.get("layers", 1),
+            }
+            for face, t in trans.items()
+            if face in ("top", "bottom") and isinstance(t, dict)
+        },
+    }
+
+
+def _slab(d: dict[str, Any]) -> dict[str, Any]:
+    faces = []
+    for key, lay in (d.get("layers") or {}).items():
+        face, direction = key.split("_")
+        faces.append(
+            {
+                "face": face,
+                "bars_along": direction.upper(),
+                "cover_mm": lay.get("cover_mm"),
+                "mesh": {
+                    "diameter_mm": (lay.get("basic") or {}).get("phi"),
+                    "spacing_mm": (lay.get("basic") or {}).get("spacing_mm"),
+                    "layers": lay.get("mesh_bar_layers") or [],
+                },
+                "zones": [
+                    {
+                        "x_m": z["x"],
+                        "y_m": z["y"],
+                        "label": z.get("label"),
+                        "layers": z.get("bar_layers") or [],
+                    }
+                    for z in lay.get("zones") or []
+                ],
+            }
+        )
+    return {
+        "element": d["element"],
+        "thickness_mm": d.get("thickness_mm"),
+        "level_m": d.get("level_m"),
+        "box_m": d.get("box"),
+        "faces": faces,
+        "links": [
+            {
+                "x_m": z["x"],
+                "y_m": z["y"],
+                "diameter_mm": z.get("phi"),
+                "sx_mm": z.get("sx_mm"),
+                "sy_mm": z.get("sy_mm"),
+            }
+            for z in (d.get("shear") or {}).get("links") or []
+        ],
     }
 
 

@@ -275,6 +275,18 @@ export class View3D {
               fill: src.color(u), stroke: false,
               tip: `${e.element} at ${along} ${(along === "Y" ? y : x).toFixed(1)} m: ${src.words ? src.words(u) : `utilisation ${u.toFixed(2)}`}` });
           }
+        } else if (b.length) {
+          // Walls: 0.5 m bands down the wall, along its full length.
+          const along = ["X", "Y"].find((a) => a !== flat);
+          const [a0, a1] = c[along];
+          const w = c[flat][0];
+          const pt = (sv, zv) => (along === "Y" ? [w, sv, zv] : [sv, w, zv]);
+          for (const [, , z, u] of b) {
+            if (u == null) continue;
+            items.push({ kind: "quad", pts: [pt(a0, z - 0.26), pt(a1, z - 0.26), pt(a1, z + 0.26), pt(a0, z + 0.26)], faded,
+              element: e.element, fill: src.color(u), stroke: false,
+              tip: `${e.element} at z ${z.toFixed(1)} m: ${src.words ? src.words(u) : `utilisation ${u.toFixed(2)}`}` });
+          }
         }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);
         items.push({ kind: "label", at: mid, text: e.element, faded, element: e.element });
