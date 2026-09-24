@@ -96,7 +96,7 @@ def test_trials_run_once_and_are_costed(tmp_path, monkeypatch):
     calls = []
 
     def fake(
-        settings, section, workbook, progress=None, only=None, deadline=None, furniture_at=None, approach=None
+        settings, section, workbook, progress=None, only=None, deadline=None, approach=None, furniture_at=None
     ):
         h = section.elements["Deck"].thickness
         calls.append(h)
@@ -176,7 +176,7 @@ def test_all_elements_with_a_crack_limit(tmp_path, monkeypatch):
     calls = []
 
     def fake(
-        settings, section, workbook, progress=None, only=None, deadline=None, furniture_at=None, approach=None
+        settings, section, workbook, progress=None, only=None, deadline=None, approach=None, furniture_at=None
     ):
         (name,) = only
         e = section.elements[name]
@@ -239,7 +239,7 @@ def test_value_engineering_ideas_and_mixes(tmp_path, monkeypatch):
     calls = []
 
     def fake(
-        settings, section, workbook, progress=None, only=None, deadline=None, furniture_at=None, approach=None
+        settings, section, workbook, progress=None, only=None, deadline=None, approach=None, furniture_at=None
     ):
         (name,) = only
         calls.append(name)

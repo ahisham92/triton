@@ -409,7 +409,13 @@ def cost_section(
             laid = next(
                 (n for k, n in (furniture or {}).items() if k.lower() == item.name.strip().lower()), None
             )
-            auto = laid if laid is not None else (math.floor(berth / item.spacing + 1e-6) + 1) if item.spacing else None
+            auto = (
+                laid
+                if laid is not None
+                else (math.floor(berth / item.spacing + 1e-6) + 1)
+                if item.spacing
+                else None
+            )
             row.count_auto = auto
             row.count = item.count if item.count is not None else auto
             row.spacing = item.spacing
