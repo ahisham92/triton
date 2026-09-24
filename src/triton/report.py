@@ -1204,8 +1204,8 @@ def _voids_kv(s: dict) -> list[tuple[str, str]]:
         (
             "Voided section",
             "bending with the compression block on the concrete left at each depth; crack widths with the voided "
-            "compression zone; shear on the webs, links in the webs only; punching without the control "
-            "perimeter over a void (EN 1992-1-1 6.4.2(3))",
+            "compression zone; shear on the webs, links in the webs only; the voids stop short of the piles, so "
+            "punching is on the solid slab",
         ),
     ]
 

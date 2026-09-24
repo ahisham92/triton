@@ -843,21 +843,18 @@ class SlabVoids(_Model):
         "spacing. Empty: from the spacing.",
         json_schema_extra={"unit": "m"},
     )
+    at_piles: Literal["stop", "leave_out"] = Field(
+        "stop",
+        title="Where a pile passes",
+        description="Stop: the voids stop short of every pile and start again beyond it, so the slab is "
+        "solid over the piles and punching is checked on the solid slab. Leave out: a void that would "
+        "come near a pile is left out along its whole length.",
+    )
     clear_to_piles: float = _mm(
         "Clear to the pile faces",
         150.0,
         ge=0,
-        description="A void that would come closer than this to a pile is left out (the slab stays solid "
-        "along that line of piles).",
-    )
-    solid_round_piles: float | None = _m(
-        "Solid round each pile",
-        None,
-        ge=0,
-        description="The voids stop this far from each pile's face and start again beyond it (a solid zone "
-        "round the pile head, e.g. 2d to keep them out of the punching perimeter u1); no void is then left "
-        "out along the lines of piles. Empty: the voids run through, and those that would hit a pile are "
-        "left out.",
+        description="Solid concrete kept between a pile's face and the nearest void.",
     )
 
 
@@ -1021,8 +1018,8 @@ class SlabInput(_ConcreteSection):
         None,
         title="Circular voids (PVC pipes)",
         description="Voids cast in the slab between the beams: bending on the voided section, shear on the "
-        "webs between the voids with links in the webs only, punching with the control perimeter over "
-        "the voids left out.",
+        "webs between the voids with links in the webs only; the voids stop short of the piles, so the slab "
+        "is solid over them.",
     )
 
 
