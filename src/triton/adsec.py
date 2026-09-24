@@ -582,12 +582,20 @@ def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) ->
                 for x in slab_sets(faces, kind)
             ]
 
+        v = slab.get("voids") or {}
+        voided = v.get("positions") and any(r.get("voided") for rs in faces.values() for r in rs)
         files[_safe(name) + ".ads"] = ads_file(
             job=job,
             title=f"SLAB {h:.0f}mm - {row['moment'].lower()}",
             subtitle=f"({where}) - {strip}",
             heading=f"{section_name}: strip {width:.0f} mm wide ({tension_face(row)} bars at "
-            f"{first[tension_face(row)]['mesh']['spacing_mm']:g} mm), forces per metre x {k:g}",
+            f"{first[tension_face(row)]['mesh']['spacing_mm']:g} mm), forces per metre x {k:g}"
+            + (
+                f"; VOIDED: add voids D{v['diameter_mm']:g} @ {v['spacing_mm']:g} mm, centre "
+                f"{v['centre_depth_mm']:g} mm below the top (not drawn in this file)"
+                if voided
+                else ""
+            ),
             section_record=sec,
             qp=loads("qp"),
             uls=loads("uls"),

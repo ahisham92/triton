@@ -166,6 +166,10 @@ table.edit-list td { padding: 4px; }
 .pp-out { fill: rgba(214, 48, 39, .08); stroke: var(--err); stroke-width: 1.2; stroke-dasharray: 5 4; }
 .pp-link { fill: var(--accent); }
 .pp-slab { fill: var(--miss-bg); stroke: var(--muted); }
+.void-hole { fill: var(--panel); stroke: var(--text); stroke-width: 1.2; }
+.void-band { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; }
+.void-dim { stroke: var(--muted); stroke-width: 1; }
+.void-solid { fill: var(--panel); stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; }
 .pp-pilesec { fill: none; stroke: var(--text); stroke-width: 1.5; }
 .pp-cone { stroke: var(--err); stroke-width: 1.5; }
 .pp-u1line { stroke: var(--muted); stroke-dasharray: 4 3; }
@@ -366,3 +370,17 @@ table.office-sheet td.sheet-note { font-size: 12px; color: var(--muted, #777); }
 .mesh-pick em { font-size: 11px; font-style: normal; color: var(--accent); }
 .mesh-pick.on { border-color: var(--accent); background: var(--accent-bg); }
 .limit-switch { display: inline-flex; gap: 4px; margin-left: 8px; }
+
+/* Comparisons tab */
+table.trials { font-size: 14px; }
+table.trials td { white-space: nowrap; }
+.trial-why { margin: 6px 0; padding-left: 20px; }
+table.trials .hint { white-space: nowrap; }
+#tr-el { padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--input); color: var(--text); font: inherit; }
+tr.trial-best-row td { background: var(--ok-bg); }
+tr.trial-idle td { color: var(--muted); }
+.chip.trial-best { border-color: var(--ok); color: var(--ok); }
+.trial-size { gap: 6px; }
+.trial-size input { padding: 3px 6px; }
+.trial-bar { display: block; height: 4px; margin-top: 3px; background: var(--line); border-radius: 2px; min-width: 6em; }
+.trial-bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }

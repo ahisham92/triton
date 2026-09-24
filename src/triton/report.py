@@ -221,12 +221,20 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
     )
     r.h(2, "2.3 Durability")
     r.h(3, "Crack width limits")
-    limits = sorted({_limit(x) for x in section.elements.values() if _limit(x) is not None})
+    limits = sorted(set().union(*(_limits(x) for x in section.elements.values())))
     r.p(
         "Crack widths are checked under the quasi-permanent (QP) combinations (BS EN 1990 6.5.3), limit "
         + (" / ".join(f"{v:g}" for v in limits) or "0.2")
-        + " mm. No crack width check applies inside a steel casing or tube."
+        + " mm. No crack width check applies inside a steel casing or tube. Slabs and beams take their own "
+        "limit on each face:"
     )
+    rows = [
+        [name, f"{e.crack_width_limit:g}", f"{getattr(e, 'crack_width_limit_bottom', e.crack_width_limit):g}"]
+        for name, e in section.elements.items()
+        if _limit(e) is not None
+    ]
+    if rows:
+        r.table(["Element", "Top face / pile (mm)", "Bottom face (mm)"], rows)
     r.h(3, "Concrete cover")
     cv = d.covers
     r.kv(
@@ -340,6 +348,10 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
 
 def _limit(element: Any) -> float | None:
     return getattr(element, "crack_width_limit", None)
+
+
+def _limits(element: Any) -> set[float]:
+    return {v for v in (_limit(element), getattr(element, "crack_width_limit_bottom", None)) if v is not None}
 
 
 def _combinations(res: dict) -> set[str]:
@@ -1180,6 +1192,27 @@ def _mesh_choice(s: dict) -> list[tuple[str, str]]:
     return [("Mesh spacing", f"{mc['chosen_mm']:g} mm ({others})")]
 
 
+def _voids_kv(s: dict) -> list[tuple[str, str]]:
+    v = s.get("voids")
+    if not v or not v.get("positions"):
+        return []
+    return [
+        (
+            "Voids",
+            f"{len(v['positions'])} × Ø{v['diameter_mm']:g} @ {v['spacing_mm']:g} mm along {v['along']}, "
+            f"{v['run'][0]:g} to {v['run'][1]:g} m ({v['run_from']}), centre {v['centre_depth_mm']:g} mm below the "
+            f"top; solid {v['flange_top_mm']:g} mm above / {v['flange_bottom_mm']:g} mm below, webs {v['web_mm']:g} mm; "
+            f"{v['void_share_pct']:g}% of the concrete",
+        ),
+        (
+            "Voided section",
+            "bending with the compression block on the concrete left at each depth; crack widths with the voided "
+            "compression zone; shear on the webs, links in the webs only; punching without the control "
+            "perimeter over a void (EN 1992-1-1 6.4.2(3))",
+        ),
+    ]
+
+
 def _slab(r: Report, s: dict) -> None:
     r.h(1, f"{s['element']}: slab")
     st = s.get("steel") or {}
@@ -1188,6 +1221,7 @@ def _slab(r: Report, s: dict) -> None:
             ("Thickness", f"{s.get('thickness_mm', 0):g} mm, {s.get('concrete')}"),
             ("Covers top / bottom", f"{s.get('cover_top_mm', 0):g} / {s.get('cover_bottom_mm', 0):g} mm"),
             ("Layout", "column and field strips" if s.get("strips") == "column_and_field" else "uniform"),
+            *_voids_kv(s),
             *_mesh_choice(s),
             (
                 "Steel",

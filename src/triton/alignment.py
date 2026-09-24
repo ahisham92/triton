@@ -648,6 +648,13 @@ def combine_parts(results: dict[str, Any]) -> dict[str, Any]:
                 elif la + lb > 0 and isinstance(a.get(k), int | float):
                     a[k] = round((a[k] * la + v * lb) / (la + lb), 3)
             a[size] = round(la + lb, 3)
+            # Links are counted zone by zone and pile by pile: every part's.
+            if isinstance(d.get("punching"), list):
+                m["punching"] = [*(m.get("punching") or []), *d["punching"]]
+            if isinstance(d.get("shear"), dict) and isinstance(d["shear"].get("links"), list):
+                sm = dict(m.get("shear") or {})
+                sm["links"] = [*(sm.get("links") or []), *d["shear"]["links"]]
+                m["shear"] = sm
             if d.get("utilisation") is not None:
                 m["utilisation"] = max(m.get("utilisation") or 0.0, d["utilisation"])
             m["passed"] = bool(m.get("passed")) and bool(d.get("passed"))

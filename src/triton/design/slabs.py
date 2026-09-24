@@ -56,6 +56,7 @@ from ..elements import CombinationType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, SlabInput, SlabStrips, with_project_grades
+from . import voids as vd
 from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restraint_factor
 from .governing import crack_terms
 from .tension import slab_tension
@@ -566,9 +567,11 @@ def locate(frame: dict, along: np.ndarray, across: np.ndarray) -> dict[str, np.n
     }
 
 
-def strip_average(f: pd.DataFrame, m: np.ndarray, n: np.ndarray, loc: dict, size: float) -> pd.DataFrame:
+def strip_average(
+    f: pd.DataFrame, m: np.ndarray, n: np.ndarray, loc: dict, size: float, v: np.ndarray | None = None
+) -> pd.DataFrame:
     """Moment and axial force per metre averaged across each strip's width, at every cut along it
-    (``size`` apart) and for every combination."""
+    (``size`` apart) and for every combination; with ``v`` (1 where the slab is voided) the voided share."""
     df = pd.DataFrame(
         {
             "combination": f["combination"].to_numpy(),
@@ -578,10 +581,11 @@ def strip_average(f: pd.DataFrame, m: np.ndarray, n: np.ndarray, loc: dict, size
             "cut": np.floor(loc["s"] / size + 1e-9).astype(int),
             "m": m,
             "n": n,
+            "v": np.zeros(len(m)) if v is None else np.asarray(v, float),
         }
     )[loc["averaged"]]
     keys = ["st", "kind", "inst", "cut", "combination"]
-    return df.groupby(keys, sort=False)[["m", "n"]].mean().reset_index()
+    return df.groupby(keys, sort=False)[["m", "n", "v"]].mean().reset_index()
 
 
 def strip_mrd(area: float, d: float, h: float, n: float, fcd: float, fyd: float) -> float:
@@ -1149,8 +1153,10 @@ def punching(
     conc,
     cover: float,
     beams: list[dict],
+    vlay: dict | None = None,
 ) -> list[dict]:
-    """6.4 punching at each pile head, each with the slab thickness at that pile (see ``punching_depth``)."""
+    """6.4 punching at each pile head, each with the slab thickness at that pile (see ``punching_depth``).
+    With voids (``vlay``), the parts of the control perimeters over a void are left out (6.4.2(3))."""
     pf = settings.partial_factors
     fck = conc.fck
     fcd = pf.alpha_cc * fck / pf.gamma_c
@@ -1173,7 +1179,8 @@ def punching(
         v_min = 0.035 * k**1.5 * math.sqrt(fck)
         D = rows[0]["D"]
         u0 = math.pi * D
-        u1 = math.pi * (D + 4 * d)
+        over = vd.perimeter_over_voids(vlay, x, y, (D / 2 + 2 * d) / 1000) if vlay else 0.0
+        u1 = math.pi * (D + 4 * d) * (1 - over)
         worst = None
         for r in rows:
             v = abs(r["N"])
@@ -1211,6 +1218,8 @@ def punching(
                     "vEd_face_MPa": round(ved0, 3),
                     "vRd_max_MPa": round(vrdmax, 2),
                     "utilisation": round(u, 3),
+                    "u1_over_voids_pct": round(100 * over, 1) if vlay else None,
+                    "_over": over,
                     "_v": v,
                     "_beta": beta,
                     "_vrdc": vrdc,
@@ -1230,7 +1239,8 @@ def punching(
             # 6.52 with sr = 0.75d: Asw per perimeter.
             sr = 0.75 * d
             asw = (worst["vEd_MPa"] - 0.75 * worst["_vrdc"]) * u1 * sr / (1.5 * fywd_ef(d))
-            u_out = worst["_beta"] * worst["_v"] * 1e3 / (worst["_vrdc"] * d)
+            # With voids, the outer perimeter loses about the same share as u1.
+            u_out = worst["_beta"] * worst["_v"] * 1e3 / (worst["_vrdc"] * d) / max(1 - worst["_over"], 0.05)
             r_out = u_out / math.pi / 2 - D / 2  # from the pile face
             perimeters = max(2, math.ceil((r_out - 1.5 * d) / sr) + 1)
             worst |= {
@@ -1247,7 +1257,7 @@ def punching(
             }
         if not worst["passed"]:
             worst["fix"] = _punching_fix(worst, h, D, cover, fck, fcd, nu, pf.gamma_c)
-        for k_ in ("_v", "_beta", "_vrdc", "_e"):
+        for k_ in ("_v", "_beta", "_vrdc", "_e", "_over"):
             worst.pop(k_)
         out.append(worst)
     return out
@@ -1259,12 +1269,13 @@ def _punching_fix(
     """What would make a failing pile head pass: more steel on the tension face (so links can take the
     rest, up to kmax·vRd,c), or a thicker slab at the pile, with and without links. Same V and e."""
     v, e, rho = w["_v"], w["_e"], w["rho_l"]
+    keep = 1 - w.get("_over", 0.0)
 
     def at(hh: float, rr: float) -> tuple[float, float, float]:
         d = hh - cover - 20
         k = min(1 + math.sqrt(200 / d), 2.0)
         vrdc = max(0.18 / gc * k * (100 * min(rr, 0.02) * fck) ** (1 / 3), 0.035 * k**1.5 * math.sqrt(fck))
-        u1 = math.pi * (D + 4 * d)
+        u1 = math.pi * (D + 4 * d) * keep
         beta = 1 + 0.6 * math.pi * e / (D + 4 * d)
         ved = beta * v * 1e3 / (u1 * d)
         face = beta * v * 1e3 / (math.pi * D * d) / (0.4 * nu * fcd)
@@ -1524,6 +1535,21 @@ def design_slab(
     covers = {"bottom": slab.cover_bottom, "top": slab.cover_top}
     limits = {"bottom": slab.crack_width_limit_bottom, "top": slab.crack_width_limit}
     x0, y0 = box["X"][0], box["Y"][0]
+    # Circular voids (PVC pipes): where they lie, and the voided section of each direction of bars.
+    vlay = vd.layout(slab.voids, h, box, piles, beams) if slab.voids is not None else None
+    vsec: dict[str, vd.VoidSection] = {}
+    if vlay is not None and vlay["positions"]:
+        if vlay["flange_top_mm"] <= 0 or vlay["flange_bottom_mm"] <= 0:
+            notes.append("Voids: the voids do not fit inside the slab's thickness at that depth; left out.")
+            vlay = None
+        else:
+            for direction in ("x", "y"):
+                kind = "circles" if direction == vlay["along"].lower() else "through"
+                vsec[direction] = vd.VoidSection(
+                    h, slab.voids.diameter, vlay["centre_depth_mm"], slab.voids.spacing, kind
+                )
+    vm_u = vd.mask(vlay, uls_m["X"], uls_m["Y"]) if vsec else np.zeros(len(uls_m), bool)
+    vm_q = vd.mask(vlay, qp_m["X"], qp_m["Y"]) if vsec and len(qp_m) else np.zeros(len(qp_m), bool)
     ui, uj = _cells(uls_m["X"].to_numpy(), uls_m["Y"].to_numpy(), x0, y0, size)
     uls_m = uls_m.assign(i=ui, j=uj)
     if len(qp_m):
@@ -1572,6 +1598,52 @@ def design_slab(
             return h - o[4] - (f if direction == "y" else 0)
         return h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
 
+    def req_as(m, n, d, face, direction, d2, voided):
+        """``required_as``, on the voided section where ``voided``."""
+        out = required_as(m, n, h, d, conc.fck, fyd, d2)
+        voided = np.asarray(voided, bool)
+        if direction not in vsec or not voided.any():
+            return out
+        v_out = vd.required_as(m, n, h, d, conc.fck, fyd, d2, vsec[direction], face)
+        return tuple(np.where(voided, b_, a_) for a_, b_ in zip(out, v_out, strict=True))
+
+    def cw(m, n, o, d_o, face, direction, voided, terms=False):
+        """``crack_widths`` of option ``o``, on the voided section where ``voided``."""
+        voided = np.asarray(voided, bool)
+        if direction in vsec and voided.any():
+            vw = vd.crack_widths(
+                m,
+                n,
+                o[0],
+                o[1],
+                o[2],
+                h,
+                d_o,
+                covers[face],
+                conc,
+                e_eff,
+                vsec[direction],
+                face,
+                K1,
+                K3,
+                K4,
+                KT,
+                terms=terms,
+            )
+            if terms:  # one set at a time
+                return vw
+            if voided.all():
+                return vw
+            return np.where(
+                voided, vw, crack_widths(m, n, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+            )
+        return crack_widths(m, n, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff, terms=terms)
+
+    def mrd_of(area, d_o, n_, face, direction, voided):
+        if voided and direction in vsec:
+            return vd.mrd(area, d_o, h, n_, fcd_s, fyd, vsec[direction], face)
+        return strip_mrd(area, d_o, h, n_, fcd_s, fyd)
+
     mesh_labels = {label(o): o for o in options}
     # Steel per node for each layer; where K > K' the opposite face's bars work in compression.
     node_req = {layer: np.zeros(len(uls_m)) for layer in LAYERS}
@@ -1581,7 +1653,7 @@ def design_slab(
         other = "top" if face == "bottom" else "bottom"
         n = uls_m["Nx" if direction == "x" else "Ny"].to_numpy()
         d2 = h - depth(other, direction)
-        a_req, k, a_s2 = required_as(wa[layer], n, h, depth(face, direction), conc.fck, fyd, d2)
+        a_req, k, a_s2 = req_as(wa[layer], n, depth(face, direction), face, direction, d2, vm_u)
         node_req[layer] = a_req
         compression[f"{other}_{direction}"] = a_s2
         if len(k) and float(k.max()) > worst_k:
@@ -1617,9 +1689,15 @@ def design_slab(
             # Every column strip together and every field strip together, station by station: the need
             # is the worst cut across a strip's width, averaged over that width.
             other = "top" if face == "bottom" else "bottom"
-            env = strip_average(uls_m, wa[layer], n_u, uloc, size)
-            a_env, _, _ = required_as(
-                env["m"].to_numpy(), env["n"].to_numpy(), h, d, conc.fck, fyd, h - depth(other, direction)
+            env = strip_average(uls_m, wa[layer], n_u, uloc, size, vm_u)
+            a_env, _, _ = req_as(
+                env["m"].to_numpy(),
+                env["n"].to_numpy(),
+                d,
+                face,
+                direction,
+                h - depth(other, direction),
+                env["v"].to_numpy() > 0.5,
             )
             env["req"] = np.maximum(a_env, a_min)
             gov = env.loc[env.groupby(["st", "kind"])["req"].idxmax()]
@@ -1639,12 +1717,13 @@ def design_slab(
                 groups[k].req if k in groups else r for k, r in zip(keys, cell["req"], strict=True)
             ]
             if wq is not None and qloc is not None:
-                qenv = strip_average(qp_m, wq[layer], nq, qloc, size)
+                qenv = strip_average(qp_m, wq[layer], nq, qloc, size, vm_q)
                 for k, g in qenv.groupby(["st", "kind"]):
                     qgroups[(int(k[0]), int(k[1]))] = (
                         g["m"].to_numpy(),
                         g["n"].to_numpy(),
                         g["combination"].to_numpy(),
+                        g["v"].to_numpy() > 0.5,
                     )
 
         def assess(
@@ -1675,16 +1754,14 @@ def design_slab(
                 crack_ok = np.ones_like(ok)
                 for oi, o in enumerate(opts):
                     if lstrips:
-                        for k, (qm, qn, _) in qgroups.items():
+                        for k, (qm, qn, _, qv) in qgroups.items():
                             if k not in members:
                                 continue
-                            w = crack_widths(
-                                qm, qn, o[0], o[1], o[2], h, d_opt[oi], covers[face], conc, e_eff
-                            )
+                            w = cw(qm, qn, o, d_opt[oi], face, direction, qv)
                             if w.max() > limits[face] + 1e-9:
                                 crack_ok[members[k], oi] = False
                         continue
-                    w = crack_widths(wq[layer], nq, o[0], o[1], o[2], h, d_opt[oi], covers[face], conc, e_eff)
+                    w = cw(wq[layer], nq, o, d_opt[oi], face, direction, vm_q)
                     crack_ok[pos[(w > limits[face] + 1e-9) & (pos >= 0)], oi] = False
                 ok &= crack_ok
             if design_rest and direction == rest_dir:
@@ -1880,17 +1957,15 @@ def design_slab(
             for oi in np.unique(chosen):
                 o, d_o = opts[int(oi)], d_all[int(oi)]
                 if lstrips:
-                    for k, (qm, qn, _) in qgroups.items():
+                    for k, (qm, qn, _, qv) in qgroups.items():
                         idxs = [c for c in members.get(k, []) if chosen[c] == oi]
                         if idxs:
-                            w = crack_widths(qm, qn, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+                            w = cw(qm, qn, o, d_o, face, direction, qv)
                             crack_u[idxs] = np.fmax(crack_u[idxs], float(w.max()) / limits[face])
                     continue
                 rows = (pos >= 0) & (chosen[np.maximum(pos, 0)] == oi)
                 if rows.any():
-                    w = crack_widths(
-                        wq[layer][rows], nq[rows], o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff
-                    )
+                    w = cw(wq[layer][rows], nq[rows], o, d_o, face, direction, vm_q[rows])
                     at = pos[rows]
                     vals = np.zeros(len(cell))
                     np.maximum.at(vals, at, w / limits[face])
@@ -1942,28 +2017,27 @@ def design_slab(
                 oi = int(chosen[c])
                 o = opts[oi]
                 d_o = d_all[oi]
-                mrd = strip_mrd(o[0], d_o, h, float(g.n), fcd_s, fyd)
+                g_void = bool(g.v > 0.5)
+                mrd = mrd_of(o[0], d_o, float(g.n), face, direction, g_void)
                 wk = qcomb = qcase = None
                 strip_sets = sets.setdefault(k, {"uls": [], "qp": []})
+                q_void = np.zeros(0, bool)
                 if k in qgroups:
-                    qm, qn, qc = qgroups[k]
-                    w = crack_widths(qm, qn, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+                    qm, qn, qc, q_void = qgroups[k]
+                    w = cw(qm, qn, o, d_o, face, direction, q_void)
                     wi = int(np.argmax(w))
                     wk, qcomb = round(float(w[wi]), 3), str(qc[wi])
                     qcase = {"M_kNm_per_m": round(float(qm[wi]), 1), "N_kN_per_m": round(float(qn[wi]), 1)}
                     strip_sets["qp"] = extreme_sets(qc, qm, qn, wi)
                 for q in strip_sets["qp"]:
-                    t = crack_widths(
+                    t = cw(
                         np.array([q["M_kNm_per_m"]]),
                         np.array([q["N_kN_per_m"]]),
-                        o[0],
-                        o[1],
-                        o[2],
-                        h,
+                        o,
                         d_o,
-                        covers[face],
-                        conc,
-                        e_eff,
+                        face,
+                        direction,
+                        [bool(q_void.any())],
                         terms=True,
                     )
                     q["crack"] = {
@@ -2004,6 +2078,7 @@ def design_slab(
                         "bar_layers": layer_rows(oi),
                         "spec": [list(p) if p else None for p in specs[oi]],
                         "sets": strip_sets,
+                        "voided": g_void,
                     }
                 )
         else:
@@ -2034,7 +2109,8 @@ def design_slab(
                 node = int(cell_node[w])
                 m_ = float(wa[layer][node])
                 n_ = float(n_u[node])
-                mrd = strip_mrd(o[0], d_o, h, n_, fcd_s, fyd)
+                g_void = bool(vm_u[node])
+                mrd = mrd_of(o[0], d_o, n_, face, direction, g_void)
                 wk = None
                 cu = crack_u[idxs]
                 if np.isfinite(cu).any():
@@ -2069,11 +2145,17 @@ def design_slab(
                 if wq is not None:
                     in_q = (pos >= 0) & np.isin(pos, idxs)
                     qq = pd.DataFrame(
-                        {"c": qp_m["combination"].to_numpy()[in_q], "m": wq[layer][in_q], "n": nq[in_q]}
+                        {
+                            "c": qp_m["combination"].to_numpy()[in_q],
+                            "m": wq[layer][in_q],
+                            "n": nq[in_q],
+                            "v": vm_q[in_q],
+                        }
                     )
                     if len(qq):
                         qm, qn, qc = qq["m"].to_numpy(), qq["n"].to_numpy(), qq["c"].to_numpy()
-                        w_all = crack_widths(qm, qn, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+                        qv = qq["v"].to_numpy(bool)
+                        w_all = cw(qm, qn, o, d_o, face, direction, qv)
                         wi = int(np.argmax(w_all))
                         qcomb = str(qc[wi])
                         qcase = {
@@ -2082,17 +2164,14 @@ def design_slab(
                         }
                         g_sets["qp"] = extreme_sets(qc, qm, qn, wi)
                         for q in g_sets["qp"]:
-                            t = crack_widths(
+                            t = cw(
                                 np.array([q["M_kNm_per_m"]]),
                                 np.array([q["N_kN_per_m"]]),
-                                o[0],
-                                o[1],
-                                o[2],
-                                h,
+                                o,
                                 d_o,
-                                covers[face],
-                                conc,
-                                e_eff,
+                                face,
+                                direction,
+                                [bool(qv[wi])],
                                 terms=True,
                             )
                             q["crack"] = {
@@ -2133,6 +2212,7 @@ def design_slab(
                         "bar_layers": layer_rows(oi),
                         "spec": [list(p) if p else None for p in specs[oi]],
                         "sets": g_sets,
+                        "voided": g_void,
                     }
                 )
         crack_gov = int((a_first > s_first).sum())
@@ -2228,10 +2308,16 @@ def design_slab(
         else:
             # Office rule: no concrete contribution where the slab is in tension in the shear's direction.
             vrdc = np.where(ncp < 0, 0.0, np.maximum(vrdc, 0) * d_s)
+        # Voided slab: only the webs between the voids, bw = 1000(1 − D/s) per metre.
+        vm_s = vd.mask(vlay, sh["X"], sh["Y"]) if vsec else np.zeros(len(sh), bool)
+        web = vsec["x"].web_factor() if vsec else 1.0
+        wf = np.where(vm_s, web, 1.0)
+        vrdc = vrdc * wf
         fyw = REINFORCEMENT_GRADES[settings.reinforcement.grade] / pf.gamma_s
         z_s = 0.9 * d_s
         nu1 = 0.6 * (1 - conc.fck / 250)
         vrd_max = 1000 * z_s * nu1 * fcd / (2.5 + 1 / 2.5) / 1e3  # kN/m at cot θ = 2.5
+        vrd_max_at = vrd_max * wf
         need = v > vrdc
         if slab.shear_links == "office":
             fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
@@ -2239,7 +2325,9 @@ def design_slab(
         else:
             carried = z_s * fyw * 2.5
         asw = np.where(need, v * 1e3 / carried, 0.0) * 1000  # mm² per m² of slab
-        cells = pd.DataFrame({"i": si, "j": sj, "need": need, "asw": asw}).groupby(["i", "j"]).max()
+        cells = (
+            pd.DataFrame({"i": si, "j": sj, "need": need, "asw": asw, "void": vm_s}).groupby(["i", "j"]).max()
+        )
         cells = cells[cells["need"]].reset_index()
         s_max = min(0.75 * d_s, 600.0)
         # Links hook round the bottom mesh bars, so they sit at the mesh spacing (or every second bar):
@@ -2257,10 +2345,78 @@ def design_slab(
             0.08 * math.sqrt(conc.fck) / REINFORCEMENT_GRADES[settings.reinforcement.grade] * 1e6
         )  # mm²/m²
         link_label = ["no links"] + [f"Ø{o[1]} @ {o[2]:g} × {o[3]:g}" for o in link_opts[1:]]
-        req = np.where(cells["asw"].to_numpy() > 0, np.maximum(cells["asw"].to_numpy(), rho_min), 0.0)
-        links, short = link_bands(
-            cells, req, link_opts, link_label, size, x0, y0, box, slab.min_zone_length, slab.strip_direction
+        in_void = cells["void"].to_numpy(bool)
+        req = np.where(
+            cells["asw"].to_numpy() > 0,
+            np.maximum(cells["asw"].to_numpy(), rho_min * np.where(in_void, web, 1.0)),
+            0.0,
         )
+        solid = ~in_void
+        links, short = link_bands(
+            cells[solid].reset_index(drop=True),
+            req[solid],
+            link_opts,
+            link_label,
+            size,
+            x0,
+            y0,
+            box,
+            slab.min_zone_length,
+            slab.strip_direction,
+        )
+        if in_void.any():
+            # In the voided slab the links stand in the webs between the voids: one leg per web (two where
+            # the web is 200 mm or wider), at the void spacing across the voids and the mesh spacing along.
+            sv = slab.voids.spacing
+            web_mm = sv - slab.voids.diameter
+            legs = 2 if web_mm >= 200 else 1
+            s_along = sx_mesh if vlay["along"] == "X" else sy_mesh
+            v_opts = [(0.0, 0, 0.0, 0.0)]
+            for phi in (10, 12, 16, 20):
+                if web_mm < phi + 2 * 25:  # a leg and some concrete each side
+                    continue
+                for sa in (s_along, 2 * s_along):
+                    if sa <= s_max + 1e-9:
+                        a_ = legs * math.pi * phi * phi / 4 / (sa * sv / 1e6)
+                        sx_, sy_ = (sa, sv) if vlay["along"] == "X" else (sv, sa)
+                        v_opts.append((a_, phi, sx_, sy_))
+            v_opts.sort()
+            if sv > 1.5 * d_s:
+                notes.append(
+                    f"Voids: links at the void spacing ({sv:g} mm) are further apart across the slab than "
+                    f"1.5d ({1.5 * d_s:.0f} mm, EN 1992-1-1 9.3.2(4))."
+                )
+            per = "2 legs per web" if legs == 2 else "1 leg per web"
+            v_label = ["no links"] + [f"Ø{o[1]} @ {o[2]:g} × {o[3]:g}, {per}" for o in v_opts[1:]]
+            if len(v_opts) == 1:
+                notes.append(
+                    f"Voids: the webs between the voids ({web_mm:g} mm) are too narrow for links, and "
+                    f"{int(in_void.sum())} cells in the voided slab need them: wider webs or a solid zone "
+                    "there."
+                )
+                short += int(in_void.sum())
+            else:
+                v_links, v_short = link_bands(
+                    cells[in_void].reset_index(drop=True),
+                    req[in_void],
+                    v_opts,
+                    v_label,
+                    size,
+                    x0,
+                    y0,
+                    box,
+                    slab.min_zone_length,
+                    slab.strip_direction,
+                )
+                for q in v_links:
+                    q["in_webs"] = True
+                    q["legs_per_web"] = legs
+                    q[vlay["across"].lower()] = [
+                        round(min(vlay["positions"]) - sv / 2000, 2),
+                        round(max(vlay["positions"]) + sv / 2000, 2),
+                    ]
+                links += v_links
+                short += v_short
         if frame is not None:
             for q in links:
                 q["stations"] = sorted(
@@ -2272,7 +2428,7 @@ def design_slab(
             )
         heaviest = max(links, key=lambda q: q["asw_mm2_per_m2"]) if links else None
         j = int(np.argmax(v - vrdc))
-        u_max = float((v / vrd_max).max())
+        u_max = float((v / vrd_max_at).max())
         shear = {
             "zones": len(links),
             "link_spacing_mm": {"x": sx_mesh, "y": sy_mesh},
@@ -2295,7 +2451,8 @@ def design_slab(
                 "y": round(float(sh["Y"].iloc[j]), 2),
                 "V_kN_per_m": round(float(v[j]), 1),
                 "VRd_c_kN_per_m": round(float(vrdc[j]), 1),
-                "VRd_max_kN_per_m": round(vrd_max, 1),
+                "VRd_max_kN_per_m": round(float(vrd_max_at[j]), 1),
+                "in_voided_slab": bool(vm_s[j]),
             },
             "utilisation": round(max(u_max, 1.01 if short else 0.0), 3),
             "passed": u_max <= 1 and not short,
@@ -2305,18 +2462,18 @@ def design_slab(
                 f"{len(cells)} cells need shear links (the slab is in tension there, or v > VRd,c), in "
                 f"{len(links)} bands across the deck at the mesh spacing; heaviest {heaviest['label']}."
             )
-        crush = v > vrd_max
+        crush = v > vrd_max_at
         if crush.any():
-            w = int(np.argmax(v))
+            w = int(np.argmax(v / vrd_max_at))
             notes.append(
-                f"Shear above VRd,max ({vrd_max:.0f} kN/m) at {int(crush.sum())} results, the largest "
+                f"Shear above VRd,max ({vrd_max_at[w]:.0f} kN/m) at {int(crush.sum())} results, the largest "
                 f"{v[w]:.0f} kN/m at X {sh['X'].iloc[w]:.1f}, Y {sh['Y'].iloc[w]:.1f}: a thicker slab, or a "
                 "pile missing from the workbook there."
             )
 
     # Punching.
     heads = pile_heads(pile_sheets, elements, box, settings.results_into_connection / 1e3)
-    punch = punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams)
+    punch = punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams, vlay if vsec else None)
     unset = sorted({p["pile"] for p in punch if getattr(elements.get(p["pile"]), "head_level", 0) is None})
     if unset:
         notes.append(
@@ -2397,10 +2554,49 @@ def design_slab(
             f"{x0 + (wi + 0.5) * size:.1f}, Y {y0 + (wj + 0.5) * size:.1f}: couplers, or a thicker slab "
             "there."
         )
+    # Concrete: the voids taken out (kg/m³ on the concrete that is cast).
+    void_share = 0.0
+    voids_out = None
+    if vsec:
+        void_share = min(vd.void_volume(vlay, box) / (area_m2 * h / 1000), 0.9) if area_m2 else 0.0
+        voids_out = {
+            **vlay,
+            "void_share_pct": round(100 * void_share, 1),
+            "void_m3": round(vd.void_volume(vlay, box), 1),
+            "results_in_voided_slab": int(vm_u.sum()),
+        }
+        notes.append(
+            f"Voids: {len(vlay['positions'])} voids Ø{vlay['diameter_mm']:g} at {vlay['spacing_mm']:g} mm, "
+            f"centre {vlay['centre_depth_mm']:g} mm below the top, along {vlay['along']} from "
+            f"{vlay['run'][0]:g} to {vlay['run'][1]:g} m ({vlay['run_from']}); solid "
+            f"{vlay['flange_top_mm']:g} mm above and {vlay['flange_bottom_mm']:g} mm below them, webs "
+            f"{vlay['web_mm']:g} mm. Bending and crack widths on the voided section there, shear on the webs "
+            f"(bw {100 * vsec['x'].web_factor():.0f}% of the width) with links in the webs only, punching "
+            "without the parts of the control perimeter over a void."
+            + (
+                f" The voids stop {vlay['solid_round_piles_m']:g} m short of every pile's face (solid zones)."
+                if vlay.get("solid_round_piles_m") is not None
+                else ""
+            )
+            + (
+                f" {len(vlay['left_out'])} void(s) left out along the lines of piles "
+                f"({', '.join(f'{p:g}' for p in vlay['left_out'])} m)."
+                if vlay["left_out"]
+                else ""
+            )
+        )
+    elif slab.voids is not None:
+        voids_out = {**vlay, "void_share_pct": 0.0, "void_m3": 0.0} if vlay else None
+        if vlay is not None:
+            notes.append(
+                "Voids: no void fits between the piles with the clear distance set; the slab is solid."
+            )
+    net = 1 - void_share
     steel = {
         "kg_per_m2": round(kg / area_m2, 1) if area_m2 else None,
-        "kg_per_m3": round(kg / area_m2 / (h / 1000)) if area_m2 else None,
-        "ratio_pct": round(100 * kg / STEEL_DENSITY / (area_m2 * h / 1000), 2) if area_m2 else None,
+        "kg_per_m3": round(kg / area_m2 / (h / 1000 * net)) if area_m2 else None,
+        "ratio_pct": round(100 * kg / STEEL_DENSITY / (area_m2 * h / 1000 * net), 2) if area_m2 else None,
+        "concrete_share": round(net, 4),
         "area_m2": round(area_m2, 1),
         "total_t": round(kg / 1000, 2),
     }
@@ -2508,6 +2704,7 @@ def design_slab(
         "moment_cells": moment_cells,
         "cover_top_mm": slab.cover_top,
         "cover_bottom_mm": slab.cover_bottom,
+        "voids": voids_out,
         "zone_size_m": size,
         "strips": "column_and_field" if strips else "uniform",
         "strip_design": strip_design,

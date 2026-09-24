@@ -180,6 +180,7 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
         "thickness_mm": d.get("thickness_mm"),
         "level_m": d.get("level_m"),
         "box_m": d.get("box"),
+        "voids": _voids(d.get("voids")),
         "faces": faces,
         "links": [
             {
@@ -191,6 +192,20 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
             }
             for z in (d.get("shear") or {}).get("links") or []
         ],
+    }
+
+
+def _voids(v: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Circular voids for drawing: each void's axis (global, m), its diameter and depth below the top."""
+    if not v or not v.get("positions"):
+        return None
+    return {
+        "diameter_mm": v["diameter_mm"],
+        "centre_below_top_mm": v["centre_depth_mm"],
+        "along": v["along"],
+        "from_m": v["run"][0],
+        "to_m": v["run"][1],
+        "positions_m": v["positions"],
     }
 
 
