@@ -1137,6 +1137,53 @@ class Bollard(_Model):
     )
 
 
+class BeamRoom(_Model):
+    """A room cut into the beam from the top (e.g. for electrical work), over part of its length.
+
+    The beam keeps a floor under the room and a wall on each side (and a roof when the room does
+    not reach the top); Triton checks that section where the room is and designs its extra bars.
+    """
+
+    name: str = Field("Room 1", title="Room")
+    start: float = _m(
+        "From",
+        0.0,
+        description="Position along the beam where the room starts (m, as on the beam's diagrams).",
+    )
+    end: float = _m("To", 3.0, description="Position along the beam where the room ends (m).")
+    height: float = _mm("Room height", 1700.0, gt=0)
+    width: float = _mm("Room width", 1000.0, gt=0, description="Inside width, across the beam.")
+    bottom: float | None = _mm(
+        "Concrete below",
+        None,
+        gt=0,
+        description="Floor thickness under the room. Empty: beam depth − roof − room height. When set, the "
+        "room height is what is left.",
+    )
+    top: float = _mm(
+        "Roof", 0.0, ge=0, description="Concrete over the room. 0: open at the top (removable covers)."
+    )
+    front_wall: float | None = _mm(
+        "Sea-side wall",
+        None,
+        gt=0,
+        description="Wall thickness on the sea side. Empty: the room is centred (equal walls).",
+    )
+    floor_load: float = Field(
+        10.0,
+        title="Floor load",
+        ge=0,
+        description="Imposed load on the room floor (equipment), characteristic.",
+        json_schema_extra={"unit": "kPa"},
+    )
+
+    @model_validator(mode="after")
+    def _ends(self) -> BeamRoom:
+        if self.end <= self.start:
+            raise ValueError(f"{self.name}: 'To' must be past 'From'")
+        return self
+
+
 class FrontBeamTruss(_Model):
     """The office's strut-and-tie check of the front beam between king piles (service loads)."""
 
@@ -1221,6 +1268,12 @@ class BeamInput(_ConcreteSection):
         title="Truss model between king piles",
         description="Front beam: struts from the loads down to the king pile heads, tied by the bottom bars. "
         "Empty: no truss check.",
+    )
+    rooms: list[BeamRoom] = Field(
+        default_factory=list,
+        title="Rooms in the beam",
+        description="Rooms cut into the beam from the top, e.g. for electrical work. Each is checked on the "
+        "section left (floor and walls) for the Plaxis actions over its length.",
     )
 
 

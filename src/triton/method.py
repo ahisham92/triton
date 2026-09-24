@@ -29,6 +29,7 @@ from .design import (
     pile_shear,
     piles,
     rect,
+    rooms,
     sheet_piles,
     slabs,
     spw_design,
@@ -79,6 +80,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
         ("Crack widths and restraint", crack),
         ("Bollard tie bars (front beam)", bollard),
         ("Truss model (front beam)", truss),
+        ("Rooms cut into the beam", rooms),
     ],
 }
 
