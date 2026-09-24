@@ -248,7 +248,9 @@ def cost_section(project: Project, section: Section, results: dict[str, Any]) ->
         length = c.length or w.get("length_m")
         row.length = length
         section_name = (el.section_name if isinstance(el, SheetPileInput) else "") or ""
-        item_name = c.steel_element or section_name
+        # No price picked: the one named like the wall's section, else the first AZ in the list.
+        first_az = next((x.name for x in prices.steel_elements if x.name.upper().startswith("AZ")), "")
+        item_name = c.steel_element or section_name or first_az
         item = _steel_item(prices, item_name)
         if not length:
             row.basis.append("sheet pile length unknown, give it")

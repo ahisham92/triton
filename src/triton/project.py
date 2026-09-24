@@ -1017,7 +1017,7 @@ class PilePrice(_Model):
 
 
 def _office_steel_prices() -> list[SteelPrice]:
-    return [SteelPrice(name="AZ 26-700", unit="t"), SteelPrice(name="King pile tube", unit="t")]
+    return [SteelPrice(name="AZ 26-700", unit="t", mass=155.2), SteelPrice(name="King pile tube", unit="t")]
 
 
 class Prices(_Model):
