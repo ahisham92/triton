@@ -143,8 +143,7 @@ def test_slab_strip_bars():
     bars = adsec.slab_bars({"phi": 16, "spacing_mm": 200, "layers": 1}, "Ø20 @ 400", 25, 50, 1200)
     assert [(b[0], b[1]) for b in bars] == [(16, 6), (20, 3)]
     assert bars[0][4] == 50 + 25 + 8
-    assert adsec._strip_width([(150, False), (200, False)]) == 1200
-    assert adsec._strip_width([(150, False), (150, False)]) == 1050
+    assert adsec.strip_width(150) == 1050 and adsec.strip_width(200) == 1000
 
 
 def test_beam_and_slab_files():
@@ -209,3 +208,71 @@ def test_beam_and_slab_files():
         (-105.0, 1050.0, 0.0),
     ]
     assert b"STD%R%700.%1050." in data
+
+
+def test_slab_sets_are_the_four_extremes_and_the_governing_ones():
+    from triton.design.slabs import extreme_sets
+
+    c = ["A", "B", "C", "D", "E"]
+    m = [100.0, 300.0, 50.0, 200.0, 10.0]
+    n = [-50.0, 0.0, 400.0, 10.0, -300.0]
+    bottom = extreme_sets(c, m, n, gov=3)
+    assert [(x["case"], x["combination"]) for x in bottom] == [
+        ("max N", "C"),
+        ("min N", "E"),
+        ("max M", "B"),
+        ("governing", "D"),
+    ]
+    top = extreme_sets(["F", "G"], [-400.0, -20.0], [5.0, 600.0], gov=0)
+    assert [(x["case"], x["combination"]) for x in top] == [("max N", "G"), ("min N, min M, governing", "F")]
+    both = adsec.slab_sets({"bottom": [{"sets": {"uls": bottom}}], "top": [{"sets": {"uls": top}}]}, "uls")
+    assert [(x["case"], x["combination"], x["face"]) for x in both] == [
+        ("max N", "G", "top"),
+        ("min N", "E", "bottom"),
+        ("max M", "B", "bottom"),
+        ("min M, governing hogging", "F", "top"),
+        ("governing sagging", "D", "bottom"),
+    ]
+
+
+def test_slab_strip_width_follows_the_tension_face_mesh():
+    row = {
+        "mesh": {"phi": 20, "spacing_mm": 200, "layers": 1},
+        "additional_bars": None,
+        "station": [0.0, 4.0],
+    }
+    sets = {
+        "uls": [{"case": "max M", "combination": "U", "N_kN_per_m": 0.0, "M_kNm_per_m": -100.0}],
+        "qp": [],
+    }
+    slab = {
+        "thickness_mm": 700,
+        "cover_top_mm": 50,
+        "cover_bottom_mm": 75,
+        "concrete": "C40/50",
+        "layers": {},
+        "strip_design": {
+            "rows": [
+                {**row, "key": "b", "layer": "bottom_x", "sets": {"uls": [], "qp": []}},
+                {
+                    **row,
+                    "key": "t",
+                    "layer": "top_x",
+                    "sets": sets,
+                    "mesh": {**row["mesh"], "spacing_mm": 150},
+                },
+            ],
+            "table": [
+                {
+                    "moment": "M11",
+                    "strip": "column",
+                    "label": "Station 0 to 4",
+                    "face": "top",
+                    "keys": {"bottom": ["b"], "top": ["t"]},
+                }
+            ],
+        },
+    }
+    data = adsec.slab_files("Job", "S", slab, "B500B")["SLAB 700 - m11 - 0 to 4 - CS.ads"]
+    assert b"STD%R%700.%1050." in data
+    assert [tuple(round(v, 1) for v in f) for f in adsec.read_forces(data)] == [(0.0, -105.0, 0.0)]

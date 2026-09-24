@@ -35,6 +35,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..adsec import slab_sets, strip_width, tension_face
 from ..importer import SheetData
 from ..project import DesignSettings, PileInput
 
@@ -277,7 +278,8 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
 
     ``Concrete``: for each pile, combi wall infill and beam (and each station where the cage
     changes down the element), its name, then 7 QP rows and 7 ULS rows underneath.
-    ``Slabs``: for each strip or zone of the slab's strip table, its QP and ULS sets per metre.
+    ``Slabs``: for each strip or zone of the slab's strip table, its QP and ULS sets per metre (max N,
+    min N, max M, min M and the governing ones, as the slab .ads files).
     ``Steel``: for each combi wall tube and sheet pile wall, its name and 10 ULS rows.
     """
     import io
@@ -335,7 +337,13 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
     if slabs:
         sl = wb.create_sheet("Slabs")
         sl.append([f"{project} · {section} · slabs, per metre width (as the slab .ads files)"])
-        sl.append(["N compression +, M sagging + (bottom in tension); each strip's QP and ULS sets."])
+        sl.append(
+            [
+                "N compression +, M sagging + (bottom in tension). Per strip and direction, for QP and "
+                "ULS: max N, min N, max M, min M over every combination, and the set that governs each "
+                "face's bars."
+            ]
+        )
         for d in slabs:
             sd = d["strip_design"]
             by_key = {r["key"]: r for r in sd.get("rows") or [] if r.get("sets") is not None}
@@ -347,25 +355,30 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
                 sl.append(["Set", "N kN/m", "M kNm/m", "Combination", "Face"])
                 for c in sl[sl.max_row]:
                     c.font = bold
+                faces = {
+                    f: [by_key[k] for k in row["keys"].get(f, []) if k in by_key] for f in ("bottom", "top")
+                }
                 for state, kind in (("QP", "qp"), ("ULS", "uls")):
-                    seen = set()
-                    for face in ("bottom", "top"):
-                        for k in row["keys"].get(face, []):
-                            r = by_key.get(k)
-                            for x in (r or {}).get("sets", {}).get(kind, []):
-                                key = (x["combination"], x["N_kN_per_m"], x["M_kNm_per_m"])
-                                if key in seen:
-                                    continue
-                                seen.add(key)
-                                sl.append(
-                                    [
-                                        f"{state} {'sagging' if face == 'bottom' else 'hogging'}",
-                                        x["N_kN_per_m"],
-                                        x["M_kNm_per_m"],
-                                        x["combination"],
-                                        face,
-                                    ]
-                                )
+                    for x in slab_sets(faces, kind):
+                        sl.append(
+                            [
+                                f"{state} {x['case']}",
+                                x["N_kN_per_m"],
+                                x["M_kNm_per_m"],
+                                x["combination"],
+                                x["face"],
+                            ]
+                        )
+                if all(faces.values()):
+                    face = tension_face(row)
+                    spacing = faces[face][0]["mesh"]["spacing_mm"]
+                    width = strip_width(spacing)
+                    sl.append(
+                        [
+                            f"AdSec file: strip {width:.0f} mm wide ({face} bars at {spacing:g} mm), "
+                            f"these forces x {width / 1000:g}"
+                        ]
+                    )
         _widths(sl, (30, 10, 10, 16, 8))
 
     ss = wb.create_sheet("Steel")

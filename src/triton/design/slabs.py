@@ -205,6 +205,35 @@ def required_as(
     return np.maximum(a_s, 0.0), k, np.maximum(a_s2, 0.0)
 
 
+def extreme_sets(c, m, n, gov: int | None = None) -> list[dict]:
+    """The sets a reviewer checks for one face: max N, min N and the largest moment on the face over every
+    result and combination, each naming its combination, plus the one that sets the bars ("governing")
+    when it is not already one of them. Nothing when the face has no moment to speak of."""
+    m, n, c = np.asarray(m, float), np.asarray(n, float), np.asarray(c)
+    if not len(m) or float(np.abs(m).max()) < 0.5:
+        return []
+    a = np.abs(m)
+    picks = [
+        ("max N", int(np.lexsort((a, n))[-1])),
+        ("min N", int(np.lexsort((-a, n))[0])),
+        ("max M" if m[int(np.argmax(a))] >= 0 else "min M", int(np.argmax(a))),
+    ]
+    if gov is not None:
+        picks.append(("governing", int(gov)))
+    out: dict[int, dict] = {}
+    for case, i in picks:
+        if i in out:
+            out[i]["case"] += f", {case}"
+            continue
+        out[i] = {
+            "case": case,
+            "combination": str(c[i]),
+            "N_kN_per_m": round(float(n[i]), 1),
+            "M_kNm_per_m": round(float(m[i]), 1),
+        }
+    return list(out.values())
+
+
 def crack_widths(
     m: np.ndarray,
     n: np.ndarray,
@@ -380,9 +409,17 @@ def strip_table(rows: list[dict], frame: dict) -> list[dict]:
                     "wk_limit_mm": wk["wk_limit_mm"],
                     "ratio": worst["ratio"],
                     "M_kNm_per_m": worst["M_kNm_per_m"],
+                    "N_kN_per_m": worst.get("N_kN_per_m"),
                     "MRd_kNm_per_m": worst["MRd_kNm_per_m"],
                     "combination": worst["combination"],
                     "face": worst["face"],
+                    "qp": None
+                    if wk["wk_mm"] is None
+                    else {
+                        **(wk.get("qp") or {}),
+                        "combination": wk.get("qp_combination"),
+                        "face": wk["face"],
+                    },
                     "bars": {f: mine[g[0]][f]["bars"] for f in ("bottom", "top") if f in mine[g[0]]},
                     "additional": {
                         f: mine[g[0]][f]["additional"] for f in ("bottom", "top") if f in mine[g[0]]
@@ -434,9 +471,17 @@ def overall_table(entries: list[dict]) -> list[dict]:
                     "wk_limit_mm": wk["wk_limit_mm"],
                     "ratio": worst["ratio"],
                     "M_kNm_per_m": worst["M_kNm_per_m"],
+                    "N_kN_per_m": worst.get("N_kN_per_m"),
                     "MRd_kNm_per_m": worst["MRd_kNm_per_m"],
                     "combination": worst["combination"],
                     "face": worst["face"],
+                    "qp": None
+                    if wk["wk_mm"] is None
+                    else {
+                        **(wk.get("qp") or {}),
+                        "combination": wk.get("qp_combination"),
+                        "face": wk["face"],
+                    },
                     "bars": {f: faces[f]["bars"] for f in fs},
                     "additional": {f: faces[f]["additional"] for f in fs},
                     "layers": {f: faces[f]["layer"] for f in fs},
@@ -1479,17 +1524,11 @@ def design_slab(
             env["req"] = np.maximum(a_env, a_min)
             gov = env.loc[env.groupby(["st", "kind"])["req"].idxmax()]
             groups = {(int(r.st), int(r.kind)): r for r in gov.itertuples(index=False)}
-            for r in env.loc[env.groupby(["st", "kind", "combination"])["req"].idxmax()].itertuples(
-                index=False
-            ):
-                if abs(r.m) >= 0.5:
-                    sets.setdefault((int(r.st), int(r.kind)), {"uls": [], "qp": []})["uls"].append(
-                        {
-                            "combination": str(r.combination),
-                            "N_kN_per_m": round(float(r.n), 1),
-                            "M_kNm_per_m": round(float(r.m), 1),
-                        }
-                    )
+            for k, g in env.groupby(["st", "kind"]):
+                gi = int(np.argmax(g["req"].to_numpy()))
+                sets.setdefault((int(k[0]), int(k[1])), {"uls": [], "qp": []})["uls"] = extreme_sets(
+                    g["combination"].to_numpy(), g["m"].to_numpy(), g["n"].to_numpy(), gi
+                )
             cxs = x0 + (cell["i"].to_numpy() + 0.5) * size
             cys = y0 + (cell["j"].to_numpy() + 0.5) * size
             cl = locate(frame, cxs if ax == "X" else cys, cys if ax == "X" else cxs)
@@ -1501,18 +1540,6 @@ def design_slab(
             ]
             if wq is not None and qloc is not None:
                 qenv = strip_average(qp_m, wq[layer], nq, qloc, size)
-                qgov = qenv.loc[
-                    qenv.assign(a=qenv["m"].abs()).groupby(["st", "kind", "combination"])["a"].idxmax()
-                ]
-                for r in qgov.itertuples(index=False):
-                    if abs(r.m) >= 0.5:
-                        sets.setdefault((int(r.st), int(r.kind)), {"uls": [], "qp": []})["qp"].append(
-                            {
-                                "combination": str(r.combination),
-                                "N_kN_per_m": round(float(r.n), 1),
-                                "M_kNm_per_m": round(float(r.m), 1),
-                            }
-                        )
                 for k, g in qenv.groupby(["st", "kind"]):
                     qgroups[(int(k[0]), int(k[1]))] = (
                         g["m"].to_numpy(),
@@ -1816,13 +1843,15 @@ def design_slab(
                 o = opts[oi]
                 d_o = d_all[oi]
                 mrd = strip_mrd(o[0], d_o, h, float(g.n), fcd_s, fyd)
-                wk = qcomb = None
+                wk = qcomb = qcase = None
+                strip_sets = sets.setdefault(k, {"uls": [], "qp": []})
                 if k in qgroups:
                     qm, qn, qc = qgroups[k]
                     w = crack_widths(qm, qn, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
                     wi = int(np.argmax(w))
                     wk, qcomb = round(float(w[wi]), 3), str(qc[wi])
-                strip_sets = sets.get(k, {"uls": [], "qp": []})
+                    qcase = {"M_kNm_per_m": round(float(qm[wi]), 1), "N_kN_per_m": round(float(qn[wi]), 1)}
+                    strip_sets["qp"] = extreme_sets(qc, qm, qn, wi)
                 for q in strip_sets["qp"]:
                     t = crack_widths(
                         np.array([q["M_kNm_per_m"]]),
@@ -1868,6 +1897,7 @@ def design_slab(
                         "wk_mm": wk,
                         "wk_limit_mm": limits[face],
                         "qp_combination": qcomb,
+                        "qp": qcase,
                         "mesh": {"phi": mesh_o[1], "spacing_mm": mesh_o[2], "layers": mesh_o[3]},
                         "additional_bars": None if mode == "mesh_only" or oi == 0 else add_text,
                         "set_by": set_by(idxs, oi),
@@ -1931,27 +1961,30 @@ def design_slab(
                         "n": n_u[in_u],
                     }
                 )
-                for r_ in uu.loc[uu.groupby("c")["r"].idxmax()].itertuples(index=False):
-                    if abs(r_.m) >= 0.5:
-                        g_sets["uls"].append(
-                            {
-                                "combination": str(r_.c),
-                                "N_kN_per_m": round(float(r_.n), 1),
-                                "M_kNm_per_m": round(float(r_.m), 1),
-                            }
-                        )
+                if len(uu):
+                    g_sets["uls"] = extreme_sets(
+                        uu["c"].to_numpy(), uu["m"].to_numpy(), uu["n"].to_numpy(), int(np.argmax(uu["r"]))
+                    )
+                qcase = qcomb = None
                 if wq is not None:
                     in_q = (pos >= 0) & np.isin(pos, idxs)
                     qq = pd.DataFrame(
                         {"c": qp_m["combination"].to_numpy()[in_q], "m": wq[layer][in_q], "n": nq[in_q]}
                     )
-                    for r_ in qq.loc[qq.assign(a=qq["m"].abs()).groupby("c")["a"].idxmax()].itertuples(
-                        index=False
-                    ):
-                        if abs(r_.m) >= 0.5:
+                    if len(qq):
+                        qm, qn, qc = qq["m"].to_numpy(), qq["n"].to_numpy(), qq["c"].to_numpy()
+                        w_all = crack_widths(qm, qn, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+                        wi = int(np.argmax(w_all))
+                        qcomb = str(qc[wi])
+                        qcase = {
+                            "M_kNm_per_m": round(float(qm[wi]), 1),
+                            "N_kN_per_m": round(float(qn[wi]), 1),
+                        }
+                        g_sets["qp"] = extreme_sets(qc, qm, qn, wi)
+                        for q in g_sets["qp"]:
                             t = crack_widths(
-                                np.array([r_.m]),
-                                np.array([r_.n]),
+                                np.array([q["M_kNm_per_m"]]),
+                                np.array([q["N_kN_per_m"]]),
                                 o[0],
                                 o[1],
                                 o[2],
@@ -1962,20 +1995,13 @@ def design_slab(
                                 e_eff,
                                 terms=True,
                             )
-                            g_sets["qp"].append(
-                                {
-                                    "combination": str(r_.c),
-                                    "N_kN_per_m": round(float(r_.n), 1),
-                                    "M_kNm_per_m": round(float(r_.m), 1),
-                                    "crack": {
-                                        **crack_terms(t[0][0], limits[face], t[1][0], t[2], t[3], h),
-                                        "face": face,
-                                        "d_mm": round(d_o),
-                                        "phi_mm": o[1],
-                                        "spacing_mm": o[2],
-                                    },
-                                }
-                            )
+                            q["crack"] = {
+                                **crack_terms(t[0][0], limits[face], t[1][0], t[2], t[3], h),
+                                "face": face,
+                                "d_mm": round(d_o),
+                                "phi_mm": o[1],
+                                "spacing_mm": o[2],
+                            }
                 mesh_o = opts[oi] if mode == "mesh_only" else options[b]
                 overall_rows.append(
                     {
@@ -1999,6 +2025,8 @@ def design_slab(
                         "ratio": round(abs(m_) / mrd, 3) if mrd > 0 else None,
                         "wk_mm": wk,
                         "wk_limit_mm": limits[face],
+                        "qp_combination": qcomb,
+                        "qp": qcase,
                         "mesh": {"phi": mesh_o[1], "spacing_mm": mesh_o[2], "layers": mesh_o[3]},
                         "additional_bars": None if mode == "mesh_only" or oi == 0 else add_text,
                         "set_by": "your mesh" if rect is None and forced is not None else set_by(idxs, oi),

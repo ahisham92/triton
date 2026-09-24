@@ -291,6 +291,12 @@ resultant moment until crack width is checked). N is in the concrete (AdSec) sig
 Plaxis N × −1. Points inside a steel casing are left out of the QP rows; where nothing is left
 (the combi wall infill, a station inside the casing) the QP rows are 1s.
 
+*Slabs* sheet: for each row of the slab table (a strip and direction, or a zone), per metre width:
+max N, min N, max M (sagging) and min M (hogging) over every combination, for QP and for ULS, plus
+the set that governs each face's bars when it is not already one of them ("governing sagging",
+"governing hogging"). M sagging +, N compression +. The row under them gives the AdSec strip width
+and the factor on these forces.
+
 *Steel* sheet: for the combi wall tube (its share of the actions) and the sheet pile wall, 10 ULS
 rows each: max and min N, M2, M3, Q1 and Q2 with the other actions at the same point, in the
 Plaxis sign. There is no most utilised row, as steel is not designed with these sets. For the
@@ -305,6 +311,11 @@ rings as circles, the first bar on +y so a half row sits behind every second out
 7 QP loads as long-term SLS cases and its 7 ULS loads as short-term ULS cases, N compression +,
 My = M2, Mz = M3. The records Triton writes match the office file byte for byte for the same
 section and loads; the rest (code, national parameters, bar rules, materials) are copied from it.
+
+Slab files, one per row of the slab table: a strip holding a whole number of the tension face's mesh
+bars, about 1 m wide (1050 mm for a 150 mm mesh, 1000 mm for 200 mm, as the office files), with both
+faces' bars and the Slabs sheet's sets, the forces per metre multiplied by width / 1000 (x 1.05 for
+1050 mm). Where the other face has a different spacing its bar count is rounded to the strip.
 
 ## Calculation reports
 

@@ -468,17 +468,58 @@ def slab_bars(
     return out
 
 
-def _strip_width(specs: list[tuple[float, bool]]) -> float:
-    """A strip about 1 m wide holding a whole number of every face's bar pattern."""
-    unit = 1
-    for spacing, second in specs:
-        unit = math.lcm(unit, round(spacing * (2 if second else 1)))
-    return unit * max(1, round(1000 / unit))
+def strip_width(spacing_mm: float) -> float:
+    """The AdSec strip: a whole number of mesh bars about 1 m wide, as the office's files (1050 mm for a
+    150 mm mesh, 1000 mm for 200 mm). The forces per metre are multiplied by width / 1000."""
+    return spacing_mm * max(1, round(1000 / spacing_mm))
+
+
+def tension_face(row: dict[str, Any]) -> str:
+    """The face whose bars set the strip width: the row's worst face (its tension face)."""
+    return row.get("face") if row.get("face") in ("bottom", "top") else "bottom"
+
+
+def slab_sets(faces: dict[str, list[dict[str, Any]]], kind: str) -> list[dict[str, Any]]:
+    """The sets of one strip and direction over both faces: max N, min N, max M (sagging) and min M
+    (hogging) over every combination, each naming its combination, plus each face's governing set (the
+    one that sets its bars) when it is not already among them. M sagging +, N compression +."""
+    pool = []
+    for f in ("bottom", "top"):
+        for r in faces.get(f, []):
+            for x in (r.get("sets") or {}).get(kind, []):
+                pool.append((f, x))
+    if not pool:
+        return []
+
+    def pick(key) -> tuple[str, dict]:
+        return max(pool, key=key)
+
+    chosen = [
+        ("max N", pick(lambda p: (p[1]["N_kN_per_m"], abs(p[1]["M_kNm_per_m"])))),
+        ("min N", pick(lambda p: (-p[1]["N_kN_per_m"], abs(p[1]["M_kNm_per_m"])))),
+        ("max M", pick(lambda p: p[1]["M_kNm_per_m"])),
+        ("min M", pick(lambda p: -p[1]["M_kNm_per_m"])),
+    ]
+    chosen = [(c, p) for c, p in chosen if not (c == "max M" and p[1]["M_kNm_per_m"] <= 0)]
+    chosen = [(c, p) for c, p in chosen if not (c == "min M" and p[1]["M_kNm_per_m"] >= 0)]
+    for f, x in pool:
+        if "governing" in x.get("case", ""):
+            chosen.append((f"governing {'sagging' if f == 'bottom' else 'hogging'}", (f, x)))
+    out: dict[tuple, dict[str, Any]] = {}
+    for case, (f, x) in chosen:
+        key = (x["combination"], x["N_kN_per_m"], x["M_kNm_per_m"])
+        if key in out:
+            if case not in out[key]["case"]:
+                out[key]["case"] += f", {case}"
+            continue
+        out[key] = {**x, "case": case, "face": f}
+    return list(out.values())
 
 
 def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) -> dict[str, bytes]:
-    """One .ads file per row of the slab's strip table (a direction, stations and strip), about 1 m
-    wide: the bars of both faces and, per combination, the governing sagging and hogging cut."""
+    """One .ads file per row of the slab's strip table (a direction, stations and strip), a whole number
+    of the tension face's mesh bars about 1 m wide (``strip_width``): the bars of both faces and, for QP
+    and ULS, the max N, min N, max M and min M sets plus the governing ones (``slab_sets``)."""
     sd = slab.get("strip_design") or {}
     rows = {r["key"]: r for r in sd.get("rows") or [] if r.get("sets") is not None}
     if not rows or not sd.get("table"):
@@ -493,14 +534,7 @@ def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) ->
         if not all(faces.values()):
             continue
         first = {f: faces[f][0] for f in faces}
-        specs = [
-            (
-                first[f]["mesh"]["spacing_mm"],
-                bool(_second(first[f]["additional_bars"], first[f]["mesh"], first[f].get("spec"))),
-            )
-            for f in faces
-        ]
-        width = _strip_width(specs)
+        width = strip_width(first[tension_face(row)]["mesh"]["spacing_mm"])
         groups = []
         for f, sign in (("bottom", -1), ("top", 1)):
             direction = first[f]["layer"].split("_")[1]
@@ -536,44 +570,28 @@ def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) ->
         k = width / 1000
 
         def loads(kind: str, faces=faces, k=k) -> list[dict[str, Any]]:
-            out, seen = [], set()
-            for f in ("bottom", "top"):
-                for r in faces[f]:
-                    for x in r["sets"][kind]:
-                        key = (x["combination"], x["N_kN_per_m"], x["M_kNm_per_m"])
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        sense = "sagging" if f == "bottom" else "hogging"
-                        case = f"{sense} {r['station'][0]:g}-{r['station'][1]:g}"
-                        out.append(
-                            {
-                                "case": case,
-                                "combination": x["combination"],
-                                "N_kN": x["N_kN_per_m"] * k,
-                                "M_kNm": x["M_kNm_per_m"] * k,
-                            }
-                        )
-            return out
+            return [
+                {
+                    "case": x["case"],
+                    "combination": x["combination"],
+                    "N_kN": x["N_kN_per_m"] * k,
+                    "M_kNm": x["M_kNm_per_m"] * k,
+                }
+                for x in slab_sets(faces, kind)
+            ]
 
         files[_safe(name) + ".ads"] = ads_file(
             job=job,
             title=f"SLAB {h:.0f}mm - {row['moment'].lower()}",
             subtitle=f"({where}) - {strip}",
-            heading=f"{section_name}: strip {width:.0f} mm wide, forces per metre x {k:g}",
+            heading=f"{section_name}: strip {width:.0f} mm wide ({tension_face(row)} bars at "
+            f"{first[tension_face(row)]['mesh']['spacing_mm']:g} mm), forces per metre x {k:g}",
             section_record=sec,
             qp=loads("qp"),
             uls=loads("uls"),
             forces_of=lambda r: (r["N_kN"], r["M_kNm"], 0.0),
         )
     return files
-
-
-def _second(additional: str | None, mesh: dict[str, Any], spec: list | None = None) -> bool:
-    m = _ADD.match(additional or "")
-    if not m and spec:
-        return any(p and p[1] > mesh["spacing_mm"] + 1e-6 for p in spec)
-    return bool(m) and float(m.group(2)) > mesh["spacing_mm"] + 1e-6
 
 
 def spec_bars(

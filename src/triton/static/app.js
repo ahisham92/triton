@@ -2667,13 +2667,15 @@ function stripTable(d) {
   const faceName = (f) => (f === "bottom" ? "Bottom" : "Top");
   const setBy = (r) => (r.edit || Object.keys(r.set_by || {})).map((f) => `${faceName(f)}: ${esc(r.set_by?.[f] || "–")}`).join("<br>");
   const line = (r, i) => `<tr data-row="${i}"><td>${esc(stripRowName(r))}${r.user_set ? '<span class="user-chip">your bars</span>' : ""}</td>
-    <td class="cell ${r.wk_mm == null || r.wk_mm <= r.wk_limit_mm ? "ok" : "error"}">${r.wk_mm == null ? "–" : fmt(r.wk_mm, 3)}</td>
-    <td class="cell ${r.ratio != null && r.ratio <= 1 ? "ok" : "error"}" title="${esc(r.face)} face">${fmt(r.ratio, 2)}</td><td>${fmt(r.M_kNm_per_m)}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
+    <td class="cell ${r.wk_mm == null || r.wk_mm <= r.wk_limit_mm ? "ok" : "error"}" title="${esc(r.qp?.face || "")} face">${r.wk_mm == null ? "–" : fmt(r.wk_mm, 3)}</td>
+    <td>${r.qp?.M_kNm_per_m == null ? "–" : `${fmt(r.qp.M_kNm_per_m)} / ${fmt(r.qp.N_kN_per_m)}`}</td><td>${esc(r.qp?.combination || "–")}</td>
+    <td class="cell ${r.ratio != null && r.ratio <= 1 ? "ok" : "error"}" title="${esc(r.face)} face">${fmt(r.ratio, 2)}</td><td>${fmt(r.M_kNm_per_m)}${r.N_kN_per_m == null ? "" : ` / ${fmt(r.N_kN_per_m)}`}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
     <td>${esc(r.combination)}</td><td>${esc(r.bars.bottom || "–")}</td><td>${esc(r.bars.top || "–")}</td><td class="set-by">${setBy(r)}</td>
     <td><button class="quiet" data-bars="${i}">Change bars</button></td></tr>`;
   return `<h3 style="margin-top:18px">Slab design results</h3>
-    <p class="status">As the calc report's slab table. Stations are metres from the ${esc(sd.from)}, on the sea side, increasing towards the rear. Bars along the strips (${esc(sd.along)}) are designed per station in column strips ${fmt(sd.column_width_m, 1)} m wide on the pile lines and field strips ${fmt(sd.field_width_m, 1)} m between them, all column strips together and all field strips together. Bars along the quay are one basic mesh over the whole deck, with zones of additional bars only where the deck needs more. "Set by" says which check chose each face's bars.</p>
-    <div class="scroll"><table><tr><th>Slab</th><th>Crack width (mm)</th><th>Ultimate M / M<sub>Rd</sub></th><th>Acting M (kNm/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bottom bars</th><th>Top bars</th><th>Set by</th><th></th></tr>
+    <p class="status">As the calc report's slab table. Stations are metres from the ${esc(sd.from)}, on the sea side, increasing towards the rear. Bars along the strips (${esc(sd.along)}) are designed per station in column strips ${fmt(sd.column_width_m, 1)} m wide on the pile lines and field strips ${fmt(sd.field_width_m, 1)} m between them, all column strips together and all field strips together. Bars along the quay are one basic mesh over the whole deck, with zones of additional bars only where the deck needs more. "Set by" says which check chose each face's bars. Acting M is the size of the moment on the face that governs; the QP M and every N carry their sign (M sagging +, N compression +).</p>
+    <p class="status">AdSec files and the Slabs sheet of the force-set Excel: per strip and direction, max N, min N, max M and min M over every combination for QP and for ULS, plus the set that governs each face's bars when it is not one of them. Each strip is a whole number of the tension face's mesh bars about 1 m wide (1050 mm for a 150 mm mesh, 1000 mm for 200 mm), with the forces per metre multiplied by width / 1000.</p>
+    <div class="scroll"><table><tr><th>Slab</th><th>Crack width (mm)</th><th>QP M / N for the crack width (kNm/m, kN/m)</th><th>QP combination</th><th>Ultimate M / M<sub>Rd</sub></th><th>Acting M / N (kNm/m, kN/m)</th><th>M<sub>Rd</sub> (kNm/m)</th><th>Governing combination</th><th>Bottom bars</th><th>Top bars</th><th>Set by</th><th></th></tr>
       ${rows.map(line).join("")}</table></div>`;
 }
 
@@ -3825,7 +3827,7 @@ function slabCrackItems(d) {
   const rows = d.strip_design?.rows || [];
   return rows.flatMap((r) =>
     (r.sets?.qp || []).filter((q) => q.crack).map((q) => ({
-      label: r.strip === "all" ? `${r.moment} ${r.face} bars, ${r.label}, ${q.combination}` : `${r.moment} ${r.face} bars, ${r.strip} strip, ${fmt(r.station[0], 2)} to ${fmt(r.station[1], 2)} m, ${q.combination}`,
+      label: r.strip === "all" ? `${r.moment} ${r.face} bars, ${r.label}, ${q.case ? `${q.case}: ` : ""}${q.combination}` : `${r.moment} ${r.face} bars, ${r.strip} strip, ${fmt(r.station[0], 2)} to ${fmt(r.station[1], 2)} m, ${q.case ? `${q.case}: ` : ""}${q.combination}`,
       set: q,
       geom: { shape: "strip" },
       forces: `${q.combination}: M = ${fmt(q.M_kNm_per_m)} kNm/m, N = ${fmt(q.N_kN_per_m)} kN/m (compression +), strip averaged, with ${r.bars}`,
