@@ -917,6 +917,52 @@ class SlabVoids(_Model):
     )
 
 
+class Manhole(_Model):
+    """An opening in the deck (a manhole or a pit), not in the Plaxis model: the bars it cuts go to
+    trimmer bars each side."""
+
+    name: str = Field("Manhole 1", title="Manhole")
+    x: float = _m("Centre X", 0.0)
+    y: float = _m("Centre Y", 0.0)
+    size_x: float = _mm("Size along X", 1000.0, gt=0, description="Inside size in plan.")
+    size_y: float = _mm("Size along Y", 1000.0, gt=0)
+    depth: float | None = _mm(
+        "Pit depth",
+        None,
+        gt=0,
+        description="Empty: through the slab. Set: a pit from the top with the rest of the slab under it.",
+    )
+    floor_load: float = Field(10.0, title="Load on the pit floor", ge=0, json_schema_extra={"unit": "kPa"})
+
+
+class Channel(_Model):
+    """A service channel cast into the deck, not in the Plaxis model: the slab's actions go round it
+    through its walls and base."""
+
+    name: str = Field("Channel 1", title="Channel")
+    direction: Literal["X", "Y"] = Field("Y", title="Runs along")
+    start: float = _m("From", 0.0, description="Where it starts along its direction (m, model coordinate).")
+    end: float = _m("To", 10.0)
+    at: float = _m("Centre line at", 0.0, description="Its centre line, across its direction (m).")
+    width: float = _mm("Inside width", 600.0, gt=0)
+    depth: float = _mm("Inside depth", 500.0, gt=0, description="From the top of the slab.")
+    walls: float = _mm("Wall thickness", 250.0, gt=0)
+    base: float | None = _mm(
+        "Base thickness",
+        None,
+        gt=0,
+        description="Empty: what the slab leaves under it. Deeper than the slab: the base hangs below the "
+        "soffit.",
+    )
+    floor_load: float = Field(10.0, title="Load in the channel", ge=0, json_schema_extra={"unit": "kPa"})
+
+    @model_validator(mode="after")
+    def _ends(self) -> Channel:
+        if self.end <= self.start:
+            raise ValueError(f"{self.name}: 'To' must be past 'From'")
+        return self
+
+
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
     thickness: float = _mm("Slab thickness", 700.0, gt=0)
@@ -1038,6 +1084,16 @@ class SlabInput(_ConcreteSection):
         title="Slab thickness at single piles",
         description="For punching only, e.g. on a slope.",
     )
+    manholes: list[Manhole] = Field(
+        default_factory=list,
+        title="Manholes and pits",
+        description="Openings in the deck that the Plaxis model does not have (Openings tab).",
+    )
+    channels: list[Channel] = Field(
+        default_factory=list,
+        title="Service channels",
+        description="Channels cast into the deck that the Plaxis model does not have (Openings tab).",
+    )
     crane: list[CraneArea] = Field(
         default_factory=list,
         title="Mobile crane additions",
@@ -1138,6 +1194,53 @@ class Bollard(_Model):
     )
 
 
+class BeamRoom(_Model):
+    """A room cut into the beam from the top (e.g. for electrical work), over part of its length.
+
+    The beam keeps a floor under the room and a wall on each side (and a roof when the room does
+    not reach the top); Triton checks that section where the room is and designs its extra bars.
+    """
+
+    name: str = Field("Room 1", title="Room")
+    start: float = _m(
+        "From",
+        0.0,
+        description="Position along the beam where the room starts (m, as on the beam's diagrams).",
+    )
+    end: float = _m("To", 3.0, description="Position along the beam where the room ends (m).")
+    height: float = _mm("Room height", 1700.0, gt=0)
+    width: float = _mm("Room width", 1000.0, gt=0, description="Inside width, across the beam.")
+    bottom: float | None = _mm(
+        "Concrete below",
+        None,
+        gt=0,
+        description="Floor thickness under the room. Empty: beam depth − roof − room height. When set, the "
+        "room height is what is left.",
+    )
+    top: float = _mm(
+        "Roof", 0.0, ge=0, description="Concrete over the room. 0: open at the top (removable covers)."
+    )
+    front_wall: float | None = _mm(
+        "Sea-side wall",
+        None,
+        gt=0,
+        description="Wall thickness on the sea side. Empty: the room is centred (equal walls).",
+    )
+    floor_load: float = Field(
+        10.0,
+        title="Floor load",
+        ge=0,
+        description="Imposed load on the room floor (equipment), characteristic.",
+        json_schema_extra={"unit": "kPa"},
+    )
+
+    @model_validator(mode="after")
+    def _ends(self) -> BeamRoom:
+        if self.end <= self.start:
+            raise ValueError(f"{self.name}: 'To' must be past 'From'")
+        return self
+
+
 class FrontBeamTruss(_Model):
     """The office's strut-and-tie check of the front beam between king piles (service loads)."""
 
@@ -1222,6 +1325,12 @@ class BeamInput(_ConcreteSection):
         title="Truss model between king piles",
         description="Front beam: struts from the loads down to the king pile heads, tied by the bottom bars. "
         "Empty: no truss check.",
+    )
+    rooms: list[BeamRoom] = Field(
+        default_factory=list,
+        title="Rooms in the beam",
+        description="Rooms cut into the beam from the top, e.g. for electrical work. Each is checked on the "
+        "section left (floor and walls) for the Plaxis actions over its length.",
     )
 
 
@@ -2053,6 +2162,105 @@ class Section(_Model):
         return added
 
 
+class Ledge(_Model):
+    """The ledge (nib) on the rear beam that the approach slab rests on, across the expansion joint."""
+
+    projection: float = _mm("Projection from the rear beam face", 400.0, gt=0)
+    depth: float = _mm("Depth at the beam face", 600.0, gt=0)
+    top_below_beam_top: float | None = _mm(
+        "Ledge top below the rear beam top",
+        None,
+        ge=0,
+        description="Empty: the approach slab thickness plus the bearing thickness, so the slab's top "
+        "is level with the beam's.",
+    )
+    bearing_width: float = _mm(
+        "Bearing strip width",
+        200.0,
+        gt=0,
+        description="Elastomeric strip under the slab end, across the ledge.",
+    )
+    bearing_thickness: float = _mm("Bearing strip thickness", 20.0, ge=0)
+    edge_distance: float = _mm("Bearing strip to the ledge tip", 50.0, ge=0)
+    cover: float | None = _mm("Cover", None, gt=0, description="Empty: the project's beam cover.")
+    horizontal_ratio: float = Field(
+        0.2,
+        title="Horizontal force H / vertical load F",
+        ge=0,
+        le=1,
+        description="EN 1992-1-1 J.3: at least 0.2 F for restraint and bearing friction.",
+    )
+    crack_width_limit: float = _mm("Crack width limit wk (QP)", 0.2, gt=0, le=0.5)
+
+
+class ApproachSlabInput(_Model):
+    """The approach slab between the quay and the existing slab on grade.
+
+    One for the whole project (typical); each section designs it with its own rear beam. Plaxis does
+    not model it, so its size and loads are entered here.
+    """
+
+    length: float = _m(
+        "Length (rear beam to the slab on grade)",
+        6.0,
+        gt=0,
+        description="From the bearing line on the ledge to the far end, which rests on the existing slab on "
+        "grade or the ground.",
+    )
+    thickness: float = _mm("Thickness", 400.0, gt=0)
+    concrete: ConcreteGrade | None = Field(None, title="Concrete grade", description=_PROJECT_GRADE)
+    cover_top: float | None = _mm(
+        "Cover, top", None, gt=0, description="Empty: the project's slab top cover."
+    )
+    cover_bottom: float = _mm("Cover, bottom (against the ground)", 75.0, gt=0)
+    joint_width: float = _mm("Expansion joint at the rear beam", 25.0, ge=0)
+    unsupported_length: float | None = _m(
+        "Length with no ground support",
+        None,
+        ge=0,
+        description="From the ledge, where the fill may settle away from the slab. Empty: the whole "
+        "length, so "
+        "the slab spans from the ledge to its far end. Beyond it the slab rests on the ground (springs).",
+    )
+    subgrade_modulus: float = Field(
+        20000.0,
+        title="Modulus of subgrade reaction",
+        gt=0,
+        description="Where the slab rests on the ground.",
+        json_schema_extra={"unit": "kN/m³"},
+    )
+    unit_weight: float = Field(
+        25.0, title="Reinforced concrete weight", gt=0, json_schema_extra={"unit": "kN/m³"}
+    )
+    surfacing: float = Field(
+        2.0, title="Surfacing and finishes", ge=0, description="Permanent.", json_schema_extra={"unit": "kPa"}
+    )
+    surcharge: float = Field(
+        35.0, title="Surcharge", ge=0, description="The office's 3.5 t/m².", json_schema_extra={"unit": "kPa"}
+    )
+    wheel_load: float = Field(
+        150.0,
+        title="Wheel or outrigger load",
+        ge=0,
+        description="Characteristic, dynamic factor included; 150 kN is a wheel of the EN 1991-2 tandem "
+        "(300 kN axle). 0: none.",
+        json_schema_extra={"unit": "kN"},
+    )
+    wheel_contact: float = _mm("Wheel contact width", 400.0, gt=0)
+    gamma_g: float = Field(1.35, title="γG permanent", ge=1)
+    gamma_q: float = Field(1.5, title="γQ variable (surcharge and wheel)", ge=1)
+    psi2: float = Field(
+        0.6,
+        title="ψ2 of the surcharge (QP)",
+        ge=0,
+        le=1,
+        description="The wheel is traffic: ψ2 = 0 in the QP combination.",
+    )
+    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.2, gt=0, le=0.5)
+    crack_width_limit_bottom: float = _mm("Crack width limit wk (QP), bottom face", 0.2, gt=0, le=0.5)
+    ledge: Ledge = Field(default_factory=Ledge, title="Ledge on the rear beam")
+
+
 class Revision(_Model):
     """An issued revision of the calculations, with a copy of the project as it was issued."""
 
@@ -2081,6 +2289,12 @@ class Project(_Model):
     )
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
     revisions: list[Revision] = Field(default_factory=list, title="Issued revisions")
+    approach: ApproachSlabInput | None = Field(
+        None,
+        title="Approach slab and rear beam ledge",
+        description="One for the whole project; each section designs it with its own rear beam, and adds the "
+        "ledge's load and torsion to that beam. Empty: no approach slab.",
+    )
     locked: bool = Field(
         False,
         title="Locked",

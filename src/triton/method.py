@@ -18,6 +18,7 @@ from . import alignment, clashes, joints, trials
 from . import furniture as furniture_layout
 from .design import (
     anchors,
+    approach,
     beams,
     bollard,
     circular,
@@ -27,11 +28,13 @@ from .design import (
     ductility,
     furniture,
     governing,
+    openings,
     peaks,
     pile_cracks,
     pile_shear,
     piles,
     rect,
+    rooms,
     sheet_piles,
     slabs,
     spw_design,
@@ -74,6 +77,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
     "Slabs": [
         ("Bars, strips, shear and punching", slabs),
         ("Circular voids (PVC pipes)", voids),
+        ("Manholes and channels (Openings tab)", openings),
         ("Crack widths and restraint", crack),
     ],
     "Beams": [
@@ -82,6 +86,11 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
         ("Crack widths and restraint", crack),
         ("Bollard tie bars (front beam)", bollard),
         ("Truss model (front beam)", truss),
+        ("Rooms cut into the beam", rooms),
+    ],
+    "Approach slab and ledge": [
+        ("Approach slab, ledge and what the rear beam takes", approach),
+        ("Crack widths", crack),
     ],
 }
 
@@ -161,6 +170,13 @@ def view(project: Project) -> dict[str, Any]:
             k["elements"].append({"section": section.name, "element": name})
             for o in options_of(element):
                 k["options"].append({**o, "section": section.name, "element": name})
+    if project.approach is not None:
+        k = kinds.setdefault(
+            "Approach slab and ledge", {"kind": "Approach slab and ledge", "elements": [], "options": []}
+        )
+        k["elements"].append({"section": "Whole project", "element": approach.ELEMENT})
+        for o in options_of(project.approach):
+            k["options"].append({**o, "section": "Whole project", "element": approach.ELEMENT})
     order = list(TOPICS)
     out_kinds = []
     for label in sorted(kinds, key=order.index):

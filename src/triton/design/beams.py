@@ -57,6 +57,7 @@ from .circular import ConcreteLaw, SteelLaw
 from .crack import autogenous_shrinkage, crack_width, restraint_crack, restraint_factor
 from .governing import crack_terms, pick_sets
 from .rect import Bars, RectSection
+from .rooms import design_rooms
 from .tension import beam_tension
 from .truss import check_truss, spacing_from_supports
 
@@ -214,6 +215,17 @@ def beam_loads(
         pd.concat(parts, ignore_index=True) if parts else empty_st,
         pd.concat(nodes, ignore_index=True) if nodes else empty_nd,
     )
+
+
+def add_ledge(frame: pd.DataFrame, added: dict[str, float], combo: str) -> pd.DataFrame:
+    """The station forces with the ledge's ΔV, ΔT and ΔM added to the size of each Plaxis value."""
+    if frame.empty:
+        return frame
+    f = frame.copy()
+    for col, key in (("V", "V"), ("T", "T"), ("Mv", "M")):
+        v = f[col].to_numpy(float)
+        f[col] = v + np.where(v >= 0, 1.0, -1.0) * added[f"{key}_{combo}"]
+    return f
 
 
 # --- Supports -------------------------------------------------------------------------------------
@@ -880,10 +892,12 @@ def design_beam(
     user_cage: BeamCage | None = None,
     sign: dict[str, Any] | None = None,
     joint_lengths: list[float] | None = None,
+    ledge: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Choose the beam's longitudinal bars, or check the ones the user set (``user_cage``).
     ``joint_lengths``: the lengths of the berth's segments between expansion joints the beam runs
-    through; the restraint crack width is also given for each of them."""
+    through; the restraint crack width is also given for each of them. ``ledge``: the approach
+    slab's ledge on a rear beam, whose load and torque are added (``approach``)."""
     beam = with_project_grades(beam, settings.materials, settings.durability)
     lay = layout(sheets, axes)
     sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
@@ -900,6 +914,13 @@ def design_beam(
     peak = g.b / 1000 if settings.beam_actions == "peak_width" else None
     uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=cut, peak_width=peak)
     qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=cut, peak_width=peak)
+    added = None
+    if ledge is not None:
+        from .approach import rear_beam_additions
+
+        spacing = spacing_from_supports([q.s for q in supports]) or max(lay.end - lay.start, 1.0)
+        added = rear_beam_additions(ledge, float(b), spacing)
+        uls, qp = add_ledge(uls, added, "uls"), add_ledge(qp, added, "qp")
     notes = [
         f"Spans along global {lay.along} ({lay.start:.2f} to {lay.end:.2f} m, {lay.end - lay.start:.1f} m); "
         f"local {lay.span_local} is along the beam"
@@ -920,6 +941,14 @@ def design_beam(
         ),
         sign_note,
     ]
+    if added is not None:
+        notes.append(
+            f"Approach slab ledge added at every station: ΔV {added['V_uls']:.0f} kN, "
+            f"ΔT {added['T_uls']:.0f} kNm, "
+            f"ΔM {added['M_uls']:.0f} kNm (ULS; QP {added['V_qp']:.0f} kN, {added['T_qp']:.0f} kNm, "
+            f"{added['M_qp']:.0f} kNm), from the ledge's load at {added['e_m']:g} m off the centre line "
+            f"between supports {added['spacing_m']:g} m apart."
+        )
     if supports and cut:
         names = sorted({q.element for q in supports})
         notes.append(
@@ -949,6 +978,8 @@ def design_beam(
         "support_results": settings.beam_support_results,
         "notes": notes,
     }
+    if added is not None:
+        base["ledge_added"] = {k: round(v, 1) for k, v in added.items()}
     if uls.empty:
         notes.append("No ULS results.")
         return {**base, "utilisation": None, "passed": False}
@@ -1244,6 +1275,41 @@ def design_beam(
             "the bottom" + (f", {sh_t['side']:.0f} mm² from each side." if sh_t["side"] else ".")
         )
 
+    # Rooms cut into the beam: the section left over each room's length, with its own extra bars.
+    rooms = design_rooms(
+        beam,
+        settings,
+        b=g.b,
+        h=g.h,
+        cover=g.cover,
+        link=g.link,
+        cage_bars=cage_bars(g, cage, dg),
+        top_phi=cage.top.phi,
+        bottom_phi=cage.bottom.phi,
+        bottom_layers=cage.bottom.layers,
+        side_phi=cage.side.phi,
+        laws=(cl, sl),
+        e_eff=e_eff,
+        limits=limits,
+        uls=mom,
+        qp=qp_all,
+        t_uls=t_uls[t_keep],
+        t_qp=t_qp_keep,
+        trans_bottom=float(trans["bottom"]["as_mm2_per_m"]),
+        supports=supports,
+        geometry=geometry,
+        centre=lay.centre,
+        across=lay.across,
+        start=lay.start,
+        end=lay.end,
+    )
+    for rm in rooms:
+        notes.append(
+            f"{rm['name']} ({rm['start_m']:g} to {rm['end_m']:g} m): "
+            + (f"passes, utilisation {rm['utilisation']:.2f}." if rm["passed"] else "fails. ")
+            + ("" if rm["passed"] else (rm.get("suggestion") or {}).get("text", ""))
+        )
+
     # Steel and utilisation.
     length = lay.end - lay.start
     kg_m = (
@@ -1271,6 +1337,7 @@ def design_beam(
     truss = truss_for(cage)
     if truss is not None:
         checks.append(truss["utilisation"])
+    checks += [rm["utilisation"] for rm in rooms]
     finite = [c for c in checks if c is not None]
     passed = (
         bending["passed"]
@@ -1281,10 +1348,15 @@ def design_beam(
         and status == "ok"
         and (bollard is None or bollard["passed"])
         and (truss is None or truss["passed"])
+        and all(rm["passed"] for rm in rooms)
     )
     # Links and restraint are one arrangement for the whole beam, so they colour every band.
     uniform = max([c for c in checks[1:] if c is not None and math.isfinite(c)], default=0.0)
-    bands = beam_bands(lay, mom.assign(u=np.maximum(u, uniform)))
+    u_band = np.maximum(u, uniform)
+    for rm in rooms:  # a room's own checks colour the bands over it
+        inside = (mom["s"].to_numpy(float) >= rm["start_m"]) & (mom["s"].to_numpy(float) <= rm["end_m"])
+        u_band = np.where(inside, np.maximum(u_band, rm["utilisation"] or 9.99), u_band)
+    bands = beam_bands(lay, mom.assign(u=u_band))
     sets = beam_sets(cage.label, mom, u, qp_all)
     crack_sec = section(cage)  # all the bars: the crack check takes no torsion steel out
     for st in sets:
@@ -1354,6 +1426,7 @@ def design_beam(
         "profile_qp": _profile_qp(crack_sec, g, cage, qp_all, e_eff, conc, limits),
         "governing_sets": sets,
         "ductility": duct,
+        "rooms": rooms,
     }
 
 
