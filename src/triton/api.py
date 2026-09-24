@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import adsec, checker, durability, fresh
+from . import adsec, checker, durability, fresh, trials
 from .costing import cost_project
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
@@ -1111,6 +1111,113 @@ def project_costing(project_id: str) -> dict:
             res = fresh.with_status(project, s, res, store().workbook_summary(project_id, s.id))
         results[s.id] = res
     return cost_project(project, results)
+
+
+class TrialRequest(BaseModel):
+    element: str
+    sizes: list[dict[str, float | None]] = Field(
+        default_factory=list,
+        description="Sizes in mm: thickness (slab), diameter (pile), width and depth (beam).",
+    )
+    budget_s: float | None = Field(
+        None, gt=0, description="Start no trial after this long; the rest come back in 'left'."
+    )
+
+
+class TrialPick(BaseModel):
+    element: str
+    size: dict[str, float | None]
+
+
+def _trial_element(section: Section, name: str):
+    element = section.elements.get(name)
+    if element is None or trials.kind_of(element) is None:
+        raise HTTPException(404, f"{name} is not a slab, beam or pile of this section.")
+    return element
+
+
+def _trial_sizes(element, sizes: list[dict]) -> list[dict[str, float]]:
+    try:
+        out = [trials.clean_size(element, s) for s in sizes]
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    unique = {trials.size_key(s): s for s in out}
+    if not unique:
+        raise HTTPException(422, "List at least one size to try.")
+    if len(unique) > 12:
+        raise HTTPException(422, "Try at most 12 sizes at a time.")
+    return list(unique.values())
+
+
+@app.get(SECTION + "/trials")
+def section_trials(project_id: str, section_id: str) -> dict:
+    """The Comparisons tab: each slab, beam and pile with the sizes to try and the trials run so far."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    d = store()._dir(project_id, section_id)
+    summary = store().workbook_summary(project_id, section_id)
+    return trials.view(project, section, summary, store().load_results(project_id, section_id), d)
+
+
+@app.post(SECTION + "/trials")
+def run_trials(project_id: str, section_id: str, body: TrialRequest) -> dict:
+    """Design an element at each size asked for (the ones not designed yet from the same inputs). The
+    section and its results do not change."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    element = _trial_element(section, body.element)
+    sizes = _trial_sizes(element, body.sizes)
+    workbook = _workbook(project_id, section)
+    if workbook is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    deadline = time.monotonic() + body.budget_s if body.budget_s else None
+    d = store()._dir(project_id, section_id)
+    summary = store().workbook_summary(project_id, section_id)
+    with _Progress(f"trials-{project_id}-{section_id}") as tell:
+        done = trials.run(project, section, workbook, summary, d, body.element, sizes, deadline, tell)
+    view = trials.view(project, section, summary, store().load_results(project_id, section_id), d)
+    return {**view, "done": done["done"], "left": done["left"]}
+
+
+@app.post(SECTION + "/trials/use")
+def use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
+    """Give the element the trial's size and take the trial's design as its result. The bars set by
+    hand for its old size go, as the trial picked its own."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    element = _trial_element(section, body.element)
+    size = _trial_sizes(element, [body.size])[0]
+    summary = store().workbook_summary(project_id, section_id)
+    d = store()._dir(project_id, section_id)
+    trial = trials.trial_section(section, body.element, size)
+    key = trials.run_key(project, trial, body.element, summary)
+    design = trials.load_design(d, key)
+    if design is None:
+        raise HTTPException(409, "Run this trial again first: its inputs changed since it ran.")
+    project.sections = [trial if s.id == section_id else s for s in project.sections]
+    kind = trials.kind_of(element)
+    old = store().load_results(project_id, section_id)
+    results = _merge(old, {kind: [design]}, [body.element], trial)
+    now = fresh.fingerprint(project, trial, summary)
+    earlier = (fresh._by_element(old, trial.elements) or {}) if old else {}
+    results["element_inputs"] = {**earlier, **fresh.element_inputs(now, trial.elements, [body.element])}
+    results["inputs"] = now
+    if not results.get("run_at"):
+        results["run_at"] = design.get("run_at") or _now()
+    store().save_results(project_id, section_id, results)
+    project.locked = True
+    saved = store().save(project)
+    # Elements designed with this one's size: piles carry the beams and the slab (supports, punching),
+    # the beams and the slab frame into each other.
+    others = {"piles": ("beams", "slabs"), "beams": ("slabs",), "slabs": ("beams",)}[kind]
+    affected = [
+        n
+        for n, e in trial.elements.items()
+        if n != body.element
+        and trials.kind_of(e) in others
+        and any(r["element"] == n for r in results.get(trials.kind_of(e)) or [])
+    ]
+    return {"project": saved, "affected": affected}
 
 
 @app.get(SECTION + "/design/report.{fmt}")

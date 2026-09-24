@@ -34,6 +34,7 @@ class _Row:
         self.missing: list[str] = []
         self.flags: list[str] = []
         self.count: int | None = None
+        self.count_auto: int | None = None
         self.spacing: float | None = None
         self.length: float | None = None
 
@@ -51,6 +52,7 @@ class _Row:
             "kind": self.kind,
             "basis": "; ".join(self.basis),
             "count": self.count,
+            "count_auto": self.count_auto,
             "spacing_m": round(self.spacing, 3) if self.spacing else None,
             "length_m": round(self.length, 2) if self.length else None,
             "concrete_m3": round(self.concrete_m3, 1),
@@ -115,10 +117,8 @@ def _count(row: _Row, c: ElementCosting, in_model: int | None, berth: float, len
     if spacing is None and in_model and length:
         spacing = length / in_model
     row.spacing = spacing
-    if c.count is not None:
-        row.count = c.count
-        return c.count
-    row.count = math.ceil(berth / spacing - 1e-6) if spacing else (in_model or 0)
+    row.count_auto = math.ceil(berth / spacing - 1e-6) if spacing else (in_model or 0)
+    row.count = c.count if c.count is not None else row.count_auto
     return row.count
 
 
@@ -130,10 +130,41 @@ def _how(row: _Row, c: ElementCosting, what: str) -> str:
     return f"{row.count} {what} (as in the model)"
 
 
-def cost_section(project: Project, section: Section, results: dict[str, Any]) -> dict[str, Any]:
+def slab_links(slab: dict[str, Any]) -> dict[str, float]:
+    """Mass (kg) of a designed slab's shear links (laid over each link zone) and punching links (the
+    perimeters round each pile head that needs them), in the part of the slab the model covers. Each
+    leg runs between the top and bottom covers with 10 bar diameters of hook at each end."""
+    h = slab.get("thickness_mm") or 0.0
+    inside = h - (slab.get("cover_top_mm") or 50.0) - (slab.get("cover_bottom_mm") or 50.0)
+    shear = 0.0
+    for z in (slab.get("shear") or {}).get("links") or []:
+        phi, asw = z.get("phi"), z.get("asw_mm2_per_m2")
+        if not phi or not asw or not z.get("x") or not z.get("y"):
+            continue
+        area = abs(z["x"][1] - z["x"][0]) * abs(z["y"][1] - z["y"][0])
+        shear += asw * area * (inside + 20 * phi) / 1e3 * STEEL_DENSITY / 1e6
+    punching = 0.0
+    for q in slab.get("punching") or []:
+        if not q.get("needs_reinforcement") or not q.get("asw_mm2_per_perimeter"):
+            continue
+        phi = q.get("link_phi_mm") or 12.0
+        legs = q["asw_mm2_per_perimeter"] * (q.get("perimeters") or 1)
+        punching += legs * (inside + 20 * phi) / 1e3 * STEEL_DENSITY / 1e6
+    return {"shear_kg": shear, "punching_kg": punching}
+
+
+def cost_section(
+    project: Project,
+    section: Section,
+    results: dict[str, Any],
+    length: float | None = None,
+    berth: float | None = None,
+) -> dict[str, Any]:
+    """``length``: the length of berth the model covers, when ``results`` do not hold the beams it is
+    taken from; ``berth``: a berth length to use when the section has none (a trial costed per metre)."""
     prices = project.prices
-    L = model_length(section, results)
-    berth = section.costing.berth_length
+    L = length or model_length(section, results)
+    berth = section.costing.berth_length or berth
     notes = []
     if not berth:
         return {
@@ -317,12 +348,15 @@ def cost_section(project: Project, section: Section, results: dict[str, Any]) ->
             rows.append(row)
             continue
         area_m2 = width * berth
+        links = slab_links(s)
+        model_area = st.get("area_m2") or 0
+        link_kg_m2 = (links["shear_kg"] + links["punching_kg"]) / model_area if model_area else 0.0
         row.basis.append(
-            f"{width:.1f} m wide × {h * 1000:.0f} mm, {st.get('kg_per_m2') or 0:.0f} kg/m² "
-            "(links not included)"
+            f"{width:.1f} m wide × {h * 1000:.0f} mm, {st.get('kg_per_m2') or 0:.0f} kg/m² of bars"
+            + (f" + {link_kg_m2:.0f} kg/m² of shear and punching links" if link_kg_m2 >= 0.5 else "")
         )
         row.concrete_m3 = area_m2 * h
-        row.rebar_t = area_m2 * (st.get("kg_per_m2") or 0) / 1000
+        row.rebar_t = area_m2 * ((st.get("kg_per_m2") or 0) + link_kg_m2) / 1000
         row.add(_price(prices.concrete_slab, row.concrete_m3), "slab concrete price")
         row.add(_price(prices.rebar, row.rebar_t), "reinforcement price")
         rows.append(row)

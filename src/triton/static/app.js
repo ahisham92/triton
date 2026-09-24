@@ -2,6 +2,7 @@
 import { View3D, directionArrows, heat } from "./view3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 import { spwCard } from "./spw.js";
+import { renderTrials } from "./trials.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -106,7 +107,7 @@ async function projectsPage() {
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d", "compare"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -134,6 +135,7 @@ async function projectPage(id, tab, sectionId) {
     ["design", "Design"],
     ["view3d", "3D view"],
     ["costing", "Costing"],
+    ["compare", "Comparisons"],
   ];
   const picker = SECTION_TABS.has(tab)
     ? `<div class="row section-pick"><label for="section-pick">Section</label>
@@ -183,6 +185,18 @@ async function projectPage(id, tab, sectionId) {
   else if (tab === "workbook") renderWorkbookTab(host);
   else if (tab === "view3d") renderView3dTab(host);
   else if (tab === "costing") renderCostingTab(host);
+  else if (tab === "compare")
+    renderTrials(host, {
+      api, again, esc, fmt, secUrl, ROOT,
+      project: () => state.project,
+      sectionId: () => sec().id,
+      costingHash: tabHash("costing"),
+      used: (res) => {
+        mergeInto(state.project, res.project);
+        state.dirty = false;
+        applyLock();
+      },
+    });
   showSaveState();
   showErrors();
   applyLock();
@@ -2534,7 +2548,7 @@ async function renderCostingTab(host) {
             const e = cs.elements[r.element] || {};
             return `<tr><td>${esc(r.element)}</td>
               <td>${spaced ? input(key, "spacing", r.spacing_m != null ? fmt(r.spacing_m, 2) : "") : "–"}</td>
-              <td>${spaced ? input(key, "count", r.count ?? "", 'step="1"') : "–"}</td>
+              <td>${spaced ? input(key, "count", r.count_auto ?? r.count ?? "", 'step="1"') + (e.count != null ? `<div class="hint">Given by you${r.count_auto != null ? `; automatic ${fmt(r.count_auto)}` : ""}</div><button class="small" data-auto="${esc(key)}">Use automatic</button>` : "") : "–"}</td>
               <td>${input(key, "length", r.length_m != null ? fmt(r.length_m, 1) : "")}</td>
               <td>${steel ? pick(key, "steel_element", e.steel_element, r.kind === "sheet_pile_wall" ? "Its section, else the first AZ" : "Structural steel price") : "–"}${r.kind === "combi_wall" ? `<div class="hint">Intermediate sheets</div>${pick(key, "intermediate_element", e.intermediate_element, "None")}` : ""}</td>
               <td class="basis">${esc(r.basis)}${r.flags.map((f) => `<div class="${/above/.test(f) ? "flag-bad" : "flag-ok"}">${esc(f)}</div>`).join("")}${r.missing.length ? `<div class="flag-bad">Missing: ${esc(r.missing.join(", "))}</div>` : ""}</td>
@@ -2548,7 +2562,8 @@ async function renderCostingTab(host) {
             <label>Berth length (m) ${input(c.section_id, "berth_length", fmt(c.berth_length_m, 1))}</label>
             <label>Length the model covers (m) ${input(c.section_id, "model_length", c.model_length_m != null ? fmt(c.model_length_m, 1) : "")}</label>
           </div>
-          <p class="status">Empty boxes use the value shown in grey, from the design. A number overrides the spacing.</p>
+          <p class="status">Empty boxes use the value shown in grey, from the design. The number follows the berth length and spacing
+            as you type them; a number you give yourself stays until you press Use automatic.</p>
           <div class="scroll"><table class="cost"><tr><th>Element</th><th>Spacing (m)</th><th>Number</th><th>Length (m)</th><th>Steel price</th><th>Basis</th>
             <th>Concrete m³</th><th>Rebar t</th><th>Steel t</th><th>Cost (${esc(cur)})</th><th>Per m</th></tr>${rows}
             <tr class="total"><td>Total</td><td colspan="5">${fmt(c.berth_length_m, 1)} m of berth${t.complete ? "" : " (incomplete: prices missing)"}</td>
@@ -2582,9 +2597,25 @@ async function renderCostingTab(host) {
         const v = el.tagName === "SELECT" ? el.value : el.value === "" ? null : Number(el.value);
         target()[el.dataset.key] = el.dataset.key === "count" && v != null ? Math.round(v) : v;
         markDirty();
-        status.textContent = "Changed: press Work out the costs.";
+        rerun(); // the numbers follow straight away
       };
     });
+    out.querySelectorAll("[data-auto]").forEach((b) => {
+      b.onclick = () => {
+        const [sid, name] = b.dataset.auto.split("|");
+        const section = p.sections.find((x) => x.id === sid);
+        if (section.costing.elements[name]) section.costing.elements[name].count = null;
+        markDirty();
+        rerun();
+      };
+    });
+  };
+  // Worked out again a moment after each change, keeping the cursor in the box it went to.
+  let timer = null;
+  const rerun = () => {
+    clearTimeout(timer);
+    status.textContent = "Working out…";
+    timer = setTimeout(run, 250);
   };
 
   const run = async () => {
@@ -2593,7 +2624,11 @@ async function renderCostingTab(host) {
     p = state.project; // saving replaces it
     status.textContent = "Working out…";
     try {
-      draw(await api(`${ROOT}/api/projects/${p.id}/costing`));
+      const data = await api(`${ROOT}/api/projects/${p.id}/costing`);
+      const a = document.activeElement;
+      const focus = a?.dataset?.obj ? `[data-obj="${CSS.escape(a.dataset.obj)}"][data-key="${CSS.escape(a.dataset.key)}"]` : null;
+      draw(data);
+      if (focus) out.querySelector(focus)?.focus();
       status.textContent = "";
     } catch (e) {
       status.textContent = e.message;
