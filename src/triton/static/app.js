@@ -446,22 +446,33 @@ function renderSections(host) {
   const keys = ["name", "x_min", "x_max", "y_min", "y_max", "peaks", "peak_ratio"];
   const schema = { properties: Object.fromEntries(keys.map((k) => [k, def.properties[k]])) };
   host.innerHTML = `<p class="sub">A project can have several sections, e.g. Section 01a and Section 02. Each section has its own
-    Plaxis workbook, elements, load multipliers and results. Materials and design settings are shared.</p>
+    Plaxis workbook, elements, load multipliers and results. Materials and design settings are shared. A new section
+    starts with another section's settings (elements and sizes, levels, combinations, multipliers, costing), or blank.</p>
     <div class="panel row" style="margin-bottom:16px">
       <input id="sec-name" placeholder="Section name, e.g. Section 02" style="flex:1;max-width:280px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--input);color:var(--text);font:inherit">
+      <label class="hint" for="sec-copy" style="margin:0">Settings</label>
+      <select id="sec-copy" style="padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--input);color:var(--text);font:inherit" title="Elements and sizes, levels, load combinations, multipliers and costing inputs are copied. The workbook, mapping and results are not.">
+        ${p.sections.map((s) => `<option value="${esc(s.id)}">Copy from ${esc(s.name)}</option>`).join("")}
+        <option value="">Start blank</option>
+      </select>
       <button id="sec-add" class="quiet">Add section</button><span class="status" id="sec-status"></span></div>`;
-  document.getElementById("sec-add").onclick = async () => {
-    const name = document.getElementById("sec-name").value.trim();
-    if (!name) return;
+  const copy = document.getElementById("sec-copy");
+  copy.value = p.sections.at(-1)?.id ?? "";
+  const addSection = async (name, copyFrom, status) => {
     if (state.dirty) await save();
     if (state.errors?.length) return;
     try {
-      state.project = await api(`${ROOT}/api/projects/${p.id}/sections`, { method: "POST", body: JSON.stringify({ name }) });
+      const body = { name, copy_from: copyFrom || null };
+      state.project = await api(`${ROOT}/api/projects/${p.id}/sections`, { method: "POST", body: JSON.stringify(body) });
       state.sectionId = state.project.sections.at(-1).id;
       route();
     } catch (e) {
-      document.getElementById("sec-status").textContent = e.message;
+      status.textContent = e.message;
     }
+  };
+  document.getElementById("sec-add").onclick = () => {
+    const name = document.getElementById("sec-name").value.trim();
+    if (name) addSection(name, copy.value, document.getElementById("sec-status"));
   };
   p.sections.forEach((s, i) => {
     const card = document.createElement("div");
@@ -469,10 +480,17 @@ function renderSections(host) {
     card.style.marginBottom = "16px";
     const n = Object.keys(s.elements).length;
     card.innerHTML = `<div class="element-head"><h3>${esc(s.name)}<span class="type">${n} element${n === 1 ? "" : "s"}</span></h3>
-      <span><button class="quiet" data-open>Open</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
+      <span><button class="quiet" data-open>Open</button> <button class="quiet" data-copy title="A new section with this one's settings, without its workbook, mapping or results">Duplicate</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
     card.querySelector("[data-open]").onclick = () => {
       state.sectionId = s.id;
       location.hash = tabHash("elements");
+    };
+    card.querySelector("[data-copy]").onclick = () => {
+      const taken = new Set(p.sections.map((x) => x.name.trim().toLowerCase()));
+      let name = `${s.name} copy`;
+      for (let k = 2; taken.has(name.toLowerCase()); k++) name = `${s.name} copy ${k}`;
+      name = prompt("Name of the new section (it starts with this section's settings):", name)?.trim();
+      if (name) addSection(name, s.id, document.getElementById("sec-status"));
     };
     card.querySelector("[data-remove]").onclick = () => {
       if (!confirm(`Remove "${s.name}" with its elements, workbook and results when you save?`)) return;

@@ -16,7 +16,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from . import adsec, checker, durability, fresh
 from .costing import cost_project
@@ -123,6 +123,7 @@ class NewProject(BaseModel):
 
 class NewSection(BaseModel):
     name: str
+    copy_from: str | None = Field(None, description="A section whose settings the new one starts with.")
 
 
 class ElementNames(BaseModel):
@@ -196,13 +197,20 @@ def delete_project(project_id: str) -> None:
 # --- Sections ----------------------------------------------------------------------
 
 
+# What belongs to a section's workbook rather than its settings: not copied to a new section.
+WORKBOOK_OWN = {"id", "name", "sheet_map", "combination_map", "review", "excluded_peaks"}
+
+
 @app.post("/api/projects/{project_id}/sections", status_code=201)
 def add_section(project_id: str, body: NewSection) -> Project:
     project = _get(project_id)
     if any(s.name.strip().lower() == body.name.strip().lower() for s in project.sections):
         raise HTTPException(400, f"There is already a section called '{body.name}'.")
+    settings = {}
+    if body.copy_from:
+        settings = _section(project, body.copy_from).model_dump(mode="json", exclude=WORKBOOK_OWN)
     try:
-        section = Section(name=body.name)
+        section = Section.model_validate({**settings, "name": body.name})
     except ValidationError as e:
         raise HTTPException(422, e.errors(include_url=False, include_context=False)) from None
     project.sections.append(section)

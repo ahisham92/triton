@@ -118,6 +118,41 @@ def test_sections(client):
     assert client.delete(f"/api/projects/{p['id']}/sections/abcdef12").status_code == 404
 
 
+def test_new_section_copies_settings(client):
+    p = client.post("/api/projects", json={"section_name": "Section 01a"}).json()
+    src = p["sections"][0]
+    url = f"/api/projects/{p['id']}/sections/{src['id']}"
+    client.post(f"{url}/elements", json={"names": ["Pile(1)", "Slab"]})
+    p = client.get(f"/api/projects/{p['id']}").json()
+    s = p["sections"][0]
+    s.update(x_min=10, x_max=90, peaks="average", combinations=["QP", "Seismic 1"])
+    s["elements"]["Pile(1)"]["diameter"] = 1500
+    s["sheet_map"] = {"Odd sheet": {"element": "Slab", "combination": "QP"}}
+    s["combination_map"] = {"Seis 1": "Seismic 1"}
+    s["review"] = {"abc": "accept"}
+    s["excluded_peaks"] = ["Slab|QP|12"]
+    assert client.put(f"/api/projects/{p['id']}", json=p).status_code == 200
+
+    r = client.post(f"/api/projects/{p['id']}/sections", json={"name": "Section 02", "copy_from": src["id"]})
+    assert r.status_code == 201
+    old, new = r.json()["sections"]
+    assert new["name"] == "Section 02" and new["id"] != old["id"]
+    for key in ("x_min", "x_max", "peaks", "combinations", "elements", "load_factors", "costing"):
+        assert new[key] == old[key], key
+    assert new["elements"]["Pile(1)"]["diameter"] == 1500
+    workbook_own = (new["sheet_map"], new["combination_map"], new["review"], new["excluded_peaks"])
+    assert workbook_own == ({}, {}, {}, [])
+
+    # Settings are the new section's own afterwards.
+    p = r.json()
+    p["sections"][1]["elements"]["Pile(1)"]["diameter"] = 1200
+    p = client.put(f"/api/projects/{p['id']}", json=p).json()
+    assert [s["elements"]["Pile(1)"]["diameter"] for s in p["sections"]] == [1500, 1200]
+
+    bad = {"name": "Section 03", "copy_from": "abcdef12"}
+    assert client.post(f"/api/projects/{p['id']}/sections", json=bad).status_code == 404
+
+
 def test_old_projects_move_into_one_section():
     old = {"info": {"name": "Berth", "section": "Section 01a"}, "elements": {"Pile(1)": {"kind": "pile"}}}
     p = Project.model_validate(old)
