@@ -336,3 +336,16 @@ b.bad, td.bad, .bad { color: var(--err); }
 tr.gov-row td { font-weight: 600; }
 .support-band { fill: var(--miss-bg); stroke: none; }
 .support-key { display: inline-block; width: 14px; height: 10px; background: var(--miss-bg); border: 1px solid var(--line); vertical-align: middle; }
+
+/* Slab bars along X and Y, and the layer builder */
+.bd-slab { fill: var(--miss-bg); stroke: var(--border); }
+line.bd-mesh { stroke: var(--text); stroke-width: 2.5; }
+.bd-seg line { stroke: #c8341e; stroke-width: 2.5; }
+.legend i.bd-mesh { background: var(--text) !important; height: 3px; }
+.legend i.bd-add { background: #c8341e !important; height: 3px; }
+td.set-by { font-size: 12px; white-space: nowrap; }
+.layer-builders { display: grid; gap: 10px; margin: 10px 0; }
+.layer-builder { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.layer-builder .lb-head { margin-bottom: 6px; }
+.layer-builder .lb-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0; }
+.layer-builder .lb-name { min-width: 58px; font-weight: 600; }

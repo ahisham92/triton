@@ -494,7 +494,10 @@ def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) ->
             continue
         first = {f: faces[f][0] for f in faces}
         specs = [
-            (first[f]["mesh"]["spacing_mm"], bool(_second(first[f]["additional_bars"], first[f]["mesh"])))
+            (
+                first[f]["mesh"]["spacing_mm"],
+                bool(_second(first[f]["additional_bars"], first[f]["mesh"], first[f].get("spec"))),
+            )
             for f in faces
         ]
         width = _strip_width(specs)
@@ -502,14 +505,25 @@ def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) ->
         for f, sign in (("bottom", -1), ("top", 1)):
             direction = first[f]["layer"].split("_")[1]
             cross = (basic.get(f"{f}_x") or {}).get("phi", 0) if direction == "y" else 0
-            for phi, count, ya, yb, t in slab_bars(
-                first[f]["mesh"], first[f]["additional_bars"], cross, covers[f], width
-            ):
+            own = first[f].get("spec")
+            if own and first[f]["additional_bars"] and not _ADD.match(first[f]["additional_bars"]):
+                bars = spec_bars(first[f]["mesh"], own, cross, covers[f], width)
+            else:
+                bars = slab_bars(first[f]["mesh"], first[f]["additional_bars"], cross, covers[f], width)
+            for phi, count, ya, yb, t in bars:
                 z = sign * (h / 2 - t) / 1e3
                 groups.append(line_group(phi, count, (ya / 1e3, z), (yb / 1e3, z), grade))
-        strip = "CS" if row["strip"] == "column" else "FS"
-        where = row["label"].replace("Station ", "")
-        name = f"SLAB {h:.0f} - {row['moment'].lower()} - {where} - {strip}"
+        if row["strip"] == "all":  # over the whole deck, or a zone of it
+            where = (
+                row["label"]
+                .replace("Whole deck, basic mesh", "whole deck")
+                .replace("Zone at station ", "zone ")
+            )
+            name = f"SLAB {h:.0f} - {row['moment'].lower()} - {where.replace(',', '')}"
+        else:
+            strip = "CS" if row["strip"] == "column" else "FS"
+            where = row["label"].replace("Station ", "")
+            name = f"SLAB {h:.0f} - {row['moment'].lower()} - {where} - {strip}"
         sec = rect_section(
             f"Slab {h:.0f}mm",
             h,
@@ -555,9 +569,47 @@ def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) ->
     return files
 
 
-def _second(additional: str | None, mesh: dict[str, Any]) -> bool:
+def _second(additional: str | None, mesh: dict[str, Any], spec: list | None = None) -> bool:
     m = _ADD.match(additional or "")
+    if not m and spec:
+        return any(p and p[1] > mesh["spacing_mm"] + 1e-6 for p in spec)
     return bool(m) and float(m.group(2)) > mesh["spacing_mm"] + 1e-6
+
+
+def spec_bars(
+    mesh: dict[str, Any], spec: list, cross_mm: float, cover_mm: float, width_mm: float
+) -> list[tuple[float, int, float, float, float]]:
+    """As ``slab_bars`` for bar layers set by the user: [(Ø, spacing) or None] per layer, the first
+    between the mesh bars, the next ones under it, each layer below the last with a clear gap of
+    max(25 mm, Ø)."""
+    phi_b, s_b, lay_b = mesh["phi"], mesh["spacing_mm"], mesh.get("layers") or 1
+    n = max(1, round(width_mm / s_b))
+    y0 = -width_mm / 2 + s_b / 4
+    mesh_y = (y0, y0 + (n - 1) * s_b)
+    layers = []
+    for k in range(max(lay_b, len(spec))):
+        items = [("mesh", phi_b, s_b)] if k < lay_b else []
+        if k < len(spec) and spec[k]:
+            items.append(("add", float(spec[k][0]), float(spec[k][1])))
+        if items:
+            layers.append((k, items))
+    out = []
+    at = cover_mm + cross_mm
+    prev = None
+    for _, items in layers:
+        big = max(i[1] for i in items)
+        at += big / 2 if prev is None else prev / 2 + max(25.0, prev, big) + big / 2
+        prev = big
+        for kind, phi, sp in items:
+            if kind == "mesh":
+                out.append((phi, n, *mesh_y, at))
+            elif sp <= s_b / 2 + 1e-6:  # under every mesh bar and every gap
+                out.append((phi, 2 * n, y0, y0 + (2 * n - 1) * s_b / 2, at))
+            else:
+                every = 2 if sp > s_b + 1e-6 else 1
+                gaps = list(range(0, n, every))
+                out.append((phi, len(gaps), y0 + s_b / 2 + gaps[0] * s_b, y0 + s_b / 2 + gaps[-1] * s_b, at))
+    return out
 
 
 def zip_files(files: dict[str, bytes]) -> bytes:
