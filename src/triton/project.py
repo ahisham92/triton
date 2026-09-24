@@ -645,11 +645,12 @@ class SheetPileInput(_Model):
     elastic_modulus: float | None = Field(None, gt=0, json_schema_extra=_HIDDEN)
     plastic_modulus: float | None = Field(None, gt=0, json_schema_extra=_HIDDEN)
     section_class: Literal[1, 2, 3, 4] = Field(2, json_schema_extra=_HIDDEN)
-    class_from: Literal["catalogue", "flange"] = Field(
-        "catalogue",
+    class_from: Literal["auto", "catalogue", "flange"] = Field(
+        "auto",
         title="Section class",
-        description="catalogue: never better than the class ArcelorMittal lists for the section; "
-        "flange: from b / tf / ε of the corroded flange only (EN 1993-5 Table 5.1).",
+        description="flange: from b / tf / ε of the corroded flange (EN 1993-5 Table 5.1), as "
+        "Durability; catalogue: never better than the class ArcelorMittal lists; auto: flange where "
+        "the real flange width is known (AZ 14-770, or given), else catalogue.",
     )
     use_wel_only: bool = Field(
         False, title="Use Wel only", description="No plastic modulus for class 1 and 2."
@@ -658,8 +659,8 @@ class SheetPileInput(_Model):
         "Flange width b",
         None,
         gt=0,
-        description="For the class and the water pressure factor. Empty: Triton's estimate from the "
-        "catalogue area and inertia (Durability's Sheet pile tab shows the real b).",
+        description="For the class and the water pressure factor. Empty: the real b for AZ 14-770 "
+        "(351 mm, as Durability), else Triton's estimate (Durability's Sheet pile tab shows b).",
     )
     web_angle: float | None = Field(
         None,
@@ -675,7 +676,13 @@ class SheetPileInput(_Model):
         "Buckling length",
         None,
         gt=0,
-        description="EN 1993-5 Figure 5.8. Empty: 0.7 × the wall height in the Plaxis results.",
+        description="EN 1993-5 Figure 5.8; only matters where N is checked. Empty: 0.7 L, L from the "
+        "top of the wall to the firm soil level, as the office's combi sheet.",
+    )
+    firm_soil_level: float | None = _m(
+        "Firm soil level",
+        None,
+        description="For the assumed buckling length. Empty: the toe of the wall in the results.",
     )
     eccentricity: float = _mm("Eccentricity of N", 0.0, ge=0, description="Adds N e to M, as Durability.")
     differential_head: float = _m(

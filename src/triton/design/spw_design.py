@@ -34,7 +34,6 @@ from .sheet_piles import (
     SECTION_NAMES,
     Options,
     check,
-    idealised,
     normalise,
     reduced,
     section,
@@ -59,6 +58,14 @@ def loss_at(z: np.ndarray, wall: SheetPileInput) -> tuple[np.ndarray, np.ndarray
     return front, back, idx + 1
 
 
+def class_floor(class_from: str, sec, flange: float | None) -> int:
+    """catalogue: never better than the catalogue's class; flange: from b / tf / ε only; auto:
+    flange where the real flange width is known (given, or held for the section), else catalogue."""
+    known = flange is not None or sec.b is not None
+    use_catalogue = class_from == "catalogue" or (class_from == "auto" and not known)
+    return sec.catalogue_class if use_catalogue else 1
+
+
 def _options(wall: SheetPileInput, fy: float, length: float) -> tuple[Options, str]:
     name = normalise(wall.section_name)
     sec = section(name)
@@ -70,7 +77,7 @@ def _options(wall: SheetPileInput, fy: float, length: float) -> tuple[Options, s
             gamma_m1=wall.gamma_m1,
             buckling_length=max(l_b, 0.1),
             wel_only=wall.use_wel_only,
-            class_floor=sec.catalogue_class if wall.class_from == "catalogue" else 1,
+            class_floor=class_floor(wall.class_from, sec, wall.flange_width),
             head=wall.differential_head,
             welded=wall.welded_interlocks,
             flange=wall.flange_width,
@@ -182,7 +189,7 @@ def _pass(f, M, V, N, loss, zone, name, opts) -> dict[str, Any]:
     }
 
 
-def summary_table(f, M, V, N, loss, opts: Options) -> list[dict[str, Any]]:
+def summary_table(f, M, V, N, loss, opts: Options, class_from: str = "auto") -> list[dict[str, Any]]:
     """Durability's Uf summary: the wall's largest Uf for every AZ section and grade, with the
     actions as designed and the element's corrosion, settings and buckling length."""
     rows = []
@@ -191,7 +198,7 @@ def summary_table(f, M, V, N, loss, opts: Options) -> list[dict[str, Any]]:
         cells = {}
         for grade, fy in SHEET_PILE_GRADES.items():
             o = Options(**{**opts.__dict__, "fy": fy, "flange": None, "angle": None})
-            o.class_floor = s.catalogue_class if opts.class_floor > 1 else 1
+            o.class_floor = class_floor(class_from, s, None)
             if np.any(loss >= min(s.tf, s.tw)):
                 cells[grade] = None
                 continue
@@ -212,7 +219,9 @@ def design_spw(
     if f.empty:
         return None
     z = f["Z"].to_numpy(float)
-    length = float(z.max() - z.min())
+    top = float(z.max())
+    firm = wall.firm_soil_level if wall.firm_soil_level is not None else float(z.min())
+    length = max(top - firm, 0.1)
     opts, sec_name = _options(wall, fy, length)
     sec = section(sec_name)
     front, back, zone = loss_at(z, wall)
@@ -240,11 +249,16 @@ def design_spw(
     adjusted = ign_n.any() or ign_q.any()
     designed = _pass(f, M_des, V_des, N_des, loss, zone, sec_name, opts) if adjusted else as_plaxis
     uf_p, uf_d = as_plaxis.pop("_uf"), designed.pop("_uf", None)
-    if not wall.buckling_length:
+    if not wall.buckling_length and (N_des > 0).any():
+        where = (
+            f"the firm soil level {firm:g} m"
+            if wall.firm_soil_level is not None
+            else f"the toe {firm:g} m (firm soil level not given)"
+        )
         notes.append(
-            f"Buckling length not given: taken as 0.7 × the wall height in the results "
-            f"({length:.1f} m), l = {opts.buckling_length:g} m. Give it on the element "
-            "(EN 1993-5 Figure 5.8)."
+            f"Buckling length assumed: 0.7 L as the office's combi sheet, L from the top {top:g} m to "
+            f"{where}: l = 0.7 × {length:.2f} = {opts.buckling_length:g} m. It only matters where N is "
+            "checked; give it, or the firm soil level, on the element (EN 1993-5 Figure 5.8)."
         )
     below = (
         z < wall.corrosion_zones[-1].bottom_level - 1e-6 if wall.corrosion_zones else np.zeros(len(z), bool)
@@ -259,8 +273,8 @@ def design_spw(
             "Where N_1 is tension, the sheet pile is checked for N with bending (EN 1993-5 5.2.3 (9)) "
             "and not for buckling."
         )
-    bf, _ = idealised(sec_name, wall.flange_width)
     base = reduced(sec_name, 0.0, wall.flange_width, wall.web_angle)
+    bf = float(base["b"])
     rules = [
         {
             "combination": r.combination or ALL,
@@ -309,6 +323,7 @@ def design_spw(
             "catalogue_class": sec.catalogue_class,
             "flange": round(bf, 1),
             "flange_given": wall.flange_width is not None,
+            "flange_known": wall.flange_width is None and sec.b is not None,
             "angle": round(wall.web_angle or web_angle(sec_name, wall.flange_width), 1),
             "angle_given": wall.web_angle is not None,
             "c": round(float(base["c"]), 1),
@@ -319,6 +334,7 @@ def design_spw(
             "gamma_m1": opts.gamma_m1,
             "buckling_length": opts.buckling_length,
             "buckling_length_given": bool(wall.buckling_length),
+            "buckling_from": [round(top, 2), round(firm, 2), wall.firm_soil_level is not None],
             "eccentricity_mm": wall.eccentricity,
             "wel_only": opts.wel_only,
             "class_from": wall.class_from,
@@ -353,7 +369,7 @@ def design_spw(
     if uf_summary:
         out["uf_summary"] = {
             "grades": list(SHEET_PILE_GRADES),
-            "rows": summary_table(f, M_des, V_des, N_des, loss, opts),
+            "rows": summary_table(f, M_des, V_des, N_des, loss, opts, wall.class_from),
         }
     return out
 

@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from triton.design.sheet_piles import (
+    CHECKS,
     SECTIONS,
     Options,
     evaluate,
@@ -49,13 +50,13 @@ def test_durability_au25_head_wall():
 
 
 def test_durability_au14_anchor_wall_class_4():
-    # AU 14 S 460 AP after 1.2 mm: class 4, taken as class 3 with a reduced fy. Durability shows
-    # fy,red 416.3 MPa; the manual's formula 235 k² tf² / b² gives 408.1, so Triton is 2 % lower.
+    # AU 14 S 460 AP after 1.2 mm: class 4, taken as class 3 with fy,red = 235 (k + 0.5)² tf² / b²:
+    # Durability shows 416.3 MPa.
     p = _props(8.8, 7.1, 406.8, 117.3, 25260, 1240, 1240, 327.2, 47.8, 268.6, 37.7)
     o = Options(fy=460, gamma_m0=1.0, gamma_m1=1.0, buckling_length=7, kind="U", beta_b=0.8, beta_d=0.55)
     r = evaluate(p, 750, o, [362], [275], [125])
     assert r["class"][0] == 4
-    assert r["fy_used"][0] == pytest.approx(408.1, abs=0.1)
+    assert r["fy_used"][0] == pytest.approx(416.3, abs=0.3)
     assert r["Ncr"][0] == pytest.approx(5877, rel=0.002)
     assert r["uf"][0] == pytest.approx(0.88, abs=0.02)
 
@@ -72,8 +73,8 @@ def test_catalogue_and_idealised_section():
         # The idealised double pile fitted to A and I lands close to the catalogue Wpl and Wel.
         from triton.design.sheet_piles import _thin
 
-        bf, ai = idealised(name)
-        t = _thin(s, bf, ai, 0.0)
+        bf, ai, lever = idealised(name)
+        t = _thin(s, bf, ai, 0.0, lever)
         assert float(t["wpl"]) == pytest.approx(s.wpl, rel=0.025), name
         assert float(t["inertia"]) * 0.1 / (s.h / 2) * 10 == pytest.approx(s.wel, rel=0.01), name
 
@@ -82,9 +83,53 @@ def test_corrosion_takes_thickness_off_every_plate():
     p = reduced("AZ 14-770", np.array([0.0, 2.35]))
     assert p["tf"].tolist() == [9.5, 7.15]
     assert p["h"].tolist() == [345.0, 342.65]
-    # Thin plates: the moduli drop about in proportion to the thickness, as Durability's charts show.
-    assert p["wel"][1] / p["wel"][0] == pytest.approx(7.15 / 9.5, abs=0.02)
     assert p["av"][0] == pytest.approx((345 - 9.5) * 9.5 / 770 * 10)
+
+
+# The office's issued Durability 4.2.1 run: AZ 14-770 S355GP, γM0 1.0, γM1 1.1, M 75 kNm/m and
+# N 0 at every level; level, loss (front + back), V.
+OFFICE = [
+    (3.5, 0.0, 0.0),
+    (-0.5, 4.5, 114.0),
+    (-14.5, 2.5, 151.0),
+    (-16.12, 4.25, 117.0),
+    (-19.0, 3.5, 161.0),
+]
+
+
+def test_durability_reduced_az14_770():
+    p = reduced("AZ 14-770", np.array([2.5, 3.5, 4.25, 4.5]))
+    assert p["b"] == 351.0 and p["alpha"] == pytest.approx(39.5) and p["c"] == pytest.approx(527.5, abs=0.1)
+    # Durability's Sheet pile tab: A, I, Wel of the reduced sections.
+    assert p["area"] == pytest.approx([101.8, 90.0, 81.2, 78.2], rel=0.005)
+    assert p["inertia"] == pytest.approx([18310, 16330, 14860, 14380], rel=0.005)
+    assert p["wel"] == pytest.approx([1065, 950, 865, 835], rel=0.005)
+
+
+@pytest.mark.parametrize("given", [True, False])
+def test_durability_office_run(given):
+    loss = np.array([x[1] for x in OFFICE])
+    V = [x[2] for x in OFFICE]
+    M = [0.0, 75, 75, 75, 75]
+    o = Options(fy=355, gamma_m0=1.0, gamma_m1=1.1, buckling_length=10)
+    if given:  # Durability's own reduced properties
+        red = {"area": [131.6, 78.2, 101.8, 81.2, 90.0], "inertia": [23300, 14380, 18310, 14860, 16330]}
+        red["wel"] = [1355 * i / 23300 for i in red["inertia"]]
+        h, tf = 345 - loss, 9.5 - loss
+        p = _props(
+            tf, tf, h, red["area"], red["inertia"], red["wel"], 1611, 351, 39.5, 527.5, (h - tf) * tf / 77
+        )
+        r = evaluate(p, 770, o, M, V, [0.0] * 5)
+    else:  # Triton's idealised section
+        r = evaluate(reduced("AZ 14-770", loss), 770, o, M, V, [0.0] * 5)
+    assert r["class"].tolist()[1:] == [4, 3, 4, 4]
+    assert r["fy_used"][1:] == pytest.approx([210.8, 355, 232.4, 303.6], abs=0.15)
+    assert r["Mc"][1:] == pytest.approx([176, 378, 201, 288], abs=1.0)
+    assert r["Vpl"][1:] == pytest.approx([265, 625, 307, 458], abs=0.6)
+    assert r["c_tw_eps"][1:] == pytest.approx([99.9, 92.6, 99.9, 99.9], abs=0.1)
+    assert r["Vb"][1:] == pytest.approx([191, 485, 221, 329], abs=0.6)
+    assert np.round(r["uf"], 2).tolist() == [0.0, 0.60, 0.31, 0.53, 0.49]
+    assert [CHECKS[g] for g in r["governs"][1:]] == ["web_buckling"] * 4
 
 
 def test_rho_p():
@@ -170,5 +215,5 @@ def test_corrosion_through_the_section_is_an_error():
 def test_saved_walls_still_open():
     old = {"kind": "sheet_pile_wall", "section_name": "AZ 26-700", "section_class": 2, "area": 187.0}
     w = SheetPileInput.model_validate(old)
-    assert w.section_name == "AZ 26-700" and w.class_from == "catalogue"
+    assert w.section_name == "AZ 26-700" and w.class_from == "auto"
     assert SheetPileInput.model_validate({"section_name": "PU 22"}).section_name == "AZ 14-770"
