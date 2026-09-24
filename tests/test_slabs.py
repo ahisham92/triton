@@ -473,7 +473,7 @@ def test_pile_face_methods_keep_faces_and_directions_apart():
 
     from triton.design.slabs import face_average, treat_pile_faces
 
-    pts = [(0.6, 0.0, 1000.0, 5.0), (0.9, 0.5, 600.0, 5.0), (-0.6, 0.0, 40.0, 5.0), (0.0, 0.7, 300.0, 5.0)]
+    pts = [(0.6, 0.0, 1000.0, 5.0), (0.9, 0.5, 600.0, 5.0), (-0.6, 0.0, 40.0, 5.0), (0.2, 0.7, 300.0, 5.0)]
     f = pd.DataFrame(
         [
             {"combination": c, "Node": i, "X": x, "Y": y, "Mx": m * k, "My": 10.0 * k, "Mxy": t}
@@ -484,15 +484,15 @@ def test_pile_face_methods_keep_faces_and_directions_apart():
     piles = [(0.0, 0.0, 0.5)]
     face = face_average(f, piles, 0.5)
     a = face[face.combination == "A"].set_index("Node")
-    # +X face: the two nodes in front of it only; the -X face keeps its own 40.
-    assert a.loc[0, "Mx"] == a.loc[1, "Mx"] == 800 and a.loc[2, "Mx"] == 40
-    # The node at the +Y face is not an X face node: its Mx stays, its My is the +Y face's mean.
-    assert a.loc[3, "Mx"] == 300
+    # +X face: the nodes on its side of the pile, the one beside the round head included (1000, 600,
+    # 300); the -X face keeps its own 40.
+    assert a.loc[0, "Mx"] == a.loc[1, "Mx"] == a.loc[3, "Mx"] == pytest.approx(633.33, abs=0.01)
+    assert a.loc[2, "Mx"] == 40
     ring = treat_pile_faces(f, piles, "ring_mean", 0.5)
     assert ring[ring.combination == "A"]["Mx"].nunique() == 1  # opposite faces mixed
     assert treat_pile_faces(f, piles, "peak", 0.5).equals(f)
     # Envelope: the worst of A and B at each node (A), averaged, for both combinations.
     env = face_average(f, piles, 0.5, envelope=True).set_index(["combination", "Node"])
-    assert env.loc[("B", 0), "Mx"] == env.loc[("A", 0), "Mx"] == 800
+    assert env.loc[("B", 0), "Mx"] == env.loc[("A", 0), "Mx"] == pytest.approx(633.33, abs=0.01)
     # Old saved values still load.
     assert SlabInput(peaks="average").peaks == "face_mean" and SlabInput(peaks="design").peaks == "peak"

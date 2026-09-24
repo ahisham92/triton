@@ -643,8 +643,9 @@ def average_peaks(f: pd.DataFrame, piles: list[tuple]) -> pd.DataFrame:
 def face_average(f: pd.DataFrame, piles: list[tuple], h: float, envelope: bool = False) -> pd.DataFrame:
     """Moments at each pile face averaged over that face alone, per combination.
 
-    At every pile and each of its four faces: the nodes from the face out to one slab thickness ``h``
-    (m) in front of it, over the pile diameter plus ``h`` each side, take the band's mean of the moment
+    At every pile and each of its four faces: the nodes outside the pile on that side of it, out to one
+    slab thickness ``h`` (m) beyond the face, over the pile diameter plus ``h`` each side (so the nodes
+    beside a round pile head count with the face they look onto), take the band's mean of the moment
     that face's bars carry (Mx at the ±X faces, My at the ±Y faces) and of the twisting moment Mxy.
     Opposite faces and the two directions are never mixed. With ``envelope`` the band takes the mean of
     each node's worst value over all combinations instead (the most hogging for combinations that hog
@@ -657,7 +658,10 @@ def face_average(f: pd.DataFrame, piles: list[tuple], h: float, envelope: bool =
         for along, across, col in ((x - px, y - py, "Mx"), (y - py, x - px, "My")):
             for side in (1, -1):
                 a = side * along
-                band = (a >= r - 1e-6) & (a <= r + h + 1e-6) & (np.abs(across) <= r + h + 1e-6)
+                # The half of the slab in front of this face (nodes inside the pile are already out),
+                # beside the pile too: round a circular head, those nodes carry the face's peak.
+                front = a >= 0 if side > 0 else a > 0  # a node on the centre line goes to +X (+Y)
+                band = front & (a <= r + h + 1e-6) & (np.abs(across) <= r + h + 1e-6)
                 if not band.any():
                     continue
                 sub = f.loc[band]
@@ -681,9 +685,10 @@ def face_average(f: pd.DataFrame, piles: list[tuple], h: float, envelope: bool =
 PEAK_METHODS = {
     "peak": "Moments at the pile faces used as they are (no averaging at the piles; the strips still "
     "average across their width).",
-    "face_mean": "Moments at the pile faces averaged face by face: from each face out to one slab "
-    "thickness, over the pile diameter plus the slab thickness each side, only the moment that face's "
-    "bars carry, for each combination; the worst combination is designed.",
+    "face_mean": "Moments at the pile faces averaged face by face: the nodes on that face's side of the "
+    "pile (those beside the round head too) out to one slab thickness beyond the face, over the pile "
+    "diameter plus the slab thickness each side, only the moment that face's bars carry, for each "
+    "combination; the worst combination is designed.",
     "ring_mean": "Moments round each pile averaged over a ring one pile diameter wide, all round the pile "
     "and for each combination (this mixes opposite faces).",
     "envelope_face_mean": "Moments at the pile faces averaged face by face as for the face mean, but from "
