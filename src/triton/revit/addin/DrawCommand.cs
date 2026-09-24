@@ -20,7 +20,7 @@ namespace Triton.Revit
             var data = new PushButtonData(
                 "TritonDrawBars", "Draw bars", typeof(App).Assembly.Location, typeof(DrawCommand).FullName)
             {
-                ToolTip = "Pick a Triton drawings file (Design tab > Drawings > Revit) and draw its bars as detail lines.",
+                ToolTip = "Pick a Triton drawings file (.crm, Design tab > Drawings > Revit) and draw its bars as detail lines.",
             };
             panel.AddItem(data);
             return Result.Succeeded;
@@ -53,7 +53,7 @@ namespace Triton.Revit
             using (var dlg = new OpenFileDialog
             {
                 Title = "Triton drawings file",
-                Filter = "Triton drawings (*.json)|*.json|All files (*.*)|*.*",
+                Filter = "Triton drawings (*.crm)|*.crm|Older Triton drawings (*.json)|*.json|All files (*.*)|*.*",
                 InitialDirectory = lastFolder ?? "",
             })
             {

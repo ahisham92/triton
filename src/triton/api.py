@@ -1080,13 +1080,14 @@ def _drawings(project_id: str, section_id: str, element: list[str] | None) -> tu
     return name, data
 
 
-@app.get(SECTION + "/design/drawings.json")
+@app.get(SECTION + "/design/drawings.crm")
+@app.get(SECTION + "/design/drawings.json")  # the name before .crm
 def drawings_for_revit(
     project_id: str, section_id: str, element: Annotated[list[str] | None, Query()] = None
 ) -> JSONResponse:
-    """Reinforcement drawings as 2D lines (format triton.drawings/1), for the Revit script."""
+    """Reinforcement drawings as 2D lines (triton.drawings/1, JSON in a .crm file), for the Revit add-in."""
     name, data = _drawings(project_id, section_id, element)
-    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}-drawings.json"'})
+    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}-drawings.crm"'})
 
 
 @app.get(SECTION + "/design/drawings.dxf")

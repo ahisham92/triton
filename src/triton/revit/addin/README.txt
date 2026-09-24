@@ -2,7 +2,7 @@ Triton drawings - Revit add-in
 ==============================
 
 Adds a "Draw bars" button (Add-Ins tab > Triton). It asks for a Triton drawings file
-(Triton, Design tab > Drawings > Revit), lists its views, and draws the ones you tick:
+(.crm; Triton, Design tab > Drawings > Revit), lists its views, and draws the ones you tick:
 
   * each in its own drafting view, "Triton - <section> - <view>" (drawn again in place
     when the view already exists, so views on sheets stay on them), or

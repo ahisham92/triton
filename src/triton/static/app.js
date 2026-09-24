@@ -2140,7 +2140,7 @@ async function renderDesignTab(host) {
           .map((n) => `<option>${esc(n)}</option>`)
           .join("")}</select>
         <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
-        <a class="quiet-link" data-draw="json" href="#">Revit (drawings file)</a>
+        <a class="quiet-link" data-draw="crm" href="#">Revit (.crm drawings file)</a>
         <a class="quiet-link" href="#" id="drawing-help">How to open in Revit</a>
       </span>
       <span class="reports" id="reports" hidden>Report:
@@ -2391,8 +2391,8 @@ function drawingHelp() {
       <li>Once: download the <a class="quiet-link" href="${ROOT}/api/revit/triton-addin.zip">Triton add-in for Revit</a> (C# source),
         open TritonDrawings.csproj in Visual Studio, set your Revit version in it and Build. The build installs it; restart Revit
         and press Always Load. Its README has the steps.</li>
-      <li>Download <em>Revit (drawings file)</em> for the section or element.</li>
-      <li>In Revit: Add-Ins › Triton › Draw bars, pick the file, tick the views and choose where: a drafting view for each, or the
+      <li>Download <em>Revit (.crm drawings file)</em> for the section or elements.</li>
+      <li>In Revit: Add-Ins › Triton › Draw bars, pick the .crm file, tick the views and choose where: a drafting view for each, or the
         view that is open, at a point you click.</li>
       <li>Drafting views are named "Triton - section - view". Drawing a new file redraws the same views, so views already on
         sheets stay there.</li>

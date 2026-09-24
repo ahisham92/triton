@@ -206,8 +206,9 @@ def test_drawing_endpoints(tmp_path, monkeypatch):
     data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet()})
     client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
     client.post(f"{url}/design")
-    r = client.get(f"{url}/design/drawings.json")
-    assert r.status_code == 200 and "Berth_1_Section_1-drawings.json" in r.headers["content-disposition"]
+    r = client.get(f"{url}/design/drawings.crm")
+    assert r.status_code == 200 and "Berth_1_Section_1-drawings.crm" in r.headers["content-disposition"]
+    assert client.get(f"{url}/design/drawings.json").json() == r.json()
     d = r.json()
     assert d["section"] == "Section 1" and d["views"][-1]["name"] == "Pile(1) - elevation"
     r = client.get(f"{url}/design/drawings.dxf", params={"element": "Pile(1)"})

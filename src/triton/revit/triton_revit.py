@@ -284,7 +284,7 @@ else:
     from System.Windows.Forms import DialogResult, OpenFileDialog
 
     dlg = OpenFileDialog()
-    dlg.Filter = "Triton drawings (*.json)|*.json"
+    dlg.Filter = "Triton drawings (*.crm)|*.crm|Older Triton drawings (*.json)|*.json"
     dlg.Title = "Triton drawings file"
     if dlg.ShowDialog() == DialogResult.OK:
         print(run(dlg.FileName))
