@@ -17,11 +17,11 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import adsec, checker, clash_report, drawings, durability, dxf, fresh, method, revit, trials
+from . import adsec, checker, clash_report, drawings, durability, dxf, fresh, method, package, revit, trials
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
@@ -188,6 +188,72 @@ def create_project(body: NewProject) -> Project:
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: str) -> Project:
     return _get(project_id)
+
+
+@app.get("/api/projects/{project_id}/project.trt")
+def download_project(project_id: str) -> StreamingResponse:
+    """The whole project as one file (.trt) to send to someone: settings, sections, workbooks, results
+    and trials."""
+    project = _get(project_id)
+    f, size = package.spool(store(), project)
+
+    def chunks():
+        with f:
+            while block := f.read(1024 * 1024):
+                yield block
+
+    return StreamingResponse(
+        chunks(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{package.file_name(project)}"',
+            "Content-Length": str(size),
+        },
+    )
+
+
+class OpenProject(BaseModel):
+    # ask: say if a project already has this name; keep: open it beside it (named "… (2)");
+    # replace: open it and delete the project ``replace_id``.
+    if_exists: Literal["ask", "keep", "replace"] = "ask"
+    replace_id: str | None = None
+
+
+@app.post("/api/projects/open/{upload_id}")
+def open_project(upload_id: str, body: OpenProject) -> dict:
+    """Open an uploaded .trt as a project on the server. When a project has its name and nothing was
+    decided, the answer lists them (``exists``) and the upload stays for the second call."""
+    d = _upload_dir(upload_id)
+    path = _upload_file(d)
+    if path.suffix != package.SUFFIX:
+        raise HTTPException(400, "Open a Triton project file (.trt).")
+    try:
+        head = package.peek(path)
+    except package.BadPackage as e:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(400, str(e)) from e
+    same = [p for p in store().list() if p.info.name == head["name"]]
+    if same and body.if_exists == "ask":
+        return {
+            "name": head["name"],
+            "exists": [{"id": p.id, "name": p.info.name, "updated_at": p.updated_at} for p in same],
+        }
+    old = None
+    if body.if_exists == "replace":
+        old = next((p for p in same if p.id == body.replace_id), None)
+        if old is None:
+            raise HTTPException(409, "The project to replace is not here any more. Open the file again.")
+    name = head["name"] if body.if_exists == "replace" else package.unique_name(store(), head["name"])
+    try:
+        with _Progress(upload_id) as tell:
+            project, notes = package.open_package(store(), path, name, tell)
+    except package.BadPackage as e:
+        raise HTTPException(400, str(e)) from e
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    if old is not None:
+        store().delete(old.id)
+    return {"id": project.id, "name": project.info.name, "notes": notes, "replaced": old is not None}
 
 
 @app.get("/api/projects/{project_id}/method")
@@ -490,7 +556,8 @@ class NewUpload(BaseModel):
 
 @app.post("/api/uploads", status_code=201)
 def start_upload(body: NewUpload) -> dict:
-    suffix = _suffix(body.filename)
+    is_project = Path(body.filename or "").suffix.lower() == package.SUFFIX
+    suffix = package.SUFFIX if is_project else _suffix(body.filename)
     housekeeping(force=True)  # abandoned uploads and the like
     upload_id = secrets.token_hex(16)
     d = _uploads() / upload_id

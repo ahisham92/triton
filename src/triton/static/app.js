@@ -82,7 +82,12 @@ async function projectsPage() {
     settings used to design the elements in a Plaxis workbook.</p>
     <div class="row"><input id="new-name" placeholder="Project name" style="flex:1;max-width:320px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--input);color:var(--text);font:inherit">
     <button id="new">New project</button></div>
+    <div class="row"><label for="trt">Open a project file</label>
+      <input type="file" id="trt" accept=".trt"><button id="open-trt" disabled>Open</button>
+      <span class="status" id="trt-status">A .trt downloaded from Triton (Project page › Download project).</span></div>
+    <div class="row" id="trt-choice" hidden></div>
     <h2>Saved projects</h2><div class="panel scroll" id="list">Loading…</div>`;
+  wireOpenProject();
   document.getElementById("new").onclick = async () => {
     const name = document.getElementById("new-name").value.trim() || "New project";
     const p = await api(ROOT + "/api/projects", { method: "POST", body: JSON.stringify({ info: { name } }) });
@@ -104,6 +109,65 @@ async function projectsPage() {
       .join("") +
     `</table>`;
   el.querySelectorAll("tr.link").forEach((tr) => (tr.onclick = () => (location.hash = `#/project/${tr.dataset.id}/info`)));
+}
+
+// Open a .trt as a project on the server: it goes up in pieces like a workbook. When a project
+// already has its name, the choice is to replace that project or keep both.
+function wireOpenProject() {
+  const file = document.getElementById("trt");
+  const btn = document.getElementById("open-trt");
+  const status = document.getElementById("trt-status");
+  const choice = document.getElementById("trt-choice");
+  file.onchange = () => (btn.disabled = !file.files.length);
+  const open = async (id, body) => {
+    status.textContent = "Opening the project and checking its workbooks…";
+    const r = await api(`${ROOT}/api/projects/open/${id}`, { method: "POST", body: JSON.stringify(body) });
+    if (r.exists) {
+      const p = r.exists[0];
+      status.textContent = "";
+      choice.hidden = false;
+      choice.innerHTML = `<span>A project named <strong>${esc(r.name)}</strong> is already here (last saved ${esc(when(p.updated_at))}).</span>
+        <button id="trt-keep">Keep both</button>
+        <button class="danger" id="trt-replace">Replace it</button>
+        <button class="quiet" id="trt-cancel">Cancel</button>`;
+      document.getElementById("trt-keep").onclick = () => finish(id, { if_exists: "keep" });
+      document.getElementById("trt-replace").onclick = () => {
+        if (!confirm(`Replace "${r.name}" with the project in the file? The one here is deleted, with its workbooks and results.`)) return;
+        finish(id, { if_exists: "replace", replace_id: p.id });
+      };
+      document.getElementById("trt-cancel").onclick = async () => {
+        choice.hidden = true;
+        btn.disabled = false;
+        status.textContent = "Not opened.";
+        await api(`${ROOT}/api/uploads/${id}`, { method: "DELETE" }).catch(() => {});
+      };
+      return;
+    }
+    if (r.notes?.length) alert(r.notes.join("\n\n"));
+    location.hash = `#/project/${r.id}/info`;
+  };
+  const finish = async (id, body) => {
+    choice.hidden = true;
+    try {
+      await open(id, body);
+    } catch (e) {
+      status.textContent = `Not opened: ${e.message}`;
+      btn.disabled = false;
+    }
+  };
+  btn.onclick = async () => {
+    const f = file.files[0];
+    if (!f) return;
+    btn.disabled = true;
+    try {
+      const mb = (n) => (n / 1048576).toFixed(0);
+      const id = await sendInPieces(f, (at) => (status.textContent = `Uploading ${f.name}: ${mb(at)} of ${mb(f.size)} MB`));
+      await open(id, { if_exists: "ask" });
+    } catch (e) {
+      status.textContent = `Not opened: ${e.message}`;
+      btn.disabled = false;
+    }
+  };
 }
 
 // ---------------------------------------------------------------- project page
@@ -155,7 +219,10 @@ async function projectPage(id, tab, sectionId) {
     <div id="lockbar"></div>
     ${picker}<div id="tab"></div>
     <div class="savebar"><span class="save-state" id="save-status"></span>
-      <span style="flex:1"></span><button class="danger" id="delete">Delete project</button></div>
+      <span style="flex:1"></span>
+      <a class="quiet-link" id="download-project" href="${ROOT}/api/projects/${esc(p.id)}/project.trt"
+        title="Settings, sections, workbooks, results and trials in one file, to send to someone or keep">Download project (.trt)</a>
+      <button class="danger" id="delete">Delete project</button></div>
     <ul class="errors" id="errors"></ul>`;
   $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab))));
   const pick = document.getElementById("section-pick");
@@ -169,6 +236,12 @@ async function projectPage(id, tab, sectionId) {
     await api(`${ROOT}/api/projects/${id}`, { method: "DELETE" });
     state = null;
     location.hash = "#/";
+  };
+  document.getElementById("download-project").onclick = async (e) => {
+    if (!state.dirty) return;
+    e.preventDefault(); // what was just typed goes into the file too
+    await save();
+    location.href = e.target.href;
   };
   const host = document.getElementById("tab");
   if (tab === "info") {

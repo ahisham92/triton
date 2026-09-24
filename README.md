@@ -147,6 +147,20 @@ in `data/projects/`, with each section's checked workbook and results in
 `data/projects/{project}/{section}/` (set `TRITON_DATA_DIR` to move it). Projects saved before
 sections existed open with everything in one section; upload their workbook again.
 
+### Project files (.trt) and choosing what to export
+
+**Download project (.trt)** (bottom of every project page, `GET /api/projects/{id}/project.trt`)
+gives the whole project as one file to send to someone or keep: settings, sections, elements,
+sheet mapping and choices, each section's workbook, design results and trials. On the Projects
+page, **Open a project file** uploads a .trt (in pieces, like a workbook) and opens it as a project
+(`POST /api/projects/open/{upload}`). When a project already has its name, Triton asks: keep both
+(the new one is named "… (2)") or replace the one here. The file is plain data (JSON in a zip);
+opening one checks its workbooks again, as an upload would, and runs nothing from the file.
+
+On the Design tab, the **Export** row picks the elements that the downloads below it hold (All,
+or the ticked ones): AdSec files and Excel, reports, Revit bars and drawings each take
+`?elements=A,B`.
+
 ### Working zone and isolated peaks
 
 FE results near the model edges are unreliable. A section can set a **working zone** (Sections tab,
