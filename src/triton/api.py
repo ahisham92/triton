@@ -21,7 +21,20 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import adsec, checker, clash_report, drawings, durability, dxf, fresh, method, package, revit, trials
+from . import (
+    adsec,
+    bbs,
+    checker,
+    clash_report,
+    drawings,
+    durability,
+    dxf,
+    fresh,
+    method,
+    package,
+    revit,
+    trials,
+)
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
@@ -1253,6 +1266,26 @@ def revit_script() -> Response:
         revit.script(),
         media_type="text/x-python",
         headers={"Content-Disposition": 'attachment; filename="triton_revit.py"'},
+    )
+
+
+@app.get(SECTION + "/design/bar-schedule.xlsx")
+def bar_schedule(project_id: str, section_id: str, elements: str | None = None) -> Response:
+    """Bar bending schedule (BS 8666 shape codes, bar marks, cut lengths, weights) of the designed bars."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    results = store().load_results(project_id, section_id)
+    if results is None:
+        raise HTTPException(404, "This section has not been designed yet.")
+    _, results, suffix = _picked(section, results, elements)
+    rows = bbs.schedule(project, results, section.name)
+    if not rows:
+        raise HTTPException(404, "No designed pile, combi wall infill, beam or slab bars to schedule.")
+    name = _file_name(project.info.name, section.name + suffix)
+    return Response(
+        bbs.workbook(project, section.name, rows),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}-bar-schedule.xlsx"'},
     )
 
 

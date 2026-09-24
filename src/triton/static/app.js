@@ -2213,6 +2213,7 @@ async function renderDesignTab(host) {
       <div class="row export-links">
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download bars for Revit (JSON: pile and infill cages, beams, slab)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
+      <a class="quiet-link" id="bbs" href="${url}/design/bar-schedule.xlsx" hidden>Download bar bending schedule (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
       <span class="reports" id="drawings" hidden>Drawings:
         <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
@@ -2523,6 +2524,7 @@ function wireExportPick(names, steelOnly, anyCages) {
       a.hidden = !bars;
     };
     setHref("cages", "cages.json");
+    setHref("bbs", "bar-schedule.xlsx");
     setHref("ads", "adsec.zip");
     const sets = document.getElementById("sets");
     if (sets) sets.href = link("governing.xlsx");
