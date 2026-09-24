@@ -28,6 +28,7 @@ _SECTION_OWN = {
     "user_cages",
     "beam_cages",
     "slab_strips",
+    "clashes",
 }
 
 

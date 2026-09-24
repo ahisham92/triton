@@ -3,6 +3,7 @@ import { View3D, directionArrows, heat } from "./view3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 import { spwCard } from "./spw.js";
 import { renderTrials } from "./trials.js";
+import { renderClashes } from "./clashes.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -107,7 +108,7 @@ async function projectsPage() {
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d", "compare"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d", "clashes", "compare"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -134,6 +135,7 @@ async function projectPage(id, tab, sectionId) {
     ["workbook", "Workbook"],
     ["design", "Design"],
     ["view3d", "3D view"],
+    ["clashes", "Clashes"],
     ["costing", "Costing"],
     ["compare", "Comparisons"],
     ["method", "Method"],
@@ -187,6 +189,7 @@ async function projectPage(id, tab, sectionId) {
   else if (tab === "view3d") renderView3dTab(host);
   else if (tab === "costing") renderCostingTab(host);
   else if (tab === "method") renderMethodTab(host);
+  else if (tab === "clashes") renderClashes(host, { api, again, esc, fmt, secUrl });
   else if (tab === "compare")
     renderTrials(host, {
       api, again, esc, fmt, secUrl, ROOT,

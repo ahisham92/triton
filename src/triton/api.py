@@ -21,8 +21,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import adsec, checker, durability, fresh, method, trials
+from . import adsec, checker, clash_report, durability, fresh, method, trials
 from .alignment import plan_geometry
+from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
@@ -40,6 +41,7 @@ from .project import (
     ProjectInfo,
     Section,
     SheetPileInput,
+    WhatIf,
     _now,
     with_project_grades,
 )
@@ -205,6 +207,7 @@ def _model(p: Project) -> dict:
         s.pop("user_cages", None)  # set on the Design tab, then checked
         s.pop("beam_cages", None)
         s.pop("slab_strips", None)
+        s.pop("clashes", None)  # the Clashes tab never changes the design
         for el in s.get("elements", {}).values():  # a sheet pile wall's "ignore N or Q", ticked on its card
             if el.get("kind") == "sheet_pile_wall":
                 el.pop("ignore", None)
@@ -226,6 +229,11 @@ def update_project(project_id: str, body: Project) -> Project:
         raise HTTPException(409, LOCKED)
     body.created_at = existing.created_at
     _stamp_multipliers(existing, body)
+    # The Clashes tab saves its own settings and what-ifs; a page holding older ones never undoes them.
+    clash = {s.id: s.clashes for s in existing.sections}
+    for s in body.sections:
+        if s.id in clash:
+            s.clashes = clash[s.id]
     saved = store().save(body)
     kept = {s.id for s in saved.sections}
     for s in existing.sections:
@@ -1289,6 +1297,127 @@ def design_report(project_id: str, section_id: str, fmt: str, detail: str = "sum
         render(rep),
         media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'},
+    )
+
+
+# --- Clashes -------------------------------------------------------------------------------------------
+
+_CLASHES: dict[tuple, Clashes] = {}
+
+
+def _clashes(project_id: str, section_id: str) -> tuple[Project, Section, Clashes]:
+    """The section's pile heads and bars round them, kept while the design, the design settings and the
+    clash rule stay the same (what-ifs and choices do not count)."""
+    project, section, results = _results(project_id, section_id)
+    rule = section.clashes.model_dump(mode="json", exclude={"whatifs", "choices"})
+    key = (
+        project_id,
+        section_id,
+        results.get("run_at"),
+        hashlib.sha1(
+            json.dumps([rule, project.design.model_dump(mode="json")], sort_keys=True, default=str).encode()
+        ).hexdigest(),
+    )
+    c = _CLASHES.get(key)
+    if c is None:
+        for k in [k for k in _CLASHES if k[:2] == (project_id, section_id)]:
+            del _CLASHES[k]
+        c = _CLASHES[key] = Clashes(project, section, results)
+    c.ctx.rule = section.clashes
+    return project, section, c
+
+
+@app.get(SECTION + "/clashes")
+def section_clashes(project_id: str, section_id: str) -> dict:
+    """The Clashes tab: every pile head's clashes by pile and element, solutions and the what-ifs kept."""
+    project, section, c = _clashes(project_id, section_id)
+    return find_clashes(project, section, c.ctx.results, c=c)
+
+
+@app.get(SECTION + "/clashes/head")
+def clash_head(project_id: str, section_id: str, group: str, index: int = 0) -> dict:
+    """One pile head: its drawing (plan, section, 3D), what clashes, the solutions and the punching links."""
+    _, _, c = _clashes(project_id, section_id)
+    head = c.head(group, index)
+    if head is None:
+        raise HTTPException(404, "No such pile head.")
+    return _clean(c.entry(head))
+
+
+class ClashSettingsIn(BaseModel):
+    rule: Literal["touch", "ec2"] | None = None
+    fixing_tolerance: float | None = Field(None, ge=0, le=50)
+    plate_level: Literal["mid", "top"] | None = None
+    top_levels: dict[str, float] | None = None
+    mesh_start: dict[str, float] | None = None
+    choices: dict[str, str] | None = None
+
+
+@app.put(SECTION + "/clashes/settings")
+def save_clash_settings(project_id: str, section_id: str, body: ClashSettingsIn) -> dict:
+    """The clash rule and the solutions chosen. Saved even while the project is locked: they never
+    change the design."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    for k, v in body.model_dump(exclude_none=True).items():
+        setattr(section.clashes, k, v)
+    store().save(project)
+    return section.clashes.model_dump(mode="json")
+
+
+@app.post(SECTION + "/clashes/whatif")
+def check_whatif(project_id: str, section_id: str, body: WhatIf) -> dict:
+    """Bars taken out at a connection, checked again; nothing is saved and the design is unchanged."""
+    _, _, c = _clashes(project_id, section_id)
+    return c.whatif(body)
+
+
+@app.post(SECTION + "/clashes/whatifs")
+def keep_whatif(project_id: str, section_id: str, body: WhatIf) -> dict:
+    """Keep a what-if with the section (replacing one of the same id)."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    section.clashes.whatifs = [w for w in section.clashes.whatifs if w.id != body.id] + [body]
+    store().save(project)
+    _, _, c = _clashes(project_id, section_id)
+    return c.whatif(body)
+
+
+@app.delete(SECTION + "/clashes/whatifs/{whatif_id}", status_code=204)
+def drop_whatif(project_id: str, section_id: str, whatif_id: str) -> Response:
+    project = _get(project_id)
+    section = _section(project, section_id)
+    section.clashes.whatifs = [w for w in section.clashes.whatifs if w.id != whatif_id]
+    store().save(project)
+    return Response(status_code=204)
+
+
+@app.get(SECTION + "/clashes/calc.{fmt}")
+def clash_calc(
+    project_id: str, section_id: str, fmt: str, group: str = "", index: int = 0, whatif: str = ""
+) -> Response:
+    """The calculation of one pile head's clashes and solutions, or of a kept what-if, as Word, PDF
+    or Excel."""
+    if fmt not in RENDERERS:
+        raise HTTPException(404, "Calculations are Word (.docx), PDF (.pdf) or Excel (.xlsx).")
+    project, section, c = _clashes(project_id, section_id)
+    w = None
+    if whatif:
+        kept = next((x for x in section.clashes.whatifs if x.id == whatif), None)
+        if kept is None:
+            raise HTTPException(404, "That what-if is not kept any more.")
+        group, index = kept.group, kept.head
+        w = c.whatif(kept)
+    head = c.head(group, index)
+    if head is None:
+        raise HTTPException(404, "No such pile head.")
+    entry = _clean(c.entry(head))
+    notes = c.notes + assumptions(c.ctx.rule, c.ctx.settings)
+    rep = clash_report.build_calc(project, section, entry, notes, w)
+    render, media = RENDERERS[fmt]
+    name = clash_report.filename(project, section, entry, w)
+    return Response(
+        render(rep), media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'}
     )
 
 

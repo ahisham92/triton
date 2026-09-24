@@ -1580,6 +1580,52 @@ class Alignment(_Model):
         return v
 
 
+class WhatIf(_Model):
+    """Bars taken out at one pile connection to see what it does (e.g. the contractor cannot place them).
+    It never changes the design."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    group: str = Field(..., title="Pile and element", description="e.g. 'Pile(1)|Deck'")
+    head: int = Field(0, title="Pile number in its element (from 0)", ge=0)
+    bars: list[str] = Field(
+        default_factory=list, title="Slab or beam bars taken out", description="Bar ids from the Clashes tab."
+    )
+    pile_bars: list[str] = Field(
+        default_factory=list, title="Pile bars taken out", description="'row:bar' from the Clashes tab."
+    )
+    note: str = Field("", title="Note", description="e.g. why the bars cannot be placed")
+
+
+class ClashSettings(_Model):
+    """How the Clashes tab finds clashes between the pile bars and the slab and beam bars."""
+
+    rule: Literal["touch", "ec2"] = Field(
+        "touch",
+        title="A clash is",
+        description="Touch: bars that would overlap (less than the fixing tolerance apart). "
+        "EC2: bars closer than EN 1992-1-1 8.2(2) allows, max(Ø, dg + 5, 20 mm), even if they do not touch.",
+    )
+    fixing_tolerance: float = _mm("Fixing tolerance", 10.0, ge=0, le=50)
+    plate_level: Literal["mid", "top"] = Field(
+        "mid",
+        title="Plaxis plates are at the element's",
+        description="Mid-depth (Plaxis) or top of concrete.",
+    )
+    top_levels: dict[str, float] = Field(
+        default_factory=dict, title="Top of concrete by element (m)", description="Overrides the plate level."
+    )
+    mesh_start: dict[str, float] = Field(
+        default_factory=dict,
+        title="Slab mesh shifted by (mm)",
+        description="By 'slab|X' (bars along X) or 'slab|Y': moves where the mesh starts from "
+        "the slab's edge.",
+    )
+    choices: dict[str, str] = Field(
+        default_factory=dict, title="Solution chosen", description="By 'pile|element': the solution used."
+    )
+    whatifs: list[WhatIf] = Field(default_factory=list, title="Bars taken out (what if)")
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
@@ -1631,6 +1677,11 @@ class Section(_Model):
         title="Slab stations and bars set by the user",
         description="By slab: stations and additional bars set on the Design tab; Re-check designs the "
         "slab with them.",
+    )
+    clashes: ClashSettings = Field(
+        default_factory=ClashSettings,
+        title="Reinforcement clashes",
+        description="Clashes tab settings, solutions chosen and bars taken out. It never changes the design.",
     )
     combinations: list[str] = Field(
         default_factory=lambda: list(DEFAULT_COMBINATIONS),

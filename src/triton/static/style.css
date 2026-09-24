@@ -391,3 +391,12 @@ tr.trial-idle td { color: var(--muted); }
 .method-doc summary { cursor: pointer; font-weight: 600; }
 .method-doc p, .method-doc ul { max-width: 60rem; }
 .method-doc pre.formula { background: var(--miss-bg); padding: 8px 12px; border-radius: 6px; overflow-x: auto; white-space: pre; }
+
+/* Clashes tab */
+.cl-views { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin: 10px 0; }
+.cl-views figure { margin: 0; border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
+.cl-views figcaption { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.cl-svg { width: 100%; height: 360px; display: block; color: var(--text); }
+.cl-svg.picking [data-bar], .cl-svg.picking [data-pile] { cursor: pointer; }
+.cl-3d { width: 100%; height: 360px; display: block; touch-action: none; cursor: grab; }
+tr.on td { background: var(--accent-bg); }
