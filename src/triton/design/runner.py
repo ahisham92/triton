@@ -13,6 +13,7 @@ from ..elements import ElementType
 from ..forces import scale_forces
 from ..geometry import elements_geometry, section_geometry
 from ..importer import SheetData
+from ..joints import restraint_length, section_joints, segment_lengths
 from ..materials import SHEET_PILE_GRADES
 from ..project import (
     BeamInput,
@@ -114,14 +115,17 @@ def combi_bands(wall: dict[str, Any], positions: list[list[float]]) -> list[list
     return [[x, y, z, round(u, 3)] for (x, y, z), u in out.items()]
 
 
+def along_axis(section: Section) -> str:
+    slab = next((e for e in section.elements.values() if isinstance(e, SlabInput)), None)
+    return "X" if slab is not None and slab.strip_direction == "Y" else "Y"
+
+
 def section_alignment(
     section: Section, sheets: dict[str, dict[str, SheetData]]
 ) -> tuple[list, dict[str, Any]]:
     """The parts the section's slabs and beams are designed in (none for a straight berth), from its
     results as designed (multipliers and working zone applied)."""
-    slab = next((e for e in section.elements.values() if isinstance(e, SlabInput)), None)
-    along = "X" if slab is not None and slab.strip_direction == "Y" else "Y"
-    return section_parts(section.alignment, sheets, along)
+    return section_parts(section.alignment, sheets, along_axis(section))
 
 
 def run_section(
@@ -258,6 +262,26 @@ def run_section(
     axes = {a["element"]: a.get("local") for a in found}
     signs = {a["element"]: a for a in found if a["kind"] == "plate"}
     parts, alignment = section_alignment(section, sheets) if plates else ([], {"parts": [], "points": []})
+    joints = section_joints(settings, section, raw, parts, along_axis(section)) if plates else None
+    use_joints = bool(joints and joints.get("segments") and settings.joints.use_in_restraint)
+
+    def with_joints(element: Any, part: Any) -> tuple[Any, list[float]]:
+        """The element with its length between movement joints from the joint layout, and the segment
+        lengths its part of the berth runs through."""
+        if not use_joints:
+            return element, []
+        index = part.index if part is not None else None
+        length = restraint_length(joints, index)
+        if not length:
+            return element, []
+        return element.model_copy(update={"joint_spacing": length}), segment_lengths(joints, index)
+
+    def joint_note(element: Any, length: float) -> str:
+        return (
+            f"Restraint: {length:.1f} m between movement joints, the longest segment of the expansion "
+            f"joint layout (Design settings; the element's own {element.joint_spacing:g} m is not used)."
+        )
+
     # Per part: every element's results inside it, turned onto the quay's axis, and their geometry.
     views: list[tuple[Any, dict[str, dict[str, SheetData]], list[dict[str, Any]]]] = []
     if parts:
@@ -289,9 +313,10 @@ def run_section(
             continue
         tick(name)
         for part, own, geo, key in runs(name):
+            placed, lengths = with_joints(element, part)
             b = design_beam(
                 name,
-                element,
+                placed,
                 settings,
                 own,
                 geo,
@@ -299,8 +324,13 @@ def run_section(
                 axes.get(name),
                 section.beam_cages.get(key),
                 signs.get(name),
+                joint_lengths=lengths,
             )
             b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+            if lengths and element.restraint_factor is None:
+                b["notes"].append(joint_note(element, placed.joint_spacing))
+            if lengths:
+                b["restraint"]["length_from"] = "expansion joints"
             beams.append(b if part is None else tag_part(b, part, parts))
     slabs = []
     for name, element in section.elements.items():
@@ -316,9 +346,10 @@ def run_section(
             pile_sheets = {
                 n: around[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in around
             }
+            placed, lengths = with_joints(element, part)
             d = design_slab_meshes(
                 name,
-                element_in_part(element, part),
+                element_in_part(placed, part),
                 settings,
                 own,
                 geo,
@@ -329,6 +360,11 @@ def run_section(
                 signs.get(name),
             )
             d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+            if lengths:
+                if element.restraint_check != "off" and element.restraint_factor is None:
+                    d["notes"].append(joint_note(element, placed.joint_spacing))
+                if isinstance(d.get("restraint"), dict):
+                    d["restraint"]["length_from"] = "expansion joints"
             slabs.append(d if part is None else tag_part(d, part, parts))
     if missing:
         skipped.append(f"Load multiplier sheets not in the workbook: {', '.join(missing)}.")
@@ -340,6 +376,7 @@ def run_section(
         "beams": beams,
         "slabs": slabs,
         "alignment": alignment,
+        "joints": joints,
         "skipped": skipped,
         "designed": handled,
         "left": left,

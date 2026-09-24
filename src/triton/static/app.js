@@ -832,7 +832,8 @@ function prettyOption(o) {
     min_cost: "Lowest cost", en1992: "EN 1992-1-1 (Table 4.4N)", en1993_5: "EN 1993-5 (Table 4.2)", bs6349: "BS 6349-1-4 (maritime)", uniform: "Uniform slab", column_and_field: "Column and field strips",
     office: "Office sheets", ec2: "EN 1992-1-1", ec3: "EN 1993 (plastic filled, shell buckling empty)", ei_split: "E·I split where filled", all: "All actions on the tube",
     feltham: "Feltham", two_legs: "Two legs per hoop", peak: "Peak (as they are)", face_mean: "Face mean (each face on its own)",
-    ring_mean: "Ring mean (all round the pile)", envelope_face_mean: "Envelope, then face mean" };
+    ring_mean: "Ring mean (all round the pile)", envelope_face_mean: "Envelope, then face mean",
+    midway: "Mid-way between pile rows", at_row: "At a pile row (doubled row)", anywhere: "Anywhere" };
   return map[o] || o;
 }
 
@@ -908,6 +909,7 @@ function renderSections(host) {
     combos.append(comboListEditor(s));
     card.append(combos);
     card.append(alignmentEditor(p, s));
+    card.append(jointsEditor(p, s));
     host.append(card);
   });
 }
@@ -985,6 +987,99 @@ function alignmentEditor(p, s) {
   };
   return box;
 }
+
+// Expansion joints along the berth (triton/joints.py): placed by the rules in Design settings round
+// any joints set by hand, and drawn on a plan of the berth laid out straight.
+function jointsEditor(p, s) {
+  const def = SCHEMA.$defs.SectionJoints.properties;
+  s.joints ??= { runs: [], pile_spacing: null, first_row: null, furniture: [], fixed: [], mode: "auto" };
+  const j = s.joints;
+  const box = document.createElement("div");
+  box.className = "field full";
+  const nums = (v) => v.split(/[ ,;\t\n]+/).filter(Boolean).map(Number).filter(Number.isFinite);
+  const furn = (list) => (list || []).map((f) => `${f.name}, ${fmt(f.chainage, 2)}`).join("\n");
+  box.innerHTML = `<label>Expansion joints</label>
+    <div class="hint">Triton places the joints by the rules in Design settings (longest and shortest segment, mid-way between pile rows,
+      clear of fenders and bollards, a joint at each corner). With the setting on, each beam's and slab's restraint check takes the
+      longest segment of its part of the berth as its length between movement joints.</div>
+    <div class="row" style="gap:10px;align-items:flex-start;flex-wrap:wrap">
+      <select data-j="mode"><option value="auto">Placed by the rules</option><option value="manual">Only the joints set by hand</option></select>
+      <label class="hint" style="margin:0" title="${esc(def.runs.description)}">Straight runs, m <input data-j="runs" placeholder="berth length" style="width:150px"></label>
+      <label class="hint" style="margin:0" title="${esc(def.pile_spacing.description)}">Pile row spacing <input type="number" step="any" min="0" data-j="pile_spacing" placeholder="from the model" style="width:110px"> m</label>
+      <label class="hint" style="margin:0" title="${esc(def.first_row.description)}">First row from each run's start <input type="number" step="any" min="0" data-j="first_row" placeholder="half a bay" style="width:100px"> m</label>
+      <label class="hint" style="margin:0" title="${esc(def.fixed.description)}">Joints set by hand at <input data-j="fixed" placeholder="e.g. 120, 250" style="width:130px"> m</label>
+    </div>
+    <div style="margin-top:8px"><div class="hint">${esc(def.furniture.description)} One item per line: name, chainage (m).</div>
+      <textarea data-j="furniture" rows="3" style="width:100%;max-width:360px;font:inherit" placeholder="Bollard, 15"></textarea></div>
+    <div class="row" style="margin-top:8px"><button class="quiet" data-j-place data-free>Place the joints</button><span class="status" data-j-status></span></div>
+    <div data-j-plan></div>`;
+  const q = (k) => box.querySelector(`[data-j="${k}"]`);
+  q("mode").value = j.mode || "auto";
+  q("runs").value = (j.runs || []).join(", ");
+  q("pile_spacing").value = j.pile_spacing ?? "";
+  q("first_row").value = j.first_row ?? "";
+  q("fixed").value = (j.fixed || []).join(", ");
+  q("furniture").value = furn(j.furniture);
+  q("mode").onchange = () => { j.mode = q("mode").value; markDirty(); };
+  q("runs").onchange = () => { j.runs = nums(q("runs").value).filter((v) => v > 0); markDirty(); };
+  q("fixed").onchange = () => { j.fixed = nums(q("fixed").value).filter((v) => v > 0); markDirty(); };
+  for (const k of ["pile_spacing", "first_row"])
+    q(k).onchange = () => { j[k] = q(k).value === "" ? null : Number(q(k).value); markDirty(); };
+  q("furniture").onchange = () => {
+    j.furniture = q("furniture").value.split("\n").map((l) => {
+      const m = l.split(/[,;\t]+/).map((t) => t.trim());
+      const c = Number(m.at(-1));
+      return m.length >= 2 && Number.isFinite(c) ? { name: m.slice(0, -1).join(", "), chainage: c } : null;
+    }).filter(Boolean);
+    markDirty();
+  };
+  const status = box.querySelector("[data-j-status]");
+  const plan = box.querySelector("[data-j-plan]");
+  box.querySelector("[data-j-place]").onclick = async () => {
+    status.textContent = "Placing…";
+    try {
+      if (state.dirty) await save();
+      const d = await api(`${ROOT}/api/projects/${p.id}/sections/${s.id}/joints`);
+      status.textContent = "";
+      plan.innerHTML = jointsPlan(d) + (d.segments?.length
+        ? `<p><a href="${ROOT}/api/projects/${esc(p.id)}/sections/${esc(s.id)}/joints.dxf">Download the joint layout (DXF)</a></p>` : "");
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  };
+  return box;
+}
+
+// The berth laid out straight: runs (corners), pile rows, furniture, joints and segment lengths.
+function jointsPlan(d) {
+  if (!d.segments?.length) return `<p class="status">${esc(d.text || "")}</p>`;
+  const L = d.berth_length_m, W = 1000, pad = 20, sx = (c) => pad + (c / L) * (W - 2 * pad);
+  const deckY = 46, deckH = 26;
+  const rows = L / (d.pile_spacing_m || L) > 250 ? [] : d.pile_rows || [];
+  const svg = `<svg viewBox="0 0 ${W} 120" style="width:100%;height:auto;max-height:180px" role="img" aria-label="Expansion joints along the berth">
+    <rect x="${sx(0)}" y="${deckY}" width="${sx(L) - sx(0)}" height="${deckH}" fill="var(--accent-bg)" stroke="var(--line)"/>
+    ${rows.map((c) => `<line x1="${sx(c)}" x2="${sx(c)}" y1="${deckY + 4}" y2="${deckY + deckH - 4}" stroke="var(--muted)" stroke-width="0.6" opacity="0.6"/>`).join("")}
+    ${(d.runs || []).slice(1).map((r) => `<line x1="${sx(r.start)}" x2="${sx(r.start)}" y1="${deckY - 12}" y2="${deckY + deckH + 12}" stroke="var(--text)" stroke-dasharray="3 3"/>`).join("")}
+    ${(d.furniture || []).map((f) => `<path d="M${sx(f.chainage) - 3},${deckY + deckH + 10} l3,-6 l3,6 z" fill="var(--warn)"><title>${esc(f.name)} at ${fmt(f.chainage, 1)} m</title></path>`).join("")}
+    ${d.joints.map((jt) => `<line x1="${sx(jt.chainage)}" x2="${sx(jt.chainage)}" y1="${deckY - 6}" y2="${deckY + deckH + 6}" stroke="var(--err)" stroke-width="2.5"><title>Joint at ${fmt(jt.chainage, 1)} m (${esc(jt.from)})</title></line>`).join("")}
+    ${d.segments.map((sg) => `<text x="${(sx(sg.start) + sx(sg.end)) / 2}" y="${deckY - 10}" text-anchor="middle" font-size="${d.segments.length > 14 ? 9 : 12}" fill="var(--text)">${fmt(sg.length, 1)}</text>`).join("")}
+    <text x="${sx(0)}" y="${deckY + deckH + 30}" font-size="11" fill="var(--muted)">0</text>
+    <text x="${sx(L)}" y="${deckY + deckH + 30}" font-size="11" fill="var(--muted)" text-anchor="end">${fmt(L, 1)} m</text>
+  </svg>`;
+  const legend = `<div class="hint"><span style="color:var(--err)">▍</span> joint · <span style="color:var(--warn)">▲</span> furniture ·
+    thin lines: pile rows${rows.length ? "" : " (too many to draw)"} · dashed: corner · figures: segment lengths, m</div>`;
+  const facts = `<p class="status">${esc(d.text)} Pile rows every ${d.pile_spacing_m ? fmt(d.pile_spacing_m, 2) + " m (" + esc(d.pile_spacing_from) + ")" : "– (none found)"};
+    furniture from ${esc(d.furniture_from || "none")}.</p>`;
+  const warn = (d.warnings || []).length ? `<ul class="errors">${d.warnings.map((w) => `<li class="warning">${esc(w)}</li>`).join("")}</ul>` : "";
+  const table = `<div class="scroll"><table><thead><tr><th>Segment</th><th class="num">From, m</th><th class="num">To, m</th><th class="num">Length, m</th><th>Ends at</th></tr></thead><tbody>
+    ${d.segments.map((sg, i) => {
+      const jt = d.joints[i];
+      const end = jt ? `joint (${esc(jt.from)})${jt.nearest_furniture_m != null ? `, ${fmt(jt.nearest_furniture_m, 1)} m from the nearest furniture` : ""}` : "end of the berth";
+      return `<tr><td>${esc(sg.name)}</td><td class="num">${fmt(sg.start, 1)}</td><td class="num">${fmt(sg.end, 1)}</td><td class="num"><strong>${fmt(sg.length, 1)}</strong></td><td>${end}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+  return svg + legend + facts + warn + table;
+}
+
 
 // ---------------------------------------------------------------- elements tab
 function renderElements(host) {
