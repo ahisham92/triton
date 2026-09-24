@@ -47,9 +47,9 @@ export function spwCard(w, h) {
         <tr><td>h, tf, tw</td><td>${fmt(p.h)}, ${fmt(p.tf, 1)}, ${fmt(p.tw, 1)} mm</td></tr>
         <tr><td>A, I</td><td>${fmt(p.area, 1)} cm²/m, ${fmt(p.inertia)} cm⁴/m</td></tr>
         <tr><td>Wel, Wpl</td><td>${fmt(p.wel)}, ${fmt(p.wpl)} cm³/m</td></tr>
-        <tr><td>Flange b, web α</td><td>${fmt(p.flange)} mm${p.flange_given ? "" : " (est.)"}, ${fmt(p.angle, 1)}°${p.angle_given ? "" : " (est.)"}</td></tr>
+        <tr><td>Flange b, web α</td><td>${fmt(p.flange)} mm${p.flange_given || p.flange_known ? "" : " (est.)"}, ${fmt(p.angle, 1)}°${p.angle_given || p.flange_known ? "" : " (est.)"}</td></tr>
         <tr><td>Web slant c, Av</td><td>${fmt(p.c)} mm, ${fmt(p.av, 1)} cm²/m</td></tr>
-        <tr><td>Catalogue class</td><td>${p.catalogue_class}${s.class_from === "catalogue" ? " (floor)" : ""}</td></tr>
+        <tr><td>Catalogue class</td><td>${p.catalogue_class}${s.class_from === "catalogue" || (s.class_from === "auto" && !p.flange_given && !p.flange_known) ? " (floor)" : ""}</td></tr>
         <tr><td>γM0, γM1</td><td>${fmt(s.gamma_m0, 2)}, ${fmt(s.gamma_m1, 2)}</td></tr>
         <tr><td>Water head, ρP</td><td>${fmt(s.head, 1)} m${s.welded ? ", welded interlocks" : ""}</td></tr>
         <tr><td>Shear, e</td><td>${esc(s.shear)}, ${fmt(s.eccentricity_mm)} mm</td></tr>
@@ -124,7 +124,7 @@ export function spwCard(w, h) {
   // Durability's Uf summary: every AZ section and grade for the same actions and corrosion.
   const sum = d.uf_summary;
   if (sum) {
-    card.querySelector('[data-spw="summary"]').innerHTML = `<p class="status">Actions as designed, the element's corrosion zones, buckling length and settings; flange width and web angle from Triton's estimate for each section. Sorted by mass.</p>
+    card.querySelector('[data-spw="summary"]').innerHTML = `<p class="status">Actions as designed, the element's corrosion zones, buckling length and settings; flange width and web angle as Triton holds them (real for AZ 14-770, estimated for the rest). Sorted by mass.</p>
       <table><tr><th>Section</th><th>kg/m²</th>${sum.grades.map((gr) => `<th>${esc(gr)}</th>`).join("")}</tr>
       ${[...sum.rows].sort((a, b) => a.mass - b.mass).map((r) => `<tr${r.section === d.section ? ' class="hl"' : ""}><td>${r.section === d.section ? `<b>${esc(r.section)}</b>` : esc(r.section)}</td><td>${fmt(r.mass, 1)}</td>
         ${sum.grades.map((gr) => ufCell(r.uf[gr])).join("")}</tr>`).join("")}</table>`;
@@ -156,7 +156,7 @@ function details(r, d, fmt, esc) {
   const lines = [
     `Point: ${esc(r.combination)}, z ${fmt(r.z, 2)} m${r.node != null ? `, node ${r.node}` : ""}, corrosion zone ${r.zone}: ${fmt(r.loss, 2)} mm off every plate.`,
     `Reduced section: tf ${fmt(v.tf, 2)} mm, tw ${fmt(v.tw, 2)} mm, h ${fmt(v.h, 1)} mm, A ${fmt(v.area, 1)} cm²/m, I ${fmt(v.inertia)} cm⁴/m, Wel ${fmt(v.wel)} cm³/m, Wpl ${fmt(v.wpl)} cm³/m, Av ${fmt(v.av, 1)} cm²/m.`,
-    `Class: (b / tf) / ε = ${fmt(v.slender, 1)} → class ${v.class}${v.class === 4 ? `, taken as class 3 with fy,red = 235 × 66² × tf² / b² = ${fmt(v.fy_used, 1)} MPa` : ""}${d.settings.class_from === "catalogue" ? ` (never better than the catalogue's ${d.properties.catalogue_class})` : ""}.`,
+    `Class: (b / tf) / ε = ${fmt(v.slender, 1)} → class ${v.class}${v.class === 4 ? `, taken as class 3 with fy,red = 235 × 66.5² × tf² / b² = ${fmt(v.fy_used, 1)} MPa` : ""}${v.class > 2 && d.settings.class_from !== "flange" && d.properties.catalogue_class === v.class && v.slender < 45.5 ? ` (never better than the catalogue's ${d.properties.catalogue_class})` : ""}.`,
     `Bending: MEd = ${fmt(r.M, 1)} kNm/m ≤ Mc,Rd = W fy ${v.rho_p < 1 ? `ρP (${fmt(v.rho_p, 3)}) ` : ""}/ γM0 = ${fmt(v.W)} × ${fmt(v.fy_used, 1)} / ${fmt(s.gamma_m0, 2)} = ${fmt(v.Mc, 1)} kNm/m.`,
     `Shear: VEd = ${fmt(r.V, 1)} kN/m, Vpl,Rd = Av fy / (√3 γM0) = ${fmt(v.Vpl, 1)} kN/m; ${r.V > 0.5 * v.Vpl ? `over 0.5 Vpl,Rd, so MV,Rd = ${fmt(v.Mv, 1)} kNm/m` : `≤ 0.5 Vpl,Rd = ${fmt(0.5 * v.Vpl, 1)}, no reduction of M`}.`,
     v.Vb != null

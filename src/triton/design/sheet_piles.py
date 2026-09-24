@@ -5,7 +5,8 @@ utilisation factor Uf and the level's Uf is the largest of them:
 
 1. Bending, EN 1993-5 5.2.2 (1)(2): Mc,Rd = W fy / γM0, W = Wpl for class 1 and 2
    (unless "Wel only"), Wel for class 3. Class 4 is taken as class 3 with
-   fy,red = 235 k² tf² / b² (k = 66, Z-piles), EN 1993-1-1 5.5.2 (9).
+   fy,red = 235 (k + 0.5)² tf² / b² (k = 66, Z-piles), EN 1993-1-1 5.5.2 (9); Durability classes
+   the rounded (b / tf) / ε, hence the 0.5. The reduced fy is used for shear too.
 2. Bending and shear, 5.2.2 (3)(4)(5)(8)(9): Vpl,Rd = Av fy / (√3 γM0) with
    Av = (h − tf) tw / bs per metre; above 0.5 Vpl,Rd the moment resistance drops to
    MV,Rd = [W − ρ (Av bd)² / (4 (2 tw) sin α bd)] fy / γM0, ρ = (2 VEd / Vpl,Rd − 1)².
@@ -25,13 +26,14 @@ unless the interlocks are welded.
 
 Section properties are the ArcelorMittal catalogue values per metre of wall. Corrosion takes
 the total loss (front + back) off every plate: flanges and webs get thinner and the height drops
-by the same amount, as Durability shows for its reduced sections. The catalogue does not list
-the flange width or the web angle, so each section is idealised as a thin-walled Z (two
-flanges, two inclined webs and the interlock mass at the flanges per double pile) whose
-flange width and interlock area reproduce the catalogue area and inertia exactly; its plastic
-modulus then lands within 1.5 % of the catalogue's. The corroded properties are the
-catalogue values scaled by the idealised section's ratio, so an uncorroded section gives the
-catalogue values. Both the flange width and the web angle can be given instead.
+by the same amount, as Durability shows for its reduced sections. Each section is idealised as a
+thin-walled Z (two flanges, two inclined webs and the interlock mass at the flanges per double
+pile) that reproduces the catalogue area and inertia exactly. Where Triton holds the real web
+angle (AZ 14-770, from the office's Durability run) the flange follows from it and the
+interlocks' lever is fitted; otherwise the flange width is fitted. The corroded properties are
+the catalogue values scaled by the idealised section's ratio (Wel in proportion to I, as
+Durability), which reproduces Durability's corroded AZ 14-770 within 0.5 %. The flange width
+and the web angle can be given instead.
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ AZ 30-750        750 510 13.0 11.0 185 76670 3005 3485 3
 AZ 32-750        750 511 14.0 12.0 198 81800 3200 3720 2
 AZ 12-770        770 344 8.5 8.5   120 21430 1245 1480 3
 AZ 13-770        770 344 9.0 9.0   126 22360 1300 1546 3
-AZ 14-770        770 345 9.5 9.5   132 23300 1355 1611 3
+AZ 14-770        770 345 9.5 9.5   131.6 23300 1355 1611 3
 AZ 14-770-10/10  770 345 10.0 10.0 137 24240 1405 1677 3
 AZ 12-700        700 314 8.5 8.5   123 18880 1205 1415 3
 AZ 13-700        700 315 9.5 9.5   135 20540 1305 1540 3
@@ -90,6 +92,9 @@ AZ 26            630 427 13.0 12.2 198 55510 2600 3059 2
 
 DEFAULT_SECTION = "AZ 14-770"
 
+# Real flange width and web angle, where known (the office's Durability 4.2.1 Sheet pile tab).
+_GEOMETRY = {"AZ 14-770": (351.0, 39.5)}
+
 
 @dataclass(frozen=True)
 class Section:
@@ -103,6 +108,8 @@ class Section:
     wel: float  # cm³/m
     wpl: float  # cm³/m
     catalogue_class: int
+    b: float | None = None  # flange width that classifies, mm, where Triton has the real one
+    alpha: float | None = None  # web angle, degrees, likewise
 
     @property
     def mass(self) -> float:
@@ -115,7 +122,7 @@ def _parse() -> dict[str, Section]:
     for line in _AZ.strip().splitlines():
         *name, b, h, tf, tw, a, i, wel, wpl, cls = line.split()
         n = " ".join(name)
-        out[n] = Section(n, *map(float, (b, h, tf, tw, a, i, wel, wpl)), int(cls))
+        out[n] = Section(n, *map(float, (b, h, tf, tw, a, i, wel, wpl)), int(cls), *_GEOMETRY.get(n, ()))
     return out
 
 
@@ -144,41 +151,36 @@ def section(name: str) -> Section:
 # --- The idealised thin-walled section -------------------------------------------------------
 
 
-def _thin(s: Section, bf: float, ai: float, loss: np.ndarray | float) -> dict[str, Any]:
+# Interlock metal lost per mm of plate loss (mm² per interlock), for the area and, since it sits
+# nearer the neutral axis than the interlock's centre, the equivalent for inertia and Wpl. Fitted to
+# Durability's corroded AZ 14-770 (A and I within 0.3 % at 2.5 to 4.5 mm loss).
+LUMP_LOSS_AREA = 25.0
+LUMP_LOSS_LEVER = 10.0
+
+
+def _thin(s: Section, bf: float, ai: float, loss: np.ndarray | float, lever: float = 1.0) -> dict[str, Any]:
     """Area (mm²/mm), inertia (mm⁴/mm), plastic modulus (mm³/mm) of the idealised double pile
-    per mm of wall, with every plate ``loss`` mm thinner and the height ``loss`` mm lower."""
+    per mm of wall, with every plate ``loss`` mm thinner and the height ``loss`` mm lower (the
+    plate centre lines stay put). ``lever``: the interlocks' distance from the neutral axis as a
+    share of the flanges'."""
     loss = np.asarray(loss, dtype=float)
     p = 2 * s.width
     tf, tw, h = s.tf - loss, s.tw - loss, s.h - loss
     w = s.width - bf  # horizontal run of a web
     rise = h - tf
     web = np.hypot(rise, w)
-    lump = ai * tf / s.tf  # the interlocks thin with the flanges
+    lump_a = np.maximum(ai - LUMP_LOSS_AREA * loss, 0.0)
+    lump_i = np.maximum(ai - LUMP_LOSS_LEVER * loss, 0.0)
     d = rise / 2
-    area = (2 * bf * tf + 2 * web * tw + 2 * lump) / p
-    inertia = (2 * (bf * tf + lump) * d**2 + 2 * bf * tf**3 / 12 + 2 * tw * web * rise**2 / 12) / p
-    wpl = (2 * (bf * tf + lump) * d + 2 * tw * web * rise / 4) / p
+    area = (2 * bf * tf + 2 * web * tw + 2 * lump_a) / p
+    inertia = (
+        2 * bf * tf * d**2 + 2 * lump_i * (lever * d) ** 2 + 2 * bf * tf**3 / 12 + 2 * tw * web * rise**2 / 12
+    ) / p
+    wpl = (2 * bf * tf * d + 2 * lump_i * lever * d + 2 * tw * web * rise / 4) / p
     return {"area": area, "inertia": inertia, "wpl": wpl, "h": h}
 
 
-@cache
-def idealised(name: str, flange: float | None = None) -> tuple[float, float]:
-    """Flange width (mm, centre line) and interlock area (mm², one interlock) of the idealised
-    section that reproduces the catalogue area and inertia. With ``flange`` given, only the
-    interlock area is fitted (to the area)."""
-    s = section(name)
-
-    def lump(bf: float) -> float:
-        web = math.hypot(s.h - s.tf, s.width - bf)
-        return (s.area * 0.1 * 2 * s.width - 2 * bf * s.tf - 2 * web * s.tw) / 2
-
-    if flange is not None:
-        return float(flange), max(lump(float(flange)), 0.0)
-
-    def err(bf: float) -> float:
-        return float(_thin(s, bf, lump(bf), 0.0)["inertia"]) * 0.1 - s.inertia
-
-    lo, hi = 50.0, s.width - 50.0
+def _bisect(err, lo: float, hi: float) -> float:
     flo = err(lo)
     for _ in range(80):
         mid = (lo + hi) / 2
@@ -187,13 +189,42 @@ def idealised(name: str, flange: float | None = None) -> tuple[float, float]:
             lo, flo = mid, fm
         else:
             hi = mid
-    bf = (lo + hi) / 2
-    return round(bf, 1), round(lump(bf), 1)
+    return (lo + hi) / 2
+
+
+@cache
+def idealised(
+    name: str, flange: float | None = None, angle: float | None = None
+) -> tuple[float, float, float]:
+    """Flange width (mm, centre line), interlock area (mm², one interlock) and interlock lever of
+    the idealised section that reproduces the catalogue area and inertia. With the web angle known
+    (given, or the real one Triton holds), the flange follows from it and the lever is fitted;
+    with the flange given, only the interlock area is fitted; otherwise the flange is fitted."""
+    s = section(name)
+    angle = angle or s.alpha
+
+    def lump(bf: float) -> float:
+        web = math.hypot(s.h - s.tf, s.width - bf)
+        return (s.area * 0.1 * 2 * s.width - 2 * bf * s.tf - 2 * web * s.tw) / 2
+
+    def inertia(bf: float, lever: float = 1.0) -> float:
+        return float(_thin(s, bf, lump(bf), 0.0, lever)["inertia"]) * 0.1 - s.inertia
+
+    if flange is not None:
+        return float(flange), max(lump(float(flange)), 0.0), 1.0
+    if angle:
+        bf = s.width - (s.h - s.tf) / math.tan(math.radians(angle))
+        lever = _bisect(lambda k: inertia(bf, k), 0.3, 1.5)
+        return round(bf, 1), round(lump(bf), 1), round(lever, 4)
+    bf = _bisect(inertia, 50.0, s.width - 50.0)
+    return round(bf, 1), round(lump(bf), 1), 1.0
 
 
 def web_angle(name: str, flange: float | None = None) -> float:
     s = section(name)
-    bf, _ = idealised(name, flange)
+    if s.alpha and flange is None:
+        return s.alpha
+    bf, _, _ = idealised(name, flange)
     return math.degrees(math.atan2(s.h - s.tf, s.width - bf))
 
 
@@ -203,24 +234,25 @@ def reduced(
     """Section properties per metre with ``loss`` mm (front + back) taken off every plate.
     Units: mm, cm²/m, cm⁴/m, cm³/m; Av in cm²/m; b is the flange width used to classify."""
     s = section(name)
-    bf, ai = idealised(name, flange)
-    base = _thin(s, bf, ai, 0.0)
-    now = _thin(s, bf, ai, loss)
+    bf, ai, lever = idealised(name, flange, angle)
+    base = _thin(s, bf, ai, 0.0, lever)
+    now = _thin(s, bf, ai, loss, lever)
     loss = np.asarray(loss, dtype=float)
     tf, tw, h = s.tf - loss, s.tw - loss, s.h - loss
     inertia = s.inertia * now["inertia"] / base["inertia"]
-    alpha = math.radians(angle) if angle else math.atan2(s.h - s.tf, s.width - bf)
+    alpha = math.radians(angle or s.alpha or math.degrees(math.atan2(s.h - s.tf, s.width - bf)))
     return {
         "tf": tf,
         "tw": tw,
         "h": h,
-        "b": bf,
+        # The flange width that classifies: given, the catalogue's, or the idealised centre line.
+        "b": flange or s.b or bf,
         "alpha": math.degrees(alpha),
         "c": (s.h - s.tf) / math.sin(alpha),  # slant height of the web (Z-piles), as Durability
         "area": s.area * now["area"] / base["area"],
         "inertia": inertia,
-        # Wel scales with I / (h / 2); the catalogue value is kept at no loss.
-        "wel": s.wel * (inertia / s.inertia) * (s.h / h),
+        # Wel in proportion to I, as Durability's reduced sections.
+        "wel": s.wel * inertia / s.inertia,
         "wpl": s.wpl * now["wpl"] / base["wpl"],
         "av": (h - tf) * tw / s.width * 10,  # (h − tf) tw per web, one web per pile width
     }
@@ -315,10 +347,12 @@ def evaluate(
     fy, g0, g1 = opts.fy, opts.gamma_m0, opts.gamma_m1
     eps = math.sqrt(235.0 / fy)
     slender = p["b"] / p["tf"] / eps
-    cls = np.where(slender <= lim2, 2, np.where(slender <= lim3, 3, 4))
+    # Durability classifies the rounded (b / tf) / ε, so a class holds up to its limit + 0.5.
+    cls = np.where(slender < lim2 + 0.5, 2, np.where(slender < lim3 + 0.5, 3, 4))
     cls = np.maximum(cls, opts.class_floor)
-    # Class 4: Durability takes class 3 with fy,red = 235 k² tf² / b² (k = 66 for Z-piles).
-    fy_cls = np.where(cls == 4, np.minimum(fy, 235.0 * k**2 * p["tf"] ** 2 / p["b"] ** 2), fy)
+    # Class 4: Durability takes class 3 with fy,red = 235 (k + 0.5)² tf² / b² (k = 66 for Z-piles),
+    # the fy that brings (b / tf) / ε down to the class 3 limit as it rounds.
+    fy_cls = np.where(cls == 4, np.minimum(fy, 235.0 * (k + 0.5) ** 2 * p["tf"] ** 2 / p["b"] ** 2), fy)
     rho_water = (
         1.0 if opts.welded else rho_p(opts.head, float(np.max(p["b"] / np.minimum(p["tf"], p["tw"]) / eps)))
     )

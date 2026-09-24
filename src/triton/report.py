@@ -1347,8 +1347,8 @@ def _spw(r: Report, w: dict) -> None:
             f"I {pr['inertia']:g} cm⁴/m, Wel {pr['wel']:g} cm³/m, Wpl {pr['wpl']:g} cm³/m), fy {d['steel']['fy']:g} "
             f"MPa, γM0 {st['gamma_m0']:g}, γM1 {st['gamma_m1']:g}, buckling length {st['buckling_length']:g} m"
             f"{'' if st['buckling_length_given'] else ' (assumed)'}. Flange b {pr['flange']:g} mm"
-            f"{'' if pr['flange_given'] else ' (estimated)'}, web angle {pr['angle']:g}°"
-            f"{'' if pr['angle_given'] else ' (estimated)'}. Checked at {d['points']} Plaxis points with M = |M_11| "
+            f"{'' if pr['flange_given'] or pr.get('flange_known') else ' (estimated)'}, web angle {pr['angle']:g}°"
+            f"{'' if pr['angle_given'] or pr.get('flange_known') else ' (estimated)'}. Checked at {d['points']} Plaxis points with M = |M_11| "
             f"+ |N| e, V = |{st['shear']}|, N = −N_1 (compression +); corrosion (front + back) taken off every plate."
         )
         r.table(
