@@ -26,7 +26,7 @@ export async function renderValueEngineering(host, h) {
   const fromServer = () => data.variants.filter((v) => !v.base).map((v) => ({ ...v.variant, label: v.label, ideas: v.ideas }));
   let queue = fromServer();
   const canon = (x) => JSON.stringify(x, (k, v) => (v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort()) : v));
-  const changeKey = (q) => canon({ crack_width_limit: q.crack_width_limit ?? null, elements: q.elements ?? null });
+  const changeKey = (q) => canon({ crack_width_limit: q.crack_width_limit ?? null, elements: q.elements ?? null, approach: q.approach ?? null });
   const enqueue = (q) => {
     queue = queue.filter((x) => changeKey(x) !== changeKey(q));
     queue.push(q);
@@ -40,22 +40,24 @@ export async function renderValueEngineering(host, h) {
     const v = values[idea.id];
     if (v == null || idea.what === "peaks") return c;
     if (c.elements) c.elements[idea.element][idea.what] = v;
+    else if (c.approach) c.approach[idea.what] = v;
     else c[idea.what] = v;
     return c;
   };
   const valueOf = (idea) => {
     const c = idea.change;
-    return values[idea.id] ?? (c.elements ? c.elements[idea.element][idea.what] : c[idea.what]);
+    return values[idea.id] ?? (c.elements ? c.elements[idea.element][idea.what] : c.approach ? c.approach[idea.what] : c[idea.what]);
   };
-  const WHAT = { thickness: "thickness", depth: "depth", diameter: "diameter", void_diameter: "void diameter", void_spacing: "void spacing", crack_width_limit: "crack width limit" };
+  const WHAT = { thickness: "thickness", depth: "depth", diameter: "diameter", void_diameter: "void diameter", void_spacing: "void spacing", crack_width_limit: "crack width limit", length: "length", ledge_depth: "ledge depth", ledge_projection: "ledge projection" };
   const shortLabel = (idea) =>
-    values[idea.id] == null ? idea.label : `${idea.element ?? "Every element"}: ${WHAT[idea.what]} ${values[idea.id]} mm`;
+    values[idea.id] == null ? idea.label : `${idea.element ?? "Every element"}: ${WHAT[idea.what]} ${values[idea.id]} ${idea.unit || "mm"}`;
   const merge = (ideas) => {
     const c = {};
     for (const idea of ideas) {
       const x = changeOf(idea);
       if (x.crack_width_limit != null) c.crack_width_limit = x.crack_width_limit;
       for (const [n, e] of Object.entries(x.elements || {})) c.elements = { ...c.elements, [n]: { ...(c.elements?.[n] || {}), ...e } };
+      if (x.approach) c.approach = { ...(c.approach || {}), ...x.approach };
     }
     return c;
   };
@@ -69,10 +71,10 @@ export async function renderValueEngineering(host, h) {
           .filter((i) => (i.element ?? "") === g)
           .map((i) => {
             const editable = i.what !== "peaks";
-            const step = i.what === "crack_width_limit" ? 0.05 : 50;
+            const step = i.what === "crack_width_limit" ? 0.05 : i.unit === "m" ? 0.5 : 50;
             return `<tr><td><input type="checkbox" data-tick="${i.id}" ${ticked.has(i.id) ? "checked" : ""}></td>
               <td>${esc(i.label)}</td>
-              <td>${editable ? `<input type="number" step="${step}" data-val="${i.id}" value="${valueOf(i)}" style="width:6em"> mm` : ""}</td>
+              <td>${editable ? `<input type="number" step="${step}" data-val="${i.id}" value="${valueOf(i)}" style="width:6em"> ${i.unit || "mm"}` : ""}</td>
               <td class="hint" style="white-space:normal">${esc(i.note || "")}</td></tr>`;
           })
           .join("");

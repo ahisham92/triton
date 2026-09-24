@@ -387,6 +387,101 @@ def section_files(
         files.update(beam_files(job, section_name, b, rebar))
     for d in results.get("slabs", []):
         files.update(slab_files(job, section_name, d, rebar))
+    for a in results.get("approach_slabs", []):
+        files.update(approach_files(job, section_name, a, rebar))
+    return files
+
+
+def approach_files(job: str, section_name: str, a: dict[str, Any], rebar: str) -> dict[str, bytes]:
+    """The approach slab as a strip about 1 m wide (``strip_width`` of its bottom bars) with its largest
+    sagging and hogging moments, QP and ULS; and the ledge as a 1 m strip at the beam face, its tie on top,
+    with F·a_c (hogging) and the tension H."""
+    grade = rebar_grade(rebar)
+    b = a.get("bending") or {}
+    bot, top = b.get("bottom") or {}, b.get("top") or {}
+    if not bot.get("phi") or not top.get("phi"):
+        return {}
+    h = a["thickness_mm"]
+    width = strip_width(bot["spacing_mm"])
+    k = width / 1000
+    groups = []
+    for f, sign, cover in (("bottom", -1, a["cover_bottom_mm"]), ("top", 1, a["cover_top_mm"])):
+        face = b[f]
+        n = max(1, round(width / face["spacing_mm"]))
+        y0 = -width / 2 + face["spacing_mm"] / 2
+        z = sign * (h / 2 - cover - face["phi"] / 2) / 1e3
+        groups.append(
+            line_group(face["phi"], n, (y0 / 1e3, z), ((y0 + (n - 1) * face["spacing_mm"]) / 1e3, z), grade)
+        )
+    sec = rect_section(
+        f"Approach slab {h:.0f}mm",
+        h,
+        width,
+        a["concrete"],
+        (a["cover_top_mm"],) + (a["cover_bottom_mm"],) * 3,
+        0,
+        groups,
+    )
+
+    def rows(kind: str) -> list[dict[str, Any]]:
+        sag = bot["M_Ed_kNm"] if kind == "uls" else bot["M_qp_kNm"]
+        hog = top["M_Ed_kNm"] if kind == "uls" else top["M_qp_kNm"]
+        out = [{"case": "max sagging", "combination": kind.upper(), "N_kN": 0.0, "M_kNm": sag * k}]
+        if hog > 0:
+            out.append({"case": "max hogging", "combination": kind.upper(), "N_kN": 0.0, "M_kNm": -hog * k})
+        return out
+
+    name = f"APPROACH SLAB {h:.0f}"
+    files = {
+        _safe(name) + ".ads": ads_file(
+            job=job,
+            title=name,
+            subtitle=f"{a.get('length_m', 0):g} m long, strip {width:.0f} mm",
+            heading=f"{section_name}: bottom {bot['bars']}, top {top['bars']}; forces per metre x {k:g}"[:80],
+            section_record=sec,
+            qp=rows("qp"),
+            uls=rows("uls"),
+            forces_of=lambda r: (r["N_kN"], r["M_kNm"], 0.0),
+        )
+    }
+    led = a.get("ledge") or {}
+    tie = led.get("tie") or {}
+    if tie.get("phi") and led.get("depth_mm"):
+        hl, w = led["depth_mm"], strip_width(tie["spacing_mm"])
+        kl = w / 1000
+        n = max(1, round(w / tie["spacing_mm"]))
+        y0 = -w / 2 + tie["spacing_mm"] / 2
+        z = (hl / 2 - led["cover_mm"] - tie["phi"] / 2) / 1e3
+        lg = [line_group(tie["phi"], n, (y0 / 1e3, z), ((y0 + (n - 1) * tie["spacing_mm"]) / 1e3, z), grade)]
+        lsec = rect_section(f"Ledge {hl:.0f}mm", hl, w, a["concrete"], (led["cover_mm"],) * 4, 0, lg)
+        a_c = (led.get("a_F_mm") or 0) / 1000
+        uls = [
+            {
+                "case": "at the beam face",
+                "combination": "ULS",
+                "N_kN": -led["H_Ed_kN_per_m"] * kl,
+                "M_kNm": -led["F_Ed_kN_per_m"] * a_c * kl,
+            }
+        ]
+        qp = [
+            {
+                "case": "at the beam face",
+                "combination": "QP",
+                "N_kN": 0.0,
+                "M_kNm": -led["F_qp_kN_per_m"] * a_c * kl,
+            }
+        ]
+        lname = f"REAR BEAM LEDGE {led['projection_mm']:.0f}X{hl:.0f}"
+        files[_safe(lname) + ".ads"] = ads_file(
+            job=job,
+            title=lname,
+            subtitle=f"strip {w:.0f} mm at the beam face",
+            heading=f"{section_name}: tie {tie.get('bars')}; F x a_c, H as tension; per metre x {kl:g}"[:80],
+            section_record=lsec,
+            qp=qp,
+            uls=uls,
+            forces_of=lambda r: (r["N_kN"], r["M_kNm"], 0.0),
+        )
     return files
 
 

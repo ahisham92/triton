@@ -24,7 +24,7 @@ from .costing import cost_section, model_length, slab_links
 from .furniture import positions_for
 from .design.runner import run_section
 from .materials import STEEL_DENSITY
-from .project import BeamInput, PileInput, Project, Section, SlabInput
+from .project import ApproachSlabInput, BeamInput, PileInput, Project, Section, SlabInput
 
 KINDS = {PileInput: "piles", BeamInput: "beams", SlabInput: "slabs"}
 
@@ -131,7 +131,7 @@ def trial_section(section: Section, name: str, size: dict[str, float]) -> Sectio
 
 def run_key(project: Project, section: Section, name: str, workbook: dict | None) -> str:
     now = fresh.fingerprint(project, section, workbook)
-    return fresh._hash(fresh.element_inputs(now, section.elements, [name])[name])
+    return fresh._hash(fresh.element_inputs(now, fresh.names(project, section), [name])[name])
 
 
 # --- Storage ---------------------------------------------------------------------------
@@ -292,7 +292,12 @@ def run(
         if tell:
             tell(i / max(len(sizes), 1), f"Designing {name} at {size_label(size)}")
         res = run_section(
-            project.design, trial, workbook, only=[name], furniture_at=positions_for(project, trial)
+            project.design,
+            trial,
+            workbook,
+            only=[name],
+            approach=project.approach,
+            furniture_at=positions_for(project, trial),
         )
         # A corner berth's parts as one design: the worst utilisation, the steel over all of them.
         design = next((e for e in combine_parts(res).get(kind) or [] if e["element"] == name), None)
@@ -455,6 +460,12 @@ def variant_label(variant: dict[str, Any], section: Section | None = None) -> st
     parts = []
     if change.get("crack_width_limit"):
         parts.append(f"wk {change['crack_width_limit']:g} mm")
+    if change.get("approach"):
+        a = change["approach"]
+        bits = [
+            f"{APPROACH_KEYS[k][0]} {v:g}{APPROACH_KEYS[k][1]}" for k, v in a.items() if k in APPROACH_KEYS
+        ]
+        parts.append(f"{fresh.APPROACH} {', '.join(bits)}")
     for name, c in (change.get("elements") or {}).items():
         bits = []
         size = {k: v for k, v in c.items() if k in SIZE_KEYS}
@@ -475,6 +486,14 @@ def variant_label(variant: dict[str, Any], section: Section | None = None) -> st
 
 
 SIZE_KEYS = ("thickness", "void_diameter", "void_spacing", "diameter", "width", "depth")
+# What a variant can change on the approach slab: (label, unit, lowest, highest).
+APPROACH_KEYS = {
+    "thickness": ("thickness", " mm", 150.0, 1500.0),
+    "length": ("length", " m", 1.0, 30.0),
+    "ledge_depth": ("ledge depth", " mm", 200.0, 2000.0),
+    "ledge_projection": ("ledge projection", " mm", 150.0, 1500.0),
+    "crack_width_limit": ("crack width limit", " mm", 0.05, 0.5),
+}
 PEAKS = {
     "peak": "peaks as they are",
     "face_mean": "face mean",
@@ -517,10 +536,51 @@ def clean_variant(variant: dict[str, Any], section: Section | None = None) -> di
             mine["crack_width_limit"] = _wk(c["crack_width_limit"])
         if mine:
             out.setdefault("elements", {})[name] = mine
+    a = variant.get("approach") or {}
+    mine = {}
+    for k, v in a.items():
+        if k not in APPROACH_KEYS or v in (None, ""):
+            continue
+        label, unit, lo, hi = APPROACH_KEYS[k]
+        v = float(v)
+        if not lo <= v <= hi:
+            raise ValueError(f"Approach slab {label} {v:g}{unit} is outside {lo:g} to {hi:g}{unit}.")
+        mine[k] = v
+    if mine:
+        out["approach"] = mine
     for k in META:
         if variant.get(k):
             out[k] = variant[k]
     return out
+
+
+def variant_approach(project: Project, variant: dict[str, Any]) -> ApproachSlabInput | None:
+    """The project's approach slab with the variant's changes (and its crack width limit on all)."""
+    a = project.approach
+    if a is None:
+        return None
+    change = change_of(variant)
+    c = change.get("approach") or {}
+    update: dict[str, Any] = {k: c[k] for k in ("thickness", "length") if k in c}
+    wk = c.get("crack_width_limit") or change.get("crack_width_limit")
+    if wk:
+        update |= {f: wk for f in CRACK_FIELDS}
+    ledge = {}
+    if "ledge_depth" in c:
+        ledge["depth"] = c["ledge_depth"]
+    if "ledge_projection" in c:
+        ledge["projection"] = c["ledge_projection"]
+    if wk:
+        ledge["crack_width_limit"] = wk
+    if ledge:
+        update["ledge"] = a.ledge.model_copy(update=ledge)
+    return a.model_copy(update=update) if update else a
+
+
+def variant_project(project: Project, variant: dict[str, Any]) -> Project:
+    """The project with the variant's approach slab (its keys follow the approach's inputs)."""
+    a = variant_approach(project, variant)
+    return project if a is project.approach else project.model_copy(update={"approach": a})
 
 
 def variant_section(section: Section, variant: dict[str, Any]) -> Section:
@@ -546,12 +606,14 @@ def variant_section(section: Section, variant: dict[str, Any]) -> Section:
     )
 
 
-def _designable(section: Section) -> list[str]:
-    """Every element the Design tab designs, in its order (a sheet pile wall only when defined)."""
+def _designable(section: Section, project: Project | None = None) -> list[str]:
+    """Every element the Design tab designs, in its order (a sheet pile wall only when defined), and the
+    project's approach slab last."""
     from .project import CombiWallInput, SheetPileInput
 
     order = (PileInput, CombiWallInput, SheetPileInput, BeamInput, SlabInput)
-    return [n for t in order for n, e in section.elements.items() if isinstance(e, t)]
+    out = [n for t in order for n, e in section.elements.items() if isinstance(e, t)]
+    return out + ([fresh.APPROACH] if project is not None and project.approach is not None else [])
 
 
 # Two sets of whole-section runs: "scenarios" (Comparisons, all elements) and "ve" (Value engineering).
@@ -575,7 +637,7 @@ def _save_scenarios(d: Path, data: dict[str, Any], which: str) -> None:
     tmp.replace(_scenario_file(d, which))
 
 
-DESIGN_KINDS = ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs")
+DESIGN_KINDS = ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs")
 
 
 def run_scenarios(
@@ -596,12 +658,13 @@ def run_scenarios(
     data = load_scenarios(d, which)
     data["variants"] = variants[1:]
     runs = data.setdefault("runs", {})
-    names = _designable(section)
+    names = _designable(section, project)
     todo = [(v, n) for v in variants for n in names]
     done, left = 0, 0
     for i, (variant, name) in enumerate(todo):
         vs = variant_section(section, variant)
-        key = scenario_key(project, vs, name, summary)
+        vp = variant_project(project, variant)
+        key = scenario_key(vp, vs, name, summary)
         vk = variant_key(variant)
         mine = runs.setdefault(vk, {})
         if mine.get(name) == key and (d / "trials" / f"{key}.json.gz").exists():
@@ -615,7 +678,7 @@ def run_scenarios(
         if tell:
             tell(i / max(len(todo), 1), f"Designing {name} ({variant_label(variant, section)})")
         res = run_section(
-            project.design, vs, workbook, only=[name], furniture_at=positions_for(project, vs)
+            vp.design, vs, workbook, only=[name], approach=vp.approach, furniture_at=positions_for(vp, vs)
         )
         design = next((e for k in DESIGN_KINDS for e in res.get(k) or [] if e["element"] == name), None)
         if design is None:
@@ -635,7 +698,7 @@ def scenario_key(project: Project, section: Section, name: str, workbook: dict |
     """``run_key``, and for beams and slabs the sizes of the elements they are designed with (the piles
     they sit on and each other), which a whole-section variant can change too."""
     key = run_key(project, section, name, workbook)
-    if kind_of(section.elements[name]) not in ("beams", "slabs"):
+    if name not in section.elements or kind_of(section.elements[name]) not in ("beams", "slabs"):
         return key
     others = {n: size_of(e) for n, e in section.elements.items() if n != name and kind_of(e)}
     return fresh._hash([key, others])
@@ -653,6 +716,8 @@ def _mark_no_results(d: Path, key: str) -> None:
 def design_kind(element: Any) -> str:
     from .project import CombiWallInput, SheetPileInput
 
+    if element is None:
+        return "approach_slabs"
     if isinstance(element, CombiWallInput):
         return "combi_walls"
     if isinstance(element, SheetPileInput):
@@ -681,18 +746,19 @@ def scenarios_view(
     data = load_scenarios(d, which)
     start = [{"crack_width_limit": 0.3}] if which == "scenarios" else []
     variants = [{}] + [v for v in (data.get("variants") if "variants" in data else start) if change_of(v)]
-    names = _designable(section)
+    names = _designable(section, project)
     L0 = model_length(section, results or {})
     cols = []
     for variant in variants:
         vk = variant_key(variant)
         vs = variant_section(section, variant)
+        vp = variant_project(project, variant)
         mine = (data.get("runs") or {}).get(vk) or {}
         designs: dict[str, list] = {}
         elements: dict[str, dict] = {}
         missing = 0
         for name in names:
-            key = scenario_key(project, vs, name, summary)
+            key = scenario_key(vp, vs, name, summary)
             if mine.get(name) != key:
                 missing += 1
                 elements[name] = {"state": "out of date" if name in mine else "not run"}
@@ -705,7 +771,7 @@ def scenarios_view(
                 missing += 1
                 elements[name] = {"state": "not run"}
                 continue
-            kind = design_kind(section.elements[name])
+            kind = design_kind(section.elements.get(name))
             designs.setdefault(kind, []).append(design)
             elements[name] = {"state": "done", **_element_summary(kind, design)}
         col: dict[str, Any] = {
@@ -724,9 +790,22 @@ def scenarios_view(
             if berth:
                 c = cost_section(project, section, designs, length=L, berth=berth)
                 for r in c.get("rows") or []:
-                    e = elements.get(r["element"])
-                    if e is not None:
-                        e |= {"cost_per_m": r["cost_per_m"], "rebar_t_per_m": round(r["rebar_t"] / berth, 4)}
+                    # The ledge's row counts with the approach slab it carries.
+                    e = elements.get(fresh.APPROACH if r["kind"] == "ledge" else r["element"])
+                    if e is None:
+                        continue
+                    if r["kind"] == "ledge" and "cost_per_m" in e:
+                        both = (
+                            None
+                            if e["cost_per_m"] is None or r["cost_per_m"] is None
+                            else e["cost_per_m"] + r["cost_per_m"]
+                        )
+                        e |= {
+                            "cost_per_m": both,
+                            "rebar_t_per_m": round(e["rebar_t_per_m"] + r["rebar_t"] / berth, 4),
+                        }
+                        continue
+                    e |= {"cost_per_m": r["cost_per_m"], "rebar_t_per_m": round(r["rebar_t"] / berth, 4)}
                 t = c.get("totals") or {}
                 col |= {
                     "cost_per_m": c.get("per_m", {}).get("cost"),
@@ -760,14 +839,18 @@ def scenarios_view(
 # --- Value engineering: the ideas Triton can cost ----------------------------------------
 
 
-def ideas(section: Section, results: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def ideas(
+    section: Section, results: dict[str, Any] | None = None, approach: ApproachSlabInput | None = None
+) -> list[dict[str, Any]]:
     """Every change Triton can design and cost for this section, one idea each, with a suggested value
     the user can edit. ``change`` is a variant; ideas with the same ``group`` change the same input
     and cannot be mixed."""
     results = results or {}
     out: list[dict[str, Any]] = []
 
-    def add(group: str, element: str | None, label: str, change: dict, what: str, note: str = "") -> None:
+    def add(
+        group: str, element: str | None, label: str, change: dict, what: str, note: str = "", unit: str = "mm"
+    ) -> None:
         out.append(
             {
                 "id": fresh._hash([group, change]),
@@ -777,10 +860,13 @@ def ideas(section: Section, results: dict[str, Any] | None = None) -> list[dict[
                 "what": what,
                 "change": change,
                 "note": note,
+                "unit": unit,
             }
         )
 
     limits = sorted({getattr(e, f) for e in section.elements.values() for f in CRACK_FIELDS if hasattr(e, f)})
+    if approach is not None:
+        limits = sorted({*limits, approach.crack_width_limit, approach.crack_width_limit_bottom})
     now = max(limits) if limits else 0.2
     for wk in (0.25, 0.3):
         if wk > now:
@@ -868,5 +954,60 @@ def ideas(section: Section, results: dict[str, Any] | None = None) -> list[dict[
                 el({"crack_width_limit": 0.3}),
                 "crack_width_limit",
                 "Only this element.",
+            )
+    if approach is not None:
+        name = fresh.APPROACH
+        t, L, led = approach.thickness, approach.length, approach.ledge
+        ap = lambda c: {"approach": c}  # noqa: E731
+        for dt in (-50, 50):
+            if t + dt >= 150:
+                add(
+                    f"approach:{name}:thickness",
+                    name,
+                    f"{name} {t + dt:g} mm thick ({dt:+g})",
+                    ap({"thickness": t + dt}),
+                    "thickness",
+                    "Thinner: less concrete, but more bars and shear links near the ledge. "
+                    "Thicker: the reverse, and a little more load on the ledge and the rear beam.",
+                )
+        for dL in (-1.0, 1.0):
+            if L + dL >= 2:
+                add(
+                    f"approach:{name}:length",
+                    name,
+                    f"{name} {L + dL:g} m long ({dL:+g} m)",
+                    ap({"length": L + dL}),
+                    "length",
+                    "Only where the settlement behind the quay allows: the slab must still bridge it.",
+                    unit="m",
+                )
+        for dd in (-100, 100):
+            if led.depth + dd >= 250:
+                add(
+                    f"approach:{name}:ledge_depth",
+                    name,
+                    f"Rear beam ledge {led.depth + dd:g} mm deep ({dd:+g})",
+                    ap({"ledge_depth": led.depth + dd}),
+                    "ledge_depth",
+                    "The rear beam is designed with it too (the ledge's load and torque).",
+                )
+        for dp in (-50, 50):
+            if led.projection + dp >= led.bearing_width + led.edge_distance + 50:
+                add(
+                    f"approach:{name}:ledge_projection",
+                    name,
+                    f"Rear beam ledge projecting {led.projection + dp:g} mm ({dp:+g})",
+                    ap({"ledge_projection": led.projection + dp}),
+                    "ledge_projection",
+                    "A shorter ledge: a shorter lever arm for its tie and less torque on the rear beam.",
+                )
+        if approach.crack_width_limit < 0.3 or approach.crack_width_limit_bottom < 0.3:
+            add(
+                f"approach:{name}:crack",
+                name,
+                f"{name} and ledge crack width limit 0.3 mm",
+                ap({"crack_width_limit": 0.3}),
+                "crack_width_limit",
+                "Only the approach slab and its ledge.",
             )
     return out

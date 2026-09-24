@@ -323,7 +323,8 @@ LOCKED = "The model is locked since it was designed. Press Unlock to edit first.
 def _model(p: Project) -> dict:
     """What the lock protects: everything the design depends on (not prices, costing or drawing names)."""
     d = p.model_dump(
-        mode="json", exclude={"locked", "created_at", "updated_at", "prices", "drawings", "revisions", "furniture"}
+        mode="json",
+        exclude={"locked", "created_at", "updated_at", "prices", "drawings", "revisions", "furniture"},
     )
     d["info"] = {k: v for k, v in d["info"].items() if k in ("name", "number", "client", "location")}
     for s in d["sections"]:
@@ -393,7 +394,7 @@ def _drop_stale(project_id: str, project: Project) -> None:
         if not results:
             continue
         now = fresh.fingerprint(project, section, store().workbook_summary(project_id, section.id))
-        changed, stale = fresh.status(results, now, section.elements)
+        changed, stale = fresh.status(results, now, fresh.names(project, section))
         designed = {e["element"] for e in fresh._designed(results)}
         gone = designed & set(stale)
         if changed is None or not gone:
@@ -1127,11 +1128,13 @@ class DesignRequest(BaseModel):
     )
 
 
-def _merge(old: dict | None, new: dict, handled: list[str], section: Section) -> dict:
+def _merge(
+    old: dict | None, new: dict, handled: list[str], section: Section, names: list[str] | None = None
+) -> dict:
     """The section's results with the elements just designed replacing their earlier results; the
     other elements keep theirs."""
     old = old or {}
-    done, kept = set(handled), set(section.elements)
+    done, kept = set(handled), set(section.elements if names is None else names)
     out = {**old, **{k: v for k, v in new.items() if k not in ("designed", "left")}}
     for kind in fresh.KINDS:
         earlier = [e for e in old.get(kind) or [] if e["element"] not in done]
@@ -1165,20 +1168,22 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
             tell,
             only=only,
             deadline=deadline,
+            approach=project.approach,
             furniture_at=furniture_mod.positions_for(project, section),
         )
+        every = fresh.names(project, section)
         summary = store().workbook_summary(project_id, section_id)
         now = fresh.fingerprint(project, section, summary)
         old = store().load_results(project_id, section_id)
         handled = new["designed"]
         if only is None and not new["left"]:
             old = None  # everything designed again: nothing earlier stays
-        results = _merge(old, new, handled, section)
+        results = _merge(old, new, handled, section, every)
         spws = {e["element"] for e in results["sheet_pile_walls"]}
-        earlier = (fresh._by_element(old, section.elements) or {}) if old else {}
+        earlier = (fresh._by_element(old, every) or {}) if old else {}
         results["element_inputs"] = {
-            **{k: v for k, v in earlier.items() if k in section.elements or k in spws},
-            **fresh.element_inputs(now, section.elements, handled),
+            **{k: v for k, v in earlier.items() if k in every or k in spws},
+            **fresh.element_inputs(now, every, handled),
         }
         results["inputs"] = now
         tell(0.97, "Saving")
@@ -1186,7 +1191,7 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
     if not project.locked:
         project.locked = True
         store().save(project)
-    changed, stale = fresh.status(results, now, section.elements)
+    changed, stale = fresh.status(results, now, every)
     return {
         **results,
         "changed": changed,
@@ -1218,7 +1223,7 @@ def _picked(section: Section, results: dict, elements: str | None) -> tuple[Sect
     names = [n.strip() for n in (elements or "").split(",") if n.strip()]
     if not names:
         return section, results, ""
-    unknown = [n for n in names if n not in section.elements]
+    unknown = [n for n in names if n not in section.elements and n != fresh.APPROACH]
     if unknown:
         raise HTTPException(404, f"No element named {', '.join(unknown)} in {section.name}.")
     keep = set(names)
@@ -1443,7 +1448,9 @@ def project_costing(project_id: str) -> dict:
         if res is not None:
             res = fresh.with_status(project, s, res, store().workbook_summary(project_id, s.id))
         results[s.id] = res
-    counts = {s.id: furniture_mod.counts_for_costing(_furniture_saved(project_id, s.id)) for s in project.sections}
+    counts = {
+        s.id: furniture_mod.counts_for_costing(_furniture_saved(project_id, s.id)) for s in project.sections
+    }
     return cost_project(project, results, counts)
 
 
@@ -1531,9 +1538,9 @@ def use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
     project.sections = [trial if s.id == section_id else s for s in project.sections]
     kind = trials.kind_of(element)
     old = store().load_results(project_id, section_id)
-    results = _merge(old, {kind: [design]}, [body.element], trial)
+    results = _merge(old, {kind: [design]}, [body.element], trial, fresh.names(project, trial))
     now = fresh.fingerprint(project, trial, summary)
-    earlier = (fresh._by_element(old, trial.elements) or {}) if old else {}
+    earlier = (fresh._by_element(old, fresh.names(project, trial)) or {}) if old else {}
     results["element_inputs"] = {**earlier, **fresh.element_inputs(now, trial.elements, [body.element])}
     results["inputs"] = now
     if not results.get("run_at"):
@@ -1571,7 +1578,7 @@ def _scenarios(project_id: str, section_id: str, which: str) -> dict:
     results = store().load_results(project_id, section_id)
     out = trials.scenarios_view(project, section, summary, results, d, which)
     if which == "ve":
-        out["ideas"] = trials.ideas(section, results)
+        out["ideas"] = trials.ideas(section, results, project.approach)
     return out
 
 
@@ -1789,7 +1796,12 @@ def expansion_joints(project_id: str, section_id: str) -> dict:
         parts, _ = section_alignment(section, sheets)
         raw = wb.elements()
     return section_joints(
-        project.design, section, raw, parts, along_axis(section), furniture_mod.positions_for(project, section)
+        project.design,
+        section,
+        raw,
+        parts,
+        along_axis(section),
+        furniture_mod.positions_for(project, section),
     )
 
 
@@ -1877,7 +1889,10 @@ def _berth_geometry(project_id: str, section: Section) -> list[dict]:
         pass
     wb = _workbook(project_id, section)
     if wb is None:
-        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first: the furniture is laid out on its beams and piles.")
+        raise HTTPException(
+            409,
+            "Upload this section's workbook on the Workbook tab first: the furniture is laid out on its beams and piles.",
+        )
     geometry = section_geometry(wb)
     store()._write_json(path, {"key": key, "geometry": geometry})
     return geometry

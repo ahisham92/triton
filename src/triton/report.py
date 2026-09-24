@@ -146,6 +146,8 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     _criteria(r, project.design, section, results)
     _sections(r, section, results)
     _displacements(r, section)
+    for a in results.get("approach_slabs", []):
+        _approach_summary(r, a)
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
         for p in results.get("piles", []):
@@ -158,6 +160,8 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             _slab(r, s)
         for w in results.get("sheet_pile_walls", []):
             _spw(r, w)
+        for a in results.get("approach_slabs", []):
+            _approach(r, a)
     return r
 
 
@@ -173,7 +177,7 @@ def _check_rows(section: Section, res: dict) -> list[list[str]]:
     """Each designed element's checking status; a check given on an earlier design says so."""
     names = [
         x["element"]
-        for k in ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs")
+        for k in ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs")
         for x in res.get(k, [])
     ]
     if not section.checks:
@@ -199,6 +203,10 @@ def _elements(res: dict) -> list[str]:
     ]
     out += [f"{b['element']} ({KIND.get(b.get('kind'), 'beam').lower()})" for b in res.get("beams", [])]
     out += [f"{s['element']} (deck slab)" for s in res.get("slabs", [])]
+    out += [
+        f"{a['element']} (approach slab to the slab on grade, on a ledge of the rear beam)"
+        for a in res.get("approach_slabs", [])
+    ]
     out += [
         f"{w['element']} (steel sheet pile wall"
         + (
@@ -545,7 +553,7 @@ def _sections(r: Report, section: Section, res: dict) -> None:
     _steel_summary(r, res)
     failing = [
         x["element"]
-        for k in ("piles", "combi_walls", "beams", "slabs")
+        for k in ("piles", "combi_walls", "beams", "slabs", "approach_slabs")
         for x in res.get(k, [])
         if not x.get("passed")
     ]
@@ -818,6 +826,154 @@ def _steel_summary(r: Report, res: dict) -> None:
             "Overall ρ is the main bars' volume over the whole element's concrete, laps included; the "
             "ratio at the pile head, where the cage is heaviest, is in each pile's calculation."
         )
+
+
+def _approach_summary(r: Report, a: dict) -> None:
+    """The approach slab and its ledge on the rear beam, per metre."""
+    b = a.get("bending") or {}
+    led = a.get("ledge") or {}
+    r.h(2, "3.6 Approach slab and rear beam ledge")
+    r.p(
+        f"The approach slab ({a.get('length_m', 0):g} m long, {a.get('thickness_mm', 0):g} mm thick, "
+        f"{a.get('concrete')}) links the quay to the existing slab on grade. It rests on an elastomeric bearing "
+        f"strip on a ledge of the rear beam, with a {a.get('joint_mm', 0):g} mm expansion joint, and is designed per "
+        "metre width to BS EN 1992-1-1; the ledge is designed as a nib by strut and tie (BS EN 1992-1-1 6.5 and "
+        "Annex J.3), and its load and torque are added to the rear beam."
+    )
+    rows = []
+    for face, label in (("bottom", "Bottom (sagging)"), ("top", "Top (hogging)")):
+        f = b.get(face) or {}
+        rows.append(
+            [
+                label,
+                f.get("bars"),
+                f.get("as_mm2_per_m"),
+                f.get("M_Ed_kNm"),
+                f.get("M_Rd_kNm"),
+                f"{f.get('wk_mm')} / {f.get('wk_limit_mm')}",
+                f.get("utilisation"),
+            ]
+        )
+    r.caption("Table 3-8: Approach slab, per metre width")
+    r.table(["Face", "Bars", "As (mm²/m)", "MEd (kNm/m)", "MRd (kNm/m)", "wk / limit (mm)", "Ratio"], rows)
+    sh = a.get("shear") or {}
+    r.p(
+        f"Shear at d from the ledge: VEd {sh.get('V_Ed_kN')} kN/m against VRd,c {sh.get('V_Rd_c_kN')} kN/m"
+        + (
+            f"; links of {sh['links_mm2_per_m2']} mm² per m² are needed near the ledge."
+            if sh.get("links_mm2_per_m2")
+            else ", no links needed."
+        )
+    )
+    u = led.get("utilisations") or {}
+    r.caption("Table 3-9: Ledge on the rear beam, per metre")
+    r.table(
+        ["Check", "Value", "Ratio"],
+        [
+            [
+                "Tie bars (top)",
+                f"{(led.get('tie') or {}).get('bars')}, Ft {led.get('F_t_kN_per_m')} kN/m",
+                u.get("tie"),
+            ],
+            ["Crack width (QP)", f"{(led.get('crack') or {}).get('wk_mm')} mm", u.get("crack")],
+            ["Bearing node", f"{(led.get('bearing') or {}).get('sigma_MPa')} MPa", u.get("bearing")],
+            ["Shear at the beam face", f"β = {(led.get('shear') or {}).get('beta')}", u.get("shear")],
+            ["Compression node at the face", f"x = {led.get('x_node_mm')} mm", u.get("node")],
+        ],
+    )
+
+
+def _approach(r: Report, a: dict) -> None:
+    """Appendix: the approach slab and its ledge in full."""
+    b = a.get("bending") or {}
+    led = a.get("ledge") or {}
+    rb = led.get("rear_beam") or {}
+    r.h(1, f"{a['element']}: approach slab and rear beam ledge")
+    r.kv(
+        [
+            ("Slab", f"{a.get('length_m')} m × {a.get('thickness_mm')} mm, {a.get('concrete')}"),
+            ("Covers", f"top {a.get('cover_top_mm')} mm, bottom {a.get('cover_bottom_mm')} mm"),
+            (
+                "Span",
+                f"{a.get('span_m')} m"
+                + (
+                    " (ledge to slab on grade)"
+                    if a.get("far_support")
+                    else " unsupported, then on the ground"
+                ),
+            ),
+            (
+                "Largest sagging moment",
+                f"{(b.get('bottom') or {}).get('M_Ed_kNm')} kNm/m at {a.get('M_sag_at_m')} m",
+            ),
+            (
+                "Largest hogging moment",
+                f"{(b.get('top') or {}).get('M_Ed_kNm')} kNm/m at {a.get('M_hog_at_m')} m",
+            ),
+            ("Bottom bars", (b.get("bottom") or {}).get("bars")),
+            ("Top bars", (b.get("top") or {}).get("bars")),
+            (
+                "Distribution bars",
+                f"bottom {((a.get('distribution') or {}).get('bottom') or {}).get('bars')}, top {((a.get('distribution') or {}).get('top') or {}).get('bars')}",
+            ),
+            (
+                "Reaction on the ledge",
+                f"ULS {(a.get('reaction') or {}).get('uls_kN_per_m')} kN/m, QP {(a.get('reaction') or {}).get('qp_kN_per_m')} kN/m",
+            ),
+            ("Utilisation", a.get("utilisation")),
+            ("Result", _ok(a.get("passed"))),
+        ]
+    )
+    r.bullets(a.get("notes") or [])
+    r.h(2, "Ledge (nib), strut and tie")
+    r.kv(
+        [
+            (
+                "Ledge",
+                f"{led.get('projection_mm')} mm projection × {led.get('depth_mm')} mm deep, top {led.get('top_below_beam_top_mm')} mm below the beam top",
+            ),
+            (
+                "Load F (ULS)",
+                f"{led.get('F_Ed_kN_per_m')} kN/m at a_c = {led.get('a_F_mm')} mm, H = {led.get('H_Ed_kN_per_m')} kN/m",
+            ),
+            (
+                "Lever arm",
+                f"d = {led.get('d_mm')} mm, z = {led.get('z_mm')} mm, tan θ = {led.get('tan_theta')}",
+            ),
+            ("Tie force Ft", f"{led.get('F_t_kN_per_m')} kN/m"),
+            (
+                "Tie bars",
+                f"{(led.get('tie') or {}).get('bars')} ({(led.get('tie') or {}).get('as_mm2_per_m')} / {(led.get('tie') or {}).get('as_req_mm2_per_m')} mm²/m); {(led.get('tie') or {}).get('detail')}",
+            ),
+            (
+                "Links",
+                f"{(led.get('links') or {}).get('bars') or 'none'}: {(led.get('links') or {}).get('rule')}",
+            ),
+            (
+                "Bearing node",
+                f"{(led.get('bearing') or {}).get('sigma_MPa')} ≤ {(led.get('bearing') or {}).get('sigma_Rd_MPa')} MPa",
+            ),
+            (
+                "Shear at the face",
+                f"β·VEd = {(led.get('shear') or {}).get('beta')} × {(led.get('shear') or {}).get('V_Ed_kN')} kN ≤ VRd,c {(led.get('shear') or {}).get('V_Rd_c_kN')} kN",
+            ),
+            (
+                "Crack width (QP)",
+                f"{(led.get('crack') or {}).get('wk_mm')} mm ≤ {(led.get('crack') or {}).get('limit_mm')} mm",
+            ),
+            (
+                "Hanger bars in the rear beam",
+                f"{(led.get('hanger') or {}).get('bars')} ({(led.get('hanger') or {}).get('as_req_mm2_per_m')} mm²/m), in addition to its links",
+            ),
+            (
+                "On the rear beam",
+                f"{rb.get('line_load_uls_kN_per_m')} kN/m and a {rb.get('wheel_uls_kN')} kN wheel (ULS), {rb.get('eccentricity_mm')} mm off its centre line",
+            ),
+            ("Utilisation", led.get("utilisation")),
+            ("Result", _ok(led.get("passed"))),
+        ]
+    )
+    r.bullets(led.get("notes") or [])
 
 
 def _displacements(r: Report, section: Section) -> None:
@@ -1342,9 +1498,127 @@ def _beam(r: Report, b: dict) -> None:
         r.kv([("Result", _ok(tr.get("passed")))])
     elif tr:
         r.note(tr.get("note", ""))
+    for rm in b.get("rooms") or []:
+        _room(r, rm)
     for n in b.get("notes", []):
         r.note(n)
     _sets(r, b.get("governing_sets"), "Governing sets")
+
+
+WALL = {"sea": "Sea-side wall", "land": "Land-side wall", "floor": "Floor", "roof": "Roof"}
+
+
+def _room(r: Report, rm: dict, kind: str = "room") -> None:
+    """A room cut into the beam (or a channel in the deck): its section, checks and extra bars."""
+    if kind == "room":
+        r.h(3, f"{rm['name']}: room in the beam from {rm['start_m']:g} to {rm['end_m']:g} m")
+    else:
+        r.h(
+            3,
+            f"{rm['name']}: channel along {rm.get('direction', '')} from {rm['start_m']:g} to {rm['end_m']:g} m, "
+            f"centre line at {rm.get('at_m', 0):g} m",
+        )
+    x = rm.get("section")
+    if not x:
+        for n in rm.get("notes", []):
+            r.note(n)
+        r.kv([("Result", _ok(False))])
+        return
+    for w in rm.get("warnings") or []:
+        r.note(w)
+    bars = rm["bars"]
+    fr = rm["frame"]
+    g = rm["bending"].get("governing") or {}
+    r.kv(
+        [
+            (
+                kind.capitalize(),
+                f"{x['width_mm']} × {x['height_mm']} mm"
+                + (f" under a {x['top_mm']} mm roof" if x["top_mm"] else ", open at the top"),
+            ),
+            ("Concrete below", f"{x['bottom_mm']} mm"),
+            (
+                "Walls",
+                f"{x['wall_sea_mm']} mm sea side, {x['wall_land_mm']} mm land side"
+                if kind == "room"
+                else f"{x['wall_sea_mm']} mm",
+            ),
+            ("Below the slab soffit", f"{rm['downstand_mm']} mm" if rm.get("downstand_mm") else None),
+            (f"Stations along the {kind}", rm.get("stations")),
+            (
+                "N with biaxial bending",
+                f"{rm['bending']['utilisation']} ({g.get('combination')} at {g.get('s')} m: N {g.get('N_kN')} kN, "
+                f"Mv {g.get('Mv_kNm')} kNm of {g.get('MRd_v_kNm')}, Mh {g.get('Mh_kNm')} kNm of {g.get('MRd_h_kNm')})"
+                if g
+                else rm["bending"]["utilisation"],
+            ),
+        ]
+    )
+    r.table(
+        ["Part", "V share", "T share", "V (kN)", "T (kNm)", "Links", "Utilisation"],
+        [
+            [
+                WALL.get(k, k),
+                s.get("V_share"),
+                s.get("T_share"),
+                (s.get("governing") or {}).get("V_kN"),
+                (s.get("governing") or {}).get("T_kNm"),
+                (s.get("link") or {}).get("label") or "not needed",
+                s.get("utilisation"),
+            ]
+            for k, s in rm["shear"].items()
+        ],
+    )
+    r.table(
+        ["Crack (QP)", "wk (mm)", "Limit (mm)", "Result"],
+        [
+            ["Top of the walls" if f == "top" else "Bottom", c["wk"], c["limit"], _ok(c["passed"])]
+            for f, c in rm["cracks"].items()
+        ],
+    )
+    fl, wl = fr["floor"], fr["walls"]
+    r.p(
+        f"Across the room (per metre): M {fr['M_kNm_per_m']['max']} / {fr['M_kNm_per_m']['min']} kNm/m from the "
+        f"plates, plus the floor's span of {fr['floor_load']['span_m']} m under {fr['floor_load']['uls_kPa']} kPa "
+        "(ULS)."
+    )
+    r.table(
+        ["Across, per metre", "Thickness (mm)", "Top / inside", "Bottom / outside", "Utilisation"],
+        [
+            ["Floor", fl["thickness_mm"], fl["top"]["label"], fl["bottom"]["label"], fl["utilisation"]],
+            ["Walls", wl["thickness_mm"], wl["top"]["label"], wl["bottom"]["label"], wl["utilisation"]],
+            [
+                "Floor shear",
+                fl["thickness_mm"],
+                fr["floor_shear"].get("links") or "no links",
+                "",
+                fr["floor_shear"]["utilisation"],
+            ],
+        ],
+    )
+    r.kv(
+        [
+            (
+                "Beam top bars cut",
+                f"{bars['cut_top']['count']}Ø{bars['cut_top']['phi']} ({bars['cut_top']['area_mm2']} mm²)",
+            ),
+            (
+                "Top of each wall",
+                f"{bars['wall_top']['label']}, {rm['corners']['wall_top_bars_past_ends_mm']} mm past each end",
+            ),
+            ("Extra bottom bars", bars["bottom_extra"]["label"]),
+            ("Inside faces of the walls", bars["inner_sides"]["label"]),
+            ("Inside corners", fr["corner_bars"]["label"]),
+            ("Corners of the opening", rm["corners"]["diagonals"]),
+            ("Extra steel over the room", f"{rm['extra_steel_kg']} kg"),
+            ("Utilisation (all checks)", rm.get("utilisation")),
+            ("Result", _ok(rm.get("passed"))),
+        ]
+    )
+    if rm.get("suggestion"):
+        r.note(rm["suggestion"]["text"])
+    for n in rm.get("notes", []):
+        r.note(n)
 
 
 LAYER = {"bottom_x": "bottom X", "bottom_y": "bottom Y", "top_x": "top X", "top_y": "top Y"}
@@ -1535,7 +1809,81 @@ def _slab(r: Report, s: dict) -> None:
             ],
         )
         r.p(f"{rest.get('length_m')} m between joints, R = {rest.get('R')} ({rest.get('R_from')}).")
+    op = s.get("openings") or {}
+    for m in op.get("manholes") or []:
+        _manhole(r, m)
+    for c in op.get("channels") or []:
+        _room(r, c, "channel")
     for n in s.get("notes", []):
+        r.note(n)
+
+
+def _manhole(r: Report, m: dict) -> None:
+    """A manhole or pit in the deck: the strips beside it and their trimmer bars."""
+    r.h(3, f"{m['name']}: opening in the deck")
+    if not m.get("directions"):
+        for n in m.get("notes", []):
+            r.note(n)
+        r.kv([("Result", _ok(False))])
+        return
+    r.kv(
+        [
+            (
+                "Opening",
+                f"{m['size_x_mm']} × {m['size_y_mm']} mm at X {m['x']:g}, Y {m['y']:g}"
+                + ("" if m["through"] else f", a pit {m['depth_mm']:g} mm deep"),
+            ),
+        ]
+    )
+    r.table(
+        [
+            "Bars along",
+            "Cut over (mm)",
+            "Strip (mm)",
+            "Factor",
+            "Strips need top / bottom",
+            "Trimmers top",
+            "Trimmers bottom",
+            "Utilisation",
+            "Shear",
+        ],
+        [
+            [
+                k,
+                d["cut_width_mm"],
+                d["strip_mm"],
+                d["factor"],
+                f"{d['strip']['top']['label']} / {d['strip']['bottom']['label']}",
+                d["trimmers"]["top"]["label"],
+                d["trimmers"]["bottom"]["label"],
+                d["strip"]["utilisation"],
+                d["shear"]["utilisation"],
+            ]
+            for k, d in m["directions"].items()
+        ],
+    )
+    pairs = [("Corners", m["corners"]["diagonals"])]
+    for p in m.get("piles") or []:
+        pairs.append(
+            (
+                f"Punching, {p['pile']}",
+                f"{round(100 * p['share'])}% of the perimeter lost: {p['utilisation_before']} → {p['utilisation']}",
+            )
+        )
+    if m.get("pit"):
+        pit = m["pit"]
+        pairs.append(
+            (
+                "Pit floor",
+                f"{pit['thickness_mm']} mm: top {pit['top']['label']}, bottom "
+                f"{pit['bottom']['label']}, utilisation {pit['utilisation']}",
+            )
+        )
+    pairs += [("Utilisation", m.get("utilisation")), ("Result", _ok(m.get("passed")))]
+    r.kv(pairs)
+    if m.get("suggestion"):
+        r.note(m["suggestion"]["text"])
+    for n in m.get("notes", []):
         r.note(n)
 
 

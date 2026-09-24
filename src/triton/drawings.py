@@ -205,10 +205,111 @@ def _beam_views(b: dict[str, Any]) -> list[View]:
         (-W / 2, y - 15 * v.scale),
         f"Along {along} from {_f(b.get('start_m'))} to {_f(b.get('end_m'))} m, top at {_f(b.get('level_m'))}",
     )
-    return [v]
+    return [v] + [_room_view(b, rm) for rm in b.get("rooms") or []]
+
+
+def _room_view(b: dict[str, Any], rm: dict[str, Any]) -> View:
+    """A section through a room cut into the beam: the concrete left, the room and its bars."""
+    W, H, cover = b["width_mm"], b["depth_mm"], b["cover_mm"] or 0
+    u0, u1, v0, v1 = rm["void_mm"]
+    v = View(
+        f"{b['element']} - {rm['name']}", f"{b['element']}: section through {rm['name']}", 20, b["element"]
+    )
+    if v1 >= H / 2 - 1e-6:  # open at the top: the outline goes down round the room
+        pts = [
+            (-W / 2, H / 2),
+            (-W / 2, -H / 2),
+            (W / 2, -H / 2),
+            (W / 2, H / 2),
+            (u1, H / 2),
+            (u1, v0),
+            (u0, v0),
+            (u0, H / 2),
+            (-W / 2, H / 2),
+        ]
+        for a, c in zip(pts[:-1], pts[1:], strict=True):
+            v.line("concrete", a, c)
+    else:
+        v.rect("concrete", (-W / 2, -H / 2), (W / 2, H / 2))
+        v.rect("concrete", (u0, v0), (u1, v1))
+    plus, minus = (u1, W / 2), (-W / 2, u0)
+    walls = {"land": plus, "sea": minus} if rm.get("land_side") == "+" else {"land": minus, "sea": plus}
+    for name, lk in (rm.get("wall_links") or {}).items():
+        phi = lk.get("diameter_mm")
+        if phi and name in walls:
+            e = cover + phi / 2
+            lo, hi = walls[name]
+            v.rect(bar_key(phi), (lo + e, -H / 2 + e), (hi - e, H / 2 - e))
+    for bar in rm["bars"]:
+        v.bar(bar["diameter_mm"], (bar["y_mm"], bar["z_mm"]))
+    y = -H / 2 - 12 * v.scale
+    v.text((-W / 2, H / 2 + 6 * v.scale), f"{b['element']} {rm['name']}  1:{v.scale}", 1.4)
+    v.text((-W / 2, y), f"{_mm(u1 - u0)} x {_mm(v1 - v0)} room from {rm['start_m']:g} to {rm['end_m']:g} m")
+    links = [
+        f"{k} wall Ø{_mm(lk['diameter_mm'])} @ {_mm(lk['spacing_mm'] or 0)}"
+        for k, lk in sorted((rm.get("wall_links") or {}).items())
+        if lk.get("diameter_mm")
+    ]
+    if links:
+        v.text((-W / 2, y - 5 * v.scale), "Closed links: " + ", ".join(links))
+    fl = rm.get("floor_per_metre") or {}
+    wl = rm.get("walls_per_metre") or {}
+    parts = [
+        f"floor {f} Ø{_mm(t['diameter_mm'])} @ {_mm(t['spacing_mm'] or 0)}"
+        for f, t in fl.items()
+        if t.get("diameter_mm")
+    ]
+    if wl.get("diameter_mm"):
+        parts.append(f"walls Ø{_mm(wl['diameter_mm'])} @ {_mm(wl['spacing_mm'] or 0)} each face")
+    if parts:
+        v.text((-W / 2, y - 10 * v.scale), "Across: " + ", ".join(parts))
+    if rm.get("diagonals"):
+        v.text(
+            (-W / 2, y - 15 * v.scale),
+            f"Wall top bars {_mm(rm.get('wall_top_bars_past_ends_mm') or 0)} past "
+            f"each end; {rm['diagonals']}",
+        )
+    return v
 
 
 # --- slabs -------------------------------------------------------------------------------------------
+
+
+def _manhole_view(d: dict[str, Any], m: dict[str, Any]) -> View:
+    """A manhole in plan (mm from its centre): the opening, the trimmer bars each side and the corner
+    diagonals. Top and bottom trimmers are the same lines; the text gives both."""
+    v = View(f"{d['element']} - {m['name']}", f"{d['element']}: {m['name']} in plan", 20, d["element"])
+    a, b = m["size_x_mm"] / 2, m["size_y_mm"] / 2
+    v.rect("concrete", (-a, -b), (a, b))
+    lines = []
+    for along, faces in m["trimmers"].items():
+        t = faces["top"] if faces["top"]["count"] >= faces["bottom"]["count"] else faces["bottom"]
+        half = t["length_mm"] / 2
+        gap = max(2.5 * t["phi"], 50.0)
+        for side in (1, -1):
+            for k in range(t["count"]):
+                off = side * ((b if along == "X" else a) + 75 + k * gap)
+                if along == "X":
+                    v.line(bar_key(t["phi"]), (-half, off), (half, off))
+                else:
+                    v.line(bar_key(t["phi"]), (off, -half), (off, half))
+        lines.append(
+            f"Along {along}: top {faces['top']['count']}Ø{faces['top']['phi']}, bottom "
+            f"{faces['bottom']['count']}Ø{faces['bottom']['phi']} each side, {_mm(t['length_mm'])} long"
+        )
+    dg = m.get("diagonals") or {}
+    if dg.get("phi"):
+        r = (dg.get("length_mm") or 0) / 2 / math.sqrt(2)
+        for sx in (1, -1):
+            for sy in (1, -1):
+                cx, cy = sx * (a + 100), sy * (b + 100)
+                # Square to the line from the opening's centre through the corner.
+                v.line(bar_key(dg["phi"]), (cx - r, cy + r * sx * sy), (cx + r, cy - r * sx * sy))
+    top = max(a, b) + 40 * v.scale
+    v.text((-a, top), f"{d['element']} {m['name']} {_mm(2 * a)} x {_mm(2 * b)}  1:{v.scale}", 1.4)
+    for i, t in enumerate(lines + ([dg["diagonals"]] if dg.get("diagonals") else [])):
+        v.text((-a, -top - 5 * i * v.scale), t)
+    return v
 
 
 def _grid(lo: float, hi: float, spacing: float, offset: float) -> list[float]:
@@ -356,6 +457,92 @@ def _slab_cuts(d: dict[str, Any]) -> list[View]:
 # --- the file ----------------------------------------------------------------------------------------
 
 
+# --- approach slab and ledge -------------------------------------------------------------------------
+
+
+def _bar_of(text: str | None) -> tuple[int, float] | None:
+    m = re.search(r"Ø(\d+) @ ([\d.]+)", text or "")
+    return (int(m.group(1)), float(m.group(2))) if m else None
+
+
+def _approach_views(a: dict[str, Any]) -> list[View]:
+    """A section along the approach slab through the rear beam's ledge: slab and ledge outlines, the
+    joint and bearing strip, main bars as lines, distribution bars cut, the ledge's U tie and hangers."""
+    led = a.get("ledge") or {}
+    v = View(f"{a['element']} - section", f"{a['element']}: section on the ledge", 25, a["element"])
+    h, L = a["thickness_mm"], a["length_m"] * 1000
+    joint = a.get("joint_mm") or 0
+    P, D = led.get("projection_mm") or 0, led.get("depth_mm") or 0
+    drop = led.get("top_below_beam_top_mm") or h
+    beam = 800  # mm of the rear beam drawn
+    # Rear beam face at x = 0; beam top at y = 0; the slab's top is level with it.
+    v.line("concrete", (-beam, 0), (0, 0))
+    v.line("concrete", (0, 0), (0, -drop))
+    v.rect("concrete", (0, -drop - D), (P, -drop))
+    v.line("concrete", (-beam, -drop - D - 400), (0, -drop - D - 400))
+    v.line("concrete", (0, -drop - D), (0, -drop - D - 400))
+    bt = led.get("bearing_thickness_mm") or 0
+    bw = led.get("bearing_width_mm") or 0
+    bx = P - (led.get("edge_distance_mm") or 0) - bw
+    v.rect("zones", (bx, -drop), (bx + bw, -drop + bt))
+    slab_bottom = -drop + bt
+    x0 = joint
+    v.rect("concrete", (x0, slab_bottom), (x0 + L, slab_bottom + h))
+    # Main bars along the slab.
+    for face, y, cover in (
+        ("bottom", slab_bottom, a.get("cover_bottom_mm") or 75),
+        ("top", slab_bottom + h, -(a.get("cover_top_mm") or 50)),
+    ):
+        bar = _bar_of((a.get(face) or {}).get("bars"))
+        if not bar:
+            continue
+        yb = y + cover + (bar[0] / 2 if face == "bottom" else -bar[0] / 2)
+        v.line(bar_key(bar[0]), (x0 + 50, yb), (x0 + L - 50, yb))
+        dist = _bar_of((a.get("distribution") or {}).get(face))
+        if dist:
+            yd = yb + (1 if face == "bottom" else -1) * (bar[0] + dist[0]) / 2
+            for xk in _grid(x0 + 50, x0 + L - 50, dist[1], dist[1] / 2):
+                v.bar(dist[0], (xk, yd))
+        v.text(
+            (x0 + L + 100, yb - 40),
+            f"{face.capitalize()} Ø{bar[0]} @ {bar[1]:.0f} (main), "
+            f"{(a.get('distribution') or {}).get(face) or ''} across",
+        )
+    # Ledge tie: a U-bar from the beam, round the tip, back into the beam.
+    tie = _bar_of(led.get("tie"))
+    c = led.get("cover_mm") or 50
+    if tie:
+        k = bar_key(tie[0])
+        yt, yl = -drop - c - tie[0] / 2, -drop - D + c + tie[0] / 2
+        anchor = 45 * tie[0]
+        v.line(k, (-anchor, yt), (P - c, yt))
+        v.line(k, (P - c, yt), (P - c, yl))
+        v.line(k, (P - c, yl), (-anchor / 2, yl))
+        v.text((P + 100, -drop - D / 2), f"Ledge tie U-bars {led['tie']}, 45Ø into the beam")
+    links = led.get("links")
+    if links:
+        v.text((P + 100, -drop - D / 2 - 6 * v.scale), f"Ledge links: {links}")
+    hang = _bar_of(led.get("hanger"))
+    if hang:
+        kh = bar_key(hang[0])
+        xh = -(led.get("cover_mm") or 50) - hang[0] / 2 - 60
+        v.line(kh, (xh, -60), (xh, -drop - D - 300))
+        v.text((-beam, -drop - D - 400 - 12 * v.scale), f"Hanger bars in the rear beam: {led['hanger']}")
+    v.text((0, h + 10 * v.scale), f"{a['element']} section on the ledge  1:{v.scale}", 1.4)
+    v.text(
+        (-beam, -drop - D - 400 - 18 * v.scale),
+        f"Slab {_mm(h)} thick, {a['length_m']:g} m to the slab on grade; "
+        f"joint {_mm(joint)} at the rear beam; "
+        f"ledge {_mm(P)} x {_mm(D)}"
+        + (
+            f"; shear links {a['links']:.0f} mm²/m² over {a.get('links_zone_m') or 0:g} m"
+            if a.get("links")
+            else ""
+        ),
+    )
+    return [v]
+
+
 def layer_names(settings: DrawingSettings, keys: set[str]) -> dict[str, dict[str, str]]:
     """What each layer key is called in AutoCAD and Revit."""
     by_d = {b.diameter: b for b in settings.bars}
@@ -409,6 +596,21 @@ def from_cages(
         views += _beam_views(b)
     for d in data["slabs"]:
         views += _slab_views(d)
+        views += [_manhole_view(d, m) for m in d.get("manholes") or []]
+        views += [
+            _room_view(
+                {
+                    "element": d["element"],
+                    "width_mm": c["strip_mm"],
+                    "depth_mm": c["depth_mm"],
+                    "cover_mm": c["cover_mm"],
+                },
+                c,
+            )
+            for c in d.get("channels") or []
+        ]
+    for a in data.get("approach") or []:
+        views += _approach_views(a)
     if element:
         wanted = {element} if isinstance(element, str) else set(element)
         views = [v for v in views if v.element in wanted]
