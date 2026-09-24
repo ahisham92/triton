@@ -12,6 +12,7 @@ from ..elements import ElementType
 from ..forces import scale_forces
 from ..geometry import section_geometry
 from ..importer import SheetData
+from ..materials import SHEET_PILE_GRADES
 from ..project import (
     BeamInput,
     CombiWallInput,
@@ -29,6 +30,17 @@ from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
 from .piles import design_pile
 from .slabs import design_slab
+from .spw_design import design_spw
+
+
+def king_piles(section: Section, geometry: list[dict[str, Any]]) -> list[tuple[float, float, float]]:
+    """Plan position and radius (m) of every combi wall king pile in the section's workbook."""
+    out = []
+    for g in geometry:
+        el = section.elements.get(g["element"])
+        if isinstance(el, CombiWallInput):
+            out += [(x, y, el.tube_diameter / 2000) for x, y, *_ in g.get("lines") or []]
+    return out
 
 
 def factored_elements(section: Section, workbook: ImportResult) -> dict[str, dict[str, SheetData]]:
@@ -190,6 +202,7 @@ def run_section(
             out["steel"]["element_total_t"] = round(steel["total_kg"] * count / 1000, 2)
         piles.append(out)
     spws = []
+    geometry = None
     for name, combos in sheets.items():
         if not any(s.parsed and s.parsed.spec.type is ElementType.SHEET_PILE_WALL for s in combos.values()):
             continue
@@ -206,19 +219,25 @@ def run_section(
             if not sh.frame.empty
             for v in (sh.frame["Z"].min(), sh.frame["Z"].max())
         ]
-        spws.append(
-            {
-                "element": name,
-                "kind": "sheet_pile_wall",
-                "governing_sets": sets,
-                "length_m": round(max(z) - min(z), 2) if z else None,
-            }
-        )
+        entry = {
+            "element": name,
+            "kind": "sheet_pile_wall",
+            "governing_sets": sets,
+            "length_m": round(max(z) - min(z), 2) if z else None,
+        }
+        wall = section.elements.get(name)
+        if isinstance(wall, SheetPileInput):
+            tick(name)
+            fy = SHEET_PILE_GRADES[wall.steel or settings.materials.sheet_pile_steel]
+            if geometry is None:
+                geometry = section_geometry(workbook)
+            entry["design"] = design_spw(name, wall, fy, combos, king_piles(section, geometry))
+            entry["notes"] = [n for n in (_multiplier_note(section, combos), _zone_note(section)) if n]
+        spws.append(entry)
     for name, element in section.elements.items():
         if isinstance(element, SheetPileInput) and name not in sheets and take(name):
             skipped.append(f"{name}: no usable results in the workbook.")
     beams = []
-    geometry = None
     found = getattr(workbook, "axes", None) or []
     plates = [n for n, e in section.elements.items() if isinstance(e, (BeamInput, SlabInput)) and take(n)]
     if settings.plate_positive_moment == "auto" and any(

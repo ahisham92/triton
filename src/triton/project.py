@@ -14,6 +14,9 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import clock
+from .design.sheet_piles import DEFAULT_SECTION as DEFAULT_SHEET_PILE
+from .design.sheet_piles import SECTION_NAMES as SHEET_PILE_SECTIONS
+from .design.sheet_piles import normalise as _normalise_sheet_pile
 from .durability import bs6349_corrosion, bs6349_covers
 from .elements import ElementType, parse_sheet_name
 from .materials import (
@@ -28,6 +31,7 @@ ConcreteGrade = Literal[tuple(CONCRETE_GRADES)]  # type: ignore[valid-type]
 RebarGrade = Literal[tuple(REINFORCEMENT_GRADES)]  # type: ignore[valid-type]
 SteelGrade = Literal[tuple(STRUCTURAL_STEEL_GRADES)]  # type: ignore[valid-type]
 SheetPileGrade = Literal[tuple(SHEET_PILE_GRADES)]  # type: ignore[valid-type]
+SheetPileSection = Literal[tuple(SHEET_PILE_SECTIONS)]  # type: ignore[valid-type]
 
 
 class _Model(BaseModel):
@@ -614,36 +618,105 @@ def _office_spw_zones() -> list[SheetPileZone]:
     ]
 
 
+class SheetPileIgnore(_Model):
+    """Leave N or V out of the sheet pile checks, for one combination or all of them, where Plaxis
+    gives values the sheet pile does not carry. The result shows both: as Plaxis and as designed."""
+
+    combination: str = Field(
+        "All combinations",
+        title="Combination",
+        description="As in the workbook (e.g. PT-B-Apron), or All combinations.",
+    )
+    ignore_n: bool = Field(False, title="Ignore N")
+    ignore_q: bool = Field(False, title="Ignore Q (shear)")
+
+
+_HIDDEN = {"hidden": True}
+
+
 class SheetPileInput(_Model):
     kind: Literal["sheet_pile_wall"] = "sheet_pile_wall"
-    section_name: str = Field("", title="Sheet pile section", description="e.g. AZ 26-700")
+    section_name: SheetPileSection = Field(
+        DEFAULT_SHEET_PILE, title="Sheet pile section", description="ArcelorMittal AZ range"
+    )
     steel: SheetPileGrade | None = Field(None, title="Steel grade", description=_PROJECT_GRADE)
-    area: float | None = Field(None, title="Area per m", gt=0, json_schema_extra={"unit": "cm²/m"})
-    elastic_modulus: float | None = Field(
-        None, title="Elastic section modulus Wel per m", gt=0, json_schema_extra={"unit": "cm³/m"}
+    # Kept so saved projects still open; the section's catalogue values are used.
+    area: float | None = Field(None, gt=0, json_schema_extra=_HIDDEN)
+    elastic_modulus: float | None = Field(None, gt=0, json_schema_extra=_HIDDEN)
+    plastic_modulus: float | None = Field(None, gt=0, json_schema_extra=_HIDDEN)
+    section_class: Literal[1, 2, 3, 4] = Field(2, json_schema_extra=_HIDDEN)
+    class_from: Literal["catalogue", "flange"] = Field(
+        "catalogue",
+        title="Section class",
+        description="catalogue: never better than the class ArcelorMittal lists for the section; "
+        "flange: from b / tf / ε of the corroded flange only (EN 1993-5 Table 5.1).",
     )
-    plastic_modulus: float | None = Field(
-        None, title="Plastic section modulus Wpl per m", gt=0, json_schema_extra={"unit": "cm³/m"}
+    use_wel_only: bool = Field(
+        False, title="Use Wel only", description="No plastic modulus for class 1 and 2."
     )
-    section_class: Literal[1, 2, 3, 4] = Field(2, title="Section class")
+    flange_width: float | None = _mm(
+        "Flange width b",
+        None,
+        gt=0,
+        description="For the class and the water pressure factor. Empty: Triton's estimate from the "
+        "catalogue area and inertia (Durability's Sheet pile tab shows the real b).",
+    )
+    web_angle: float | None = Field(
+        None,
+        title="Web angle α",
+        gt=0,
+        lt=90,
+        description="Empty: Triton's estimate (see flange width).",
+        json_schema_extra={"unit": "°"},
+    )
+    gamma_m0: float = Field(1.0, title="γM0", gt=0, description="EN 1993-5 5.1.1 (4)")
+    gamma_m1: float = Field(1.1, title="γM1", gt=0, description="EN 1993-5 5.1.1 (4); UK NA 1.0")
+    buckling_length: float | None = _m(
+        "Buckling length",
+        None,
+        gt=0,
+        description="EN 1993-5 Figure 5.8. Empty: 0.7 × the wall height in the Plaxis results.",
+    )
+    eccentricity: float = _mm("Eccentricity of N", 0.0, ge=0, description="Adds N e to M, as Durability.")
+    differential_head: float = _m(
+        "Differential water head",
+        0.0,
+        ge=0,
+        description="Over 5 m, fy for bending is reduced by ρP (EN 1993-5 5.2.4, Table 5.2).",
+    )
+    welded_interlocks: bool = Field(False, title="Welded interlocks", description="ρP = 1.0")
     top_level: float | None = _m(
         "Top level of the wall (capping beam soffit)",
         None,
         description="Straining actions above this level are ignored, in the design and in the exports. "
         "Empty: every result is used.",
     )
-    corrosion_loss_per_face: float | None = _mm(
-        "Corrosion loss per face", None, ge=0, description=_PROJECT_VALUE
+    # The project's single allowance; the design uses the zones.
+    corrosion_loss_per_face: float | None = Field(
+        None, ge=0, title="Corrosion loss per face", json_schema_extra={"unit": "mm", **_HIDDEN}
     )
     corrosion_zones: list[SheetPileZone] = Field(
         default_factory=_office_spw_zones,
-        title="Corrosion zones (Durability)",
-        description="Top down. The export gives the actions of each zone at its bottom level, with these "
-        "losses, as ArcelorMittal Durability takes them. The values are the office's sample run.",
+        title="Corrosion zones",
+        description="Top down, front and back loss of each zone down to its bottom level; the design "
+        "takes front + back off every plate. The values are the office's sample run.",
     )
     shear: Literal["Q_13", "Q_23"] = Field(
-        "Q_13", title="Shear for Durability", description="Q_13: the shear of the vertical bending (M_11)."
+        "Q_13", title="Shear", description="Q_13: the shear of the vertical bending (M_11)."
     )
+    ignore: list[SheetPileIgnore] = Field(
+        default_factory=list,
+        title="Ignore N or Q",
+        description="Where Plaxis values are suspect: the result shows the check with every action "
+        "and the one with these left out.",
+    )
+
+    @field_validator("section_name", mode="before")
+    @classmethod
+    def _known_section(cls, v: Any) -> str:
+        # The field was free text before the design came in: an unknown name falls back to the default.
+        name = _normalise_sheet_pile(v if isinstance(v, str) else None)
+        return name if name in SHEET_PILE_SECTIONS else DEFAULT_SHEET_PILE
 
     @model_validator(mode="after")
     def _zones_descend(self) -> SheetPileInput:

@@ -198,6 +198,9 @@ def _model(p: Project) -> dict:
         s.pop("user_cages", None)  # set on the Design tab, then checked
         s.pop("beam_cages", None)
         s.pop("slab_strips", None)
+        for el in s.get("elements", {}).values():  # a sheet pile wall's "ignore N or Q", ticked on its card
+            if el.get("kind") == "sheet_pile_wall":
+                el.pop("ignore", None)
     return d
 
 
