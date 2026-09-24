@@ -109,3 +109,103 @@ def test_section_files_one_per_station():
     files = adsec.section_files("Job", "Section 1", results, info, "B500B")
     assert list(files) == ["Pile(2) - 1200mm - Part 1.ads", "Pile(2) - 1200mm - Part 2.ads"]
     assert len(adsec.read_forces(files["Pile(2) - 1200mm - Part 1.ads"])) == 14
+
+
+def test_rectangles_match_the_office_beam_and_slab_files():
+    from data.adsec_rect import BEAM_SECTIONS, SLAB_SECTIONS
+
+    # The slab strip: 700 x 1050, three user bar lines, then a slab group Triton does not write.
+    rest = SLAB_SECTIONS[SLAB_SECTIONS.index(b"\0GRP_SLAB") :]
+    groups = [
+        adsec.line_group(32, 7, (0.45, -0.23), (-0.45, -0.23), "500B"),
+        adsec.line_group(20, 7, (0.45, 0.25), (-0.45, 0.25), "500B"),
+        adsec.line_group(16, 7, (0.45, -0.19), (-0.45, -0.19), "500B"),
+        rest,
+    ]
+    _same(adsec.rect_section("Slab 700mm", 700, 1050, "C40/50", (50, 75, 75, 75), 0, groups), SLAB_SECTIONS)
+    # The front beam: 4500 wide, 2000 deep, 50 mm cover to 16 mm links.
+    rest = BEAM_SECTIONS[BEAM_SECTIONS.index(b"\0GRP_BEAM") :]
+    _same(adsec.rect_section("Front Beam", 2000, 4500, "C40/50", (50,) * 4, 16, [rest]), BEAM_SECTIONS)
+
+
+def test_slab_strip_bars():
+    # The office strip's bottom mesh: 7Ø25 at 150 over 1050, 75 mm cover: centres 87.5 mm up.
+    assert adsec.slab_bars({"phi": 25, "spacing_mm": 150, "layers": 1}, None, 0, 75, 1050) == [
+        (25, 7, -450.0, 450.0, 87.5)
+    ]
+    # Additional bars in every gap in two layers and under the mesh: 4 bars per mesh spacing.
+    bars = adsec.slab_bars(
+        {"phi": 32, "spacing_mm": 200, "layers": 1}, "Ø32 @ 200 in 2 layers + Ø32 under the mesh", 0, 50, 1000
+    )
+    assert sum(b[1] for b in bars) == 20
+    assert {b[4] for b in bars} == {66.0, 123.0}
+    # Every second gap: half as many additional bars; bars along Y sit inside the X bars.
+    bars = adsec.slab_bars({"phi": 16, "spacing_mm": 200, "layers": 1}, "Ø20 @ 400", 25, 50, 1200)
+    assert [(b[0], b[1]) for b in bars] == [(16, 6), (20, 3)]
+    assert bars[0][4] == 50 + 25 + 8
+    assert adsec._strip_width([(150, False), (200, False)]) == 1200
+    assert adsec._strip_width([(150, False), (150, False)]) == 1050
+
+
+def test_beam_and_slab_files():
+    beam = {
+        "element": "Front Beam",
+        "width_mm": 2000,
+        "depth_mm": 1600,
+        "cover_mm": 50,
+        "concrete": "C40/50",
+        "cage": {
+            "label": "Top 10Ø16",
+            "link_diameter_mm": 16,
+            "lines": [{"phi": 16, "count": 10, "a": [-926, 726], "b": [926, 726]}],
+        },
+        "governing_sets": [
+            {
+                "qp": [{"case": "max M3", "combination": "QP", "N_kN": 10.0, "M2_kNm": 5.0, "M3_kNm": 700.0}],
+                "uls": [
+                    {"case": "max M3", "combination": "PT-C", "N_kN": -20.0, "M2_kNm": 6.0, "M3_kNm": 900.0}
+                ],
+            }
+        ],
+    }
+    files = adsec.beam_files("Job", "Section 1", beam, "B500B")
+    data = files["Front Beam 2000X1600.ads"]
+    assert [tuple(round(v) for v in f) for f in adsec.read_forces(data)] == [(10, 700, 5), (-20, 900, 6)]
+    row = {
+        "mesh": {"phi": 25, "spacing_mm": 150, "layers": 1},
+        "additional_bars": None,
+        "station": [8.0, 12.0],
+        "sets": {
+            "uls": [{"combination": "PT-C", "N_kN_per_m": -100.0, "M_kNm_per_m": 1000.0}],
+            "qp": [{"combination": "QP", "N_kN_per_m": -50.0, "M_kNm_per_m": 600.0}],
+        },
+    }
+    slab = {
+        "thickness_mm": 700,
+        "cover_top_mm": 50,
+        "cover_bottom_mm": 75,
+        "concrete": "C40/50",
+        "layers": {},
+        "strip_design": {
+            "rows": [
+                {**row, "key": "b", "layer": "bottom_x"},
+                {**row, "key": "t", "layer": "top_x", "sets": {"uls": [], "qp": []}},
+            ],
+            "table": [
+                {
+                    "moment": "M11",
+                    "strip": "column",
+                    "label": "Station 8 to 12",
+                    "keys": {"bottom": ["b"], "top": ["t"]},
+                }
+            ],
+        },
+    }
+    files = adsec.slab_files("Job", "Section 1", slab, "B500B")
+    data = files["SLAB 700 - m11 - 8 to 12 - CS.ads"]
+    # A strip 1050 wide: forces per metre x 1.05, QP first.
+    assert [tuple(round(v, 1) for v in f) for f in adsec.read_forces(data)] == [
+        (-52.5, 630.0, 0.0),
+        (-105.0, 1050.0, 0.0),
+    ]
+    assert b"STD%R%700.%1050." in data

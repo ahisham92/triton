@@ -1950,7 +1950,7 @@ async function renderDesignTab(host) {
       <button id="run-design" ${units.length ? "" : "disabled"}>Design</button>
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download cages for Revit (JSON)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
-      <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec files (.ads per pile part)</a>
+      <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
       <span class="reports" id="reports" hidden>Report:
         <select id="report-detail"><option value="summary">Summary</option><option value="detailed">Detailed</option></select>
         <a class="quiet-link" data-fmt="docx" href="#">Word</a>

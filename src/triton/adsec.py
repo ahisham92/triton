@@ -1,4 +1,5 @@
-"""AdSec 8.3 section files (.ads) of designed circular concrete sections, ready to analyse.
+"""AdSec 8.3 section files (.ads) of designed concrete sections, ready to analyse: pile and combi wall
+infill parts (circles), beams and 1 m slab strips (rectangles).
 
 An .ads file is a run of binary records, each ending with ``####@@@@``: a record type, its
 name, then little-endian 32-bit integers and floats, 64-bit doubles for forces, and
@@ -16,7 +17,12 @@ writes the rest:
   the AdSec convention Triton designs with), My = M2 and Mz = M3 in N·m;
 * one SLS analysis case per QP load (long-term) and one ULS case per ULS load (short-term).
 
-The layout of every generated record matches the office file byte for byte when given the
+Rectangles (from the office's front beam and slab strip files) are ``STD%R%depth.%width.`` with
+four covers (top first) and every bar line a user line group (``GRP_LINE``, kind ``U``) between
+its end bars, y across the section and z up, in m; My is the vertical bending (sagging +, as the
+office beam file) and Mz the horizontal.
+
+The layout of every generated record matches the office files byte for byte when given the
 same section and loads (see ``tests/test_adsec.py``).
 """
 
@@ -123,6 +129,43 @@ def circle_group(bar_mm: float, count: int, first: tuple[float, float], grade: s
     )
 
 
+def line_group(
+    bar_mm: float, count: int, a: tuple[float, float], b: tuple[float, float], grade: str
+) -> bytes:
+    """``count`` bars evenly spaced from ``a`` to ``b`` (y, z in m), placed by the user."""
+    return (
+        b"\0"
+        + _s("GRP_LINE")
+        + _i(0, 1, 1, 0, 1)
+        + _layer(bar_mm, count, grade, "GRP_LINE", b"U", [0.0, 0.0, a[0], a[1], b[0], b[1], 0.0, 0.0])
+    )
+
+
+def rect_section(
+    name: str,
+    depth_mm: float,
+    width_mm: float,
+    concrete: str,
+    covers_mm: tuple[float, float, float, float],
+    link_mm: float,
+    groups: list[bytes],
+) -> bytes:
+    body = (
+        _i(14, 1, 1, 10, 1)
+        + _s(name)
+        + _s(f"STD%R%{depth_mm:.0f}.%{width_mm:.0f}.")
+        + _s("MT_CONCRETE")
+        + _i(-8)
+        + _s(concrete)
+        + _i(0, 1)
+        + _f(*[c / 1e3 for c in covers_mm])
+        + _f(0.0, 0.0, 0.02, link_mm / 1e3, 0.0, 0.0)
+        + _i(len(groups))
+        + b"".join(groups)
+    )
+    return _record(b"\xea\x1a\x06\x00", "Sections", body)
+
+
 def section(name: str, diameter_mm: float, concrete: str, cover_mm: float, groups: list[bytes]) -> bytes:
     body = (
         _i(14, 1, 1, 8, 2)
@@ -219,12 +262,40 @@ def pile_file(
     when: datetime | None = None,
 ) -> bytes:
     """One .ads file: the section, its QP loads as SLS cases and its ULS loads as ULS cases."""
-    when = when or clock.now()
     grade = rebar_grade(rebar)
+    sec = section("Concrete Pile", diameter_mm, concrete, cover_mm, ring_groups(rings, grade))
+    return ads_file(
+        job=job,
+        title=title,
+        subtitle=f"D = {diameter_mm:.0f} mm",
+        heading=heading,
+        section_record=sec,
+        qp=qp,
+        uls=uls,
+        forces_of=lambda r: (r["N_kN"], r["M2_kNm"], r["M3_kNm"]),
+        when=when,
+    )
+
+
+def ads_file(
+    *,
+    job: str,
+    title: str,
+    subtitle: str,
+    heading: str,
+    section_record: bytes,
+    qp: list[dict[str, Any]],
+    uls: list[dict[str, Any]],
+    forces_of,
+    when: datetime | None = None,
+) -> bytes:
+    """The records around a section: its QP loads as SLS cases and ULS loads as ULS cases.
+    ``forces_of(row)`` gives the row's (N, My, Mz) in kN and kNm."""
+    when = when or clock.now()
     rows = [("QP", r) for r in qp] + [("ULS", r) for r in uls]
     records = [
         STATIC["program"],
-        titles(job, title, f"D = {diameter_mm:.0f} mm", when.strftime("%d-%b-%Y"), "Triton", heading),
+        titles(job, title, subtitle, when.strftime("%d-%b-%Y"), "Triton", heading),
         history(when),
         STATIC["national"],
         STATIC["units"],
@@ -235,10 +306,10 @@ def pile_file(
         STATIC["bar_spacing"],
         STATIC["bar_sizes"],
         STATIC["bar_limits"],
-        section("Concrete Pile", diameter_mm, concrete, cover_mm, ring_groups(rings, grade)),
+        section_record,
         STATIC["rebar"],
         load_titles([_title(s, r) for s, r in rows]),
-        forces([(r["N_kN"], r["M2_kNm"], r["M3_kNm"]) for _, r in rows]),
+        forces([forces_of(r) for _, r in rows]),
         STATIC["cover"],
         sls_cases(list(range(1, len(qp) + 1))),
         uls_cases(list(range(len(qp) + 1, len(rows) + 1))),
@@ -275,7 +346,8 @@ def _safe(text: str) -> str:
 def section_files(
     job: str, section_name: str, results: dict[str, Any], elements: dict[str, dict[str, Any]], rebar: str
 ) -> dict[str, bytes]:
-    """An .ads file per station (part) of every designed pile and combi wall infill.
+    """An .ads file per station (part) of every designed pile and combi wall infill, per beam, and per
+    row of every slab's strip table.
 
     ``elements`` maps each element name to its diameter (mm), concrete grade and cover (mm) to
     the main bars' links, as designed.
@@ -309,7 +381,183 @@ def section_files(
                 uls=st["uls"],
                 heading=heading,
             )
+    for b in results.get("beams", []):
+        files.update(beam_files(job, section_name, b, rebar))
+    for d in results.get("slabs", []):
+        files.update(slab_files(job, section_name, d, rebar))
     return files
+
+
+def beam_files(job: str, section_name: str, beam: dict[str, Any], rebar: str) -> dict[str, bytes]:
+    """One .ads file per designed beam: its cage and its 7 QP and 7 ULS governing sets."""
+    cage = beam.get("cage") or {}
+    lines = cage.get("lines")
+    sets = beam.get("governing_sets") or []
+    if not lines or not sets:
+        return {}
+    grade = rebar_grade(rebar)
+    b, h = beam["width_mm"], beam["depth_mm"]
+    groups = [
+        line_group(
+            ln["phi"],
+            ln["count"],
+            (ln["a"][0] / 1e3, ln["a"][1] / 1e3),
+            (ln["b"][0] / 1e3, ln["b"][1] / 1e3),
+            grade,
+        )
+        for ln in lines
+    ]
+    sec = rect_section(
+        beam["element"],
+        h,
+        b,
+        beam["concrete"],
+        (beam["cover_mm"],) * 4,
+        cage.get("link_diameter_mm") or 0.0,
+        groups,
+    )
+    name = f"{beam['element']} {b:.0f}X{h:.0f}"
+    st = sets[0]
+    data = ads_file(
+        job=job,
+        title=name,
+        subtitle=f"{b:.0f} x {h:.0f} mm",
+        heading=f"{section_name}: {cage.get('label', '')}"[:80],
+        section_record=sec,
+        qp=st.get("qp") or [],
+        uls=st.get("uls") or [],
+        forces_of=lambda r: (r["N_kN"], r["M3_kNm"], r["M2_kNm"]),  # My = vertical bending, sagging +
+    )
+    return {_safe(name) + ".ads": data}
+
+
+_ADD = re.compile(r"Ø(\d+) @ ([\d.]+)( in 2 layers)?( \+ Ø\d+ under the mesh)?$")
+
+
+def slab_bars(
+    mesh: dict[str, Any], additional: str | None, cross_mm: float, cover_mm: float, width_mm: float
+) -> list[tuple[float, int, float, float, float]]:
+    """Bars of one face of a slab strip ``width_mm`` wide, as lines (Ø, count, y from, y to, depth
+    from the face to the bar centres), all in mm. The strip repeats the slab's bar pattern: the mesh
+    at its spacing, additional bars in the gaps between (every gap or every second one), in a second
+    layer, and under the mesh bars, at the layer pitch Triton designs with (Ø + 25 mm)."""
+    phi_b, s_b, lay_b = mesh["phi"], mesh["spacing_mm"], mesh.get("layers") or 1
+    m = _ADD.match(additional or "")
+    n = max(1, round(width_mm / s_b))
+    offset = s_b / 4 if m else s_b / 2
+    y0 = -width_mm / 2 + offset
+    mesh_y = (y0, y0 + (n - 1) * s_b)
+    out = []
+    t1 = cover_mm + cross_mm + phi_b / 2
+    if not m:
+        pitch = phi_b + 25
+        return [(phi_b, n, *mesh_y, t1 + k * pitch) for k in range(lay_b)]
+    phi_a, s_a = int(m.group(1)), float(m.group(2))
+    pitch = max(phi_a, phi_b) + 25
+    t_a = cover_mm + cross_mm + phi_a / 2
+    for k in range(lay_b):
+        out.append((phi_b, n, *mesh_y, t1 + k * pitch))
+    every = 2 if s_a > s_b + 1e-6 else 1
+    gaps = list(range(0, n, every))
+    gy = (y0 + s_b / 2 + gaps[0] * s_b, y0 + s_b / 2 + gaps[-1] * s_b)
+    out.append((phi_a, len(gaps), *gy, t_a))
+    if m.group(3):
+        out.append((phi_a, len(gaps), *gy, t_a + pitch))
+    if m.group(4):
+        out.append((phi_a, n, *mesh_y, t1 + lay_b * pitch if lay_b > 1 else t1 + pitch))
+    return out
+
+
+def _strip_width(specs: list[tuple[float, bool]]) -> float:
+    """A strip about 1 m wide holding a whole number of every face's bar pattern."""
+    unit = 1
+    for spacing, second in specs:
+        unit = math.lcm(unit, round(spacing * (2 if second else 1)))
+    return unit * max(1, round(1000 / unit))
+
+
+def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) -> dict[str, bytes]:
+    """One .ads file per row of the slab's strip table (a direction, stations and strip), about 1 m
+    wide: the bars of both faces and, per combination, the governing sagging and hogging cut."""
+    sd = slab.get("strip_design") or {}
+    rows = {r["key"]: r for r in sd.get("rows") or [] if r.get("sets") is not None}
+    if not rows or not sd.get("table"):
+        return {}
+    grade = rebar_grade(rebar)
+    h = slab["thickness_mm"]
+    covers = {"top": slab["cover_top_mm"], "bottom": slab["cover_bottom_mm"]}
+    basic = {k: (v.get("basic") or {}) for k, v in (slab.get("layers") or {}).items()}
+    files: dict[str, bytes] = {}
+    for row in sd["table"]:
+        faces = {f: [rows[k] for k in row["keys"].get(f, []) if k in rows] for f in ("bottom", "top")}
+        if not all(faces.values()):
+            continue
+        first = {f: faces[f][0] for f in faces}
+        specs = [
+            (first[f]["mesh"]["spacing_mm"], bool(_second(first[f]["additional_bars"], first[f]["mesh"])))
+            for f in faces
+        ]
+        width = _strip_width(specs)
+        groups = []
+        for f, sign in (("bottom", -1), ("top", 1)):
+            direction = first[f]["layer"].split("_")[1]
+            cross = (basic.get(f"{f}_x") or {}).get("phi", 0) if direction == "y" else 0
+            for phi, count, ya, yb, t in slab_bars(
+                first[f]["mesh"], first[f]["additional_bars"], cross, covers[f], width
+            ):
+                z = sign * (h / 2 - t) / 1e3
+                groups.append(line_group(phi, count, (ya / 1e3, z), (yb / 1e3, z), grade))
+        strip = "CS" if row["strip"] == "column" else "FS"
+        where = row["label"].replace("Station ", "")
+        name = f"SLAB {h:.0f} - {row['moment'].lower()} - {where} - {strip}"
+        sec = rect_section(
+            f"Slab {h:.0f}mm",
+            h,
+            width,
+            slab["concrete"],
+            (covers["top"],) + (covers["bottom"],) * 3,
+            0,
+            groups,
+        )
+        k = width / 1000
+
+        def loads(kind: str, faces=faces, k=k) -> list[dict[str, Any]]:
+            out, seen = [], set()
+            for f in ("bottom", "top"):
+                for r in faces[f]:
+                    for x in r["sets"][kind]:
+                        key = (x["combination"], x["N_kN_per_m"], x["M_kNm_per_m"])
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        sense = "sagging" if f == "bottom" else "hogging"
+                        case = f"{sense} {r['station'][0]:g}-{r['station'][1]:g}"
+                        out.append(
+                            {
+                                "case": case,
+                                "combination": x["combination"],
+                                "N_kN": x["N_kN_per_m"] * k,
+                                "M_kNm": x["M_kNm_per_m"] * k,
+                            }
+                        )
+            return out
+
+        files[_safe(name) + ".ads"] = ads_file(
+            job=job,
+            title=f"SLAB {h:.0f}mm - {row['moment'].lower()}",
+            subtitle=f"({where}) - {strip}",
+            heading=f"{section_name}: strip {width:.0f} mm wide, forces per metre x {k:g}",
+            section_record=sec,
+            qp=loads("qp"),
+            uls=loads("uls"),
+            forces_of=lambda r: (r["N_kN"], r["M_kNm"], 0.0),
+        )
+    return files
+
+
+def _second(additional: str | None, mesh: dict[str, Any]) -> bool:
+    m = _ADD.match(additional or "")
+    return bool(m) and float(m.group(2)) > mesh["spacing_mm"] + 1e-6
 
 
 def zip_files(files: dict[str, bytes]) -> bytes:

@@ -1018,6 +1018,7 @@ def design_slab(
         groups: dict = {}
         members: dict = {}
         qgroups: dict = {}
+        sets: dict = {}  # per strip and station: the governing cut of every combination, for AdSec
         if strips:
             # Every column strip together and every field strip together, station by station: the need
             # is the worst cut across a strip's width, averaged over that width.
@@ -1030,6 +1031,17 @@ def design_slab(
             env["req"] = np.maximum(a_env, a_min)
             gov = env.loc[env.groupby(["st", "kind"])["req"].idxmax()]
             groups = {(int(r.st), int(r.kind)): r for r in gov.itertuples(index=False)}
+            for r in env.loc[env.groupby(["st", "kind", "combination"])["req"].idxmax()].itertuples(
+                index=False
+            ):
+                if abs(r.m) >= 0.5:
+                    sets.setdefault((int(r.st), int(r.kind)), {"uls": [], "qp": []})["uls"].append(
+                        {
+                            "combination": str(r.combination),
+                            "N_kN_per_m": round(float(r.n), 1),
+                            "M_kNm_per_m": round(float(r.m), 1),
+                        }
+                    )
             cxs = x0 + (cell["i"].to_numpy() + 0.5) * size
             cys = y0 + (cell["j"].to_numpy() + 0.5) * size
             cl = locate(frame, cxs if ax == "X" else cys, cys if ax == "X" else cxs)
@@ -1041,6 +1053,18 @@ def design_slab(
             ]
             if wq is not None and qloc is not None:
                 qenv = strip_average(qp_m, wq[layer], nq, qloc, size)
+                qgov = qenv.loc[
+                    qenv.assign(a=qenv["m"].abs()).groupby(["st", "kind", "combination"])["a"].idxmax()
+                ]
+                for r in qgov.itertuples(index=False):
+                    if abs(r.m) >= 0.5:
+                        sets.setdefault((int(r.st), int(r.kind)), {"uls": [], "qp": []})["qp"].append(
+                            {
+                                "combination": str(r.combination),
+                                "N_kN_per_m": round(float(r.n), 1),
+                                "M_kNm_per_m": round(float(r.m), 1),
+                            }
+                        )
                 for k, g in qenv.groupby(["st", "kind"]):
                     qgroups[(int(k[0]), int(k[1]))] = (
                         g["m"].to_numpy(),
@@ -1198,6 +1222,7 @@ def design_slab(
                     wi = int(np.argmax(w))
                     wk, qcomb = round(float(w[wi]), 3), str(qc[wi])
                 bars = labels[oi] if mode == "mesh_only" or oi == 0 else f"{label(options[b])} + {labels[oi]}"
+                mesh_o = opts[oi] if mode == "mesh_only" else options[b]
                 strip_rows.append(
                     {
                         "key": strip_key(layer, frame["bounds"], k),
@@ -1219,6 +1244,9 @@ def design_slab(
                         "wk_mm": wk,
                         "wk_limit_mm": limits[face],
                         "qp_combination": qcomb,
+                        "mesh": {"phi": mesh_o[1], "spacing_mm": mesh_o[2], "layers": mesh_o[3]},
+                        "additional_bars": None if mode == "mesh_only" or oi == 0 else labels[oi],
+                        "sets": sets.get(k, {"uls": [], "qp": []}),
                     }
                 )
         crack_gov = int((areas[cell["idx"].to_numpy()] > areas[cell["uidx"].to_numpy()] + 1e-6).sum())

@@ -983,7 +983,7 @@ def governing_sets_export(project_id: str, section_id: str) -> Response:
 
 @app.get(SECTION + "/design/adsec.zip")
 def adsec_export(project_id: str, section_id: str) -> Response:
-    """AdSec 8.3 files (.ads), one per pile part and combi wall infill part, with its 7 QP and 7 ULS loads."""
+    """AdSec 8.3 files (.ads): pile and combi infill parts, beams and slab strips, with QP and ULS loads."""
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
@@ -1004,7 +1004,7 @@ def adsec_export(project_id: str, section_id: str) -> Response:
             }
     files = adsec.section_files(project.info.name, section.name, results, info, d.reinforcement.grade)
     if not files:
-        raise HTTPException(404, "No designed piles or combi wall infill in this section.")
+        raise HTTPException(404, "Nothing designed in this section has AdSec files.")
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name}").strip("_") or "project"
     return Response(
         adsec.zip_files(files),
