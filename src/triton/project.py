@@ -1337,6 +1337,54 @@ class Prices(_Model):
     )
 
 
+class BarLayer(_Model):
+    """How one bar size is drawn: its AutoCAD layer and its Revit line style or detail family."""
+
+    diameter: int = Field(16, title="Bar", json_schema_extra={"unit": "mm"})
+    cad_layer: str = Field("REBAR-16", title="AutoCAD layer")
+    revit_line_style: str = Field(
+        "REBAR-16",
+        title="Revit line style",
+        description="Bars along the view; made if the template lacks it.",
+    )
+    revit_section_type: str = Field(
+        "",
+        title="Revit family type, cut bar",
+        description="Detail component placed at each cut bar, as 'Family: Type'. Empty: a filled dot.",
+    )
+    revit_line_type: str = Field(
+        "",
+        title="Revit family type, bar line",
+        description="Line-based detail component for bars along the view, as 'Family: Type'. Empty: a "
+        "detail line in the line style.",
+    )
+
+
+def _placeholder_bar_layers() -> list[BarLayer]:
+    return [
+        BarLayer(diameter=d, cad_layer=f"REBAR-{d}", revit_line_style=f"REBAR-{d}") for d in BAR_DIAMETERS
+    ]
+
+
+class DrawingSettings(_Model):
+    """Names used by the AutoCAD and Revit drawing exports. They do not change any design."""
+
+    bars: list[BarLayer] = Field(
+        default_factory=_placeholder_bar_layers,
+        title="Bars: layer, line style and family type by diameter",
+        description="Placeholders until the office names are set. A size not listed is drawn on REBAR-<Ø>.",
+    )
+    concrete_cad_layer: str = Field("TRITON-CONCRETE", title="AutoCAD layer, concrete outline")
+    concrete_revit_line_style: str = Field("TRITON-CONCRETE", title="Revit line style, concrete outline")
+    zones_cad_layer: str = Field("TRITON-ZONES", title="AutoCAD layer, zones and level marks")
+    zones_revit_line_style: str = Field("TRITON-ZONES", title="Revit line style, zones and level marks")
+    text_cad_layer: str = Field("TRITON-TEXT", title="AutoCAD layer, text")
+    revit_text_type: str = Field(
+        "", title="Revit text type", description="Empty: the project's default text type."
+    )
+    revit_view_prefix: str = Field("Triton", title="Revit drafting view names start with")
+
+
 class ElementCosting(_Model):
     """How many of an element the berth needs, when not as in the design model."""
 
@@ -1802,6 +1850,7 @@ class Project(_Model):
     info: ProjectInfo = Field(default_factory=ProjectInfo, title="Project")
     design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
     prices: Prices = Field(default_factory=Prices, title="Prices")
+    drawings: DrawingSettings = Field(default_factory=DrawingSettings, title="Drawings (AutoCAD and Revit)")
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
     locked: bool = Field(
         False,

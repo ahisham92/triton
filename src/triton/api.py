@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import adsec, checker, durability, fresh, method, trials
+from . import adsec, checker, drawings, durability, dxf, fresh, method, revit, trials
 from .alignment import plan_geometry
 from .costing import cost_project
 from .design.export import pile_cages
@@ -198,8 +198,8 @@ LOCKED = "The model is locked since it was designed. Press Unlock to edit first.
 
 
 def _model(p: Project) -> dict:
-    """What the lock protects: everything the design depends on (not prices and costing inputs)."""
-    d = p.model_dump(mode="json", exclude={"locked", "created_at", "updated_at", "prices"})
+    """What the lock protects: everything the design depends on (not prices, costing or drawing names)."""
+    d = p.model_dump(mode="json", exclude={"locked", "created_at", "updated_at", "prices", "drawings"})
     for s in d["sections"]:
         s.pop("costing", None)
         s.pop("user_cages", None)  # set on the Design tab, then checked
@@ -1056,6 +1056,66 @@ def pile_cage_export(project_id: str, section_id: str) -> JSONResponse:
     return JSONResponse(
         pile_cages(project.info.name, results, section=section.name),
         headers={"Content-Disposition": f'attachment; filename="{name}-cages.json"'},
+    )
+
+
+def _drawings(project_id: str, section_id: str, element: str | None) -> tuple[str, dict]:
+    project = _get(project_id)
+    section = _section(project, section_id)
+    results = store().load_results(project_id, section_id)
+    if results is None:
+        raise HTTPException(404, "This section has not been designed yet.")
+    data = drawings.drawings(project.info.name, results, project.drawings, section.name, element or None)
+    if not data["views"]:
+        raise HTTPException(
+            404,
+            "Nothing to draw: no designed pile, combi wall, beam or slab"
+            + (f" named {element}." if element else "."),
+        )
+    name = drawings.safe_name(" ".join(x for x in (project.info.name, section.name, element) if x)).replace(
+        " ", "_"
+    )
+    return name, data
+
+
+@app.get(SECTION + "/design/drawings.json")
+def drawings_for_revit(project_id: str, section_id: str, element: str | None = None) -> JSONResponse:
+    """Reinforcement drawings as 2D lines (format triton.drawings/1), for the Revit script."""
+    name, data = _drawings(project_id, section_id, element)
+    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}-drawings.json"'})
+
+
+@app.get(SECTION + "/design/drawings.dxf")
+def drawings_for_autocad(project_id: str, section_id: str, element: str | None = None) -> Response:
+    """The same drawings as an AutoCAD DXF, one layer per bar size."""
+    name, data = _drawings(project_id, section_id, element)
+    return Response(
+        dxf.to_dxf(data),
+        media_type="application/dxf",
+        headers={"Content-Disposition": f'attachment; filename="{name}.dxf"'},
+    )
+
+
+@app.get("/api/revit/triton-drawings.dyn")
+def revit_dynamo_graph(engine: str = "CPython3") -> Response:
+    """The Dynamo graph that draws a drawings file in Revit (download once)."""
+    if engine not in revit.ENGINES:
+        raise HTTPException(400, f"engine must be one of {', '.join(revit.ENGINES)}")
+    suffix = "" if engine == "CPython3" else "-ironpython"
+    return Response(
+        revit.dynamo_graph(engine),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="Triton-drawings{suffix}.dyn"'},
+    )
+
+
+@app.get("/api/revit/triton_revit.py")
+def revit_script() -> Response:
+    """The same script as a plain Python file, for pyRevit or RevitPythonShell."""
+    return Response(
+        revit.script(),
+        media_type="text/x-python",
+        headers={"Content-Disposition": 'attachment; filename="triton_revit.py"'},
     )
 
 

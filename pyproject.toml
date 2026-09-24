@@ -31,7 +31,7 @@ triton = "triton.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-triton = ["static/*"]
+triton = ["static/*", "revit/*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
