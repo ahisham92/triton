@@ -39,6 +39,18 @@ def _hash(value: Any) -> str:
     return hashlib.sha1(json.dumps(value, sort_keys=True, default=str).encode()).hexdigest()[:12]
 
 
+APPROACH = "Approach Slab"
+
+
+def names(project: Project, section: Section) -> list[str]:
+    """Every element the section designs: its own, and the project's approach slab when it has one."""
+    return list(section.elements) + ([APPROACH] if project.approach is not None else [])
+
+
+def _rear_beam(section: Section) -> Any:
+    return next((e for e in section.elements.values() if getattr(e, "kind", None) == "rear_beam"), None)
+
+
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
     """What the design of a section depends on, part by part, as short hashes."""
     parts = {
@@ -79,7 +91,17 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
             if k.startswith(f"{name} · ")
         }
         value = own if cage is None else [own, cage.model_dump(mode="json")]
+        if project.approach is not None and getattr(element, "kind", None) == "rear_beam":
+            value = [value, project.approach.model_dump(mode="json")]  # the ledge's load and torque
         parts[name] = _hash([value, sorted(each.items())] if each else value)
+    if project.approach is not None:
+        rear = _rear_beam(section)
+        parts[APPROACH] = _hash(
+            [
+                project.approach.model_dump(mode="json"),
+                rear.model_dump(mode="json") if rear is not None else None,
+            ]
+        )
     return parts
 
 
@@ -119,7 +141,7 @@ def _by_element(results: dict[str, Any], elements: Iterable[str]) -> dict[str, d
     return {n: {**shared, n: then[n]} for n in names if n in then}
 
 
-KINDS = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls")
+KINDS = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
 
 
 def _designed(results: dict[str, Any]) -> list[dict]:
@@ -158,5 +180,5 @@ def changes(results: dict[str, Any], now: dict[str, str]) -> list[str] | None:
 def with_status(project: Project, section: Section, results: dict[str, Any], workbook: dict | None) -> dict:
     """The results with ``changed``: what changed since they were designed ([] = up to date), and
     ``stale``: the elements whose results are out of date."""
-    changed, stale = status(results, fingerprint(project, section, workbook), section.elements)
+    changed, stale = status(results, fingerprint(project, section, workbook), names(project, section))
     return {**results, "changed": changed, "stale": stale}

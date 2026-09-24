@@ -101,6 +101,43 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
         "piles": piles,
         "beams": [_beam(b) for b in results.get("beams", []) if b.get("cage")],
         "slabs": [_slab(d) for d in results.get("slabs", []) if d.get("layers")],
+        "approach": [_approach(a) for a in results.get("approach_slabs", []) if a.get("bending")],
+    }
+
+
+def _approach(a: dict[str, Any]) -> dict[str, Any]:
+    """The approach slab and its ledge: sizes and bars per metre, for the section drawing."""
+    led = a.get("ledge") or {}
+    return {
+        "element": a["element"],
+        "length_m": a.get("length_m"),
+        "thickness_mm": a.get("thickness_mm"),
+        "cover_top_mm": a.get("cover_top_mm"),
+        "cover_bottom_mm": a.get("cover_bottom_mm"),
+        "joint_mm": a.get("joint_mm"),
+        "bottom": {k: (a["bending"].get("bottom") or {}).get(k) for k in ("bars", "phi", "spacing_mm")},
+        "top": {k: (a["bending"].get("top") or {}).get(k) for k in ("bars", "phi", "spacing_mm")},
+        "distribution": {f: (a.get("distribution") or {}).get(f, {}).get("bars") for f in ("bottom", "top")},
+        "links": (a.get("shear") or {}).get("links_mm2_per_m2"),
+        "links_zone_m": (a.get("shear") or {}).get("links_zone_m"),
+        "ledge": {
+            k: led.get(k)
+            for k in (
+                "projection_mm",
+                "depth_mm",
+                "top_below_beam_top_mm",
+                "cover_mm",
+                "bearing_width_mm",
+                "bearing_thickness_mm",
+                "edge_distance_mm",
+            )
+        }
+        | {
+            "tie": (led.get("tie") or {}).get("bars"),
+            "tie_phi": (led.get("tie") or {}).get("phi"),
+            "links": (led.get("links") or {}).get("bars"),
+            "hanger": (led.get("hanger") or {}).get("bars"),
+        },
     }
 
 

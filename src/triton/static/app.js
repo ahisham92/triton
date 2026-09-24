@@ -5,6 +5,7 @@ import { spwCard } from "./spw.js";
 import { renderTrials } from "./trials.js";
 import { renderValueEngineering } from "./ve.js";
 import { renderClashes } from "./clashes.js";
+import { APPROACH, approachCard, approachPanel } from "./approach.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -1151,6 +1152,7 @@ function renderElements(host) {
     if (!name) return;
     await addElements([name]);
   };
+  approachPanel(host, { project: state.project, schema: SCHEMA.properties.approach, renderObject, esc });
   if (!names.length) {
     host.insertAdjacentHTML("beforeend", `<p class="empty">No elements yet.</p>`);
     return;
@@ -2485,7 +2487,8 @@ const designUnits = (section) =>
   Object.entries(section.elements)
     .filter(([, e]) => e.kind in DESIGN_ORDER)
     .sort(([, a], [, b]) => DESIGN_ORDER[a.kind] - DESIGN_ORDER[b.kind]) // the order the server designs them in
-    .map(([n]) => n);
+    .map(([n]) => n)
+    .concat(state?.project?.approach ? [APPROACH] : []); // the project's approach slab, last
 
 async function renderDesignTab(host) {
   const url = secUrl();
@@ -2567,7 +2570,7 @@ async function renderDesignTab(host) {
     const job = designJob(section, picked, (res, done) => {
       if (!document.body.contains(out)) return;
       const view = { ...res };
-      for (const k of ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls"]) view[k] = (res[k] || []).filter((e) => done.has(e.element));
+      for (const k of ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"]) view[k] = (res[k] || []).filter((e) => done.has(e.element));
       view.stale = [];
       view.changed = [];
       drawResults(view);
@@ -2652,7 +2655,7 @@ async function designJob(section, chosen, onResults) {
     for (;;) {
       if (job.stopped) throw new Error("Stopped.");
       res = await again(() => api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3 }) }));
-      const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls"].flatMap((k) => res[k] || []);
+      const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"].flatMap((k) => res[k] || []);
       for (const n of res.designed) {
         const s = step(n);
         const r = all.find((x) => x.element === n);
@@ -2707,7 +2710,7 @@ const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : (Math.abs(v) < 0.
 function renderResults(full) {
   const out = document.getElementById("design-out");
   if (!out) return;
-  const kinds = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls"];
+  const kinds = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"];
   const names = [...new Set(kinds.flatMap((k) => (full[k] || []).map((e) => e.element)))]; // a corner berth's parts: once
   state.designShow ??= {};
   let shown = (state.designShow[sec().id] || []).filter((n) => names.includes(n));
@@ -2848,7 +2851,7 @@ function drawResults(res, full = res) {
   if (draw) draw.hidden = !anyCages;
   // In the order of the Design row's tick boxes.
   const order = designUnits(sec());
-  const exported = ["piles", "combi_walls", "sheet_pile_walls", "beams", "slabs"]
+  const exported = ["piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs"]
     .flatMap((k) => (full[k] || []).map((x) => x.element))
     .sort((a, b) => (order.indexOf(a) + 1 || 1e9) - (order.indexOf(b) + 1 || 1e9));
   wireExportPick(exported, new Set((full.sheet_pile_walls || []).map((x) => x.element)), anyCages);
@@ -2886,7 +2889,9 @@ function drawResults(res, full = res) {
         <td class="cell ${b.passed ? "ok" : "error"}">${fmt(b.utilisation, 2)}</td><td>${fmt(overallRatio(b.steel), 2)}%</td><td>${fmt(b.steel?.kg_per_m3)}</td></tr>`).join("")}</table></div>` : ""}
     <div id="beam-cards"></div>
     ${slabs.length ? "<h2>Slab</h2>" : ""}<div id="slab-cards"></div>
-    ${spws.length ? `<h2>Sheet pile wall</h2><div id="spw-cards"></div>` : ""}`;
+    ${spws.length ? `<h2>Sheet pile wall</h2><div id="spw-cards"></div>` : ""}
+    ${(res.approach_slabs || []).length ? `<h2>Approach slab and ledge</h2><div id="approach-cards"></div>` : ""}`;
+  for (const a of res.approach_slabs || []) document.getElementById("approach-cards").append(approachCard(a, { esc, fmt }));
   for (const w of spws) document.getElementById("spw-cards").append(spwWithSets(w));
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
@@ -2993,6 +2998,10 @@ function alerts(res) {
   }
   const noTop = (res.piles || []).filter((p) => p.section?.head_level_set === false).map((p) => p.element);
   if (noTop.length) add("limit", noTop.join(", "), "no top level set, so results inside the slab are included: set it on the Elements tab");
+  for (const a of res.approach_slabs || []) {
+    if (!a.passed) add("unsafe", a.element, `utilisation ${fmt(a.utilisation, 2)} (slab ${fmt(a.slab_utilisation, 2)}, ledge ${fmt(a.ledge?.utilisation, 2)}): see its card`);
+    else if (a.shear?.links_mm2_per_m2) add("limit", a.element, `needs shear links near the ledge (${fmt(a.shear.links_mm2_per_m2)} mm²/m²), or a thicker slab`);
+  }
   for (const w of res.combi_walls || []) {
     const u = w.infill?.utilisation;
     if (u > 1) add("unsafe", w.element, `infill N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}`);
@@ -3224,7 +3233,7 @@ async function renderCostingTab(host) {
             return `<tr><td>${esc(r.element)}</td>
               <td>${spaced ? input(key, "spacing", r.spacing_m != null ? fmt(r.spacing_m, 2) : "") : "–"}</td>
               <td>${spaced ? input(key, "count", r.count_auto ?? r.count ?? "", 'step="1"') + (e.count != null ? `<div class="hint">Given by you${r.count_auto != null ? `; automatic ${fmt(r.count_auto)}` : ""}</div><button class="small" data-auto="${esc(key)}">Use automatic</button>` : "") : "–"}</td>
-              <td>${input(key, "length", r.length_m != null ? fmt(r.length_m, 1) : "")}</td>
+              <td>${["approach_slab", "ledge"].includes(r.kind) ? (r.length_m != null ? fmt(r.length_m, 1) : "–") : input(key, "length", r.length_m != null ? fmt(r.length_m, 1) : "")}</td>
               <td>${steel ? pick(key, "steel_element", e.steel_element, r.kind === "sheet_pile_wall" ? "Its section, else the first AZ" : "Structural steel price") : "–"}${r.kind === "combi_wall" ? `<div class="hint">Intermediate sheets</div>${pick(key, "intermediate_element", e.intermediate_element, "None")}` : ""}</td>
               <td class="basis">${esc(r.basis)}${r.flags.map((f) => `<div class="${/above/.test(f) ? "flag-bad" : "flag-ok"}">${esc(f)}</div>`).join("")}${r.missing.length ? `<div class="flag-bad">Missing: ${esc(r.missing.join(", "))}</div>` : ""}</td>
               <td>${fmt(r.concrete_m3, 1)}</td><td>${fmt(r.rebar_t, 1)}</td><td>${fmt(r.steel_t, 1)}</td>
