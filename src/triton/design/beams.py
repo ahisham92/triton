@@ -881,9 +881,11 @@ def design_beam(
     cl, sl = _laws(beam, settings)
     e_eff = conc.ecm / (1 + settings.cracking.creep_coefficient)
     supports = find_supports(lay, geometry, elements)
+    # The supports whose results are left out (Design settings); all of them still set the truss spans.
+    cut = supports if settings.beam_support_results == "faces" else []
     peak = g.b / 1000 if settings.beam_actions == "peak_width" else None
-    uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=supports, peak_width=peak)
-    qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=supports, peak_width=peak)
+    uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=cut, peak_width=peak)
+    qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=cut, peak_width=peak)
     notes = [
         f"Spans along global {lay.along} ({lay.start:.2f} to {lay.end:.2f} m, {lay.end - lay.start:.1f} m); "
         f"local {lay.span_local} is along the beam"
@@ -904,11 +906,18 @@ def design_beam(
         ),
         "Positive plate moments taken as " + settings.plate_positive_moment + " (Design settings).",
     ]
-    if supports:
+    if supports and cut:
         names = sorted({q.element for q in supports})
         notes.append(
             f"{len(supports)} supports inside the beam ({', '.join(names)}): bending at their faces, "
-            f"shear at {settings.shear_check_distance} from them; results inside them are left out."
+            f"shear at {settings.shear_check_distance} from them; results inside them are left out "
+            "(Design settings)."
+        )
+    elif supports:
+        names = sorted({q.element for q in supports})
+        notes.append(
+            f"{len(supports)} supports inside the beam ({', '.join(names)}): every result along the beam is "
+            "designed, over them too (Design settings: leave them out to take bending at their faces)."
         )
     base = {
         "element": name,
@@ -923,6 +932,7 @@ def design_beam(
         "start_m": lay.start,
         "end_m": lay.end,
         "supports": [{"element": q.element, "s": q.s, "t": q.t, "r": q.r} for q in supports],
+        "support_results": settings.beam_support_results,
         "notes": notes,
     }
     if uls.empty:
@@ -930,16 +940,16 @@ def design_beam(
         return {**base, "utilisation": None, "passed": False}
 
     s_all = uls["s"].to_numpy(float)
-    mom = uls[moment_stations(s_all, supports)]
+    mom = uls[moment_stations(s_all, cut)]
     d_est = (g.h - g.inner(25)) / 1000
     dv = d_est * (2 if settings.shear_check_distance == "2d" else 1)
-    mask, fallback = shear_stations(s_all, supports, dv)
+    mask, fallback = shear_stations(s_all, cut, dv)
     shr = uls[mask]
     if fallback:
         notes.append(
             "Supports are closer than 2 × (radius + d): shear is checked at the station midway between them."
         )
-    qp_m = qp[moment_stations(qp["s"].to_numpy(float), supports)] if len(qp) else qp
+    qp_m = qp[moment_stations(qp["s"].to_numpy(float), cut)] if len(qp) else qp
     qp_all = qp_m
     qp_m = crack_candidates(qp_m, 0.9 * d_est) if len(qp_m) else qp_m
 
@@ -1130,6 +1140,8 @@ def design_beam(
 
     # Torsion (6.3.2(3)): its longitudinal steel is shared round the perimeter and comes out of the
     # bars that bending uses, so the cage is grown again with it taken out of each face.
+    # The transverse bars (per metre across the beam) never take the nodes inside a support: there the
+    # plate moments are point peaks at the pile or king pile head, whatever the setting for the beam.
     t_keep = transverse_nodes(t_uls, supports, 0.0)
     t_qp_keep = t_qp[transverse_nodes(t_qp, supports, 0.0)] if len(t_qp) else t_qp
     t_shear = t_uls[transverse_nodes(t_uls, supports, dv)]

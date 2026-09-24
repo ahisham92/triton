@@ -158,7 +158,18 @@ def test_design_beam_with_supports_and_export():
     wb = import_sheets(raw)
     truss = {"crane_load": 0, "bollard_slab_thickness": None}
     els = {"Front Beam": BeamInput(depth=1500, truss=truss), "Pile(1)": PileInput(head_level=2.7)}
+    faces = DesignSettings(beam_support_results="faces")
     d = design_beam(
+        "Front Beam",
+        els["Front Beam"],
+        faces,
+        wb.elements()["Front Beam"],
+        section_geometry(wb),
+        els,
+        {"1": "X", "2": "Y"},
+    )
+    # By default every result is designed, the peak inside the pile too, as the office's beam designs.
+    every = design_beam(
         "Front Beam",
         els["Front Beam"],
         DesignSettings(),
@@ -167,6 +178,8 @@ def test_design_beam_with_supports_and_export():
         els,
         {"1": "X", "2": "Y"},
     )
+    assert every["support_results"] == "all" and every["bending"]["extremes"]["Mv"]["max"] > 5000
+    assert [q["s"] for q in every["supports"]] == [0.0, 6.0, 12.0]
     assert [q["s"] for q in d["supports"]] == [0.0, 6.0, 12.0]
     # 6 m between piles on a 1.5 m deep beam: the truss tie, not bending, sets the bottom bars.
     assert d["passed"] and d["utilisation"] <= 1
@@ -189,7 +202,7 @@ def test_design_beam_with_supports_and_export():
     worst = d["cracks"]["bottom"]["wk"] / d["cracks"]["bottom"]["limit"]
     assert max(b[3] for b in d["crack_bands"]) == pytest.approx(worst, abs=2e-3)
 
-    res = run_section(DesignSettings(), Section(elements=els), wb)
+    res = run_section(faces, Section(elements=els), wb)
     assert [b["element"] for b in res["beams"]] == ["Front Beam"]
     from io import BytesIO
 

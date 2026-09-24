@@ -2868,7 +2868,7 @@ function slabCard(d) {
         <td>${l.mode === "mesh_only" ? "mesh only (your choice)" : l.zones.length ? `${l.zones.length} zones: ${esc([...new Set(l.zones.map((z) => z.label))].join(", "))}` : "none needed"}</td>
         <td class="cell ${l.utilisation <= 1 ? "ok" : "error"}">${fmt(l.utilisation, 2)}</td><td>${fmt(l.cells_set_by_cracks)} cells</td><td>${fmt(l.d_mm)} mm</td></tr>`).join("")}
     </table></div>
-    <div class="row" style="margin:10px 0 4px">${Object.keys(layers).map((k, i) => `<button class="quiet${i ? "" : " on"}" data-layer="${k}">${esc(LAYER_NAME[k] || k)}</button>`).join("")}</div>
+    <div class="row" style="margin:10px 0 4px">${Object.keys(layers).map((k, i) => `<button class="quiet${i ? "" : " on"}" data-layer="${k}">${esc(LAYER_NAME[k] || k)}</button>`).join("")}${sh.links?.length ? `<button class="quiet" data-layer="shear">Shear links</button>` : ""}</div>
     <div class="chart wide" data-kind="plan"></div>
     <h3 style="margin-top:18px">Punching at the piles</h3>
     ${punch.length ? `<p class="status">Click a pile to see its control perimeters. Change a pile's thickness for a slope, then save and design again.</p>
@@ -2881,7 +2881,10 @@ function slabCard(d) {
     <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d); nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
     <h3 style="margin-top:18px">Shear per metre ${ok(sh.passed !== false)}</h3>
     <p>${sh.governing ? `Largest v − V<sub>Rd,c</sub>: ${esc(sh.governing.combination)} at X ${fmt(sh.governing.x, 1)}, Y ${fmt(sh.governing.y, 1)}: v = ${fmt(sh.governing.V_kN_per_m)} kN/m, V<sub>Rd,c</sub> = ${fmt(sh.governing.VRd_c_kN_per_m)} kN/m, V<sub>Rd,max</sub> = ${fmt(sh.governing.VRd_max_kN_per_m)} kN/m.` : ""}
-      ${sh.heaviest ? ` Links in ${sh.cells_needing_links} cells, heaviest ${esc(sh.heaviest.label)} (${fmt(sh.heaviest.asw_mm2_per_m2)} mm²/m²).` : " No shear links needed."}</p>
+      ${sh.heaviest ? ` Links in ${sh.cells_needing_links} cells, in ${sh.links.length} zones at the mesh spacing (they hook round the bottom mesh: ${fmt(sh.link_spacing_mm?.x)} mm across X, ${fmt(sh.link_spacing_mm?.y)} mm across Y, or every second bar).` : " No shear links needed."}</p>
+    ${sh.links?.length ? `<div class="scroll"><table><tr><th>Zone</th><th>X (m)</th><th>Y (m)</th><th>Links</th><th>A<sub>sw</sub> given / needed (mm²/m²)</th><th>Cells needing links</th></tr>
+      ${sh.links.map((z, i) => `<tr><td>S${i + 1}</td><td>${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}</td><td>${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</td><td><b>${esc(z.label)}</b></td><td>${fmt(z.asw_mm2_per_m2)} / ${fmt(z.needs_mm2_per_m2)}</td><td>${fmt(z.cells)}</td></tr>`).join("")}</table></div>
+      <p class="status">The shear link zones are drawn on the plan above (Shear links). They follow the shear need, not the bending zones.</p>` : ""}
     ${sh.method ? `<p class="status">${esc(sh.method)}.</p>` : ""}
     <h3 style="margin-top:18px">Temperature and shrinkage restraint</h3>
     <div class="scroll"><table><tr><th>Layer</th><th>w<sub>k</sub></th><th>Limit</th><th>Details</th><th></th></tr>
@@ -2973,8 +2976,10 @@ function punchDiagram(el, q) {
 }
 
 function slabPlan(el, d, key) {
-  // Plan of one layer: the basic mesh everywhere, zones of heavier bars, piles.
-  const l = d.layers[key];
+  // Plan of one layer: the basic mesh everywhere, zones of heavier bars, piles. "shear": the link zones.
+  const l = key === "shear"
+    ? { basic: { label: "no links" }, zones: (d.shear?.links || []).map((z) => ({ ...z, as_mm2_per_m: z.asw_mm2_per_m2, additional_mm2_per_m: z.asw_mm2_per_m2 })) }
+    : d.layers[key];
   const [x0, x1] = d.box.X, [y0, y1] = d.box.Y;
   const W = 820, pad = 30;
   const sc = (W - 2 * pad) / (x1 - x0);
@@ -2987,7 +2992,7 @@ function slabPlan(el, d, key) {
   const zones = l.zones.map((z) => `<rect x="${L(z.x[0], z.x[1])}" y="${Y(z.y[1])}" width="${(z.x[1] - z.x[0]) * sc}" height="${(z.y[1] - z.y[0]) * sc}" fill="${shade(z.label)}"><title>Additional ${esc(z.label)} (${fmt(z.additional_mm2_per_m ?? z.as_mm2_per_m)} mm²/m, ${fmt(z.as_mm2_per_m)} mm²/m with the mesh), X ${fmt(z.x[0], 1)} to ${fmt(z.x[1], 1)}, Y ${fmt(z.y[0], 1)} to ${fmt(z.y[1], 1)}</title></rect>`).join("");
   const piles = (d.punching || []).map((q) => `<circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.r_u1_mm / 1000) * sc}" class="${q.needs_reinforcement ? "pp-out" : "pp-u1"}"><title>${esc(q.pile)}: u1 at 2d${q.needs_reinforcement ? ", needs punching links" : ""}</title></circle>
     <circle cx="${X(q.x)}" cy="${Y(q.y)}" r="${(q.D_mm / 2000) * sc}" fill="none" stroke="var(--text)" stroke-width="1.5"><title>${esc(q.pile)}</title></circle>`).join("");
-  el.innerHTML = `<div class="chart-title">${esc(LAYER_NAME[key] || key)}: mesh ${esc(l.basic.label)} everywhere${labels.length ? `, plus additional ${esc(labels.join(", "))} in the shaded zones` : ""}</div>
+  el.innerHTML = `<div class="chart-title">${key === "shear" ? `Shear links: ${esc(labels.join(", "))} in the shaded zones, none elsewhere` : `${esc(LAYER_NAME[key] || key)}: mesh ${esc(l.basic.label)} everywhere${labels.length ? `, plus additional ${esc(labels.join(", "))} in the shaded zones` : ""}`}</div>
     <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Slab plan of ${esc(key)}">
       <rect x="${L(x0, x1)}" y="${Y(y1)}" width="${(x1 - x0) * sc}" height="${(y1 - y0) * sc}" fill="var(--miss-bg)" stroke="var(--muted)"/>
       ${zones}${piles}
@@ -3075,9 +3080,9 @@ function beamCard(b) {
   wireBeamCage(card, b);
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
   if (b.profile?.length) {
-    beamMoments(card.querySelector('[data-kind="moments"]'), b.profile, b.supports);
+    beamMoments(card.querySelector('[data-kind="moments"]'), b.profile, b.supports, b.support_results === "faces");
     const prof = { profile: b.profile.map((q) => ({ z: q.s, util: q.u })) };
-    alongChart(card.querySelector('[data-kind="profile"]'), prof.profile, "Utilisation along the beam", "Utilisation", (q) => q.util, 1, b.supports);
+    alongChart(card.querySelector('[data-kind="profile"]'), prof.profile, "Utilisation along the beam", "Utilisation", (q) => q.util, 1, b.supports, b.support_results === "faces");
   }
   return card;
 }
@@ -3183,16 +3188,16 @@ function beamSection(el, b) {
 // The supports inside a beam (king piles, piles) as shaded bands: the results inside them are FE
 // peaks in the connection and are not designed; bending is taken at their faces. A line is broken
 // only where a support lies between two results.
-function supportBands(c, supports, lo, hi) {
+function supportBands(c, supports, lo, hi, cut = true) {
   return (supports || []).filter((q) => q.s + q.r > lo && q.s - q.r < hi).map((q) => {
     const a = c.x(Math.max(lo, q.s - q.r)), b = c.x(Math.min(hi, q.s + q.r));
-    return `<rect class="support-band" x="${a}" y="${c.m.t}" width="${b - a}" height="${c.h - c.m.t - c.m.b}"><title>${esc(q.element)} at ${fmt(q.s, 2)} m, Ø${fmt(2000 * q.r)} mm: no design inside it, bending at its faces</title></rect>`;
+    return `<rect class="support-band" x="${a}" y="${c.m.t}" width="${b - a}" height="${c.h - c.m.t - c.m.b}"><title>${esc(q.element)} at ${fmt(q.s, 2)} m, Ø${fmt(2000 * q.r)} mm${cut ? ": no design inside it, bending at its faces" : ""}</title></rect>`;
   }).join("");
 }
 const acrossSupport = (supports, a, b) => (supports || []).some((q) => q.s > Math.min(a, b) && q.s < Math.max(a, b));
-const supportLegend = (supports) => (supports?.length ? `<p class="status" style="margin:4px 0 0"><span class="support-key"></span> ${esc(supports[0].element)}${new Set(supports.map((q) => q.element)).size > 1 ? " and other supports" : ""}: nothing is designed inside them (FE peaks in the connection); bending is taken at their faces.</p>` : "");
+const supportLegend = (supports, cut = true) => (supports?.length ? `<p class="status" style="margin:4px 0 0"><span class="support-key"></span> ${esc(supports[0].element)}${new Set(supports.map((q) => q.element)).size > 1 ? " and other supports" : ""}${cut ? ": nothing is designed inside them (FE peaks in the connection); bending is taken at their faces (Design settings)." : ": their results are designed like the rest of the beam (Design settings can leave them out)."}</p>` : "");
 
-function beamMoments(el, prof, supports = []) {
+function beamMoments(el, prof, supports = [], cut = true) {
   // Vertical bending envelope along the beam (ULS), sagging +.
   const xs = prof.map((q) => q.s);
   const lo = Math.min(0, ...prof.map((q) => q.Mv_min)), hi = Math.max(0, ...prof.map((q) => q.Mv_max));
@@ -3200,10 +3205,10 @@ function beamMoments(el, prof, supports = []) {
   const c = frame(el, { xDomain: [Math.min(...xs), Math.max(...xs)], yDomain: [lo - padm, hi + padm],
     xLabel: "Position along the beam (m)", yLabel: "M vertical (kNm)", title: "Vertical bending, ULS envelope (sagging +)" });
   // Break the line over the supports, where there are no results.
-  const line = (k) => prof.map((q, i) => `${i && !acrossSupport(supports, q.s, prof[i - 1].s) ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
-  c.g.innerHTML = supportBands(c, supports, Math.min(...xs), Math.max(...xs)) + `<line class="grid" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(0)}" y2="${c.y(0)}"/>
+  const line = (k) => prof.map((q, i) => `${i && !(cut && acrossSupport(supports, q.s, prof[i - 1].s)) ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
+  c.g.innerHTML = supportBands(c, supports, Math.min(...xs), Math.max(...xs), cut) + `<line class="grid" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(0)}" y2="${c.y(0)}"/>
     <path class="series" d="${line("Mv_max")}"/><path class="series" d="${line("Mv_min")}" stroke-dasharray="5 3"/>`;
-  el.insertAdjacentHTML("beforeend", supportLegend(supports));
+  el.insertAdjacentHTML("beforeend", supportLegend(supports, cut));
   c.svg.onmousemove = (evt) => {
     const r = c.svg.getBoundingClientRect();
     const sx = ((evt.clientX - r.left) / r.width) * c.w;
@@ -3215,15 +3220,15 @@ function beamMoments(el, prof, supports = []) {
   c.svg.onmouseleave = () => { c.tip.hidden = true; };
 }
 
-function alongChart(el, rows, title, yLabel, val, limit = null, supports = null) {
+function alongChart(el, rows, title, yLabel, val, limit = null, supports = null, cut = true) {
   // A value along the beam (x = position), with an optional limit line.
   const xs = rows.map((q) => q.z);
   const hi = Math.max(limit ?? 0, ...rows.map(val)) * 1.08 || 1;
   const c = frame(el, { xDomain: [Math.min(...xs), Math.max(...xs)], yDomain: [0, hi], xLabel: "Position along the beam (m)", yLabel, title });
-  const gap = (a, b) => (supports ? acrossSupport(supports, a, b) : Math.abs(a - b) >= 0.6);
+  const gap = (a, b) => (supports ? cut && acrossSupport(supports, a, b) : Math.abs(a - b) >= 0.6);
   const path = rows.map((q, i) => `${i && !gap(q.z, rows[i - 1].z) ? "L" : "M"}${c.x(q.z).toFixed(1)},${c.y(val(q)).toFixed(1)}`).join("");
-  c.g.innerHTML = (supports ? supportBands(c, supports, Math.min(...xs), Math.max(...xs)) : "") + (limit != null ? `<line class="limit" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(limit)}" y2="${c.y(limit)}"/>` : "") + `<path class="series" d="${path}"/>`;
-  if (supports) el.insertAdjacentHTML("beforeend", supportLegend(supports));
+  c.g.innerHTML = (supports ? supportBands(c, supports, Math.min(...xs), Math.max(...xs), cut) : "") + (limit != null ? `<line class="limit" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(limit)}" y2="${c.y(limit)}"/>` : "") + `<path class="series" d="${path}"/>`;
+  if (supports) el.insertAdjacentHTML("beforeend", supportLegend(supports, cut));
   c.svg.onmousemove = (evt) => {
     const r = c.svg.getBoundingClientRect();
     const sx = ((evt.clientX - r.left) / r.width) * c.w;

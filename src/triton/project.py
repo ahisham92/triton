@@ -359,6 +359,13 @@ class DesignSettings(_Model):
         "width, as the calc report takes them. Integrated: the plate results fitted and integrated across "
         "the model's width (smaller where the mesh is coarse and noisy).",
     )
+    beam_support_results: Literal["all", "faces"] = Field(
+        "all",
+        title="Beam results over piles and king piles",
+        description="All: every Plaxis result along the beam is designed, over the supports too, as the "
+        "office's beam designs take them. Faces: results inside a pile or king pile are left out as FE "
+        "peaks in the connection; bending is taken at its faces and shear at d (or 2d) from them.",
+    )
     shear_check_distance: Literal["d", "2d"] = Field(
         "d", title="Shear checked at", description="Distance from the support face"
     )

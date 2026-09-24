@@ -651,6 +651,106 @@ def zones_for(
     }
 
 
+def _rects(cells: set, grow: int) -> list[list[int]]:
+    """Rectangles [i0, i1, j0, j1] round each group of touching cells, each side at least ``grow`` + 1
+    cells long, overlapping ones merged."""
+    boxes = []
+    seen: set = set()
+    for c0 in sorted(cells):
+        if c0 in seen:
+            continue
+        stack, comp = [c0], []
+        seen.add(c0)
+        while stack:
+            a, b = stack.pop()
+            comp.append((a, b))
+            for da in (-1, 0, 1):
+                for db in (-1, 0, 1):
+                    nb = (a + da, b + db)
+                    if nb in cells and nb not in seen:
+                        seen.add(nb)
+                        stack.append(nb)
+        boxes.append(
+            [
+                min(c[0] for c in comp),
+                max(c[0] for c in comp),
+                min(c[1] for c in comp),
+                max(c[1] for c in comp),
+            ]
+        )
+    for bx in boxes:
+        for lo, hi in ((0, 1), (2, 3)):
+            short_by = grow - (bx[hi] - bx[lo])
+            if short_by > 0:
+                bx[lo] -= short_by // 2
+                bx[hi] += short_by - short_by // 2
+    merged = True
+    while merged:
+        merged = False
+        for m in range(len(boxes)):
+            for n in range(m + 1, len(boxes)):
+                p, q = boxes[m], boxes[n]
+                if p[0] <= q[1] + 1 and q[0] <= p[1] + 1 and p[2] <= q[3] + 1 and q[2] <= p[3] + 1:
+                    boxes[m] = [min(p[0], q[0]), max(p[1], q[1]), min(p[2], q[2]), max(p[3], q[3])]
+                    del boxes[n]
+                    merged = True
+                    break
+            if merged:
+                break
+    return boxes
+
+
+def link_zones(cells, req, opts, labels, size, x0, y0, box, min_zone) -> tuple[list[dict], int]:
+    """Shear link zones, independent of the bending zones: the lightest links that are needed over the
+    widest area, then heavier links in the zones inside it that need them, as the bars are zoned.
+    ``req`` is each cell's need (mm²/m²); ``opts`` (mm²/m², Ø, sx, sy) lightest first, 0 = none."""
+    level = np.array(
+        [next((m for m, o in enumerate(opts) if m and o[0] >= r - 1e-6), len(opts)) for r in req]
+    )
+    short = int((level >= len(opts)).sum())
+    level = np.minimum(level, len(opts) - 1)
+    at = list(zip(cells["i"].tolist(), cells["j"].tolist(), strict=True))
+    grow = max(0, math.ceil(min_zone / size - 1e-9) - 1)
+    out = []
+    covered: dict = {}  # cell -> level its zone already gives
+    for lv in sorted(set(level.tolist())):
+        # Cells the zones so far do not cover with enough links.
+        todo = {c for c, v in zip(at, level, strict=True) if v >= lv and covered.get(c, 0) < v}
+        if not todo:
+            continue
+        for i0, i1, j0, j1 in _rects(todo, grow):
+            inside = [
+                (c, v, r)
+                for c, v, r in zip(at, level, req, strict=True)
+                if i0 <= c[0] <= i1 and j0 <= c[1] <= j1
+            ]
+            # This level's links over the zone; its cells that need more get a heavier zone inside it.
+            give = lv
+            for c, _, _ in inside:
+                covered[c] = max(covered.get(c, 0), give)
+            o = opts[give]
+            out.append(
+                {
+                    "x": [
+                        round(max(x0, x0 + i0 * size), 2),
+                        round(min(box["X"][1], x0 + (i1 + 1) * size), 2),
+                    ],
+                    "y": [
+                        round(max(y0, y0 + j0 * size), 2),
+                        round(min(box["Y"][1], y0 + (j1 + 1) * size), 2),
+                    ],
+                    "phi": o[1],
+                    "sx_mm": o[2],
+                    "sy_mm": o[3],
+                    "asw_mm2_per_m2": round(o[0]),
+                    "needs_mm2_per_m2": round(float(max(r for c, _, r in inside if c in todo))),
+                    "cells": sum(1 for c, _, _ in inside if c in todo),
+                    "label": labels[give],
+                }
+            )
+    return out, short
+
+
 # --- Punching -------------------------------------------------------------------------------------
 
 
@@ -1387,38 +1487,33 @@ def design_slab(
         cells = pd.DataFrame({"i": si, "j": sj, "need": need, "asw": asw}).groupby(["i", "j"]).max()
         cells = cells[cells["need"]].reset_index()
         s_max = min(0.75 * d_s, 600.0)
-        step = settings.reinforcement.spacing_step
-        link_opts = []
+        # Links hook round the bottom mesh bars, so they sit at the mesh spacing (or every second bar):
+        # across X at the spacing of the bars along Y, across Y at the spacing of the bars along X.
+        sx_mesh = layers["bottom_y"]["basic"]["spacing_mm"]
+        sy_mesh = layers["bottom_x"]["basic"]["spacing_mm"]
+        link_opts = [(0.0, 0, 0.0, 0.0)]  # none
         for phi in (10, 12, 16, 20):
-            sp = math.floor(s_max / step) * step
-            while sp >= 100:
-                link_opts.append((math.pi * phi * phi / 4 / (sp / 1000) ** 2, phi, sp))
-                sp -= step
+            for sx in (sx_mesh, 2 * sx_mesh):
+                for sy in (sy_mesh, 2 * sy_mesh):
+                    if max(sx, sy) <= s_max + 1e-9:
+                        link_opts.append((math.pi * phi * phi / 4 / (sx * sy / 1e6), phi, sx, sy))
         link_opts.sort()
         rho_min = (
             0.08 * math.sqrt(conc.fck) / REINFORCEMENT_GRADES[settings.reinforcement.grade] * 1e6
         )  # mm²/m²
-
-        def pick(req: float) -> tuple | None:
-            return next((o for o in link_opts if o[0] >= max(req, rho_min) - 1e-6), None)
-
-        links = []
-        short = 0
-        for a, b, w in zip(cells["i"], cells["j"], cells["asw"], strict=True):
-            o = pick(float(w))
-            short += o is None
-            links.append(
-                {
-                    "x": [round(x0 + a * size, 2), round(x0 + (a + 1) * size, 2)],
-                    "y": [round(y0 + b * size, 2), round(y0 + (b + 1) * size, 2)],
-                    "asw_mm2_per_m2": round(float(w)),
-                    "label": f"Ø{o[1]} @ {o[2]:g} × {o[2]:g}" if o else "more than Ø20 @ 100 × 100",
-                }
+        link_label = ["no links"] + [f"Ø{o[1]} @ {o[2]:g} × {o[3]:g}" for o in link_opts[1:]]
+        req = np.where(cells["asw"].to_numpy() > 0, np.maximum(cells["asw"].to_numpy(), rho_min), 0.0)
+        links, short = link_zones(cells, req, link_opts, link_label, size, x0, y0, box, slab.min_zone_length)
+        if short:
+            notes.append(
+                f"{short} cells need more shear links than Ø20 at the mesh spacing: a thicker slab there."
             )
         heaviest = max(links, key=lambda q: q["asw_mm2_per_m2"]) if links else None
         j = int(np.argmax(v - vrdc))
         u_max = float((v / vrd_max).max())
         shear = {
+            "zones": len(links),
+            "link_spacing_mm": {"x": sx_mesh, "y": sy_mesh},
             "method": "EN 1992-1-1 6.2 per metre, v = √(Vx² + Vy²), at "
             + settings.shear_check_distance
             + " from the pile faces; no concrete contribution in tension; links "
@@ -1439,8 +1534,8 @@ def design_slab(
         }
         if links:
             notes.append(
-                f"{len(links)} cells need shear links (the slab is in tension there, or v > VRd,c); "
-                f"heaviest {heaviest['label']}."
+                f"{len(cells)} cells need shear links (the slab is in tension there, or v > VRd,c), in "
+                f"{len(links)} zones at the mesh spacing; heaviest {heaviest['label']}."
             )
 
     # Punching.

@@ -143,7 +143,9 @@ class RectSection:
         mv = np.asarray(mv, float)
         mh = np.zeros_like(n) if mh is None else np.asarray(mh, float)
         nc, nt = self.n_rd()
-        u_n = np.where(n >= 0, n / nc, n / nt)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            # No steel left for tension (torsion took it all): any tension fails.
+            u_n = np.where(n >= 0, n / nc, np.where(n < 0, n / nt if nt else np.inf, 0.0))
         rv = self.m_rd("v", np.where(mv >= 0, 1, -1), n)
         rh = self.m_rd("h", np.where(mh >= 0, 1, -1), n)
         n_rd = (self.area_concrete * self.concrete.fcd + self.bars.total * self.steel.fyd) / 1e3
