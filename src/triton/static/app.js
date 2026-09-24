@@ -2663,7 +2663,8 @@ async function renderMethodTab(host) {
         ${k.topics.map((t) => `<details class="panel method-doc"><summary>${esc(t.title)}</summary>${docHtml(t.text)}</details>`).join("")}`,
       )
       .join("")}
-    ${m.general.map((t) => `<h2>${esc(t.title)}</h2><details class="panel method-doc" open><summary>${esc(t.title)}</summary>${docHtml(t.text)}</details>`).join("")}
+    <h2>Across elements</h2>
+    ${m.general.map((t) => `<details class="panel method-doc"><summary>${esc(t.title)}</summary>${docHtml(t.text)}</details>`).join("")}
     ${m.empty ? '<p class="status">No elements yet: add them on the Elements tab.</p>' : ""}`;
 }
 

@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from . import alignment, trials
 from .design import (
     beams,
     bollard,
@@ -80,7 +81,11 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
     ],
 }
 
-GENERAL = [("AdSec load sets and signs", governing)]
+GENERAL = [
+    ("Corner berths: a quay that turns", alignment),
+    ("Comparisons (trial sizes)", trials),
+    ("AdSec load sets and signs", governing),
+]
 
 # Methods of the slab's moments at the pile faces, in the order the options are offered.
 PEAK_ORDER = ["peak", "face_mean", "ring_mean", "envelope_face_mean"]
