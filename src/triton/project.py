@@ -64,8 +64,8 @@ class ProjectInfo(_Model):
     document_number: str = Field("", title="Calculation document number")
     revision: str = Field(
         "P01",
-        title="Revision in work",
-        description="Printed on the reports. Issue revision on the Project tab keeps a copy of it, dated.",
+        title="Revision",
+        description="Printed on the reports' cover.",
     )
 
 
@@ -2252,18 +2252,6 @@ class ApproachSlabInput(_Model):
     ledge: Ledge = Field(default_factory=Ledge, title="Ledge on the rear beam")
 
 
-class Revision(_Model):
-    """An issued revision of the calculations, with a copy of the project as it was issued."""
-
-    rev: str = Field(title="Revision")
-    description: str = Field("", title="Description")
-    issued_at: str = Field(default_factory=_now, title="Issued")
-    prepared: str = Field("", title="Prepared by")
-    checked: str = Field("", title="Checked by")
-    approved: str = Field("", title="Approved by")
-    snapshot: str | None = Field(None, description="The copy's file name in the project's revisions folder.")
-
-
 class Project(_Model):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: str = Field(default_factory=_now)
@@ -2273,7 +2261,6 @@ class Project(_Model):
     prices: Prices = Field(default_factory=Prices, title="Prices")
     drawings: DrawingSettings = Field(default_factory=DrawingSettings, title="Drawings (AutoCAD and Revit)")
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
-    revisions: list[Revision] = Field(default_factory=list, title="Issued revisions")
     approach: ApproachSlabInput | None = Field(
         None,
         title="Approach slab and rear beam ledge",
@@ -2309,6 +2296,8 @@ class Project(_Model):
         elif isinstance(data, dict) and isinstance(data.get("info"), dict) and "section" in data["info"]:
             data = dict(data)
             data["info"] = {k: v for k, v in data["info"].items() if k != "section"}
+        if isinstance(data, dict) and "revisions" in data:  # issued revisions were dropped
+            data = {k: v for k, v in data.items() if k != "revisions"}
         return data
 
     @field_validator("id")

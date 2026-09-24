@@ -171,88 +171,6 @@ function wireOpenProject() {
   };
 }
 
-// Issued revisions: each keeps a copy of the project as issued; "What changed" compares it with now.
-function revisionsPanel(box) {
-  const p = state.project;
-  const info = p.info;
-  const list = p.revisions || [];
-  box.innerHTML = `<h2>Revisions</h2>
-    <p class="status">Revision in work: <strong>${esc(info.revision || "P01")}</strong>${info.document_number ? ` of ${esc(info.document_number)}` : ""}.
-      Reports print it with the names above. Issuing keeps a copy of the project as it is now and moves the revision on.</p>
-    ${
-      list.length
-        ? `<table class="rev-table"><tr><th>Rev</th><th>Issued (Cairo)</th><th>Description</th><th>Prepared</th><th>Checked</th><th>Approved</th><th></th></tr>
-        ${list
-          .map(
-            (v) => `<tr><td>${esc(v.rev)}</td><td>${esc(when(v.issued_at))}</td><td>${esc(v.description)}</td><td>${esc(v.prepared)}</td>
-            <td>${esc(v.checked)}</td><td>${esc(v.approved)}</td>
-            <td><a class="quiet-link" href="${ROOT}/api/projects/${esc(p.id)}/revisions/${encodeURIComponent(v.rev)}/project.trt">Copy (.trt)</a>
-              <a class="quiet-link" href="#" data-changes="${esc(v.rev)}">What changed since</a></td></tr>`
-          )
-          .join("")}</table>`
-        : `<p class="status">No revision issued yet.</p>`
-    }
-    <div class="row"><input id="rev-desc" placeholder="Description, e.g. Issued for approval" style="flex:1;max-width:360px">
-      <button id="issue-rev">Issue revision ${esc(info.revision || "P01")}</button><span class="status" id="rev-status"></span></div>
-    <div id="rev-changes"></div>`;
-  box.querySelector("#issue-rev").onclick = async () => {
-    const status = box.querySelector("#rev-status");
-    try {
-      if (state.dirty) await save();
-      status.textContent = "Keeping a copy…";
-      const saved = await api(`${ROOT}/api/projects/${p.id}/revisions`, {
-        method: "POST",
-        body: JSON.stringify({ description: box.querySelector("#rev-desc").value }),
-      });
-      mergeInto(state.project, saved);
-      route(); // the Project tab again, with the next revision in work
-    } catch (e) {
-      status.textContent = e.message;
-    }
-  };
-  box.querySelectorAll("[data-changes]").forEach(
-    (a) =>
-      (a.onclick = async (e) => {
-        e.preventDefault();
-        const out = box.querySelector("#rev-changes");
-        out.innerHTML = `<p class="status">Comparing…</p>`;
-        try {
-          if (state.dirty) await save();
-          const d = await api(`${ROOT}/api/projects/${p.id}/revisions/${encodeURIComponent(a.dataset.changes)}/changes`);
-          out.innerHTML = revisionChanges(d);
-        } catch (err) {
-          out.innerHTML = `<p class="status">${esc(err.message)}</p>`;
-        }
-      })
-  );
-}
-
-function revisionChanges(d) {
-  const val = (v) => (v == null || v === "" ? "–" : typeof v === "object" ? esc(JSON.stringify(v)) : esc(String(v)));
-  const res = (x) =>
-    x ? `${esc(x.bars || "–")} · u ${x.utilisation ?? "–"}${x.passed === false ? " ✗" : ""}${x.kg_per_m3 != null ? ` · ${x.kg_per_m3} kg/m³` : ""}` : "not designed";
-  const els = d.sections.filter((s) => s.elements.length);
-  return `<h3>Changed since ${esc(d.rev)}</h3>
-    ${
-      els.length
-        ? els
-            .map(
-              (s) => `<p><strong>${esc(s.section)}</strong></p><table><tr><th>Element</th><th>At ${esc(d.rev)}</th><th>Now</th></tr>
-            ${s.elements.map((r) => `<tr><td>${esc(r.element)}</td><td>${res(r.was)}</td><td>${res(r.now)}</td></tr>`).join("")}</table>`
-            )
-            .join("")
-        : `<p class="status">No element's bars or results changed.</p>`
-    }
-    ${
-      d.inputs.length
-        ? `<details><summary>${d.inputs.length + d.more_inputs} input${d.inputs.length + d.more_inputs === 1 ? "" : "s"} changed</summary>
-          <table><tr><th>Input</th><th>Was</th><th>Now</th></tr>${d.inputs
-            .map((r) => `<tr><td>${esc(r.what)}</td><td>${val(r.was)}</td><td>${val(r.now)}</td></tr>`)
-            .join("")}</table>${d.more_inputs ? `<p class="status">and ${d.more_inputs} more.</p>` : ""}</details>`
-        : `<p class="status">No input changed.</p>`
-    }`;
-}
-
 // The checker's status per designed element: designed, returned with comments, checked, approved.
 const CHECK_LABEL = { designed: "Designed", comments: "Comments", checked: "Checked", approved: "Approved" };
 function checkingPanel(names, runAt) {
@@ -411,6 +329,7 @@ async function projectPage(id, tab, sectionId) {
       <span style="flex:1"></span>
       <a class="quiet-link" id="download-project" href="${ROOT}/api/projects/${esc(p.id)}/project.trt"
         title="Settings, sections, workbooks, results and trials in one file, to send to someone or keep">Download project (.trt)</a>
+      <button class="quiet" id="duplicate" title="A new project with all of this one's settings, sections, workbooks, results and trials">Duplicate project</button>
       <button class="danger" id="delete">Delete project</button></div>
     <ul class="errors" id="errors"></ul>`;
   $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab))));
@@ -426,6 +345,14 @@ async function projectPage(id, tab, sectionId) {
     state = null;
     location.hash = "#/";
   };
+  document.getElementById("duplicate").onclick = async () => {
+    const name = prompt("Name of the copy", `${p.info.name} copy`);
+    if (name === null) return;
+    if (state.dirty) await save(); // what was just typed goes into the copy too
+    const copy = await api(`${ROOT}/api/projects/${id}/duplicate`, { method: "POST", body: JSON.stringify({ name }) });
+    state = null;
+    location.hash = `#/project/${copy.id}/info`;
+  };
   document.getElementById("download-project").onclick = async (e) => {
     if (!state.dirty) return;
     e.preventDefault(); // what was just typed goes into the file too
@@ -434,7 +361,9 @@ async function projectPage(id, tab, sectionId) {
   };
   const host = document.getElementById("tab");
   if (tab === "info") {
-    host.append(renderObject(SCHEMA.properties.info, p.info, "info", "Project"));
+    const info = renderObject(SCHEMA.properties.info, p.info, "info", "Project");
+    info.dataset.free = ""; // names and numbers, not design inputs: open to edit at any time
+    host.append(info);
     const prices = renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)");
     prices.dataset.free = ""; // not a design input: open while the model is locked
     host.append(prices);
@@ -445,11 +374,6 @@ async function projectPage(id, tab, sectionId) {
     used.className = "panel";
     used.dataset.free = "";
     used.innerHTML = '<h2>Storage</h2><p class="status">Working out…</p>';
-    const revs = document.createElement("div");
-    revs.className = "panel";
-    revs.dataset.free = ""; // issuing is open while the model is locked
-    host.append(revs);
-    revisionsPanel(revs);
     host.append(used);
     storagePanel(used, id);
   }
@@ -2505,7 +2429,6 @@ async function renderDesignTab(host) {
       <div class="row export-links">
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download bars for Revit (JSON: pile and infill cages, beams, slab)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
-      <a class="quiet-link" id="bbs" href="${url}/design/bar-schedule.xlsx" hidden>Download bar bending schedule (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
       <span class="reports" id="drawings" hidden>Drawings:
         <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
@@ -2817,7 +2740,6 @@ function wireExportPick(names, steelOnly, anyCages) {
       a.hidden = !bars;
     };
     setHref("cages", "cages.json");
-    setHref("bbs", "bar-schedule.xlsx");
     setHref("ads", "adsec.zip");
     const sets = document.getElementById("sets");
     if (sets) sets.href = link("governing.xlsx");

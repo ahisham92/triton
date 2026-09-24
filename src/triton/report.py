@@ -124,14 +124,6 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
         ]
     )
-    if project.revisions:
-        r.table(
-            ["Rev", "Date", "Description", "Prepared", "Checked", "Approved"],
-            [
-                [v.rev, clock.show(v.issued_at)[:10], v.description, v.prepared, v.checked, v.approved]
-                for v in project.revisions
-            ],
-        )
     checks = _check_rows(section, results)
     if checks:
         r.p("Checking of each element:")
