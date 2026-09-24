@@ -41,11 +41,12 @@ from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
-from .design.runner import factored_elements, run_section, section_alignment
+from .design.runner import along_axis, factored_elements, run_section, section_alignment
 from .design.spw import workbook as spw_workbook
 from .elements import ElementType
 from .geometry import section_geometry
 from .importer import is_header
+from .joints import joints_drawing, section_joints
 from .materials import catalogue
 from .project import (
     CombiWallInput,
@@ -1754,6 +1755,37 @@ def geometry(project_id: str, section_id: str) -> dict:
     axes = {a["element"]: a.get("local") for a in getattr(wb, "axes", None) or []}
     elements = plan_geometry(section_geometry(wb), sheets, parts, axes)
     return {"elements": elements, "axes": wb.summary()["axes"], "alignment": alignment}
+
+
+@app.get(SECTION + "/joints")
+def expansion_joints(project_id: str, section_id: str) -> dict:
+    """Where the expansion joints go along the section's berth (Design settings' rules)."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    wb = _workbook(project_id, section)
+    raw, parts = {}, []
+    if wb is not None:
+        sheets = factored_elements(section, wb)
+        parts, _ = section_alignment(section, sheets)
+        raw = wb.elements()
+    return section_joints(project.design, section, raw, parts, along_axis(section))
+
+
+@app.get(SECTION + "/joints.dxf")
+def expansion_joints_dxf(project_id: str, section_id: str) -> Response:
+    """The expansion joint layout as an AutoCAD DXF: the berth laid out straight, 1:1 in mm."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    layout = expansion_joints(project_id, section_id)
+    if not layout.get("segments"):
+        raise HTTPException(409, layout.get("text") or "No joint layout yet.")
+    title = f"{project.info.name} - {section.name} - expansion joints"
+    name = f"{project.info.name} {section.name} expansion joints".replace('"', "")
+    return Response(
+        dxf.to_dxf(joints_drawing(layout, project.drawings, title)),
+        media_type="application/dxf",
+        headers={"Content-Disposition": f'attachment; filename="{name}.dxf"'},
+    )
 
 
 def _king_piles(section: Section, wb) -> list[tuple[float, float, float]]:

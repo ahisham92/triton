@@ -31,6 +31,7 @@ _SECTION_OWN = {
     "clashes",
     "checks",
     "displacements",
+    "joints",
 }
 
 
@@ -41,7 +42,7 @@ def _hash(value: Any) -> str:
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
     """What the design of a section depends on, part by part, as short hashes."""
     parts = {
-        "design settings": _hash(project.design.model_dump(mode="json")),
+        "design settings": _hash(project.design.model_dump(mode="json", exclude={"joints"})),
         "working zone and peaks": _hash(section.model_dump(mode="json", exclude=_SECTION_OWN)),
         "load multipliers": _hash([f.model_dump(mode="json") for f in section.load_factors]),
         "sheet mapping": _hash({k: v.model_dump(mode="json") for k, v in section.sheet_map.items()}),
@@ -49,6 +50,19 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         "reviewed warnings": _hash(sorted(section.review.items())),
         "workbook": _hash([(workbook or {}).get(k) for k in ("version", "uploaded_at")]),
     }
+    joints = project.design.joints
+    if joints.use_in_restraint:
+        # The joint layout sets the beams' and slabs' restraint length: its rules, the section's berth
+        # and the furniture priced each (Costing) when no positions are given.
+        c = section.costing
+        parts["expansion joints"] = _hash(
+            [
+                joints.model_dump(mode="json"),
+                section.joints.model_dump(mode="json"),
+                c.berth_length,
+                [i.model_dump(mode="json") for i in c.items if i.unit == "each"],
+            ]
+        )
     for name, element in section.elements.items():
         cage = section.user_cages.get(name) or section.beam_cages.get(name) or section.slab_strips.get(name)
         own = element.model_dump(mode="json")
@@ -70,8 +84,8 @@ def _diff(then: dict[str, str], now: dict[str, str]) -> list[str]:
         if then.get(part) == now.get(part):
             continue
         if part not in then:
-            if part in ("load combinations", "reviewed warnings"):
-                continue  # designed before combinations were defined per section
+            if part in ("load combinations", "reviewed warnings", "expansion joints"):
+                continue  # designed before these were kept
             out.append(f"{part} (added)")
         elif part not in now:
             out.append(f"{part} (removed)")

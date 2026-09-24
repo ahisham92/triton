@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from . import alignment, clashes, trials
+from . import alignment, clashes, joints, trials
 from .design import (
     beams,
     bollard,
@@ -84,6 +84,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
 
 GENERAL = [
     ("Corner berths: a quay that turns", alignment),
+    ("Expansion joints along the berth", joints),
     ("Comparisons (trial sizes)", trials),
     ("Over-reinforced sections (slabs and beams)", ductility),
     ("Reinforcement clashes at the pile heads", clashes),

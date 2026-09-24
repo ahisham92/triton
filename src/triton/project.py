@@ -355,6 +355,56 @@ class Cracking(_Model):
     )
 
 
+class ExpansionJoints(_Model):
+    """How Triton places the expansion (movement) joints along a berth. Positions are proposed per
+    section on the Sections tab; they never change the elements' Plaxis results."""
+
+    max_segment: float = _m(
+        "Longest segment between joints",
+        58.0,
+        gt=0,
+        description="No segment of deck and beams is longer than this. 58 m is the office's joint spacing.",
+    )
+    preferred_segment: float | None = _m(
+        "Preferred segment length",
+        None,
+        gt=0,
+        description="Empty: as few joints as the longest segment allows. Given: about this length, so a "
+        "shorter value gives more joints.",
+    )
+    min_segment: float = _m(
+        "Shortest segment",
+        20.0,
+        gt=0,
+        description="No segment (end ones included) shorter than this.",
+    )
+    position: Literal["midway", "at_row", "anywhere"] = Field(
+        "midway",
+        title="Joint position against the pile rows",
+        description="Mid-way between two rows of piles: the deck cantilevers half a bay each side. At a "
+        "row: a doubled row of piles, one each side of the joint. Anywhere: every 0.5 m.",
+    )
+    furniture_clearance: float = _m(
+        "Clear distance from fenders, bollards and other furniture",
+        1.5,
+        ge=0,
+        description="Measured along the berth from the item's centre. Items are the section's furniture "
+        "positions, else the fenders, bollards and other items priced each on the Costing tab.",
+    )
+    at_corners: bool = Field(
+        True,
+        title="A joint at each corner of a corner berth",
+        description="Off: segments may run round a corner (lengths measured along the quay line).",
+    )
+    use_in_restraint: bool = Field(
+        True,
+        title="Beam and slab restraint checks use the segment lengths",
+        description="On: the length between movement joints of each beam and slab is the longest segment "
+        "of its part of the berth (the element's own length is used when there is no joint layout). Off: "
+        "each element's own length between movement joints.",
+    )
+
+
 class DesignSettings(_Model):
     code: Literal["EN 1992 / EN 1993 + BS 6349"] = Field("EN 1992 / EN 1993 + BS 6349", title="Design code")
     design_life_years: int = Field(50, title="Design life", ge=1, json_schema_extra={"unit": "years"})
@@ -398,6 +448,7 @@ class DesignSettings(_Model):
         "inside the slab or beam, with the results there at their own level. Results higher up are FE "
         "peaks inside the connection and are ignored.",
     )
+    joints: ExpansionJoints = Field(default_factory=ExpansionJoints, title="Expansion joints")
 
 
 # --- Element inputs ----------------------------------------------------------
@@ -1687,6 +1738,60 @@ class Alignment(_Model):
         return v
 
 
+class FurnitureAt(_Model):
+    """A fender, bollard, ladder or other item at a chainage along the berth."""
+
+    name: str = Field("", title="Item", description="e.g. Fender, Bollard, Ladder")
+    chainage: float = _m("Chainage along the berth", 0.0, ge=0, description="From the start of the berth.")
+
+
+class SectionJoints(_Model):
+    """The berth the expansion joints are placed along (rules in Design settings)."""
+
+    runs: list[float] = Field(
+        default_factory=list,
+        title="Straight runs of the berth",
+        description="Length of each straight run between corners, in order, m. Empty: the berth length "
+        "from Costing as one run, or for a corner berth the parts found in the model.",
+    )
+    pile_spacing: float | None = _m(
+        "Spacing of the pile rows along the berth",
+        None,
+        gt=0,
+        description="Empty: from the piles in the workbook.",
+    )
+    first_row: float | None = _m(
+        "First pile row from the start of each run",
+        None,
+        ge=0,
+        description="Empty: half the pile row spacing.",
+    )
+    furniture: list[FurnitureAt] = Field(
+        default_factory=list,
+        title="Furniture positions",
+        description="Empty: the items priced each on the Costing tab (fenders, bollards, ...), one at each "
+        "end of the berth and evenly between at their spacing.",
+    )
+    fixed: list[float] = Field(
+        default_factory=list,
+        title="Joints set by hand",
+        description="Chainages (m) that must be joints; Triton places the others round them.",
+    )
+    mode: Literal["auto", "manual"] = Field(
+        "auto",
+        title="Joints",
+        description="Automatic: placed by the rules round any joints set by hand. By hand: only the joints "
+        "set by hand.",
+    )
+
+    @field_validator("runs")
+    @classmethod
+    def _runs(cls, v: list[float]) -> list[float]:
+        if any(x <= 0 for x in v):
+            raise ValueError("Each run of the berth must be longer than 0 m.")
+        return v
+
+
 class WhatIf(_Model):
     """Bars taken out at one pile connection to see what it does (e.g. the contractor cannot place them).
     It never changes the design."""
@@ -1793,6 +1898,7 @@ class Section(_Model):
     )
     costing: SectionCosting = Field(default_factory=SectionCosting, title="Costing")
     alignment: Alignment = Field(default_factory=Alignment, title="Berth alignment")
+    joints: SectionJoints = Field(default_factory=SectionJoints, title="Expansion joints")
     user_cages: dict[str, UserCage] = Field(
         default_factory=dict,
         title="Cages set by the user",

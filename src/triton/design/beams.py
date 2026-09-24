@@ -879,8 +879,11 @@ def design_beam(
     axes: dict[str, str] | None,
     user_cage: BeamCage | None = None,
     sign: dict[str, Any] | None = None,
+    joint_lengths: list[float] | None = None,
 ) -> dict[str, Any]:
-    """Choose the beam's longitudinal bars, or check the ones the user set (``user_cage``)."""
+    """Choose the beam's longitudinal bars, or check the ones the user set (``user_cage``).
+    ``joint_lengths``: the lengths of the berth's segments between expansion joints the beam runs
+    through; the restraint crack width is also given for each of them."""
     beam = with_project_grades(beam, settings.materials, settings.durability)
     lay = layout(sheets, axes)
     sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
@@ -1214,6 +1217,20 @@ def design_beam(
     for f, c in restr["faces"].items():
         c["limit"] = limits[f]
         c["passed"] = c["wk"] <= limits[f] + 1e-9
+    if joint_lengths:
+        restr["segments"] = []
+        for length in joint_lengths:
+            r = restraint_check(beam.model_copy(update={"joint_spacing": length}), settings, g, cage, conc)
+            restr["segments"].append(
+                {
+                    "length_m": length,
+                    "R": r["R"],
+                    "faces": {
+                        f: {"wk": c["wk"], "limit": limits[f], "passed": c["wk"] <= limits[f] + 1e-9}
+                        for f, c in r["faces"].items()
+                    },
+                }
+            )
 
     # Transverse bars and links, on the final cage.
     trans = transverse_design(beam, settings, g, cage, t_uls[t_keep], t_qp_keep)
