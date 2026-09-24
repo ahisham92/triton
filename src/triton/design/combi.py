@@ -20,7 +20,15 @@ from typing import Any
 from ..forces import CombiSection, scale_forces
 from ..importer import SheetData
 from ..materials import concrete
-from ..project import Casing, CombiWallInput, DesignSettings, PileInput, UserCage, with_project_grades
+from ..project import (
+    Casing,
+    CombiWallInput,
+    DesignSettings,
+    PileInput,
+    UserCage,
+    _office_tube_zones,
+    with_project_grades,
+)
 from .governing import placeholder_sets, steel_sets
 from .piles import design_pile
 from .tube import Tube, check_tube, tube_loads
@@ -40,16 +48,26 @@ def combi_section(wall: CombiWallInput) -> CombiSection:
 def tube_zones(wall: CombiWallInput) -> list[tuple[float, float, Tube]]:
     """(top, bottom, tube) down the king pile from the corrosion zones, or one tube for the whole length."""
 
-    def tube(outside: float, inside: float = 0.0) -> Tube:
+    def tube(outside: float, inside: float = 0.0, name: str = "") -> Tube:
         return Tube(
-            wall.tube_diameter, wall.tube_thickness, outside, wall.steel, wall.fabrication_class, inside
+            wall.tube_diameter,
+            wall.tube_thickness,
+            outside,
+            wall.steel,
+            wall.fabrication_class,
+            inside,
+            fy_set=wall.tube_fy,
+            name=name,
         )
 
     if not wall.corrosion_zones:
         return [(math.inf, -math.inf, tube(wall.corrosion_loss))]
     out, top = [], math.inf
+    # Zones saved before they had names take the office sheet's name for the same level and losses.
+    office = {(o.bottom_level, o.outside, o.inside): o.name for o in _office_tube_zones()}
     for z in wall.corrosion_zones:
-        out.append((top, z.bottom_level, tube(z.outside, z.inside)))
+        name = z.name or office.get((z.bottom_level, z.outside, z.inside), "")
+        out.append((top, z.bottom_level, tube(z.outside, z.inside, name)))
         top = z.bottom_level
     return out
 
@@ -120,6 +138,8 @@ def design_combi_wall(
             "ecm": conc.ecm,
             "factor": wall.buckling_length_factor,
             "curve": wall.buckling_curve,
+            "firm": wall.firm_soil_level,
+            "column_ei": wall.column_ei * 1e9 if wall.column_ei else None,  # kN·m² to N·mm²
         }
     steel = check_tube(
         zones, loads, method=wall.tube_check, gamma_m0=pf.gamma_m0, gamma_m1=pf.gamma_m1, column=column

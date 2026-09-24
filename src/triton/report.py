@@ -948,6 +948,26 @@ def _combi(r: Report, w: dict) -> None:
                     for z in zones
                 ],
             )
+        sheet = t.get("sheet")
+        if sheet:
+            r.h(3, "Tube check by zone (office sheet)")
+            r.caption("Each zone takes its largest N, V and M together, as the office king pile sheet does.")
+            rows = []
+            for g in sheet["groups"]:
+                rows.append([g["title"], ""] + [""] * len(sheet["columns"]))
+                for row in g["rows"]:
+                    vals = [
+                        v
+                        if v is None or isinstance(v, str)
+                        else f"{v:.2f}%"
+                        if row["format"] == "pct"
+                        else f"{v:.2E}"
+                        if row["format"] == "sci"
+                        else v
+                        for v in row["values"]
+                    ]
+                    rows.append([row["item"], row["unit"], *vals])
+            r.table(["Item", "Unit", *sheet["columns"]], rows)
         col = t.get("column")
         if col:
             r.h(3, "Column buckling (composite, EN 1994-1-1 6.7.3)")

@@ -3500,6 +3500,25 @@ function alongChart(el, rows, title, yLabel, val, limit = null, supports = null,
   c.svg.onmouseleave = () => { c.tip.hidden = true; };
 }
 
+// The office king pile sheet: one column per corrosion zone, rows grouped as the sheet, checks green
+// when they pass and red when they fail.
+function officeSheet(sh) {
+  if (!sh?.columns?.length) return "";
+  const cell = (v, r) => {
+    if (v == null) return "<td></td>";
+    if (typeof v === "string") return `<td class="${r.check ? "sheet-note" : ""}">${esc(v)}</td>`;
+    if (r.format === "pct") return `<td class="${r.check ? (v <= 100 ? "sheet-ok" : "sheet-bad") : ""}">${v.toFixed(2)}%</td>`;
+    if (r.format === "sci") return `<td>${v.toExponential(2).toUpperCase()}</td>`;
+    return `<td>${fmt(v, Math.abs(v) >= 1000 ? 0 : 2)}</td>`;
+  };
+  const head = `<tr><th>Item</th><th>Unit</th>${sh.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
+  const body = sh.groups.map((g) => `<tr class="sheet-group"><th colspan="${sh.columns.length + 2}">${esc(g.title)}</th></tr>`
+    + g.rows.map((r) => `<tr><td>${esc(r.item)}</td><td>${esc(r.unit)}</td>${r.values.map((v) => cell(v, r)).join("")}</tr>`).join("")).join("");
+  return `<h3 style="margin-top:18px">Tube check by zone (office sheet)</h3>
+    <p class="status">Each zone takes its largest N, V and M together, as the office sheet does. Green passes, red fails.</p>
+    <div class="scroll"><table class="office-sheet">${head}${body}</table></div>`;
+}
+
 function combiCard(w) {
   const card = document.createElement("div");
   card.className = "panel";
@@ -3529,8 +3548,10 @@ function combiCard(w) {
       <tr><td>M<sub>el,Rd</sub> / V<sub>pl,Rd</sub></td><td>${fmt(r.M_el_kNm)} kNm / ${fmt(r.V_pl_kN)} kN</td></tr>
       ${b ? `<tr><td>Shell buckling σ<sub>x,Rd</sub></td><td>${fmt(b.sigma_Rd_MPa)} MPa (χ ${fmt(b.chi, 3)}, λ̄ ${fmt(b.slenderness, 3)})</td></tr>` : ""}
     </table></div></div>
-    ${g.combination ? `<p>Governing: ${esc(g.combination)}, z ${fmt(g.z, 2)} m (${esc(g.zone)}), N = ${fmt(g.N_kN)} kN (Plaxis sign), M = ${fmt(g.M_kNm)} kNm, V = ${fmt(g.V_kN)} kN. Check: ${esc(g.check)}.</p>` : ""}
+    ${g.envelope ? `<p>Governing: ${esc(g.zone)} zone, with the zone's largest N, V and M taken together as the office sheet does: N = ${fmt(g.N_kN)} kN (Plaxis sign), M = ${fmt(g.M_kNm)} kNm, V = ${fmt(g.V_kN)} kN. Check: ${esc(g.check)}.</p>`
+      : g.combination ? `<p>Governing: ${esc(g.combination)}, z ${fmt(g.z, 2)} m (${esc(g.zone)}), N = ${fmt(g.N_kN)} kN (Plaxis sign), M = ${fmt(g.M_kNm)} kNm, V = ${fmt(g.V_kN)} kN. Check: ${esc(g.check)}.</p>` : ""}
     ${(t.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${officeSheet(t.sheet)}
     ${steelSetsBlock(t.governing_sets, "kN, kNm")}
     <h3 style="margin-top:18px">Concrete infill</h3>`;
   if (t.profile?.length) profileChart(card.querySelector('[data-kind="tube"]'), t, "Tube utilisation along the wall", w.infill_bottom_level);

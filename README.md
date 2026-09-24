@@ -349,7 +349,8 @@ The tube is checked in corrosion zones down its length (per wall: bottom level, 
 inside; empty: the single loss above), with γM0 = 1.10 and γM1 = 1.1 as the office sheets. A new
 wall starts with the office's king pile zones: 4.5 mm splash to −0.5, 2.5 mm immersion to −16.12,
 1.75 mm soil to −25, then 1.75 mm on both faces below the infill (the last zone runs on to the toe).
-On the sample Section 01a this gives a tube utilisation of 0.663, against 66.2% in the office sheet.
+On the sample Section 01a the zone envelope gives 0.794 in the steel-only zone (largest N and M taken
+together, class 4 effective properties with γM0); at each result with its own forces it is 0.663.
 
 - **Infill:** a circular reinforced concrete section of the tube's inner diameter, designed exactly
   like a pile (N–M cage, reductions down the length, links), from the front beam soffit to the infill
@@ -357,10 +358,21 @@ On the sample Section 01a this gives a tube utilisation of 0.663, against 66.2% 
 - **Tube, office check (default):** as the office steel sheets, elastic with class 4 effective
   properties wherever d/t > 90ε², filled or not: A_eff = A·√(90ε²/(d/t)),
   W_eff = W_el·(140ε²/(d/t))^0.25, σ = N/A_eff + M/W_eff ≤ fy/γM0, and V ≤ V_pl,Rd.
-- **Column buckling:** the king pile as a composite column over its length from the top level to the
-  toe: EI_eff = EaIa + 0.6·Ecm·Ic, N_pl,Rk = A_eff·fy + 0.85·Ac·fck (both averaged along the
-  length), Lcr = 0.7L, curve c, N_b,Rd = χ·N_pl,Rk/γM1, and N/N_b,Rd + k_yy·M/M_eff,Rd ≤ 1 with
-  k_yy = 0.9(1 + 0.6λN/N_b,Rd). Factor and curve are per wall.
+- **Office king pile sheet ("SECTION #1"), office check:** one column per corrosion zone (split where
+  the infill stops), each with the zone's largest N, V and M taken together, row by row as the sheet:
+  class, A_eff and W_eff, τ = V·S/(I·2t), N_Rd and M_Rd with γM0, bending with shear only above
+  0.5 V_pl,Rd, σ = N/A + M/W_el against fy, and column buckling. Added to the sheet: the class 3/4
+  stress with effective properties and γM0 (EN 1993-1-1 6.2.1(7)), and τ against fy/√3/γM0 (the sheet
+  divides by γ instead). Checked against Ahmed's sheet in `tests/test_combi.py`: zones 1 to 4 match
+  to 0.01%; below the infill the sheet takes the inner diameter as 1590 + 1.75 for I and W (I 6% high).
+  The card and the report show the table in the sheet's layout.
+- **Column buckling (office sheet):** EI_eff = EaIa + 0.6·Ecm·Ic per zone; N_pl,Rk = A_eff·fy +
+  0.85·Ac·fck per zone and length-weighted over the whole pile; N_cr = π²EI/Lcr² with EI of the whole
+  king pile (entered, e.g. from SAP, or the zones averaged over the length), Lcr = 0.7L with L from the
+  top level to the firm soil level (or the toe); λ from each zone's own N_pl,Rk, curve c,
+  N_b,Rd = χ·N_pl,Rk,whole/γM1, and N_c/N_b,Rd + k_yy·M/M_Rd with N_c the whole king pile's compression
+  and k_yy = 0.9(1 + 0.6λ·N_tube/N_b,Rd). fy per the grade and thickness (345 MPa for 18 mm S355)
+  unless a tube fy is entered.
 - **Tube, EN 1993 check (option), filled part:** full plastic resistance, whatever its D/t (EN 1993-5
   5.5.4(9)), with M_N,Rd = M_pl,Rd cos(πn/2) and the 6.2.8 shear reduction.
 - **Tube, EN 1993 check, below the infill:** class from EN 1993-1-1 Table 5.2 on the corroded section. Classes 1 and 2

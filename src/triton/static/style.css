@@ -349,3 +349,11 @@ td.set-by { font-size: 12px; white-space: nowrap; }
 .layer-builder .lb-head { margin-bottom: 6px; }
 .layer-builder .lb-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0; }
 .layer-builder .lb-name { min-width: 58px; font-weight: 600; }
+
+/* The office king pile sheet on the combi card. */
+table.office-sheet td, table.office-sheet th { white-space: nowrap; text-align: right; }
+table.office-sheet td:first-child, table.office-sheet th:first-child { text-align: left; white-space: normal; min-width: 220px; }
+table.office-sheet tr.sheet-group th { text-align: left; background: var(--panel-2, rgba(127,127,127,.12)); }
+table.office-sheet td.sheet-ok { background: rgba(46, 160, 67, .18); }
+table.office-sheet td.sheet-bad { background: rgba(218, 54, 51, .22); }
+table.office-sheet td.sheet-note { font-size: 12px; color: var(--muted, #777); }

@@ -493,6 +493,7 @@ class PileInput(_ConcreteSection):
 class CorrosionZone(_Model):
     """Loss of tube wall over one length, from the zone above (or the top) down to ``bottom_level``."""
 
+    name: str = Field("", title="Zone name", description="As the office sheet's columns, e.g. Splash.")
     bottom_level: float = _m("Zone bottom level", 0.0)
     outside: float = _mm("Loss on the outside face", 0.0, ge=0)
     inside: float = _mm("Loss on the inside face", 0.0, ge=0, description="e.g. below the infill")
@@ -502,11 +503,11 @@ def _office_tube_zones() -> list[CorrosionZone]:
     # The office's king pile sheets: splash, immersion, immersion with soil, soil (filled), then the
     # steel-only length below the infill with 1.75 mm lost inside as well. BS 6349-1-4 mean losses.
     return [
-        CorrosionZone(bottom_level=-0.5, outside=4.5),
-        CorrosionZone(bottom_level=-14.5, outside=2.5),
-        CorrosionZone(bottom_level=-16.12, outside=2.5),
-        CorrosionZone(bottom_level=-25.0, outside=1.75),
-        CorrosionZone(bottom_level=-39.0, outside=1.75, inside=1.75),
+        CorrosionZone(name="Splash", bottom_level=-0.5, outside=4.5),
+        CorrosionZone(name="Submerged", bottom_level=-14.5, outside=2.5),
+        CorrosionZone(name="Submerged & soil", bottom_level=-16.12, outside=2.5),
+        CorrosionZone(name="Soil", bottom_level=-25.0, outside=1.75),
+        CorrosionZone(name="Soil (steel only)", bottom_level=-39.0, outside=1.75, inside=1.75),
     ]
 
 
@@ -570,7 +571,30 @@ class CombiWallInput(_Model):
         title="Column buckling length factor",
         gt=0,
         le=2,
-        description="Lcr = factor × the length from the top level to the toe (the lowest result).",
+        description="Lcr = factor × L, L from the king pile top level down to the firm soil level "
+        "(or the toe).",
+    )
+    firm_soil_level: float | None = _m(
+        "Firm soil level (column buckling)",
+        None,
+        description="L of the column buckling check runs from the king pile top level down to here, as the "
+        "office sheet's 'length between the pile head and the firm soil'. Empty: down to the toe.",
+    )
+    column_ei: float | None = Field(
+        None,
+        title="Equivalent EI of the whole king pile",
+        gt=0,
+        json_schema_extra={"unit": "kN·m²"},
+        description="For N_cr = π²·EI/Lcr², e.g. from a SAP frame model of the king pile (the office sheet: "
+        "7.14E+15 N·mm² = 7.14E+06 kN·m²). Empty: the zones' E·I_eff averaged over the length.",
+    )
+    tube_fy: float | None = Field(
+        None,
+        title="Tube yield strength fy",
+        gt=0,
+        json_schema_extra={"unit": "MPa"},
+        description="Empty: from the grade and the wall thickness (EN 10025-2: S355 is 345 MPa over 16 mm). "
+        "The office sheet takes 355 MPa for the 18 mm tube.",
     )
     buckling_curve: Literal["a", "b", "c"] = Field(
         "c",

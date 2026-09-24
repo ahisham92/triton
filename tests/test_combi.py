@@ -162,3 +162,69 @@ def test_infill_has_no_crack_check_inside_the_tube():
     w = design_combi_wall("Combi Wall", wall, DesignSettings(), combi_sheets().elements()["Combi Wall"])
     cracks = w["infill"]["cracks"]
     assert cracks["wk_mm"] is None and cracks["passed"] and "permanent casing" in cracks["casing"]
+
+
+def test_the_office_king_pile_sheet_section_1():
+    """Ahmed's SECTION #1 sheet: 1590 infill, 18 mm tube, fy 355, five corrosion zones, L 36.6 m, SAP EI."""
+    from triton.design.tube import Segment, office_sheet, sheet_table
+
+    def tube(c, inside=0.0):
+        return Tube(1626, 18, c, "S355", inside=inside, fy_set=355)
+
+    segs = [
+        Segment("Splash", 3.5, -0.5, tube(4.5), True, 0),
+        Segment("Submerged", -0.5, -14.5, tube(2.5), True, 1),
+        Segment("Submerged & soil", -14.5, -16.12, tube(2.5), True, 2),
+        Segment("Soil", -16.12, -25, tube(1.75), True, 3),
+        Segment("Soil (steel only)", -25, -35, tube(1.75, 1.75), False, 4),
+    ]
+    forces = [
+        {"N": n, "V": v, "M": m, "N_total": nt}
+        for n, v, m, nt in (
+            (914, 223, 1201, 2742),
+            (1472, 197, 4558.9, 4416),
+            (1487, 169, 4078.2, 4461),
+            (3133, 366, 3894, 9399),
+            (9433, 1473, 3579, 9433),
+        )
+    ]
+    sh = office_sheet(
+        segs,
+        forces,
+        length=36.6,
+        factor=0.7,
+        infill_diameter=1590,
+        fck=40,
+        ecm=35000,
+        curve="c",
+        column_ei=7.14e15,
+        gamma_m0=1.1,
+        gamma_m1=1.1,
+    )
+    cols = sh["columns"]
+    assert sh["Npl_w"] / 1e3 == pytest.approx(70371, rel=1e-3)
+    assert sh["N_cr"] / 1e3 == pytest.approx(107341.5, rel=1e-3)
+    # NEd/NRd, MEd/MRd, σ/fy and the buckling interaction, % as the sheet (it takes π as 3.142).
+    sheet = [
+        (5.90, 14.68, 16.30, 7.05, 20.43),
+        (7.73, 46.84, 46.62, 11.60, 54.65),
+        (7.81, 41.90, 42.32, 11.72, 50.23),
+        (15.32, 37.71, 44.41, 24.89, 60.37),
+    ]
+    for c, (un, um, us, unb, unm) in zip(cols, sheet, strict=False):
+        assert c["cls"] == 4
+        assert 100 * c["u_N"] == pytest.approx(un, abs=0.03)
+        assert 100 * c["u_M"] == pytest.approx(um, abs=0.03)
+        assert 100 * c["u_sigma"] == pytest.approx(us, abs=0.03)
+        assert 100 * c["u_Nb"] == pytest.approx(unb, abs=0.03)
+        assert 100 * c["u_NM"] == pytest.approx(unm, abs=0.03)
+    steel = cols[4]  # below the infill: steel only, both faces corroded
+    assert steel["Npl_Rk"] / 1e3 == pytest.approx(18997, rel=2e-3)
+    assert 100 * steel["u_Nb"] == pytest.approx(16.64, abs=0.03)
+    assert steel["chi"] == pytest.approx(0.886, abs=2e-3)  # α 0.49, as the sheet's Nb,Rd
+    # The sheet's I there takes the inner diameter as 1590 + 1.75 (not 1593.5): I 2.51E+10 against 2.37E+10.
+    assert steel["I"] == pytest.approx(2.368e10, rel=2e-3)
+    # With effective properties and γM0 (EN 1993-1-1 6.2.1(7)) the steel-only zone is at 94.5%.
+    assert steel["check"].startswith("N/Aeff + M/Weff") and steel["u"] == pytest.approx(0.945, abs=2e-3)
+    table = sheet_table(sh, 35000, 40)
+    assert table["columns"][0] == "Splash" and table["groups"][0]["title"] == "Pile parameters"
