@@ -1863,6 +1863,12 @@ class SlabStrips(_Model):
         "results, drawings, AdSec files and report. Empty: the lighter one.",
         json_schema_extra={"unit": "mm"},
     )
+    lines: list[float] | None = Field(
+        None,
+        exclude=True,
+        description="Only while checking moved piles (never saved): the lines of piles the column strips "
+        "were designed on, so the bars stay where they are.",
+    )
 
 
 def _short_id() -> str:

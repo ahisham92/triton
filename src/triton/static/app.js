@@ -7,6 +7,7 @@ import { renderValueEngineering } from "./ve.js";
 import { renderClashes } from "./clashes.js";
 import { APPROACH, approachCard, approachPanel } from "./approach.js";
 import { renderFurniture } from "./furniture.js";
+import { renderMovedPiles } from "./moved.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -397,7 +398,7 @@ function deflectionChart(el, e) {
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design", "openings", "view3d", "clashes", "furniture", "compare", "ve"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "openings", "view3d", "clashes", "furniture", "moved", "compare", "ve"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -427,6 +428,7 @@ async function projectPage(id, tab, sectionId) {
     ["view3d", "3D view"],
     ["clashes", "Clashes"],
     ["furniture", "Furniture"],
+    ["moved", "Moved piles"],
     ["costing", "Costing"],
     ["compare", "Comparisons"],
     ["ve", "Value engineering"],
@@ -513,6 +515,12 @@ async function projectPage(id, tab, sectionId) {
       costingHash: tabHash("costing"),
     });
   else if (tab === "clashes") renderClashes(host, { api, again, esc, fmt, secUrl });
+  else if (tab === "moved")
+    renderMovedPiles(host, {
+      api, again, esc, fmt, secUrl, ROOT,
+      project: () => state.project,
+      sectionId: () => sec().id,
+    });
   else if (tab === "furniture")
     renderFurniture(host, {
       api, again, esc, fmt, secUrl, save,
