@@ -5,11 +5,13 @@ from __future__ import annotations
 import html
 import os
 import re
+import secrets
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
@@ -211,25 +213,110 @@ def add_elements(project_id: str, section_id: str, body: ElementNames) -> dict:
 # --- Workbooks ------------------------------------------------------------------------
 
 
-def _import_upload(file: UploadFile) -> ImportResult:
-    suffix = Path(file.filename or "").suffix.lower()
+def _suffix(filename: str) -> str:
+    suffix = Path(filename or "").suffix.lower()
     if suffix not in ALLOWED:
         raise HTTPException(400, f"Upload a .xlsb, .xlsx or .xlsm file (got '{suffix or 'no extension'}').")
+    return suffix
+
+
+def _import_path(path: Path) -> ImportResult:
+    try:
+        return import_workbook(path)
+    except UnsupportedWorkbook as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # corrupt or password-protected files
+        raise HTTPException(400, f"Could not read the workbook: {e}") from e
+
+
+def _import_upload(file: UploadFile) -> ImportResult:
+    suffix = _suffix(file.filename or "")
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / f"upload{suffix}"
         with path.open("wb") as out:
             shutil.copyfileobj(file.file, out, length=1024 * 1024)
-        try:
-            return import_workbook(path)
-        except UnsupportedWorkbook as e:
-            raise HTTPException(400, str(e)) from e
-        except Exception as e:  # corrupt or password-protected files
-            raise HTTPException(400, f"Could not read the workbook: {e}") from e
+        return _import_path(path)
+
+
+# --- Uploads in pieces --------------------------------------------------------------------
+# Hosts cap the size of one request (PythonAnywhere at about 100 MB), and a whole project's
+# workbook can be larger. The browser sends it in pieces to /api/uploads/{id}, then asks for it
+# to be checked or kept by that id. A finished or abandoned upload is deleted.
+
+UPLOAD_ID = re.compile(r"[0-9a-f]{32}")
+UPLOAD_MAX_AGE = 24 * 3600
+
+
+def _uploads() -> Path:
+    root = Path(os.environ.get("TRITON_DATA_DIR", "data")) / "uploads"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _upload_dir(upload_id: str) -> Path:
+    d = _uploads() / upload_id
+    if not UPLOAD_ID.fullmatch(upload_id) or not d.is_dir():
+        raise HTTPException(404, "That upload is not here (it may have expired). Upload the file again.")
+    return d
+
+
+class NewUpload(BaseModel):
+    filename: str
+    size: int = 0
+
+
+@app.post("/api/uploads", status_code=201)
+def start_upload(body: NewUpload) -> dict:
+    suffix = _suffix(body.filename)
+    for old in _uploads().iterdir():  # abandoned uploads
+        if time.time() - old.stat().st_mtime > UPLOAD_MAX_AGE:
+            shutil.rmtree(old, ignore_errors=True)
+    upload_id = secrets.token_hex(16)
+    d = _uploads() / upload_id
+    d.mkdir()
+    (d / "name").write_text(body.filename, "utf-8")
+    (d / f"data{suffix}").touch()
+    return {"id": upload_id, "received": 0}
+
+
+def _upload_file(d: Path) -> Path:
+    return next(d.glob("data.*"))
+
+
+@app.put("/api/uploads/{upload_id}")
+async def upload_piece(upload_id: str, request: Request, offset: int = 0) -> dict:
+    """Append one piece at ``offset``. Sending a piece again (after a dropped connection) replaces it."""
+    d = _upload_dir(upload_id)
+    path = _upload_file(d)
+    size = path.stat().st_size
+    if offset > size or offset < 0:
+        raise HTTPException(409, f"Expected a piece at byte {size}, got one at {offset}.")
+    with path.open("r+b") as out:
+        out.truncate(offset)
+        out.seek(offset)
+        async for chunk in request.stream():
+            out.write(chunk)
+        received = out.tell()
+    return {"id": upload_id, "received": received}
+
+
+def _take_upload(upload_id: str) -> tuple[str, ImportResult]:
+    d = _upload_dir(upload_id)
+    try:
+        return (d / "name").read_text("utf-8"), _import_path(_upload_file(d))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @app.post("/api/workbooks/check")
 def check_workbook(file: UploadFile) -> dict:
     return {"file": file.filename, **_import_upload(file).summary()}
+
+
+@app.post("/api/workbooks/check/{upload_id}")
+def check_uploaded_workbook(upload_id: str) -> dict:
+    filename, result = _take_upload(upload_id)
+    return {"file": filename, **result.summary()}
 
 
 SECTION = "/api/projects/{project_id}/sections/{section_id}"
@@ -240,6 +327,13 @@ def upload_section_workbook(project_id: str, section_id: str, file: UploadFile) 
     _section(_get(project_id), section_id)
     result = _import_upload(file)
     return store().save_workbook(project_id, section_id, file.filename or "workbook", result)
+
+
+@app.post(SECTION + "/workbook/{upload_id}")
+def keep_uploaded_workbook(project_id: str, section_id: str, upload_id: str) -> dict:
+    _section(_get(project_id), section_id)
+    filename, result = _take_upload(upload_id)
+    return store().save_workbook(project_id, section_id, filename, result)
 
 
 def _workbook(project_id: str, section: Section) -> ImportResult | None:

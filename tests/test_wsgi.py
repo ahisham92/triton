@@ -11,12 +11,12 @@ import pytest
 from triton.wsgi import application, guarded, mount
 
 
-def call(app, path, method="GET", body=b"", content_type="", root=""):
+def call(app, path, method="GET", body=b"", content_type="", root="", query=""):
     environ = {
         "REQUEST_METHOD": method,
         "SCRIPT_NAME": root,
         "PATH_INFO": path,
-        "QUERY_STRING": "",
+        "QUERY_STRING": query,
         "CONTENT_TYPE": content_type,
         "CONTENT_LENGTH": str(len(body)),
         "wsgi.input": io.BytesIO(body),
@@ -127,3 +127,14 @@ def test_an_error_is_a_500_and_logged():
     body = b"".join(asgi_to_wsgi(broken)(environ, lambda s, h, e=None: out.update(status=s)))
     assert out["status"] == "500 Internal Server Error" and body == b"Internal Server Error"
     assert "RuntimeError: boom" in errors.getvalue()
+
+
+def test_a_piece_through_wsgi():
+    """The raw body of a PUT reaches the app through the WSGI bridge intact."""
+    status, _, data = call(application, "/api/uploads", "POST", b'{"filename": "w.xlsb"}', "application/json")
+    upload_id = json.loads(data)["id"]
+    piece = bytes(range(256)) * 1000  # several reads of the bridge's buffer
+    status, _, data = call(
+        application, f"/api/uploads/{upload_id}", "PUT", piece, "application/octet-stream", query="offset=0"
+    )
+    assert status == 200 and json.loads(data)["received"] == len(piece)

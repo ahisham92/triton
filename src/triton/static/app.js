@@ -558,6 +558,36 @@ function checkerHtml() {
     </div>`;
 }
 
+// Workbooks go up in pieces: hosts cap one request (PythonAnywhere at about 100 MB), and a whole
+// project's workbook can be bigger than that. A piece that fails is sent again.
+const PIECE = 8 * 1024 * 1024;
+async function sendInPieces(f, progress) {
+  const { id } = await api(ROOT + "/api/uploads", {
+    method: "POST",
+    body: JSON.stringify({ filename: f.name, size: f.size }),
+  });
+  let at = 0;
+  do {
+    const piece = f.slice(at, at + PIECE);
+    for (let tries = 1; ; tries++) {
+      try {
+        await api(`${ROOT}/api/uploads/${id}?offset=${at}`, {
+          method: "PUT",
+          body: piece,
+          headers: { "Content-Type": "application/octet-stream" },
+        });
+        break;
+      } catch (e) {
+        if (tries >= 3) throw e;
+        await new Promise((r) => setTimeout(r, 1000 * tries));
+      }
+    }
+    at += piece.size;
+    progress(at);
+  } while (at < f.size);
+  return id;
+}
+
 function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
   const file = document.getElementById("file");
   const run = document.getElementById("run");
@@ -566,11 +596,14 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
     const f = file.files[0];
     if (!f) return;
     run.disabled = true;
-    document.getElementById("status").textContent = `Reading ${f.name}…`;
-    const body = new FormData();
-    body.append("file", f);
+    const status = document.getElementById("status");
     try {
-      const data = await api(url, { method: "POST", body });
+      const mb = (n) => (n / 1048576).toFixed(0);
+      const id = await sendInPieces(f, (at) => {
+        status.textContent = `Uploading ${f.name}: ${mb(at)} of ${mb(f.size)} MB`;
+      });
+      status.textContent = `Reading ${f.name}…`;
+      const data = await api(`${url}/${id}`, { method: "POST" });
       renderReport(data);
       onReport?.(data);
       document.getElementById("status").textContent = `Checked ${data.file}`;
