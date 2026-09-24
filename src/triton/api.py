@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
-from . import adsec, checker, durability, fresh, trials
+from . import adsec, checker, durability, fresh, method, trials
 from .costing import cost_project
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
@@ -185,6 +185,12 @@ def create_project(body: NewProject) -> Project:
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: str) -> Project:
     return _get(project_id)
+
+
+@app.get("/api/projects/{project_id}/method")
+def project_method(project_id: str) -> dict:
+    """The Method tab: how each kind of element in the project is designed, and the options in use."""
+    return method.view(_get(project_id))
 
 
 LOCKED = "The model is locked since it was designed. Press Unlock to edit first."

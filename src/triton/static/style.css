@@ -384,3 +384,10 @@ tr.trial-idle td { color: var(--muted); }
 .trial-size input { padding: 3px 6px; }
 .trial-bar { display: block; height: 4px; margin-top: 3px; background: var(--line); border-radius: 2px; min-width: 6em; }
 .trial-bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+
+/* Method tab */
+.method-table td { vertical-align: top; }
+.method-table tr.method-on td { background: var(--ok-bg); }
+.method-doc summary { cursor: pointer; font-weight: 600; }
+.method-doc p, .method-doc ul { max-width: 60rem; }
+.method-doc pre.formula { background: var(--miss-bg); padding: 8px 12px; border-radius: 6px; overflow-x: auto; white-space: pre; }
