@@ -160,3 +160,35 @@ def test_sheet_view_filters_and_sorts_without_touching_row_numbers(client):
     down = get(sort=1, desc=True)["numbers"]
     assert down[-1] == 4 and down[:-1] == sorted(up[:-1], key=lambda n: nodes[up.index(n)], reverse=True)
     assert down.index(2) < down.index(7)  # equal nodes keep Excel order
+
+
+def test_the_workbook_tab_starts_from_a_brief_and_keeps_the_check(client, monkeypatch):
+    import triton.api as api
+
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)"]}).json()
+    url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
+    assert client.get(f"{url}/workbook/brief").status_code == 404
+    data = xlsx({"Pile(1)-QP": with_repeat(), "Pile(1)-PT-B-Apron": pile_sheet(scale=2)})
+    full = client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)}).json()
+
+    brief = client.get(f"{url}/workbook/brief").json()
+    assert brief["file"] == "s.xlsx" and brief["checked"]
+    assert [s["name"] for s in brief["sheets"]] == ["Pile(1)-QP", "Pile(1)-PT-B-Apron"]
+    assert brief["counts"] == full["counts"] and "issues" not in brief
+
+    # The upload worked the check out: opening the tab only reads it back.
+    calls = []
+    view = api._view
+    monkeypatch.setattr(api, "_view", lambda *a: calls.append(1) or view(*a))
+    assert client.get(f"{url}/workbook", params={"progress": "open-t1"}).json() == full
+    assert not calls
+    # A decision changes how the section reads the workbook: it is checked again.
+    (dup,) = [i["id"] for i in full["issues"] if i["code"] == "duplicate_rows_removed"]
+    project = client.get(f"/api/projects/{p['id']}").json()
+    project["sections"][0]["review"] = {dup: "accept"}
+    client.put(f"/api/projects/{p['id']}", json=project)
+    assert not client.get(f"{url}/workbook/brief").json()["checked"]
+    client.get(f"{url}/workbook")
+    assert calls == [1]
+    client.get(f"{url}/workbook")
+    assert calls == [1]

@@ -47,6 +47,8 @@ async function again(fn, tries = 4) {
 
 // Uploads and designs under way, whatever page is open (see "long work" below).
 const JOBS = [];
+// Sections whose workbook was opened on this visit: their Workbook tab opens it straight away.
+const OPENED = new Set();
 let state = null; // the open project: { project, sectionId, dirty, errors }
 
 let SCHEMA = null;
@@ -951,6 +953,7 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check", slot = "uplo
     if (!f || busyWith(slot)) return;
     const mode = document.getElementById("upload-mode");
     const home = location.hash;
+    const sid = state && url !== ROOT + "/api/workbooks/check" ? sec()?.id : null;
     const job = uploadJob(f, {
       url,
       mode: mode && !mode.hidden ? mode.value : null,
@@ -962,7 +965,10 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check", slot = "uplo
         if (url === ROOT + "/api/workbooks/check") {
           renderReport(data);
           onReport?.(data);
-        } else route();
+        } else {
+          OPENED.add(sid); // the upload has just checked it: the tab opens it at once
+          route();
+        }
       },
     });
     ready();
@@ -995,8 +1001,9 @@ async function renderWorkbookTab(host) {
   host.innerHTML = `<p class="sub" id="wb-note">Upload the Plaxis workbook for ${esc(sec().name)}. It is checked, then kept with
     the section so its elements can be designed without uploading it again. You can go on working on other tabs while it uploads.</p>` + checkerHtml(slot);
   const onReport = (data) => {
-    document.getElementById("wb-note").textContent =
-      `Workbook in use: ${data.file}, uploaded ${when(data.uploaded_at)} (Cairo time). Upload another file to replace it, replace some of its tabs or add tabs to it.`;
+    document.getElementById("wb-note").outerHTML = `<p class="sub" id="wb-note">${esc(
+      `Workbook in use: ${data.file}, uploaded ${when(data.uploaded_at)} (Cairo time). Upload another file to replace it, replace some of its tabs or add tabs to it.`,
+    )}</p>`;
     document.getElementById("upload-mode").hidden = false;
     wireDeleteTabs(data, url);
     renderFactors(data);
@@ -1024,12 +1031,112 @@ async function renderWorkbookTab(host) {
   };
   wireChecker(onReport, `${url}/workbook`, slot);
   drawJobs();
+  // First only what the workbook is (a small file): reading and checking all of it takes a while,
+  // and uploading, replacing or deleting tabs does not need it.
+  const sid = sec().id;
+  let brief;
   try {
-    const stored = await api(`${url}/workbook`);
-    renderReport(stored);
-    onReport(stored);
+    brief = await api(`${url}/workbook/brief`);
   } catch {
-    /* no workbook yet */
+    return; /* no workbook yet */
+  }
+  if (!document.body.contains(host) || sec()?.id !== sid) return;
+  const openSlot = `open-${sid}`;
+  const note = document.getElementById("wb-note");
+  const c = brief.counts || {};
+  note.outerHTML = `<div class="panel wb-brief" id="wb-note">
+      <div class="row"><strong>Workbook in use: ${esc(brief.file)}</strong><span class="status">uploaded ${when(brief.uploaded_at)} (Cairo time)</span></div>
+      <p class="status">${brief.sheets.length} tab${brief.sheets.length === 1 ? "" : "s"}, ${brief.elements.length} element${brief.elements.length === 1 ? "" : "s"}
+        · ${c.error ?? 0} errors, ${c.warning ?? 0} warnings, ${c.info ?? 0} automatic clean-ups${brief.checked ? "" : " (as found on upload)"}</p>
+      <div class="row" id="wb-open-row"><button id="wb-open">Open the workbook</button>
+        <span class="status">Shows its checks, sheet mapping and warnings. To replace it, replace or add tabs, or delete tabs,
+        you don't need to open it: use the upload box below.</span></div>
+      <div data-slot="${esc(openSlot)}"></div></div>`;
+  document.getElementById("upload-mode").hidden = false;
+  wireDeleteTabs(brief, url);
+  const shown = (data) => {
+    if (!document.body.contains(host) || sec()?.id !== sid) return false;
+    document.getElementById("wb-open-row")?.remove();
+    renderReport(data);
+    onReport(data);
+    return true;
+  };
+  const open = () => openWorkbook(url, brief.file, openSlot, shown);
+  document.getElementById("wb-open").onclick = open;
+  drawJobs();
+  if (busyWith(openSlot)) document.getElementById("wb-open-row").hidden = true;
+  else if (OPENED.has(sid)) open();
+}
+
+// Reads and checks a section's stored workbook as a job with a percentage: how far the server has
+// got (it says so under a progress key), then the download of the answer. A check already worked
+// out comes back at once.
+async function openWorkbook(url, file, slot, shown) {
+  if (busyWith(slot)) return;
+  document.getElementById("wb-open-row")?.setAttribute("hidden", "");
+  const key = `open-${Math.random().toString(36).slice(2)}`;
+  const home = location.hash;
+  const sid = sec().id;
+  const job = newJob({
+    kind: "open",
+    title: `Opening ${file}`,
+    slot,
+    home,
+    steps: [
+      { label: "Read and check", weight: 4, state: "running", fraction: 0, detail: "Loading the workbook" },
+      { label: "Download", weight: 1, state: "waiting" },
+    ],
+  });
+  const [check, down] = job.steps;
+  const ctrl = new AbortController();
+  job.stop = () => {
+    job.stopped = true;
+    ctrl.abort();
+  };
+  const poll = setInterval(async () => {
+    try {
+      const p = await api(`${ROOT}/api/progress/${key}`);
+      if (check.state !== "running") return;
+      check.fraction = p.fraction;
+      check.detail = p.step;
+      drawJobs();
+    } catch {
+      /* not started yet, or finished */
+    }
+  }, 700);
+  try {
+    const res = await fetch(`${url}/workbook?progress=${key}`, { signal: ctrl.signal });
+    clearInterval(poll);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(typeof d.detail === "string" ? d.detail : GATEWAY.includes(res.status) ? `The server did not answer (${res.status}); try again.` : res.statusText);
+    }
+    Object.assign(check, { state: "done", fraction: 1 });
+    Object.assign(down, { state: "running", fraction: 0, detail: "Downloading the checks" });
+    drawJobs();
+    const size = Number(res.headers.get("Content-Length")) || 0;
+    const reader = res.body.getReader();
+    const parts = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      got += value.length;
+      if (size) {
+        down.fraction = Math.min(got / size, 1);
+        down.note = `${(got / 1048576).toFixed(1)} / ${(size / 1048576).toFixed(1)} MB`;
+        drawJobs();
+      }
+    }
+    const data = JSON.parse(await new Blob(parts).text());
+    OPENED.add(sid);
+    jobDone(job, "done", `Opened ${file}.`);
+    if (location.hash === home && shown(data)) dismissJob(job);
+  } catch (e) {
+    clearInterval(poll);
+    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped. Open it again when you need it." : `Failed: ${e.message}`);
+    document.getElementById("wb-open-row")?.removeAttribute("hidden");
   }
 }
 
@@ -1320,7 +1427,10 @@ function renderFactors(data) {
   const draw = () => {
     const taken = (i) => new Set(p.load_factors.flatMap((r, j) => (j === i ? [] : r.sheets)));
     box.innerHTML = `<h2>Load multipliers</h2>
-      <p class="status" style="margin-top:0">Multiply the straining actions of chosen sheets, e.g. 1.35 on the Set B sheets. X, Y and Z are not changed. Save to keep.</p>
+      <p class="status" style="margin-top:0">Multiply the straining actions of chosen sheets, e.g. 1.35 on the Set B sheets. X, Y and Z are not changed.
+        Saved as you type, with no need to press Apply decisions (that button is only for the warnings). It is applied when you design
+        and in the sheet pile wall export; the stored workbook and the sheet view keep the uploaded values. Changing it marks designed
+        results out of date.</p>
       ${p.load_factors
         .map((r, i) => {
           const other = taken(i);

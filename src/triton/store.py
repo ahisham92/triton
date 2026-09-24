@@ -97,7 +97,7 @@ class ProjectStore:
     def delete_workbook(self, project_id: str, section_id: str) -> None:
         """The section's workbook and the rows kept with it; its results stay (out of date)."""
         d = self._dir(project_id, section_id)
-        for name in ("workbook.pkl", "workbook.json"):
+        for name in ("workbook.pkl", "workbook.json", "workbook_view.json"):
             (d / name).unlink(missing_ok=True)
         shutil.rmtree(d / "raw", ignore_errors=True)
 
@@ -105,6 +105,20 @@ class ProjectStore:
         d = self._dir(project_id, section_id)
         for sheet in sheets:
             self._raw_path(d, sheet).unlink(missing_ok=True)
+
+    def load_view(self, project_id: str, section_id: str, key: str) -> dict[str, Any] | None:
+        """The workbook as the section last read it, if nothing it depends on has changed since."""
+        path = self._dir(project_id, section_id) / "workbook_view.json"
+        if not path.exists():
+            return None
+        try:
+            kept = json.loads(path.read_text("utf-8"))
+        except ValueError:
+            return None
+        return kept["data"] if kept.get("key") == key else None
+
+    def save_view(self, project_id: str, section_id: str, key: str, data: dict[str, Any]) -> None:
+        self._write_json(self._dir(project_id, section_id) / "workbook_view.json", {"key": key, "data": data})
 
     def workbook_summary(self, project_id: str, section_id: str) -> dict[str, Any] | None:
         path = self._dir(project_id, section_id) / "workbook.json"

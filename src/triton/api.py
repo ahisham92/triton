@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import html
 import json
 import os
@@ -590,23 +592,75 @@ def _workbook(project_id: str, section: Section) -> ImportResult | None:
     return _view(wb, section)
 
 
+# The checked workbook depends on the stored workbook, the section's reading of it and this code;
+# it is kept once worked out, so opening the Workbook tab again only reads a file.
+_CODE = hashlib.sha1(
+    b"".join(p.read_bytes() for p in sorted(Path(__file__).parent.rglob("*.py")))
+).hexdigest()[:12]
+
+
+def _view_key(summary: dict, section: Section) -> str:
+    what = {
+        "code": _CODE,
+        "version": summary.get("version"),
+        "sheet_map": _sheet_map(section),
+        "combinations": section.combinations,
+        "combination_map": section.combination_map,
+        "review": section.review,
+        "sizes": _sizes(section),
+        "elements": list(section.elements),
+    }
+    return hashlib.sha1(json.dumps(what, sort_keys=True, default=str).encode()).hexdigest()
+
+
 @app.get(SECTION + "/workbook")
-def section_workbook(project_id: str, section_id: str) -> dict:
+def section_workbook(project_id: str, section_id: str, progress: str | None = None) -> dict:
     section = _section(_get(project_id), section_id)
     summary = store().workbook_summary(project_id, section_id)
     if summary is None:
         raise HTTPException(404, "No workbook uploaded for this section yet.")
-    raw = store().load_workbook(project_id, section_id)
-    if raw is None:
-        return summary
-    wb = _view(raw, section)
-    summary = {**summary, **wb.summary(), "sheet_map": list(section.sheet_map)}
-    check = combination_check(
-        apply_mapping(raw, _sheet_map(section)), section.combinations, section.combination_map
-    )
-    summary["combination_check"] = check
-    summary["suggestions"] = suggest(summary["sheets"], list(section.elements), section.combinations)
+    key = _view_key(summary, section)
+    kept = store().load_view(project_id, section_id, key)
+    if kept is not None:
+        return kept
+    with _Progress(progress) if progress else contextlib.nullcontext(lambda *_: None) as tell:
+        tell(0.02, "Loading the workbook")
+        raw = store().load_workbook(project_id, section_id)
+        if raw is None:
+            return summary
+        tell(0.35, "Checking the sheets for this section")
+        wb = _view(raw, section)
+        tell(0.8, "Checking the load combinations")
+        summary = {**summary, **wb.summary(), "sheet_map": list(section.sheet_map)}
+        check = combination_check(
+            apply_mapping(raw, _sheet_map(section)), section.combinations, section.combination_map
+        )
+        summary["combination_check"] = check
+        summary["suggestions"] = suggest(summary["sheets"], list(section.elements), section.combinations)
+        tell(0.95, "Keeping the result")
+        store().save_view(project_id, section_id, key, summary)
     return summary
+
+
+@app.get(SECTION + "/workbook/brief")
+def section_workbook_brief(project_id: str, section_id: str) -> dict:
+    """What the section's workbook is, without reading it: the file, when it was uploaded, its tabs
+    and its warnings (as the section reads them when that is already worked out, else as found on
+    upload)."""
+    section = _section(_get(project_id), section_id)
+    summary = store().workbook_summary(project_id, section_id)
+    if summary is None:
+        raise HTTPException(404, "No workbook uploaded for this section yet.")
+    kept = store().load_view(project_id, section_id, _view_key(summary, section))
+    counts = (kept or summary).get("counts") or {}
+    return {
+        "file": summary.get("file"),
+        "uploaded_at": summary.get("uploaded_at"),
+        "sheets": [{"name": s["name"]} for s in summary.get("sheets", [])],
+        "elements": summary.get("elements", []),
+        "counts": counts,
+        "checked": kept is not None,
+    }
 
 
 # --- Sheets as read, to see and edit where a warning is ----------------------------------------
