@@ -1228,7 +1228,7 @@ def use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
 
 
 class ScenarioRequest(BaseModel):
-    variants: list[dict[str, float | None]] = Field(
+    variants: list[dict] = Field(
         default_factory=list, description="Changes to try on every element, e.g. {crack_width_limit: 0.3}."
     )
     budget_s: float | None = Field(
@@ -1236,29 +1236,27 @@ class ScenarioRequest(BaseModel):
     )
 
 
-@app.get(SECTION + "/scenarios")
-def section_scenarios(project_id: str, section_id: str) -> dict:
-    """The whole section designed with a change on every element, against the section as set."""
+def _scenarios(project_id: str, section_id: str, which: str) -> dict:
     project = _get(project_id)
     section = _section(project, section_id)
     d = store()._dir(project_id, section_id)
     summary = store().workbook_summary(project_id, section_id)
-    return trials.scenarios_view(project, section, summary, store().load_results(project_id, section_id), d)
+    results = store().load_results(project_id, section_id)
+    out = trials.scenarios_view(project, section, summary, results, d, which)
+    if which == "ve":
+        out["ideas"] = trials.ideas(section, results)
+    return out
 
 
-@app.post(SECTION + "/scenarios")
-def run_scenarios(project_id: str, section_id: str, body: ScenarioRequest) -> dict:
-    """Design every element for the section as set and for each variant, in steps. The section and its
-    results do not change."""
+def _run_scenarios(project_id: str, section_id: str, body: ScenarioRequest, which: str) -> dict:
     project = _get(project_id)
     section = _section(project, section_id)
     try:
-        variants = [trials.clean_variant(v) for v in body.variants]
+        variants = [trials.clean_variant(v, section) for v in body.variants]
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
-    variants = list({trials.variant_key(v): v for v in variants if v}.values())
-    if len(variants) > 6:
-        raise HTTPException(422, "Try at most 6 changes at a time.")
+    if len({trials.variant_key(v) for v in variants if trials.change_of(v)}) > 12:
+        raise HTTPException(422, "Try at most 12 changes at a time.")
     workbook = _workbook(project_id, section)
     if workbook is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
@@ -1266,9 +1264,34 @@ def run_scenarios(project_id: str, section_id: str, body: ScenarioRequest) -> di
     d = store()._dir(project_id, section_id)
     summary = store().workbook_summary(project_id, section_id)
     with _Progress(f"trials-{project_id}-{section_id}") as tell:
-        done = trials.run_scenarios(project, section, workbook, summary, d, variants, deadline, tell)
-    view = trials.scenarios_view(project, section, summary, store().load_results(project_id, section_id), d)
-    return {**view, **done}
+        done = trials.run_scenarios(project, section, workbook, summary, d, variants, deadline, tell, which)
+    return {**_scenarios(project_id, section_id, which), **done}
+
+
+@app.get(SECTION + "/scenarios")
+def section_scenarios(project_id: str, section_id: str) -> dict:
+    """The whole section designed with a change on every element, against the section as set."""
+    return _scenarios(project_id, section_id, "scenarios")
+
+
+@app.post(SECTION + "/scenarios")
+def run_scenarios(project_id: str, section_id: str, body: ScenarioRequest) -> dict:
+    """Design every element for the section as set and for each variant, in steps. The section and its
+    results do not change."""
+    return _run_scenarios(project_id, section_id, body, "scenarios")
+
+
+@app.get(SECTION + "/value-engineering")
+def value_engineering(project_id: str, section_id: str) -> dict:
+    """The value engineering ideas Triton can cost for this section, and the mixes run so far."""
+    return _scenarios(project_id, section_id, "ve")
+
+
+@app.post(SECTION + "/value-engineering")
+def run_value_engineering(project_id: str, section_id: str, body: ScenarioRequest) -> dict:
+    """Design the whole section for each idea or mix of ideas, in steps, and cost it against the
+    section as set. The section and its results do not change."""
+    return _run_scenarios(project_id, section_id, body, "ve")
 
 
 @app.get(SECTION + "/design/report.{fmt}")

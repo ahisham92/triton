@@ -3,6 +3,7 @@ import { View3D, directionArrows, heat } from "./view3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 import { spwCard } from "./spw.js";
 import { renderTrials } from "./trials.js";
+import { renderValueEngineering } from "./ve.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -107,7 +108,7 @@ async function projectsPage() {
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d", "compare"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "view3d", "compare", "ve"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -136,6 +137,7 @@ async function projectPage(id, tab, sectionId) {
     ["view3d", "3D view"],
     ["costing", "Costing"],
     ["compare", "Comparisons"],
+    ["ve", "Value engineering"],
     ["method", "Method"],
   ];
   const picker = SECTION_TABS.has(tab)
@@ -187,6 +189,13 @@ async function projectPage(id, tab, sectionId) {
   else if (tab === "view3d") renderView3dTab(host);
   else if (tab === "costing") renderCostingTab(host);
   else if (tab === "method") renderMethodTab(host);
+  else if (tab === "ve")
+    renderValueEngineering(host, {
+      api, again, esc, fmt, secUrl, ROOT,
+      project: () => state.project,
+      sectionId: () => sec().id,
+      costingHash: tabHash("costing"),
+    });
   else if (tab === "compare")
     renderTrials(host, {
       api, again, esc, fmt, secUrl, ROOT,
@@ -2687,6 +2696,36 @@ async function renderCostingTab(host) {
       .map((n) => `<option ${n === value ? "selected" : ""}>${esc(n)}</option>`)
       .join("")}</select>`;
 
+  // Fenders, bollards, crane rails and anything else the berth needs, each priced per item, per metre or
+  // as a lump sum; the total above includes them.
+  const itemsTable = (c, cs) => {
+    const got = Object.fromEntries(c.rows.filter((r) => r.kind === "item").map((r) => [r.item, r]));
+    const box = (i, key, placeholder = "", attrs = "") =>
+      `<input type="number" step="any" min="0" ${attrs} data-item="${esc(c.section_id)}|${i}" data-key="${key}" placeholder="${esc(placeholder)}">`;
+    const rows = (cs.items || [])
+      .map((it, i) => {
+        const r = got[i] || {};
+        const each = it.unit === "each";
+        return `<tr><td><input type="text" data-item="${esc(c.section_id)}|${i}" data-key="name" style="width:10em"></td>
+          <td><select data-item="${esc(c.section_id)}|${i}" data-key="unit">${[["each", "each"], ["m", "per m"], ["lump", "lump sum"]]
+            .map(([v, t]) => `<option value="${v}" ${it.unit === v ? "selected" : ""}>${t}</option>`)
+            .join("")}</select></td>
+          <td>${box(i, "price")}</td>
+          <td>${each ? box(i, "spacing") : "–"}</td>
+          <td>${each ? box(i, "count", r.count_auto ?? "", 'step="1"') + (it.count != null ? `<div class="hint">Given by you${r.count_auto != null ? `; automatic ${fmt(r.count_auto)}` : ""}</div><button class="small" data-item-auto="${esc(c.section_id)}|${i}">Use automatic</button>` : "") : "–"}</td>
+          <td>${it.unit === "m" ? `${box(i, "runs", "1")}<div class="hint">lines</div>${box(i, "length", fmt(c.berth_length_m, 1))}<div class="hint">m each</div>` : "–"}</td>
+          <td class="basis">${esc(r.basis || "")}${it.price == null ? '<div class="flag-bad">No price yet</div>' : ""}</td>
+          <td>${money(r.cost)}</td><td>${money(r.cost_per_m)}</td>
+          <td><button class="small quiet" data-item-drop="${esc(c.section_id)}|${i}" title="Take this item off">×</button></td></tr>`;
+      })
+      .join("");
+    return `<h3 style="margin-top:14px">Other items</h3>
+      <div class="scroll"><table class="cost"><tr><th>Item</th><th>Priced</th><th>Unit price (${esc(cur)})</th><th>Spacing (m)</th><th>Number</th><th>Length</th><th>Basis</th><th>Cost (${esc(cur)})</th><th>Per m</th><th></th></tr>
+        ${rows}</table></div>
+      <button class="small" data-item-add="${esc(c.section_id)}">Add an item</button>
+      <p class="status">Spacings for fenders (20 m) and bollards (30 m) are common values, not from your drawings: change them. Items with no price are left out of the total.</p>`;
+  };
+
   const draw = (data) => {
     const sections = data.sections;
     const costed = sections.filter((x) => x.totals);
@@ -2699,6 +2738,7 @@ async function renderCostingTab(host) {
           return `${head}<div class="panel"><p class="status">${esc(c.notes.join(" "))}</p>
             ${c.notes[0] === "Not designed yet." ? "" : `<div class="row"><label>Berth length (m) ${input(`${c.section_id}`, "berth_length", "")}</label></div>`}</div>`;
         const rows = c.rows
+          .filter((r) => r.kind !== "item")
           .map((r) => {
             const key = `${c.section_id}|${r.element}`;
             const spaced = ["pile", "combi_wall"].includes(r.kind) || (r.kind === "beam" && r.count != null);
@@ -2726,6 +2766,7 @@ async function renderCostingTab(host) {
             <th>Concrete m³</th><th>Rebar t</th><th>Steel t</th><th>Cost (${esc(cur)})</th><th>Per m</th></tr>${rows}
             <tr class="total"><td>Total</td><td colspan="5">${fmt(c.berth_length_m, 1)} m of berth${t.complete ? "" : " (incomplete: prices missing)"}</td>
               <td>${fmt(t.concrete_m3, 1)}</td><td>${fmt(t.rebar_t, 1)}</td><td>${fmt(t.steel_t, 1)}</td><td>${money(t.cost)}</td><td>${money(c.per_m.cost)}</td></tr></table></div>
+          ${itemsTable(c, cs)}
           ${c.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}</div>`;
       })
       .join("");
@@ -2758,6 +2799,47 @@ async function renderCostingTab(host) {
         rerun(); // the numbers follow straight away
       };
     });
+    const itemOf = (ref) => {
+      const [sid, i] = ref.split("|");
+      const section = p.sections.find((x) => x.id === sid);
+      section.costing.items ??= [];
+      return [section.costing.items, +i];
+    };
+    out.querySelectorAll("[data-item][data-key]").forEach((el) => {
+      const [list, i] = itemOf(el.dataset.item);
+      const k = el.dataset.key;
+      if (el.tagName === "INPUT") el.value = list[i]?.[k] ?? "";
+      el.onchange = () => {
+        const v = el.tagName === "SELECT" || el.type === "text" ? el.value : el.value === "" ? null : Number(el.value);
+        list[i][k] = k === "count" && v != null ? Math.round(v) : k === "runs" && v == null ? 1 : v;
+        markDirty();
+        rerun();
+      };
+    });
+    out.querySelectorAll("[data-item-auto]").forEach((b) => {
+      b.onclick = () => {
+        const [list, i] = itemOf(b.dataset.itemAuto);
+        list[i].count = null;
+        markDirty();
+        rerun();
+      };
+    });
+    out.querySelectorAll("[data-item-drop]").forEach((b) => {
+      b.onclick = () => {
+        const [list, i] = itemOf(b.dataset.itemDrop);
+        list.splice(i, 1);
+        markDirty();
+        rerun();
+      };
+    });
+    out.querySelectorAll("[data-item-add]").forEach((b) => {
+      b.onclick = () => {
+        const section = p.sections.find((x) => x.id === b.dataset.itemAdd);
+        (section.costing.items ??= []).push({ name: "", unit: "each", price: null, spacing: null, count: null, runs: 1, length: null });
+        markDirty();
+        rerun();
+      };
+    });
     out.querySelectorAll("[data-auto]").forEach((b) => {
       b.onclick = () => {
         const [sid, name] = b.dataset.auto.split("|");
@@ -2784,7 +2866,8 @@ async function renderCostingTab(host) {
     try {
       const data = await api(`${ROOT}/api/projects/${p.id}/costing`);
       const a = document.activeElement;
-      const focus = a?.dataset?.obj ? `[data-obj="${CSS.escape(a.dataset.obj)}"][data-key="${CSS.escape(a.dataset.key)}"]` : null;
+      const ref = a?.dataset?.obj ? ["obj", a.dataset.obj] : a?.dataset?.item ? ["item", a.dataset.item] : null;
+      const focus = ref ? `[data-${ref[0]}="${CSS.escape(ref[1])}"][data-key="${CSS.escape(a.dataset.key)}"]` : null;
       draw(data);
       if (focus) out.querySelector(focus)?.focus();
       status.textContent = "";

@@ -174,7 +174,10 @@ def prune(d: Path, data: dict[str, Any]) -> None:
     if not folder.is_dir():
         return
     used = {r["key"] for el in data.values() for r in (el.get("runs") or {}).values()}
-    used |= {k for run in (load_scenarios(d).get("runs") or {}).values() for k in run.values() if k}
+    for which in SETS:
+        used |= {
+            k for run in (load_scenarios(d, which).get("runs") or {}).values() for k in run.values() if k
+        }
     for f in folder.glob("*.json.gz"):
         if f.name[: -len(".json.gz")] not in used:
             f.unlink(missing_ok=True)
@@ -418,37 +421,122 @@ def view(
 CRACK_FIELDS = ("crack_width_limit", "crack_width_limit_bottom")
 
 
+META = ("label", "ideas")
+
+
+def change_of(variant: dict[str, Any]) -> dict[str, Any]:
+    """What a variant changes, without its label and the ideas it came from."""
+    return {k: v for k, v in variant.items() if k not in META and v not in (None, {}, "")}
+
+
 def variant_key(variant: dict[str, Any]) -> str:
-    return "as-set" if not variant else "x".join(f"{k}{float(v):g}" for k, v in sorted(variant.items()))
+    change = change_of(variant)
+    if not change:
+        return "as-set"
+    if set(change) == {"crack_width_limit"}:
+        return f"crack_width_limit{float(change['crack_width_limit']):g}"
+    return fresh._hash(change)
 
 
 def variant_label(variant: dict[str, Any], section: Section | None = None) -> str:
-    if variant.get("crack_width_limit"):
-        return f"wk {variant['crack_width_limit']:g} mm"
-    if section is None:
-        return "As set"
-    limits = sorted({getattr(e, f) for e in section.elements.values() for f in CRACK_FIELDS if hasattr(e, f)})
-    return "As set" + (f" (wk {', '.join(f'{x:g}' for x in limits)} mm)" if limits else "")
+    if variant.get("label"):
+        return str(variant["label"])
+    change = change_of(variant)
+    if not change:
+        if section is None:
+            return "As set"
+        limits = sorted(
+            {getattr(e, f) for e in section.elements.values() for f in CRACK_FIELDS if hasattr(e, f)}
+        )
+        return "As set" + (f" (wk {', '.join(f'{x:g}' for x in limits)} mm)" if limits else "")
+    parts = []
+    if change.get("crack_width_limit"):
+        parts.append(f"wk {change['crack_width_limit']:g} mm")
+    for name, c in (change.get("elements") or {}).items():
+        bits = []
+        size = {k: v for k, v in c.items() if k in SIZE_KEYS}
+        if size:
+            bits.append(" × ".join(f"{v:g}" for k, v in size.items() if not k.startswith("void_")) + " mm")
+            if "void_diameter" in size or "void_spacing" in size:
+                bits.append(
+                    f"voids Ø{size.get('void_diameter', '')} @ {size.get('void_spacing', '')}".replace(
+                        ".0", ""
+                    )
+                )
+        if c.get("peaks"):
+            bits.append(PEAKS.get(c["peaks"], c["peaks"]))
+        if c.get("crack_width_limit"):
+            bits.append(f"wk {c['crack_width_limit']:g}")
+        parts.append(f"{name} {', '.join(bits)}")
+    return "; ".join(parts)
 
 
-def clean_variant(variant: dict[str, Any]) -> dict[str, float]:
-    out = {}
-    v = variant.get("crack_width_limit")
-    if v not in (None, ""):
-        v = float(v)
-        if not 0.05 <= v <= 0.5:
-            raise ValueError(f"A crack width limit of {v:g} mm is outside 0.05 to 0.5 mm.")
-        out["crack_width_limit"] = v
+SIZE_KEYS = ("thickness", "void_diameter", "void_spacing", "diameter", "width", "depth")
+PEAKS = {
+    "peak": "peaks as they are",
+    "face_mean": "face mean",
+    "ring_mean": "ring mean",
+    "envelope_face_mean": "envelope then face mean",
+}
+
+
+def _wk(v: Any) -> float:
+    v = float(v)
+    if not 0.05 <= v <= 0.5:
+        raise ValueError(f"A crack width limit of {v:g} mm is outside 0.05 to 0.5 mm.")
+    return v
+
+
+def clean_variant(variant: dict[str, Any], section: Section | None = None) -> dict[str, Any]:
+    """A variant checked against the section: a crack width limit on every element, and changes to
+    single elements (size, a slab's pile-face method, the element's crack width limit)."""
+    out: dict[str, Any] = {}
+    if variant.get("crack_width_limit") not in (None, ""):
+        out["crack_width_limit"] = _wk(variant["crack_width_limit"])
+    for name, c in (variant.get("elements") or {}).items():
+        if section is None or name not in section.elements:
+            raise ValueError(f"{name} is not an element of this section.")
+        element = section.elements[name]
+        mine: dict[str, Any] = {}
+        size = {k: v for k, v in c.items() if k in SIZE_KEYS and v not in (None, "")}
+        if size:
+            if kind_of(element) is None:
+                raise ValueError(f"{name}: Triton cannot change its size.")
+            full = clean_size(element, {**size_of(element), **size})
+            mine |= {k: v for k, v in full.items() if k in size}
+        if c.get("peaks"):
+            if not isinstance(element, SlabInput) or c["peaks"] not in PEAKS:
+                raise ValueError(f"{name}: no pile-face method '{c['peaks']}'.")
+            mine["peaks"] = c["peaks"]
+        if c.get("crack_width_limit") not in (None, ""):
+            if not hasattr(element, "crack_width_limit"):
+                raise ValueError(f"{name} has no crack width limit.")
+            mine["crack_width_limit"] = _wk(c["crack_width_limit"])
+        if mine:
+            out.setdefault("elements", {})[name] = mine
+    for k in META:
+        if variant.get(k):
+            out[k] = variant[k]
     return out
 
 
-def variant_section(section: Section, variant: dict[str, float]) -> Section:
-    """The section with the variant's change on every element, and no bars set by hand."""
+def variant_section(section: Section, variant: dict[str, Any]) -> Section:
+    """The section with the variant's changes, and no bars set by hand."""
+    change = change_of(variant)
+    wk = change.get("crack_width_limit")
+    per = change.get("elements") or {}
     elements = {}
     for name, e in section.elements.items():
-        wk = variant.get("crack_width_limit")
-        change = {f: wk for f in CRACK_FIELDS if wk and hasattr(e, f)}
-        elements[name] = e.model_copy(update=change) if change else e
+        update = {f: wk for f in CRACK_FIELDS if wk and hasattr(e, f)}
+        c = per.get(name) or {}
+        if c.get("crack_width_limit"):
+            update |= {f: c["crack_width_limit"] for f in CRACK_FIELDS if hasattr(e, f)}
+        if c.get("peaks"):
+            update["peaks"] = c["peaks"]
+        size = {k: v for k, v in c.items() if k in SIZE_KEYS}
+        if size:
+            e = with_size(e, size)
+        elements[name] = e.model_copy(update=update) if update else e
     strips = {k: v.model_copy(update={"bars": {}, "spacing": None}) for k, v in section.slab_strips.items()}
     return section.model_copy(
         update={"elements": elements, "user_cages": {}, "beam_cages": {}, "slab_strips": strips}
@@ -463,21 +551,25 @@ def _designable(section: Section) -> list[str]:
     return [n for t in order for n, e in section.elements.items() if isinstance(e, t)]
 
 
-def _scenario_file(d: Path) -> Path:
-    return d / "scenarios.json"
+# Two sets of whole-section runs: "scenarios" (Comparisons, all elements) and "ve" (Value engineering).
+SETS = ("scenarios", "ve")
 
 
-def load_scenarios(d: Path) -> dict[str, Any]:
+def _scenario_file(d: Path, which: str) -> Path:
+    return d / f"{which}.json"
+
+
+def load_scenarios(d: Path, which: str = "scenarios") -> dict[str, Any]:
     try:
-        return json.loads(_scenario_file(d).read_text("utf-8"))
+        return json.loads(_scenario_file(d, which).read_text("utf-8"))
     except (FileNotFoundError, ValueError):
         return {}
 
 
-def _save_scenarios(d: Path, data: dict[str, Any]) -> None:
-    tmp = _scenario_file(d).with_suffix(".stmp")
+def _save_scenarios(d: Path, data: dict[str, Any], which: str) -> None:
+    tmp = _scenario_file(d, which).with_suffix(".stmp")
     tmp.write_text(json.dumps(data, default=str), "utf-8")
-    tmp.replace(_scenario_file(d))
+    tmp.replace(_scenario_file(d, which))
 
 
 DESIGN_KINDS = ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs")
@@ -489,14 +581,16 @@ def run_scenarios(
     workbook: Any,
     summary: dict | None,
     d: Path,
-    variants: list[dict[str, float]],
+    variants: list[dict[str, Any]],
     deadline: float | None = None,
     tell=None,
+    which: str = "scenarios",
 ) -> dict[str, Any]:
     """Design every element for each variant ("as set" first), skipping what is already designed from
     the same inputs, until ``deadline`` (at least one element). ``left`` counts what is still to do."""
-    variants = [{}] + [v for v in variants if v]
-    data = load_scenarios(d)
+    unique = {variant_key(v): v for v in variants if change_of(v)}
+    variants = [{}] + list(unique.values())
+    data = load_scenarios(d, which)
     data["variants"] = variants[1:]
     runs = data.setdefault("runs", {})
     names = _designable(section)
@@ -504,7 +598,7 @@ def run_scenarios(
     done, left = 0, 0
     for i, (variant, name) in enumerate(todo):
         vs = variant_section(section, variant)
-        key = run_key(project, vs, name, summary)
+        key = scenario_key(project, vs, name, summary)
         vk = variant_key(variant)
         mine = runs.setdefault(vk, {})
         if mine.get(name) == key and (d / "trials" / f"{key}.json.gz").exists():
@@ -516,7 +610,7 @@ def run_scenarios(
             left += 1
             continue
         if tell:
-            tell(i / max(len(todo), 1), f"Designing {name} ({variant_label(variant)})")
+            tell(i / max(len(todo), 1), f"Designing {name} ({variant_label(variant, section)})")
         res = run_section(project.design, vs, workbook, only=[name])
         design = next((e for k in DESIGN_KINDS for e in res.get(k) or [] if e["element"] == name), None)
         if design is None:
@@ -527,9 +621,19 @@ def run_scenarios(
         done += 1
     wanted = {variant_key(v) for v in variants}
     data["runs"] = {k: v for k, v in runs.items() if k in wanted}
-    _save_scenarios(d, data)
+    _save_scenarios(d, data, which)
     prune(d, load(d))
     return {"done": done, "left": left}
+
+
+def scenario_key(project: Project, section: Section, name: str, workbook: dict | None) -> str:
+    """``run_key``, and for beams and slabs the sizes of the elements they are designed with (the piles
+    they sit on and each other), which a whole-section variant can change too."""
+    key = run_key(project, section, name, workbook)
+    if kind_of(section.elements[name]) not in ("beams", "slabs"):
+        return key
+    others = {n: size_of(e) for n, e in section.elements.items() if n != name and kind_of(e)}
+    return fresh._hash([key, others])
 
 
 def _no_results(d: Path, key: str) -> bool:
@@ -561,11 +665,17 @@ def _element_summary(kind: str, design: dict[str, Any]) -> dict[str, Any]:
 
 
 def scenarios_view(
-    project: Project, section: Section, summary: dict | None, results: dict[str, Any] | None, d: Path
+    project: Project,
+    section: Section,
+    summary: dict | None,
+    results: dict[str, Any] | None,
+    d: Path,
+    which: str = "scenarios",
 ) -> dict[str, Any]:
     """Each variant's whole-section cost per metre of berth, and each element's part in it."""
-    data = load_scenarios(d)
-    variants = [{}] + [v for v in data.get("variants") or [{"crack_width_limit": 0.3}] if v]
+    data = load_scenarios(d, which)
+    start = [{"crack_width_limit": 0.3}] if which == "scenarios" else []
+    variants = [{}] + [v for v in (data.get("variants") if "variants" in data else start) if change_of(v)]
     names = _designable(section)
     L0 = model_length(section, results or {})
     cols = []
@@ -577,7 +687,7 @@ def scenarios_view(
         elements: dict[str, dict] = {}
         missing = 0
         for name in names:
-            key = run_key(project, vs, name, summary)
+            key = scenario_key(project, vs, name, summary)
             if mine.get(name) != key:
                 missing += 1
                 elements[name] = {"state": "out of date" if name in mine else "not run"}
@@ -597,6 +707,7 @@ def scenarios_view(
             "variant": variant,
             "key": vk,
             "label": variant_label(variant, section),
+            "ideas": variant.get("ideas") or [],
             "base": not variant,
             "complete": missing == 0,
             "missing": missing,
@@ -639,3 +750,118 @@ def scenarios_view(
         "elements": names,
         "variants": cols,
     }
+
+
+# --- Value engineering: the ideas Triton can cost ----------------------------------------
+
+
+def ideas(section: Section, results: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Every change Triton can design and cost for this section, one idea each, with a suggested value
+    the user can edit. ``change`` is a variant; ideas with the same ``group`` change the same input
+    and cannot be mixed."""
+    results = results or {}
+    out: list[dict[str, Any]] = []
+
+    def add(group: str, element: str | None, label: str, change: dict, what: str, note: str = "") -> None:
+        out.append(
+            {
+                "id": fresh._hash([group, change]),
+                "group": group,
+                "element": element,
+                "label": label,
+                "what": what,
+                "change": change,
+                "note": note,
+            }
+        )
+
+    limits = sorted({getattr(e, f) for e in section.elements.values() for f in CRACK_FIELDS if hasattr(e, f)})
+    now = max(limits) if limits else 0.2
+    for wk in (0.25, 0.3):
+        if wk > now:
+            add(
+                "crack:all",
+                None,
+                f"Crack width limit {wk:g} mm on every element",
+                {"crack_width_limit": wk},
+                "crack_width_limit",
+                f"Now {', '.join(f'{x:g}' for x in limits)} mm. Check the exposure class and the client's "
+                "specification allow it (BS 6349 asks 0.2 mm in the splash zone).",
+            )
+    for name, e in section.elements.items():
+        kind = kind_of(e)
+        if kind is None:
+            continue
+        designed = next((r for r in results.get(kind) or [] if r["element"] == name), None)
+        size = size_of(e, designed)
+        el = lambda c, n=name: {"elements": {n: c}}  # noqa: E731
+        if kind == "slabs":
+            t = size["thickness"]
+            for dt in (-50, 50):
+                add(
+                    f"size:{name}",
+                    name,
+                    f"{name} {t + dt:g} mm thick ({dt:+g})",
+                    el({"thickness": t + dt}),
+                    "thickness",
+                    "Thinner: less concrete, more steel and punching links. Thicker: the reverse.",
+                )
+            if "void_diameter" in size:
+                d, sp = size["void_diameter"], size["void_spacing"]
+                add(
+                    f"voids:{name}",
+                    name,
+                    f"{name} voids Ø{d + 100:g} @ {sp:g}",
+                    el({"void_diameter": d + 100}),
+                    "void_diameter",
+                    "Bigger voids: less concrete and weight, thinner webs for shear.",
+                )
+                add(
+                    f"voids:{name}",
+                    name,
+                    f"{name} voids Ø{d:g} @ {sp + 100:g}",
+                    el({"void_spacing": sp + 100}),
+                    "void_spacing",
+                    "Wider spacing: more concrete, wider webs.",
+                )
+            for m, text in PEAKS.items():
+                if m != getattr(e, "peaks", None):
+                    add(
+                        f"peaks:{name}",
+                        name,
+                        f"{name} moments at the pile faces: {text}",
+                        el({"peaks": m}),
+                        "peaks",
+                        "A method choice: see the Method tab for what each one takes.",
+                    )
+        elif kind == "beams":
+            d = size["depth"]
+            for dd in (-200, 200):
+                add(
+                    f"size:{name}",
+                    name,
+                    f"{name} {d + dd:g} mm deep ({dd:+g})",
+                    el({"depth": d + dd}),
+                    "depth",
+                )
+        else:
+            D = size["diameter"]
+            for dD in (-200, 200):
+                add(
+                    f"size:{name}",
+                    name,
+                    f"{name} Ø{D + dD:g} ({dD:+g})",
+                    el({"diameter": D + dD}),
+                    "diameter",
+                    "The deck's punching and the beams' supports are designed with the new diameter too.",
+                )
+        if hasattr(e, "crack_width_limit") and e.crack_width_limit < 0.3:
+            add(
+                f"crack:{name}",
+                name,
+                f"{name} crack width limit 0.3 mm",
+                el({"crack_width_limit": 0.3}),
+                "crack_width_limit",
+                "Only this element.",
+            )
+    return out
