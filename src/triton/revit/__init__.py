@@ -1,21 +1,44 @@
-"""The Revit side of the drawing export: a script that draws a Triton drawings file as detail lines.
+"""The Revit side of the drawing export: what draws a Triton drawings file as detail lines.
 
+``addin_zip()`` is the Revit add-in (C#, Revit API) as source to build once in Visual Studio: a Triton
+button that picks the file and draws it into drafting views or the open view. The Python script below
+does the same without building anything:
 ``script()`` is the Python file (pyRevit, RevitPythonShell, or pasted into a Dynamo Python node);
 ``dynamo_graph()`` wraps it in a Dynamo graph (.dyn) with a File Path input, for Revit's own Dynamo.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import uuid
+import zipfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("triton_revit.py")
+DEVKIT = Path(__file__).with_name("TritonDrawBars.txt")  # C# statements for a paste-in code runner
+ADDIN = Path(__file__).with_name("addin")
+ADDIN_FILES = ("*.cs", "*.csproj", "*.addin", "README.txt")
 ENGINES = ("CPython3", "IronPython2")
 
 
 def script() -> str:
     return SCRIPT.read_text("utf-8")
+
+
+def devkit_code() -> str:
+    """The same drawing code as C# statements (no usings, no namespace) for a paste-in DevKit runner."""
+    return DEVKIT.read_text("utf-8")
+
+
+def addin_zip() -> bytes:
+    """The add-in's source in a TritonDrawings folder, ready to open in Visual Studio."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for pattern in ADDIN_FILES:
+            for f in sorted(ADDIN.glob(pattern)):
+                z.write(f, f"TritonDrawings/{f.name}")
+    return buf.getvalue()
 
 
 def _id() -> str:

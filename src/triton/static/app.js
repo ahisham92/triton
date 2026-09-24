@@ -2216,7 +2216,7 @@ async function renderDesignTab(host) {
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
       <span class="reports" id="drawings" hidden>Drawings:
         <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
-        <a class="quiet-link" data-draw="json" href="#">Revit (drawings file)</a>
+        <a class="quiet-link" data-draw="crm" href="#">Revit (.crm drawings file)</a>
         <a class="quiet-link" href="#" id="drawing-help">How to open in Revit</a>
       </span>
       <span class="reports" id="reports" hidden>Report:
@@ -2463,17 +2463,17 @@ function drawingHelp() {
     <p>Download <em>AutoCAD (DXF)</em> and open it (File › Open, file type DXF). The views sit side by side in model space, 1 unit = 1 mm.</p>
     <h3>Revit</h3>
     <ol>
-      <li>Once: download the Dynamo graph <a class="quiet-link" href="${ROOT}/api/revit/triton-drawings.dyn">Triton-drawings.dyn</a>
-        (Revit 2022 and later; for Revit 2021 or older use <a class="quiet-link" href="${ROOT}/api/revit/triton-drawings.dyn?engine=IronPython2">this one</a>).</li>
-      <li>Download <em>Revit (drawings file)</em> for the section or element.</li>
-      <li>In Revit: Manage › Dynamo, open Triton-drawings.dyn, press Browse on the first node and pick the drawings file, then Run.</li>
-      <li>Each Triton view becomes a drafting view named "Triton - section - view". Running it again with a new file redraws the same
-        views, so views already on sheets stay there.</li>
+      <li>Download <em>Revit (.crm drawings file)</em> for the elements ticked.</li>
+      <li>Paste <a class="quiet-link" href="${ROOT}/api/revit/triton-draw-bars.txt">the Triton DevKit code</a> into your DevKit code
+        runner in Revit and run it (Revit 2021 and later). It asks for the .crm file, lists its views to tick, and asks where: a
+        drafting view for each, or the view that is open, at a point you click.</li>
+      <li>Drafting views are named "Triton - section - view". Drawing a new file redraws the same views, so views already on
+        sheets stay there.</li>
     </ol>
-    <p class="status">Line styles your template lacks are made by the script and listed in its result. Where a Revit family type is set
-      for a bar size, cut bars are placed as that detail component and bars along the view as the line-based one. With pyRevit or
-      RevitPythonShell, <a class="quiet-link" href="${ROOT}/api/revit/triton_revit.py">the same script as a .py file</a> asks for the file itself.
-      Without either: Insert › Import CAD the DXF into a drafting view, then Explode.</p>`;
+    <p class="status">The same code as a <a class="quiet-link" href="${ROOT}/api/revit/triton-addin.zip">Revit add-in</a> (build once in
+      Visual Studio) gives a Triton button on the Add-Ins tab instead.</p>
+    <p class="status">Line styles your project lacks are made by the add-in, and it lists them when it finishes. Where a Revit family type is set
+      for a bar size, cut bars are placed as that detail component and bars along the view as the line-based one.</p>`;
   document.getElementById("drawings").closest(".panel").after(box);
 }
 

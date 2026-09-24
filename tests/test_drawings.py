@@ -39,6 +39,8 @@ def test_views_of_every_element():
             assert f"Deck - {face} bars along {along}" in names
     assert {"Deck - mesh cut across X", "Deck - mesh cut across Y", "Deck - shear links"} <= set(names)
     assert [v["name"] for v in sample(element="Front Beam")["views"]] == ["Front Beam - section"]
+    both = {v["element"] for v in sample(element=["Front Beam", "Deck"])["views"]}
+    assert both == {"Front Beam", "Deck"}
 
 
 def test_pile_section_has_every_bar_on_its_circle():
@@ -204,8 +206,9 @@ def test_drawing_endpoints(tmp_path, monkeypatch):
     data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet()})
     client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
     client.post(f"{url}/design")
-    r = client.get(f"{url}/design/drawings.json")
-    assert r.status_code == 200 and "Berth_1_Section_1-drawings.json" in r.headers["content-disposition"]
+    r = client.get(f"{url}/design/drawings.crm")
+    assert r.status_code == 200 and "Berth_1_Section_1-drawings.crm" in r.headers["content-disposition"]
+    assert client.get(f"{url}/design/drawings.json").json() == r.json()
     d = r.json()
     assert d["section"] == "Section 1" and d["views"][-1]["name"] == "Pile(1) - elevation"
     r = client.get(f"{url}/design/drawings.dxf", params={"element": "Pile(1)"})
@@ -216,3 +219,30 @@ def test_drawing_endpoints(tmp_path, monkeypatch):
     assert g.status_code == 200 and json.loads(g.text)["Name"] == "Triton drawings"
     assert client.get("/api/revit/triton-drawings.dyn", params={"engine": "x"}).status_code == 400
     assert "NewDetailCurve" in client.get("/api/revit/triton_revit.py").text
+    t = client.get("/api/revit/triton-draw-bars.txt")
+    assert (
+        t.status_code == 200
+        and "triton.drawings/1" in t.text
+        and "TritonDrawBars.txt" in t.headers["content-disposition"]
+    )
+    z = client.get("/api/revit/triton-addin.zip")
+    assert z.status_code == 200 and z.content[:2] == b"PK"
+
+
+def test_revit_addin_source_zip():
+    import io
+    import zipfile
+
+    names = zipfile.ZipFile(io.BytesIO(revit.addin_zip())).namelist()
+    for f in ("TritonDrawings.csproj", "TritonDrawings.addin", "DrawCommand.cs", "Drawer.cs", "README.txt"):
+        assert f"TritonDrawings/{f}" in names
+    cs = (revit.ADDIN / "TritonFile.cs").read_text("utf-8")
+    assert f'Format = "{FORMAT}"' in cs  # the add-in reads the format Triton writes
+
+
+def test_devkit_code_is_statements_only():
+    code = revit.devkit_code()
+    lines = [x.strip() for x in code.splitlines()]
+    assert not any(x.startswith(("using ", "namespace ")) for x in lines)
+    assert f'"{FORMAT}"' in code and "*.crm" in code
+    assert "Autodesk.Revit.DB.Document theDoc = doc;" in code

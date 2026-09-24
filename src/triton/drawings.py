@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Collection
 from typing import Any
 
 from .design.export import pile_cages
@@ -390,14 +391,17 @@ def drawings(
     results: dict[str, Any],
     settings: DrawingSettings,
     section: str = "",
-    element: str | None = None,
+    element: str | Collection[str] | None = None,
 ) -> dict[str, Any]:
-    """Every drawing of a designed section (or of one element), with the names to draw them on."""
+    """Every drawing of a designed section (or of the elements named), with the names to draw them on."""
     return from_cages(pile_cages(project_name, results, section), settings, element)
 
 
-def from_cages(data: dict[str, Any], settings: DrawingSettings, element: str | None = None) -> dict[str, Any]:
-    """The drawings of the bars in a Revit bar file (``design.export.pile_cages``)."""
+def from_cages(
+    data: dict[str, Any], settings: DrawingSettings, element: str | Collection[str] | None = None
+) -> dict[str, Any]:
+    """The drawings of the bars in a Revit bar file (``design.export.pile_cages``); ``element``: only
+    these elements (one name or several; empty: all)."""
     views: list[View] = []
     for p in data["piles"]:
         views += _pile_views(p)
@@ -406,7 +410,8 @@ def from_cages(data: dict[str, Any], settings: DrawingSettings, element: str | N
     for d in data["slabs"]:
         views += _slab_views(d)
     if element:
-        views = [v for v in views if v.element == element]
+        wanted = {element} if isinstance(element, str) else set(element)
+        views = [v for v in views if v.element in wanted]
     out = [v.as_dict() for v in views]
     keys = {it["layer"] for v in out for it in v["items"]}
     return {

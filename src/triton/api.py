@@ -14,9 +14,9 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
@@ -1161,39 +1161,48 @@ def pile_cage_export(project_id: str, section_id: str, elements: str | None = No
 
 
 def _drawings(
-    project_id: str, section_id: str, element: str | None, elements: str | None = None
+    project_id: str, section_id: str, element: list[str] | None, elements: str | None = None
 ) -> tuple[str, dict]:
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
-    _, results, suffix = _picked(section, results, elements)
-    data = drawings.drawings(project.info.name, results, project.drawings, section.name, element or None)
+    # ?element=A&element=B (the drawings thread's form) and ?elements=A,B (every export) both pick.
+    picked = ",".join([e for e in element or [] if e] + ([elements] if elements else []))
+    _, results, suffix = _picked(section, results, picked)
+    data = drawings.drawings(project.info.name, results, project.drawings, section.name, None)
     if not data["views"]:
         raise HTTPException(
             404,
             "Nothing to draw: no designed pile, combi wall, beam or slab"
-            + (f" named {element}." if element else " among the picked elements." if suffix else "."),
+            + (" among the picked elements." if suffix else "."),
         )
-    name = drawings.safe_name(
-        " ".join(x for x in (project.info.name, section.name + suffix, element) if x)
-    ).replace(" ", "_")
+    name = drawings.safe_name(" ".join(x for x in (project.info.name, section.name + suffix) if x)).replace(
+        " ", "_"
+    )
     return name, data
 
 
-@app.get(SECTION + "/design/drawings.json")
+@app.get(SECTION + "/design/drawings.crm")
+@app.get(SECTION + "/design/drawings.json")  # the name before .crm
 def drawings_for_revit(
-    project_id: str, section_id: str, element: str | None = None, elements: str | None = None
+    project_id: str,
+    section_id: str,
+    element: Annotated[list[str] | None, Query()] = None,
+    elements: str | None = None,
 ) -> JSONResponse:
-    """Reinforcement drawings as 2D lines (format triton.drawings/1), for the Revit script."""
+    """Reinforcement drawings as 2D lines (triton.drawings/1, JSON in a .crm file), for the Revit add-in."""
     name, data = _drawings(project_id, section_id, element, elements)
-    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}-drawings.json"'})
+    return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}-drawings.crm"'})
 
 
 @app.get(SECTION + "/design/drawings.dxf")
 def drawings_for_autocad(
-    project_id: str, section_id: str, element: str | None = None, elements: str | None = None
+    project_id: str,
+    section_id: str,
+    element: Annotated[list[str] | None, Query()] = None,
+    elements: str | None = None,
 ) -> Response:
     """The same drawings as an AutoCAD DXF, one layer per bar size."""
     name, data = _drawings(project_id, section_id, element, elements)
@@ -1214,6 +1223,26 @@ def revit_dynamo_graph(engine: str = "CPython3") -> Response:
         revit.dynamo_graph(engine),
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="Triton-drawings{suffix}.dyn"'},
+    )
+
+
+@app.get("/api/revit/triton-draw-bars.txt")
+def revit_devkit_code() -> Response:
+    """C# statements to paste into a DevKit code runner in Revit: picks a .crm file and draws it."""
+    return Response(
+        revit.devkit_code(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="TritonDrawBars.txt"'},
+    )
+
+
+@app.get("/api/revit/triton-addin.zip")
+def revit_addin() -> Response:
+    """The Revit add-in (C# source, build once in Visual Studio): a Triton button that draws the file."""
+    return Response(
+        revit.addin_zip(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="TritonDrawings-addin.zip"'},
     )
 
 
