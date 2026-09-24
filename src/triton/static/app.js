@@ -2462,7 +2462,7 @@ function alerts(res) {
     }
     const where = (q) => `${q.pile} (X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)})`;
     for (const q of d.punching || []) {
-      if (!q.passed) add("unsafe", d.element, `punching at ${where(q)}: crushes at the pile face`);
+      if (!q.passed) add("unsafe", d.element, `punching at ${where(q)}: ${q.vEd_face_MPa > q.vRd_max_MPa ? "crushes at the pile face" : `needs more than links can give (${fmt(q.kmax_ratio, 2)} × 1.5·vRd,c)`}${punchFix(q) ? `. Fix: ${punchFix(q)}` : ""}`);
     }
     const links = (d.punching || []).filter((q) => q.passed && q.needs_reinforcement);
     if (links.length === 1) add("limit", d.element, `punching links needed at ${where(links[0])}, ${links[0].perimeters} perimeters`);
@@ -3128,7 +3128,7 @@ function slabCard(d) {
       ${punch.map((q, i) => `<tr class="link" data-punch="${i}"><td>${esc(q.pile)}</td><td>${fmt(q.x, 1)}, ${fmt(q.y, 1)}</td>
         <td><input type="number" step="any" data-depth="${i}" value="${q.thickness_mm}" style="width:80px" title="${esc(q.thickness_from)}"> mm</td><td>${fmt(q.V_kN)} kN, ${esc(q.direction)}<br><span class="status">${esc(q.combination)}</span></td><td>${fmt(q.beta, 2)}</td>
         <td>${fmt(q.vEd_MPa, 3)} / ${fmt(q.vRd_c_MPa, 3)}</td><td>${fmt(q.vEd_face_MPa, 2)} / ${fmt(q.vRd_max_MPa, 2)}</td>
-        <td>${q.needs_reinforcement ? (q.perimeters ? `${q.perimeters} perimeters @ ${fmt(q.radial_spacing_mm)} mm, ${fmt(q.asw_mm2_per_perimeter)} mm² each, to ${fmt(q.reinforced_to_mm)} mm from the face` : "–") : "none"}</td><td>${ok(q.passed)}</td></tr>`).join("")}
+        <td>${q.needs_reinforcement ? (q.perimeters ? `${q.perimeters} perimeters @ ${fmt(q.radial_spacing_mm)} mm, ${fmt(q.asw_mm2_per_perimeter)} mm² each, to ${fmt(q.reinforced_to_mm)} mm from the face` : q.fix ? `Links alone cannot: ${esc(punchFix(q))}` : "–") : "none"}</td><td>${ok(q.passed)}</td></tr>`).join("")}
     </table></div><div class="charts" data-kind="punch"></div>
     <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d); nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
     <h3 style="margin-top:18px">Shear per metre ${ok(sh.passed !== false)}</h3>
@@ -3512,6 +3512,17 @@ function alongChart(el, rows, title, yLabel, val, limit = null, supports = null,
 
 // The office king pile sheet: one column per corrosion zone, rows grouped as the sheet, checks green
 // when they pass and red when they fail.
+// What makes a failing pile head pass, in words (from the design's punching fix).
+function punchFix(q) {
+  const f = q.fix;
+  if (!f) return "";
+  const ways = [];
+  if (f.rho_l_with_links != null) ways.push(`ρl of the ${q.direction === "pile pulls down" ? "bottom" : "top"} bars over the pile ≥ ${fmt(f.rho_l_with_links * 100, 2)}% (now ${fmt(q.rho_l * 100, 2)}%; about ${fmt(f.as_mm2_per_m_with_links)} mm²/m each way), with links`);
+  if (f.thickness_mm_with_links) ways.push(`${fmt(f.thickness_mm_with_links)} mm thick at the pile with links`);
+  if (f.thickness_mm_without_links) ways.push(`${fmt(f.thickness_mm_without_links)} mm without links`);
+  return ways.join("; or ");
+}
+
 function officeSheet(sh) {
   if (!sh?.columns?.length) return "";
   const cell = (v, r) => {

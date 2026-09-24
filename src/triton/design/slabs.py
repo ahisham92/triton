@@ -1163,6 +1163,7 @@ def punching(
                     "_v": v,
                     "_beta": beta,
                     "_vrdc": vrdc,
+                    "_e": e,
                 }
         if worst is None:
             continue
@@ -1193,9 +1194,48 @@ def punching(
                 "r_out_mm": round(u_out / (2 * math.pi)),
                 "link_radii_mm": [round(D / 2 + 0.5 * d + i * sr) for i in range(perimeters)],
             }
-        for k_ in ("_v", "_beta", "_vrdc"):
+        if not worst["passed"]:
+            worst["fix"] = _punching_fix(worst, h, D, cover, fck, fcd, nu, pf.gamma_c)
+        for k_ in ("_v", "_beta", "_vrdc", "_e"):
             worst.pop(k_)
         out.append(worst)
+    return out
+
+
+def _punching_fix(
+    w: dict, h: float, D: float, cover: float, fck: float, fcd: float, nu: float, gc: float
+) -> dict:
+    """What would make a failing pile head pass: more steel on the tension face (so links can take the
+    rest, up to kmax·vRd,c), or a thicker slab at the pile, with and without links. Same V and e."""
+    v, e, rho = w["_v"], w["_e"], w["rho_l"]
+
+    def at(hh: float, rr: float) -> tuple[float, float, float]:
+        d = hh - cover - 20
+        k = min(1 + math.sqrt(200 / d), 2.0)
+        vrdc = max(0.18 / gc * k * (100 * min(rr, 0.02) * fck) ** (1 / 3), 0.035 * k**1.5 * math.sqrt(fck))
+        u1 = math.pi * (D + 4 * d)
+        beta = 1 + 0.6 * math.pi * e / (D + 4 * d)
+        ved = beta * v * 1e3 / (u1 * d)
+        face = beta * v * 1e3 / (math.pi * D * d) / (0.4 * nu * fcd)
+        return ved / vrdc, ved / (KMAX * vrdc), face
+
+    out: dict = {}
+    d = h - cover - 20
+    k = min(1 + math.sqrt(200 / d), 2.0)
+    need = w["vEd_MPa"] / KMAX / (0.18 / gc * k)
+    rho_req = need**3 / (100 * fck)
+    if w["vEd_face_MPa"] <= w["vRd_max_MPa"]:
+        out["rho_l_with_links"] = round(rho_req, 4) if rho_req <= 0.02 else None
+        if rho_req <= 0.02:
+            out["as_mm2_per_m_with_links"] = round(rho_req * d * 1000)
+    for label, pick in (
+        ("with_links", lambda r: max(r[1], r[2])),
+        ("without_links", lambda r: max(r[0], r[2])),
+    ):
+        for hh in range(int(h) + 50, int(h) + 2001, 50):
+            if pick(at(hh, rho)) <= 1.0:
+                out[f"thickness_mm_{label}"] = hh
+                break
     return out
 
 
@@ -2149,6 +2189,19 @@ def design_slab(
     # Punching.
     heads = pile_heads(pile_sheets, elements, box, settings.results_into_connection / 1e3)
     punch = punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams)
+    unset = sorted({p["pile"] for p in punch if getattr(elements.get(p["pile"]), "head_level", 0) is None})
+    if unset:
+        notes.append(
+            f"Punching: {', '.join(unset)} {'has' if len(unset) == 1 else 'have'} no pile head level, so the "
+            "pile's force and moment are read at its topmost node, inside the connection, where the moment "
+            "is largest. Set the head level (the slab soffit) on the pile to read them there."
+        )
+    if any(p["direction"] == "pile pulls down" for p in punch):
+        notes.append(
+            "Punching where a pile pulls the slab down is checked as EN 1992-1-1 6.4, the pull entering at "
+            "the top of the slab through the pile's bars anchored over the top bars, with the bottom bars "
+            "in tension; the anchorage of the pile bars is checked on the pile."
+        )
     if slab.punching_thickness:
         notes.append(
             f"Punching uses a depth of {slab.punching_thickness:g} mm (sloped slab); bending uses {h:g} mm."

@@ -391,3 +391,23 @@ def test_slab_bars_in_the_drawing_file():
     zones = [z for f in js["faces"] for z in f["zones"]]
     assert zones and all(z["layers"] and z["layers"][0]["bars"][0]["kind"] == "mesh" for z in zones)
     assert all(f["mesh"]["layers"][0]["from_face_mm"] > f["cover_mm"] for f in js["faces"])
+
+
+def test_failing_punching_says_what_would_fix_it():
+    wb = import_sheets(
+        {
+            "Deck-PT-B-Apron": deck_rows(lambda x, y: [0.0] * 5 + [50.0, 50.0, 0.0]),
+            "Deck-QP": deck_rows(lambda x, y: [0.0] * 5 + [20.0, 20.0, 0.0]),
+            "Pile(1)-PT-B-Apron": piles_at([(-4.0, 0.0)], 9000.0),
+            "Pile(1)-QP": piles_at([(-4.0, 0.0)], 6000.0),
+        }
+    )
+    els = {"Deck": SlabInput(thickness=500), "Pile(1)": PileInput(head_level=2.7)}
+    (d,) = run_section(DesignSettings(), Section(elements=els), wb)["slabs"]
+    (p,) = d["punching"]
+    assert not p["passed"]
+    fix = p["fix"]
+    # A thicker slab always helps, and it needs more without links than with them.
+    assert 500 < fix["thickness_mm_with_links"] <= fix["thickness_mm_without_links"]
+    if fix.get("rho_l_with_links"):
+        assert fix["rho_l_with_links"] > p["rho_l"]
