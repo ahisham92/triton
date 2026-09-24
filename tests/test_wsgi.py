@@ -2,6 +2,8 @@
 
 import io
 import json
+import os
+import signal
 import wsgiref.util
 
 import pytest
@@ -96,3 +98,32 @@ def test_mount_keeps_the_host_site():
     status, _, page = call(app, "/triton/")
     assert status == 200 and b"<title>Triton</title>" in page
     assert call(app, "/triton/api/projects")[0] == 200
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork")
+def test_answers_in_a_forked_worker():
+    """uWSGI (PythonAnywhere) imports the app and then forks its workers: a request in the fork must
+    still be answered, not wait on a loop thread that stayed behind in the parent."""
+    pid = os.fork()
+    if pid == 0:  # the worker
+        signal.alarm(20)
+        status, _, _ = call(application, "/api/projects", root="/triton")
+        os._exit(0 if status == 200 else 1)
+    _, code = os.waitpid(pid, 0)
+    assert os.WIFEXITED(code) and os.WEXITSTATUS(code) == 0
+
+
+def test_an_error_is_a_500_and_logged():
+    errors = io.StringIO()
+
+    async def broken(scope, receive, send):
+        raise RuntimeError("boom")
+
+    from triton.wsgi import asgi_to_wsgi
+
+    environ = {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "wsgi.input": io.BytesIO(), "wsgi.errors": errors}
+    wsgiref.util.setup_testing_defaults(environ)
+    out = {}
+    body = b"".join(asgi_to_wsgi(broken)(environ, lambda s, h, e=None: out.update(status=s)))
+    assert out["status"] == "500 Internal Server Error" and body == b"Internal Server Error"
+    assert "RuntimeError: boom" in errors.getvalue()

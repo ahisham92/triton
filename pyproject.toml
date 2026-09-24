@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "Structural design of marine structure elements from Plaxis straining actions"
 requires-python = ">=3.11"
 dependencies = [
-    "a2wsgi>=1.10",
     "fastapi>=0.110",
     "numpy>=1.26",
     "openpyxl>=3.1",
