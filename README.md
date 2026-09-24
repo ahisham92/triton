@@ -161,6 +161,18 @@ On the Design tab, the **Export** row picks the elements that the downloads belo
 or the ticked ones): AdSec files and Excel, reports, Revit bars and drawings each take
 `?elements=A,B`.
 
+### Revisions, checking and the bar bending schedule
+
+The Project tab holds the calculation document number, the revision in work and who prepared,
+checked and approved it; the reports print them on the cover with the table of issued revisions.
+**Issue revision** keeps a copy of the project as it is (a .trt in `projects/{id}/revisions/`), adds
+the revision to the table and moves the revision in work on (P01 to P02). Each issued revision can
+be downloaded, and **What changed since** lists the inputs that differ and each element whose bars,
+utilisation or steel changed. On the Design tab, **Checking** keeps each element's status
+(designed, returned with comments, checked, approved) with who and when; a status given on an
+earlier design is marked so. **Download bar bending schedule** gives BS 8666 bar marks, shape codes,
+cut lengths and weights for all or the ticked elements (`bbs.py` says how lengths are taken).
+
 ### Working zone and isolated peaks
 
 FE results near the model edges are unreliable. A section can set a **working zone** (Sections tab,

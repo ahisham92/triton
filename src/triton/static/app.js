@@ -170,6 +170,138 @@ function wireOpenProject() {
   };
 }
 
+// Issued revisions: each keeps a copy of the project as issued; "What changed" compares it with now.
+function revisionsPanel(box) {
+  const p = state.project;
+  const info = p.info;
+  const list = p.revisions || [];
+  box.innerHTML = `<h2>Revisions</h2>
+    <p class="status">Revision in work: <strong>${esc(info.revision || "P01")}</strong>${info.document_number ? ` of ${esc(info.document_number)}` : ""}.
+      Reports print it with the names above. Issuing keeps a copy of the project as it is now and moves the revision on.</p>
+    ${
+      list.length
+        ? `<table class="rev-table"><tr><th>Rev</th><th>Issued (Cairo)</th><th>Description</th><th>Prepared</th><th>Checked</th><th>Approved</th><th></th></tr>
+        ${list
+          .map(
+            (v) => `<tr><td>${esc(v.rev)}</td><td>${esc(when(v.issued_at))}</td><td>${esc(v.description)}</td><td>${esc(v.prepared)}</td>
+            <td>${esc(v.checked)}</td><td>${esc(v.approved)}</td>
+            <td><a class="quiet-link" href="${ROOT}/api/projects/${esc(p.id)}/revisions/${encodeURIComponent(v.rev)}/project.trt">Copy (.trt)</a>
+              <a class="quiet-link" href="#" data-changes="${esc(v.rev)}">What changed since</a></td></tr>`
+          )
+          .join("")}</table>`
+        : `<p class="status">No revision issued yet.</p>`
+    }
+    <div class="row"><input id="rev-desc" placeholder="Description, e.g. Issued for approval" style="flex:1;max-width:360px">
+      <button id="issue-rev">Issue revision ${esc(info.revision || "P01")}</button><span class="status" id="rev-status"></span></div>
+    <div id="rev-changes"></div>`;
+  box.querySelector("#issue-rev").onclick = async () => {
+    const status = box.querySelector("#rev-status");
+    try {
+      if (state.dirty) await save();
+      status.textContent = "Keeping a copy…";
+      const saved = await api(`${ROOT}/api/projects/${p.id}/revisions`, {
+        method: "POST",
+        body: JSON.stringify({ description: box.querySelector("#rev-desc").value }),
+      });
+      mergeInto(state.project, saved);
+      route(); // the Project tab again, with the next revision in work
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  };
+  box.querySelectorAll("[data-changes]").forEach(
+    (a) =>
+      (a.onclick = async (e) => {
+        e.preventDefault();
+        const out = box.querySelector("#rev-changes");
+        out.innerHTML = `<p class="status">Comparing…</p>`;
+        try {
+          if (state.dirty) await save();
+          const d = await api(`${ROOT}/api/projects/${p.id}/revisions/${encodeURIComponent(a.dataset.changes)}/changes`);
+          out.innerHTML = revisionChanges(d);
+        } catch (err) {
+          out.innerHTML = `<p class="status">${esc(err.message)}</p>`;
+        }
+      })
+  );
+}
+
+function revisionChanges(d) {
+  const val = (v) => (v == null || v === "" ? "–" : typeof v === "object" ? esc(JSON.stringify(v)) : esc(String(v)));
+  const res = (x) =>
+    x ? `${esc(x.bars || "–")} · u ${x.utilisation ?? "–"}${x.passed === false ? " ✗" : ""}${x.kg_per_m3 != null ? ` · ${x.kg_per_m3} kg/m³` : ""}` : "not designed";
+  const els = d.sections.filter((s) => s.elements.length);
+  return `<h3>Changed since ${esc(d.rev)}</h3>
+    ${
+      els.length
+        ? els
+            .map(
+              (s) => `<p><strong>${esc(s.section)}</strong></p><table><tr><th>Element</th><th>At ${esc(d.rev)}</th><th>Now</th></tr>
+            ${s.elements.map((r) => `<tr><td>${esc(r.element)}</td><td>${res(r.was)}</td><td>${res(r.now)}</td></tr>`).join("")}</table>`
+            )
+            .join("")
+        : `<p class="status">No element's bars or results changed.</p>`
+    }
+    ${
+      d.inputs.length
+        ? `<details><summary>${d.inputs.length + d.more_inputs} input${d.inputs.length + d.more_inputs === 1 ? "" : "s"} changed</summary>
+          <table><tr><th>Input</th><th>Was</th><th>Now</th></tr>${d.inputs
+            .map((r) => `<tr><td>${esc(r.what)}</td><td>${val(r.was)}</td><td>${val(r.now)}</td></tr>`)
+            .join("")}</table>${d.more_inputs ? `<p class="status">and ${d.more_inputs} more.</p>` : ""}</details>`
+        : `<p class="status">No input changed.</p>`
+    }`;
+}
+
+// The checker's status per designed element: designed, returned with comments, checked, approved.
+const CHECK_LABEL = { designed: "Designed", comments: "Comments", checked: "Checked", approved: "Approved" };
+function checkingPanel(names, runAt) {
+  let box = document.getElementById("checking");
+  if (!box) {
+    box = document.createElement("details");
+    box.id = "checking";
+    box.className = "panel";
+    document.getElementById("export-pick")?.closest(".panel")?.after(box);
+  }
+  const s = sec();
+  const checks = s.checks || {};
+  const done = names.filter((n) => ["checked", "approved"].includes(checks[n]?.status) && checks[n]?.design_run_at === runAt).length;
+  const open = box.open;
+  box.innerHTML = `<summary><strong>Checking</strong> <span class="status">${done} of ${names.length} checked or approved on this design</span></summary>
+    <table class="check-table"><tr><th>Element</th><th>Status</th><th>By</th><th>Comment</th><th></th></tr>
+    ${names
+      .map((n) => {
+        const c = checks[n] || {};
+        const earlier = c.status && c.status !== "designed" && c.design_run_at && c.design_run_at !== runAt;
+        return `<tr data-el="${esc(n)}"><td>${esc(n)}</td>
+          <td><select data-f="status">${Object.entries(CHECK_LABEL)
+            .map(([k, t]) => `<option value="${k}" ${(c.status || "designed") === k ? "selected" : ""}>${t}</option>`)
+            .join("")}</select>${earlier ? ' <span class="chip small-chip stale-chip" title="Given on an earlier design">earlier design</span>' : ""}</td>
+          <td><input data-f="by" value="${esc(c.by || state.project.info.checker || "")}" style="width:9em"></td>
+          <td><input data-f="comment" value="${esc(c.comment || "")}" style="width:100%;min-width:12em"></td>
+          <td><button class="quiet small" data-save>Save</button> <span class="status">${c.at ? esc(when(c.at)) : ""}</span></td></tr>`;
+      })
+      .join("")}</table>`;
+  box.open = open;
+  box.querySelectorAll("[data-save]").forEach(
+    (b) =>
+      (b.onclick = async () => {
+        const tr = b.closest("tr");
+        const body = Object.fromEntries([...tr.querySelectorAll("[data-f]")].map((i) => [i.dataset.f, i.value]));
+        b.disabled = true;
+        try {
+          const saved = await api(`${secUrl()}/checks/${encodeURIComponent(tr.dataset.el)}`, { method: "PUT", body: JSON.stringify(body) });
+          const mine = saved.sections.find((x) => x.id === s.id);
+          s.checks = mine.checks;
+          checkingPanel(names, runAt);
+          document.getElementById("checking").open = true;
+        } catch (e) {
+          b.disabled = false;
+          b.nextElementSibling.textContent = e.message;
+        }
+      })
+  );
+}
+
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
@@ -256,6 +388,11 @@ async function projectPage(id, tab, sectionId) {
     used.className = "panel";
     used.dataset.free = "";
     used.innerHTML = '<h2>Storage</h2><p class="status">Working out…</p>';
+    const revs = document.createElement("div");
+    revs.className = "panel";
+    revs.dataset.free = ""; // issuing is open while the model is locked
+    host.append(revs);
+    revisionsPanel(revs);
     host.append(used);
     storagePanel(used, id);
   }
@@ -2562,6 +2699,7 @@ function drawResults(res, full = res) {
     .flatMap((k) => (full[k] || []).map((x) => x.element))
     .sort((a, b) => (order.indexOf(a) + 1 || 1e9) - (order.indexOf(b) + 1 || 1e9));
   wireExportPick(exported, new Set((full.sheet_pile_walls || []).map((x) => x.element)), anyCages);
+  checkingPanel(exported, full.run_at);
   if (draw) {
     document.getElementById("drawing-help").onclick = (e) => {
       e.preventDefault();

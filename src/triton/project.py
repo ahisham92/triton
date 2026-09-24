@@ -60,6 +60,13 @@ class ProjectInfo(_Model):
     location: str = Field("", title="Location")
     designer: str = Field("", title="Designed by")
     checker: str = Field("", title="Checked by")
+    approver: str = Field("", title="Approved by")
+    document_number: str = Field("", title="Calculation document number")
+    revision: str = Field(
+        "P01",
+        title="Revision in work",
+        description="Printed on the reports. Issue revision on the Project tab keeps a copy of it, dated.",
+    )
 
 
 class PartialFactors(_Model):
@@ -1726,6 +1733,18 @@ class ClashSettings(_Model):
     whatifs: list[WhatIf] = Field(default_factory=list, title="Bars taken out (what if)")
 
 
+class ElementCheck(_Model):
+    """The checker's word on one element's design."""
+
+    status: Literal["designed", "comments", "checked", "approved"] = Field("designed", title="Status")
+    by: str = Field("", title="By")
+    comment: str = Field("", title="Comment")
+    at: str | None = Field(None, title="When")
+    design_run_at: str | None = Field(
+        None, description="The design run it was given on: a later design makes it 'on an earlier design'."
+    )
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
@@ -1777,6 +1796,11 @@ class Section(_Model):
         title="Slab stations and bars set by the user",
         description="By slab: stations and additional bars set on the Design tab; Re-check designs the "
         "slab with them.",
+    )
+    checks: dict[str, ElementCheck] = Field(
+        default_factory=dict,
+        title="Checking",
+        description="By element: designed, returned with comments, checked or approved, by whom and when.",
     )
     clashes: ClashSettings = Field(
         default_factory=ClashSettings,
@@ -1894,6 +1918,18 @@ class Section(_Model):
         return added
 
 
+class Revision(_Model):
+    """An issued revision of the calculations, with a copy of the project as it was issued."""
+
+    rev: str = Field(title="Revision")
+    description: str = Field("", title="Description")
+    issued_at: str = Field(default_factory=_now, title="Issued")
+    prepared: str = Field("", title="Prepared by")
+    checked: str = Field("", title="Checked by")
+    approved: str = Field("", title="Approved by")
+    snapshot: str | None = Field(None, description="The copy's file name in the project's revisions folder.")
+
+
 class Project(_Model):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: str = Field(default_factory=_now)
@@ -1903,6 +1939,7 @@ class Project(_Model):
     prices: Prices = Field(default_factory=Prices, title="Prices")
     drawings: DrawingSettings = Field(default_factory=DrawingSettings, title="Drawings (AutoCAD and Revit)")
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
+    revisions: list[Revision] = Field(default_factory=list, title="Issued revisions")
     locked: bool = Field(
         False,
         title="Locked",

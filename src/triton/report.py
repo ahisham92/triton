@@ -116,11 +116,26 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             ("Client", info.client),
             ("Location", info.location),
             ("Section", section.name),
-            ("Designed by", info.designer),
+            ("Document number", info.document_number),
+            ("Revision", info.revision),
+            ("Prepared by", info.designer),
             ("Checked by", info.checker),
+            ("Approved by", info.approver),
             ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
         ]
     )
+    if project.revisions:
+        r.table(
+            ["Rev", "Date", "Description", "Prepared", "Checked", "Approved"],
+            [
+                [v.rev, clock.show(v.issued_at)[:10], v.description, v.prepared, v.checked, v.approved]
+                for v in project.revisions
+            ],
+        )
+    checks = _check_rows(section, results)
+    if checks:
+        r.p("Checking of each element:")
+        r.table(["Element", "Status", "By", "Date", "Comment"], checks)
     if results.get("changed"):
         r.p(
             "OUT OF DATE: these results were designed before the following inputs changed: "
@@ -143,6 +158,36 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
         for w in results.get("sheet_pile_walls", []):
             _spw(r, w)
     return r
+
+
+CHECK_STATUS = {
+    "designed": "Designed, not yet checked",
+    "comments": "Returned with comments",
+    "checked": "Checked",
+    "approved": "Approved",
+}
+
+
+def _check_rows(section: Section, res: dict) -> list[list[str]]:
+    """Each designed element's checking status; a check given on an earlier design says so."""
+    names = [
+        x["element"]
+        for k in ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs")
+        for x in res.get(k, [])
+    ]
+    if not section.checks:
+        return []
+    rows = []
+    for name in dict.fromkeys(names):
+        c = section.checks.get(name)
+        if c is None:
+            rows.append([name, CHECK_STATUS["designed"], "", "", ""])
+            continue
+        status = CHECK_STATUS[c.status]
+        if c.status != "designed" and c.design_run_at and c.design_run_at != res.get("run_at"):
+            status += " (on an earlier design)"
+        rows.append([name, status, c.by, clock.show(c.at or "")[:10], c.comment])
+    return rows
 
 
 def _elements(res: dict) -> list[str]:
