@@ -731,7 +731,10 @@ def _pile_body(r: Report, p: dict) -> None:
                 f"{sec.get('cover_mm', 0):g} / {sec.get('link_diameter_mm', 0):g} mm",
             ),
             ("Top / toe level", f"{sec.get('head_level_m')} / {sec.get('toe_level_m')} m"),
-            ("Cage at the head", a.get("label")),
+            (
+                "Cage at the head",
+                f"{a.get('label')} (set by the user, checked)" if p.get("user_set") else a.get("label"),
+            ),
             ("Steel area", f"{a.get('area_mm2', 0):,} mm² ({p.get('reinforcement_ratio_pct', 0):.2f}%)"),
             ("N–M utilisation", p.get("utilisation")),
             ("Result", _ok(p.get("passed"))),
@@ -754,13 +757,14 @@ def _pile_body(r: Report, p: dict) -> None:
     if runs:
         r.h(3, "Reinforcement down the pile")
         r.table(
-            ["From m", "To m", "Cage", "Bar lengths m", "Lap below m", "Utilisation"],
+            ["From m", "To m", "Cage", "Bar lengths m", "Above head m", "Lap below m", "Utilisation"],
             [
                 [
                     x["top"],
                     x["bottom"],
                     x["cage"]["label"],
                     ", ".join(f"{v:g}" for v in x.get("bar_lengths_m", [])),
+                    ", ".join(f"{v:g}" for v in x.get("above_head_m", [])) or "-",
                     ", ".join(f"{v:g}" for v in x.get("lap_below_m", [])),
                     x.get("utilisation"),
                 ]

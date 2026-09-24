@@ -185,6 +185,7 @@ def _model(p: Project) -> dict:
     d = p.model_dump(mode="json", exclude={"locked", "created_at", "updated_at", "prices"})
     for s in d["sections"]:
         s.pop("costing", None)
+        s.pop("user_cages", None)  # set on the Design tab, then checked
     return d
 
 
@@ -222,7 +223,7 @@ def delete_project(project_id: str) -> None:
 
 
 # What belongs to a section's workbook rather than its settings: not copied to a new section.
-WORKBOOK_OWN = {"id", "name", "sheet_map", "combination_map", "review", "excluded_peaks"}
+WORKBOOK_OWN = {"id", "name", "sheet_map", "combination_map", "review", "excluded_peaks", "user_cages"}
 
 
 @app.post("/api/projects/{project_id}/sections", status_code=201)

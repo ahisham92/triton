@@ -41,19 +41,23 @@ class Run:
     cage: Arrangement
     extension: tuple[float, ...]  # m below ``bottom`` for each row (lap), 0 at the toe
     joint: str  # "lap", "coupler" or "toe"
+    above: tuple[float, ...] = ()  # m above ``top`` for each row: into the element over the pile head
 
     @property
     def length(self) -> float:
         return self.top - self.bottom
 
+    def _above(self) -> tuple[float, ...]:
+        return self.above or tuple(0.0 for _ in self.extension)
+
     def bar_lengths(self) -> list[float]:
-        return [self.length + e for e in self.extension]
+        return [a + self.length + e for a, e in zip(self._above(), self.extension, strict=True)]
 
     @property
     def weight(self) -> float:
         return sum(
-            r.area / 1e6 * STEEL_DENSITY * (self.length + e)
-            for r, e in zip(self.cage.rings, self.extension, strict=True)
+            r.area / 1e6 * STEEL_DENSITY * length
+            for r, length in zip(self.cage.rings, self.bar_lengths(), strict=True)
         )
 
 
@@ -69,6 +73,12 @@ def _laps(settings: DesignSettings, upper: Arrangement, lower: Arrangement | Non
         # Rounded up to 50 mm as detailed.
         out.append(math.ceil(pr.lap_factor * max(r.diameter, below) / 50 - 1e-9) * 0.05)
     return tuple(out)
+
+
+def anchorage(settings: DesignSettings, cage: Arrangement) -> tuple[float, ...]:
+    """Length (m) each row runs on above the pile head into the element over it, rounded up to 50 mm."""
+    f = settings.piles.head_anchorage_factor
+    return tuple(math.ceil(f * r.diameter / 50 - 1e-9) * 0.05 for r in cage.rings)
 
 
 def _fits_below(lower: Arrangement, upper: Arrangement) -> bool:
@@ -141,7 +151,11 @@ def curtail(
             abs(r.bar_lengths()[0] - s) < 0.01 for s in standard
         ):
             notes.append(f"{r.top:.2f} to {r.bottom:.2f} m: bars are not a standard cut length.")
-    notes.append("Starter bars into the slab above the pile head are not included.")
+    if runs and runs[0].above and max(runs[0].above) > 0:
+        notes.append(
+            f"The top bars run on {' / '.join(f'{x:g}' for x in runs[0].above)} m above the pile head into "
+            f"the element over it ({pr.head_anchorage_factor:g}φ), counted in their lengths and weight."
+        )
     return {
         "element": name,
         "mode": pr.curtailment,
@@ -198,7 +212,8 @@ def _search(pr, settings, cages, fits, n_bands, head, ac, least=False) -> list[R
                 if prev is not None and not _fits_below(c, prev):
                     continue
                 laps = _laps(settings, c, c)  # lap lengths below a run ending above the toe
-                ext = max(laps)
+                above = anchorage(settings, c) if p == 0 else ()
+                ext = max(laps) + max(above, default=0.0)
                 lengths = set()
                 remaining = n_bands - p
                 if remaining * STEP <= max_len + 1e-9:
@@ -222,7 +237,7 @@ def _search(pr, settings, cages, fits, n_bands, head, ac, least=False) -> list[R
                         continue
                     run_ext = tuple(0.0 for _ in c.rings) if at_toe else laps
                     joint = "toe" if at_toe else pr.splice
-                    run = Run(round(head - p * STEP, 3), round(head - e * STEP, 3), c, run_ext, joint)
+                    run = Run(round(head - p * STEP, 3), round(head - e * STEP, 3), c, run_ext, joint, above)
                     if max(run.bar_lengths()) > max_len + 1e-9:
                         continue
                     penalty = pen
@@ -259,6 +274,7 @@ def _run_dict(r: Run, band_util: dict, head: float) -> dict:
         "cage": r.cage.to_dict(),
         "bar_lengths_m": [round(x, 2) for x in r.bar_lengths()],
         "lap_below_m": [round(x, 2) for x in r.extension],
+        "above_head_m": [round(x, 2) for x in r.above],
         "joint": r.joint,
         "utilisation": round(util, 3),
         "weight_kg": round(r.weight, 1),

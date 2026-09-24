@@ -25,6 +25,7 @@ _SECTION_OWN = {
     "combinations",
     "combination_map",
     "review",
+    "user_cages",
 }
 
 
@@ -44,7 +45,9 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         "workbook": _hash([(workbook or {}).get(k) for k in ("version", "uploaded_at")]),
     }
     for name, element in section.elements.items():
-        parts[name] = _hash(element.model_dump(mode="json"))
+        cage = section.user_cages.get(name)
+        own = element.model_dump(mode="json")
+        parts[name] = _hash(own if cage is None else [own, cage.model_dump(mode="json")])
     return parts
 
 

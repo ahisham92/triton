@@ -20,7 +20,7 @@ from typing import Any
 from ..forces import CombiSection, scale_forces
 from ..importer import SheetData
 from ..materials import concrete
-from ..project import Casing, CombiWallInput, DesignSettings, PileInput, with_project_grades
+from ..project import Casing, CombiWallInput, DesignSettings, PileInput, UserCage, with_project_grades
 from .governing import placeholder_sets, steel_sets
 from .piles import design_pile
 from .tube import Tube, check_tube, tube_loads
@@ -71,7 +71,11 @@ def infill_as_pile(wall: CombiWallInput) -> PileInput:
 
 
 def design_combi_wall(
-    name: str, wall: CombiWallInput, settings: DesignSettings, sheets: dict[str, SheetData]
+    name: str,
+    wall: CombiWallInput,
+    settings: DesignSettings,
+    sheets: dict[str, SheetData],
+    cage: UserCage | None = None,
 ) -> dict[str, Any]:
     wall = with_project_grades(wall, settings.materials, settings.durability)
     sec = combi_section(wall)
@@ -84,7 +88,7 @@ def design_combi_wall(
         f = f[f["Z"] >= bottom - 1e-9]
         if not f.empty:
             infill_sheets[combo] = replace(sheet, frame=scale_forces(f, 1 - share))
-    infill = design_pile(name, infill_as_pile(wall), settings, infill_sheets).to_dict()
+    infill = design_pile(name, infill_as_pile(wall), settings, infill_sheets, cage).to_dict()
     infill["notes"] = [
         n.replace("into the slab", "into the front beam")
         for n in infill["notes"]

@@ -1998,16 +1998,45 @@ async function renderDesignTab(host) {
     run.disabled = !units.length || busyWith(`design-${section.id}`);
   };
   drawPick();
-  run.onclick = async () => {
+  // A run shows only its own new results, element by element as they come; the earlier ones are
+  // hidden meanwhile.
+  const out = document.getElementById("design-out");
+  const start = async (picked) => {
     if (state.dirty) await save();
     if (state.errors?.length) return;
-    const picked = state.designPick[section.id]?.filter((n) => units.includes(n)) ?? null;
-    const job = designJob(section, picked);
+    if (busyWith(`design-${section.id}`)) return;
+    out.innerHTML = `<p class="status">Designing. Each element's new results appear here as it is done; earlier results are hidden until then.</p>`;
+    const job = designJob(section, picked, (res, done) => {
+      if (!document.body.contains(out)) return;
+      const view = { ...res };
+      for (const k of ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls"]) view[k] = (res[k] || []).filter((e) => done.has(e.element));
+      view.stale = [];
+      view.changed = [];
+      drawResults(view);
+      out.insertAdjacentHTML("afterbegin", `<p class="status">New results so far: ${done.size} element${done.size === 1 ? "" : "s"}. Still designing…</p>`);
+    });
     drawPick();
     await job;
     drawPick();
   };
+  state.runDesign = (names) => start(names);
+  run.onclick = () => start(state.designPick[section.id]?.filter((n) => units.includes(n)) ?? null);
   drawJobs();
+  if (busyWith(`design-${section.id}`)) {
+    out.innerHTML = `<p class="status">Designing. The new results appear here when it is done.</p>`;
+    return;
+  }
+  if (!state.project.locked) {
+    // Unlocked to edit: the inputs may no longer match the last results, so they are not shown.
+    try {
+      await api(`${url}/design`);
+      out.innerHTML = `<div class="panel"><p style="margin:0"><strong>Results are hidden while the model is unlocked.</strong>
+        Design again to see them; the model locks again when you do.</p></div>`;
+    } catch {
+      /* not designed yet */
+    }
+    return;
+  }
   try {
     const res = await api(`${url}/design`);
     stale = res.stale || [];
@@ -2020,7 +2049,7 @@ async function renderDesignTab(host) {
 
 // Design a section's elements (all, or the ones picked) as a job: a few elements per request, each
 // element with its own bar; the others keep their results.
-async function designJob(section, chosen) {
+async function designJob(section, chosen, onResults) {
   const pid = state.project.id;
   const url = `${ROOT}/api/projects/${pid}/sections/${section.id}`;
   const key = `design-${pid}-${section.id}`;
@@ -2058,6 +2087,7 @@ async function designJob(section, chosen) {
   }, 1200);
   let ask = chosen;
   let res = null;
+  const done = new Set();
   try {
     job.steps[0] && (job.steps[0].state = "running");
     drawJobs();
@@ -2076,6 +2106,8 @@ async function designJob(section, chosen) {
           s.bad = true;
         } else s.note = "OK";
       }
+      res.designed.forEach((n) => done.add(n));
+      onResults?.(res, done);
       res.left.forEach(step);
       const next = res.left.find((n) => step(n).state !== "done");
       if (next) step(next).state = "running";
@@ -2175,7 +2207,7 @@ function drawResults(res, full = res) {
       const a = p.arrangement;
       const sh = p.shear;
       const kg = p.steel?.kg_per_m3 ?? p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3;
-      return `<tr><td>${esc(p.element)}</td><td>${a ? esc(a.label) : "–"}</td>
+      return `<tr><td>${esc(p.element)}</td><td>${a ? esc(a.label) : "–"}${p.user_set ? ' <span class="chip small-chip">set by you</span>' : ""}</td>
         <td class="cell ${p.passed ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
         <td>${sh ? esc(sh.zones[0].link) : "–"}</td>
         <td class="cell ${sh ? (sh.passed ? "ok" : "error") : ""}">${sh ? fmt(sh.utilisation, 2) : "–"}</td>
@@ -2244,11 +2276,12 @@ async function mountElementViews(res) {
   if (!slots.length) return;
   const geo = await sectionGeometry();
   if (!geo) {
-    slots.forEach((s) => (s.innerHTML = '<p class="status">Upload the workbook to see the 3D view.</p>'));
+    slots.forEach((s) => document.body.contains(s) && (s.innerHTML = '<p class="status">Upload the workbook to see the 3D view.</p>'));
     return;
   }
   const bands = resultBands(res);
   for (const slot of slots) {
+    if (!document.body.contains(slot)) continue; // redrawn meanwhile (a design run's new results)
     const name = slot.dataset.element;
     const el = geo.elements.find((e) => e.element === name);
     const view = new View3D(slot, { height: 380, compact: true });
@@ -2831,6 +2864,61 @@ function combiCard(w) {
   return card;
 }
 
+// A pile (or combi wall infill) cage set by hand: rows, bars in the outer row, bar sizes. Check
+// designs just that element with it; "Let Triton choose" goes back to the automatic cage.
+const cageKey = (p) => p.element.replace(/ infill$/, "");
+function cageSetHtml(p) {
+  const key = cageKey(p);
+  const own = sec().user_cages?.[key];
+  const a = p.arrangement;
+  const v = own || {
+    rows: a?.rows ?? 1,
+    count: a?.rings?.[0]?.count ?? 26,
+    diameter: a?.rings?.[0]?.diameter ?? 32,
+    inner_diameter: a?.rings?.[1]?.diameter ?? null,
+  };
+  const bars = (state.project.design?.reinforcement?.bar_diameters || [16, 20, 25, 32]).filter((d) => d >= 16);
+  const opt = (list, cur) => list.map((d) => `<option value="${d}" ${Number(cur) === d ? "selected" : ""}>Ø${d}</option>`).join("");
+  return `<details class="panel cage-set" data-free ${own ? "open" : ""}><summary>${own ? "Cage set by you (checked, not chosen by Triton)" : "Set the cage yourself and check it"}</summary>
+    <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:10px">
+      <label>Rows <select data-cage="rows">${[1, 1.5, 2, 2.5, 3].map((r) => `<option value="${r}" ${Number(v.rows) === r ? "selected" : ""}>${r}</option>`).join("")}</select></label>
+      <label>Bars in the outer row <input type="number" min="6" step="1" data-cage="count" value="${v.count}" style="width:80px"></label>
+      <label>Outer bar <select data-cage="diameter">${opt(bars, v.diameter)}</select></label>
+      <label>Inner rows bar <select data-cage="inner_diameter"><option value="">Same as outer</option>${opt(bars, v.inner_diameter)}</select></label>
+      <button data-cage-check>Check</button>
+      ${own ? `<button class="quiet" data-cage-auto>Let Triton choose again</button>` : ""}
+      <span class="status" data-cage-status>${own ? "" : "Check designs only this element with your cage: utilisation, cracks, links and steel are worked out again."}</span>
+    </div></details>`;
+}
+
+function wireCageSet(card, p) {
+  const box = card.querySelector(".cage-set");
+  if (!box) return;
+  const key = cageKey(p);
+  const status = box.querySelector("[data-cage-status]");
+  const read = () => {
+    const get = (k) => box.querySelector(`[data-cage="${k}"]`).value;
+    return { rows: Number(get("rows")), count: Math.round(Number(get("count"))), diameter: Number(get("diameter")), inner_diameter: get("inner_diameter") ? Number(get("inner_diameter")) : null };
+  };
+  const run = async (cage) => {
+    const s = sec();
+    if (cage && [1.5, 2.5].includes(cage.rows) && cage.count % 2) return (status.textContent = "A half row sits behind every second bar: use an even number of bars.");
+    if (cage && !(cage.count >= 6)) return (status.textContent = "At least 6 bars in the outer row (EN 1992-1-1 9.8.5).");
+    s.user_cages ??= {};
+    if (cage) s.user_cages[key] = cage;
+    else delete s.user_cages[key];
+    status.textContent = "Saving…";
+    markDirty();
+    await save();
+    if (state.errors?.length) return (status.textContent = state.errors.map((e) => e.msg).join(" "));
+    status.textContent = `Checking ${key}…`;
+    state.runDesign?.([key]);
+  };
+  box.querySelector("[data-cage-check]").onclick = () => run(read());
+  const auto = box.querySelector("[data-cage-auto]");
+  if (auto) auto.onclick = () => run(null);
+}
+
 function pileCard(p) {
   const card = document.createElement("div");
   card.className = "panel";
@@ -2850,6 +2938,7 @@ function pileCard(p) {
     ${g.combination ? `<p>Governing: ${esc(g.combination)}, node ${g.node}, y ${fmt(g.y, 2)} m, z ${fmt(g.z, 2)} m.
       N<sub>Ed</sub> = ${fmt(g.N_kN)} kN (compression +), M<sub>Ed</sub> = ${fmt(g.M_kNm)} kNm, M<sub>Rd</sub> at this N = ${fmt(g.M_Rd_kNm)} kNm.</p>` : ""}
     ${p.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
+    ${cageSetHtml(p)}
     ${p.element.endsWith(" infill") ? "" : v3dSlot(p.element)}
     ${a?.rings ? `<div class="cage"><div class="chart" data-kind="section"></div><div class="scroll"><table>
       <tr><th>Row</th><th>Bars</th><th>Bar circle radius</th><th>Clear spacing</th></tr>
@@ -2869,6 +2958,7 @@ function pileCard(p) {
       <tr><th>Bars</th><th>Rows</th><th>Area mm²</th><th>Utilisation</th><th>kg/m³</th><th>Clear spacing mm</th></tr>
       ${p.alternatives.map((x) => `<tr${x.chosen ? ' style="font-weight:600"' : ""}><td>${esc(x.label)}${x.chosen ? " (chosen)" : ""}</td><td>${x.rows}</td><td>${fmt(x.area_mm2)}</td><td>${fmt(x.utilisation, 3)}</td><td>${fmt(x.steel_ratio_kg_m3)}</td><td>${fmt(x.clear_spacing_mm)}</td></tr>`).join("")}
     </table></div></details>`;
+  wireCageSet(card, p);
   if (a?.rings) sectionDrawing(card.querySelector('[data-kind="section"]'), p);
   if (p.curtailment?.runs?.length) elevationDrawing(card.querySelector('[data-kind="elevation"]'), p.curtailment);
   if (p.curve.length) {
@@ -3033,9 +3123,10 @@ function curtailmentBlock(c) {
   return `<h3 style="margin:20px 0 4px;font-size:15px">Reinforcement down the pile</h3>
     <p class="status" style="margin:0 0 8px">Zones chosen for ${mode}. Main bars: ${fmt(c.weight_kg)} kg per pile, ${fmt(c.steel_ratio_kg_m3)} kg/m³${saving != null ? `, against ${fmt(c.unified_steel_ratio_kg_m3)} kg/m³ with the head cage all the way down (${saving}% less)` : ""}.${c.couplers ? ` ${c.couplers} couplers.` : ""}</p>
     <div class="cage"><div class="chart" data-kind="elevation"></div><div class="scroll"><table>
-      <tr><th>From</th><th>To</th><th>Cage</th><th>Bar lengths</th><th>Below</th><th>Utilisation</th></tr>
+      <tr><th>From</th><th>To</th><th>Cage</th><th>Bar lengths</th><th>Above head</th><th>Below</th><th>Utilisation</th></tr>
       ${c.runs.map((r) => `<tr><td>${fmt(r.top, 2)}</td><td>${fmt(r.bottom, 2)}</td><td>${esc(r.cage.label)}</td>
         <td>${r.bar_lengths_m.map((x) => fmt(x, 2)).join(" / ")} m</td>
+        <td>${r.above_head_m?.length ? `${r.above_head_m.map((x) => fmt(x, 2)).join(" / ")} m` : "–"}</td>
         <td>${r.joint === "toe" ? "toe" : r.joint === "coupler" ? "couplers" : `lap ${r.lap_below_m.map((x) => fmt(x, 2)).join(" / ")} m`}</td>
         <td>${fmt(r.utilisation, 2)}</td></tr>`).join("")}
     </table>

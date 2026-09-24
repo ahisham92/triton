@@ -19,7 +19,7 @@ from ..elements import CombinationType, combination_type
 from ..forces import design_forces
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
-from ..project import DesignSettings, PileInput, pile_cover, with_project_grades
+from ..project import DesignSettings, PileInput, UserCage, pile_cover, with_project_grades
 from .circular import CircularSection, ConcreteLaw, Ring, SteelLaw, hull_indices
 from .governing import qp_loads, station_sets
 from .pile_cracks import pile_crack_widths
@@ -162,6 +162,7 @@ class PileDesign:
     curve: list[list[float]] = field(default_factory=list)
     profile: list[dict] = field(default_factory=list)
     points: list[list] = field(default_factory=list)
+    user_set: bool = False  # the cage was set by the user and checked, not chosen
 
     def to_dict(self) -> dict:
         a = self.arrangement
@@ -192,6 +193,7 @@ class PileDesign:
             "curve": self.curve,
             "profile": self.profile,
             "points": self.points,
+            "user_set": self.user_set,
         }
 
 
@@ -227,9 +229,16 @@ def _row_gap(settings: DesignSettings, phi_a: float, phi_b: float) -> float:
 
 
 def make_arrangement(
-    pile: PileInput, settings: DesignSettings, rows: float, n: int, phi1: int, phi2: int | None
+    pile: PileInput,
+    settings: DesignSettings,
+    rows: float,
+    n: int,
+    phi1: int,
+    phi2: int | None,
+    strict: bool = True,
 ) -> Arrangement | None:
-    """The cage with n bars of phi1 in the outer row, or None if it breaks a spacing rule."""
+    """The cage with n bars of phi1 in the outer row, or None if it breaks a spacing rule (with
+    ``strict=False`` only if it does not fit in the pile at all; see ``cage_breaches``)."""
     pr, r = settings.piles, settings.reinforcement
     layout = ROW_LAYOUTS[rows]
     if any(f == 0.5 for f, _ in layout) and n % 2:
@@ -245,19 +254,42 @@ def make_arrangement(
         if radius <= 0 or count < 1:
             return None
         clear = 2 * math.pi * radius / count - phi
-        if clear < _min_clear(settings, phi) - 1e-9:
+        if strict and clear < _min_clear(settings, phi) - 1e-9:
             return None
-        if i == 0 and clear > pr.max_clear_spacing + 1e-9:
+        if strict and i == 0 and clear > pr.max_clear_spacing + 1e-9:
+            return None
+        if clear <= 0:
             return None
         rings.append(RingSpec(count, phi, radius, clear))
         prev_phi = phi
     area = sum(x.area for x in rings)
-    if area > max_ratio(settings) * math.pi * pile.diameter**2 / 4:
+    if strict and area > max_ratio(settings) * math.pi * pile.diameter**2 / 4:
         return None
     weight = area / 1e6 * STEEL_DENSITY
     bars = sum(x.count for x in rings)
     cost = weight / 1000 * r.rebar_cost_per_tonne + bars * r.cost_per_bar_placed
     return Arrangement(tuple(rings), rows, weight, cost)
+
+
+def cage_breaches(pile: PileInput, settings: DesignSettings, a: Arrangement) -> list[str]:
+    """The spacing and steel limits a cage set by the user does not meet."""
+    pr = settings.piles
+    out = []
+    for i, r in enumerate(a.rings):
+        least = _min_clear(settings, r.diameter)
+        if r.clear_spacing < least - 1e-9:
+            out.append(
+                f"Row {i + 1}: clear spacing {r.clear_spacing:.0f} mm is below the {least:.0f} mm minimum."
+            )
+    if a.clear_spacing > pr.max_clear_spacing + 1e-9:
+        out.append(
+            f"Outer row: clear spacing {a.clear_spacing:.0f} mm is over the "
+            f"{pr.max_clear_spacing:g} mm maximum."
+        )
+    ratio = a.area / (math.pi * pile.diameter**2 / 4)
+    if ratio > max_ratio(settings) + 1e-9:
+        out.append(f"Steel {100 * ratio:.2f}% is over the {pr.max_steel_ratio:g}% limit.")
+    return out
 
 
 def _sort_key(settings: DesignSettings):
@@ -401,8 +433,13 @@ class _Checker:
 
 
 def design_pile(
-    name: str, pile: PileInput, settings: DesignSettings, sheets: dict[str, SheetData]
+    name: str,
+    pile: PileInput,
+    settings: DesignSettings,
+    sheets: dict[str, SheetData],
+    cage: UserCage | None = None,
 ) -> PileDesign:
+    """Choose the pile's cage, or check the one the user set (``cage``)."""
     pile = with_project_grades(pile, settings.materials, settings.durability)
     above = settings.results_into_connection / 1e3
     full_loads = None
@@ -443,8 +480,37 @@ def design_pile(
         notes.append("No ULS results.")
         return PileDesign(name, None, 0.0, False, {}, area_min, area_max, 0.0, 0.0, limits, geom, notes=notes)
 
-    families = [[a for a in fam if a.area >= area_min] for fam in _families(pile, settings)]
-    families = [f for f in families if f]
+    breaches: list[str] = []
+    if cage is not None:
+        own = make_arrangement(
+            pile, settings, cage.rows, cage.count, cage.diameter, cage.inner_diameter or cage.diameter, False
+        )
+        if own is None:
+            notes.append(
+                f"Your cage ({cage.count}Ø{cage.diameter}, {cage.rows:g} rows) does not fit in the pile."
+            )
+            return PileDesign(
+                name,
+                None,
+                math.inf,
+                False,
+                {},
+                area_min,
+                area_max,
+                0.0,
+                0.0,
+                limits,
+                geom,
+                notes=notes,
+                user_set=True,
+            )
+        breaches = cage_breaches(pile, settings, own)
+        if own.area < area_min - 1e-9:
+            breaches.append(f"Steel {own.area:.0f} mm² is below the {area_min:.0f} mm² minimum (Table 9.6N).")
+        families = [[own]]
+    else:
+        families = [[a for a in fam if a.area >= area_min] for fam in _families(pile, settings)]
+        families = [f for f in families if f]
     if not families:
         fixed = f" with {pile.bar_count} bars in the outer row" if pile.bar_count else ""
         notes.append(f"No cage fits the pile{fixed} with the chosen bar sizes, rows and spacing limits.")
@@ -454,36 +520,38 @@ def design_pile(
 
     qp = crack_loads(pile, qp_loads(sheets, pile.head_level, above))
     check = _Checker(pile, settings, loads, qp)
-    passing: list[Arrangement] = []
-    strongest, strongest_u = None, math.inf
-    for fam in families:
-        u = check(fam[-1])
-        if u < strongest_u:
-            strongest, strongest_u = fam[-1], u
-        if u > 1.0:
-            continue
-        lo, hi = 0, len(fam) - 1  # fam[hi] passes; find the fewest bars that pass
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if check(fam[mid]) <= 1.0:
-                hi = mid
-            else:
-                lo = mid + 1
-        passing.append(fam[hi])
+    strength = _Checker(pile, settings, loads)
+    passing = [a for fam in families if (a := _fewest(fam, check))]
 
     key = _sort_key(settings)
-    passed = bool(passing)
-    if passed:
+    passed = bool(passing) and not breaches
+    if cage is not None:
+        chosen = families[0][0]
+        notes.append(f"Cage set by you: {chosen.label}. Triton checks it; it does not choose one.")
+        notes += breaches
+        if not passing:
+            notes.append("Your cage does not carry the loads or keep the QP crack widths within the limit.")
+    elif passed:
         pool = passing
         if pr.extra_rows_only_when_needed and any(a.rows == 1 for a in passing):
             pool = [a for a in passing if a.rows == 1]
         chosen = min(pool, key=key)
     else:
-        chosen = strongest
-        notes.append(
-            f"No cage within the {pr.max_steel_ratio:g}% limit and the allowed rows carries the loads "
-            "and keeps the QP crack widths within the limit; the strongest one is shown."
-        )
+        # Nothing passes both: the cage must carry the loads first (the lightest one that does, with
+        # the smallest crack width among those), else the one closest to carrying them.
+        strong = [a for fam in families if (a := _fewest(fam, strength))]
+        if strong:
+            chosen = min(strong, key=lambda a: (check(a), key(a)))
+            notes.append(
+                "No cage within the allowed rows and steel limit keeps the QP crack widths within the "
+                "limit; the cage shown carries the loads, with the smallest crack width of those that do."
+            )
+        else:
+            chosen = min((fam[-1] for fam in families), key=lambda a: (strength(a), key(a)))
+            notes.append(
+                f"No cage within the {pr.max_steel_ratio:g}% limit and the allowed rows carries the loads; "
+                "the strongest one is shown."
+            )
 
     curtailment = None
     if pr.curtail and passed:
@@ -573,7 +641,22 @@ def design_pile(
             [c, round(n, 1), round(m, 1), round(u, 3)]
             for c, n, m, u in loads[["combination", "N", "M", "util"]].itertuples(index=False)
         ],
+        user_set=cage is not None,
     )
+
+
+def _fewest(fam: list[Arrangement], check) -> Arrangement | None:
+    """The cage of a family (in order of bar count) with the fewest bars that passes ``check``."""
+    if check(fam[-1]) > 1.0:
+        return None
+    lo, hi = 0, len(fam) - 1  # fam[hi] passes
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if check(fam[mid]) <= 1.0:
+            hi = mid
+        else:
+            lo = mid + 1
+    return fam[hi]
 
 
 def crack_summary(pile: PileInput, settings: DesignSettings, qp: pd.DataFrame, stations: list[tuple]) -> dict:
@@ -773,7 +856,13 @@ def _shear_and_steel(pile, settings, loads, chosen, curtailment, geom) -> tuple[
     else:
         diameters = [g.diameter for g in chosen.rings]
         zones = [CageZone(head, toe, chosen.area, chosen.outer.radius, max(diameters), min(diameters), 0.0)]
-        longitudinal = chosen.weight_per_m * (head - toe)
+        from .curtailment import anchorage  # imports this module
+
+        above = anchorage(settings, chosen)
+        longitudinal = sum(
+            r.area / 1e6 * STEEL_DENSITY * (head - toe + a) for r, a in zip(chosen.rings, above, strict=True)
+        )
+        geom["above_head_m"] = [round(a, 2) for a in above]
     shear = design_shear(pile, settings, loads, zones)
     volume = math.pi * pile.diameter**2 / 4 / 1e6 * (head - toe)
     total = longitudinal + shear["links_kg"]

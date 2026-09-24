@@ -165,6 +165,14 @@ class PileReinforcement(_Model):
         description="Lap length as a multiple of the bar diameter (45 gives 45φ).",
         json_schema_extra={"unit": "φ"},
     )
+    head_anchorage_factor: float = Field(
+        45.0,
+        title="Bars into the element above",
+        ge=0,
+        description="The pile bars run on above the pile head into the beam or slab over it, as a multiple "
+        "of the bar diameter (45 gives 45φ); counted in bar lengths, weights and costs. 0 for none.",
+        json_schema_extra={"unit": "φ"},
+    )
     max_steel_ratio: float = Field(
         4.0,
         title="Maximum steel ratio",
@@ -1130,6 +1138,26 @@ class LoadFactor(_Model):
     note: str = Field("", title="Note", description="e.g. Set B actions to design values")
 
 
+class UserCage(_Model):
+    """A pile (or combi wall infill) cage set by the user instead of the one Triton chooses."""
+
+    rows: Literal[1, 1.5, 2, 2.5, 3] = Field(1, title="Rows")
+    count: int = Field(26, title="Bars in the outer row", ge=6)
+    diameter: int = Field(32, title="Outer row bar", json_schema_extra={"unit": "mm"})
+    inner_diameter: int | None = Field(
+        None,
+        title="Inner rows bar",
+        description="Empty: the outer row's bar.",
+        json_schema_extra={"unit": "mm"},
+    )
+
+    @model_validator(mode="after")
+    def _half_rows(self) -> UserCage:
+        if self.rows in (1.5, 2.5) and self.count % 2:
+            raise ValueError("A half row sits behind every second bar: use an even number of bars.")
+        return self
+
+
 def _short_id() -> str:
     return uuid.uuid4().hex[:8]
 
@@ -1206,6 +1234,12 @@ class Section(_Model):
         default_factory=dict, title="Sheet mapping", description="Sheets assigned by hand, by sheet name."
     )
     costing: SectionCosting = Field(default_factory=SectionCosting, title="Costing")
+    user_cages: dict[str, UserCage] = Field(
+        default_factory=dict,
+        title="Cages set by the user",
+        description="Pile or combi wall infill cages set on the Design tab, by element; Check designs "
+        "the element with its cage.",
+    )
     combinations: list[str] = Field(
         default_factory=lambda: list(DEFAULT_COMBINATIONS),
         title="Load combinations",

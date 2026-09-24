@@ -156,7 +156,7 @@ def run_section(
         positions = _positions(raw.get(name, {}))
         count = element.count or len(positions) or 1
         if isinstance(element, CombiWallInput):
-            wall = design_combi_wall(name, element, settings, own)
+            wall = design_combi_wall(name, element, settings, own, section.user_cages.get(name))
             wall["notes"][:0] = notes
             wall["peaks"] = peaks
             share = 1 - wall["steel_share"]  # the infill's moments are its share of the Plaxis ones
@@ -177,7 +177,7 @@ def run_section(
                 )
             walls.append(wall)
             continue
-        d = design_pile(name, element, settings, own)
+        d = design_pile(name, element, settings, own, section.user_cages.get(name))
         d.notes[:0] = notes
         out = d.to_dict()
         out["peaks"] = peaks

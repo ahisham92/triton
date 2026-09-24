@@ -45,6 +45,7 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
                 "toe_level_m": p["section"].get("toe_level_m"),
                 "positions": [{"x": x, "y": y} for x, y in p.get("positions", [])],
                 "splice": c.get("splice", "lap"),
+                "user_set": bool(p.get("user_set")),
                 "runs": [
                     {
                         "top_m": r["top"],
@@ -56,12 +57,16 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
                                 "diameter_mm": ring["diameter"],
                                 "radius_mm": ring["radius"],
                                 "first_bar_angle_deg": 0.0,
-                                "bar_top_m": r["top"],
+                                "bar_top_m": round(r["top"] + above, 3),
                                 "bar_bottom_m": round(r["bottom"] - lap, 3),
                                 "bar_length_m": length,
                             }
-                            for ring, lap, length in zip(
-                                r["cage"]["rings"], r["lap_below_m"], r["bar_lengths_m"], strict=True
+                            for ring, lap, length, above in zip(
+                                r["cage"]["rings"],
+                                r["lap_below_m"],
+                                r["bar_lengths_m"],
+                                r.get("above_head_m") or [0.0] * len(r["cage"]["rings"]),
+                                strict=True,
                             )
                         ],
                     }
@@ -83,10 +88,12 @@ def _single_run(p: dict[str, Any]) -> dict[str, Any]:
     top, bottom = p["section"].get("head_level_m"), p["section"].get("toe_level_m")
     length = round(top - bottom, 2) if top is not None and bottom is not None else None
     rings = p["arrangement"]["rings"]
+    above = p["section"].get("above_head_m") or [0.0] * len(rings)
     return {
         "top": top,
         "bottom": bottom,
         "cage": p["arrangement"],
         "lap_below_m": [0.0] * len(rings),
-        "bar_lengths_m": [length] * len(rings),
+        "above_head_m": above,
+        "bar_lengths_m": [None if length is None else round(length + a, 2) for a in above],
     }

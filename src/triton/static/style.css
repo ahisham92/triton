@@ -276,3 +276,7 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .decided summary { cursor: pointer; font-weight: 600; }
 .decided table { width: 100%; margin-top: 8px; }
 #factor-status.unsaved { color: var(--warn); font-weight: 600; }
+.small-chip { font-size: 11px; padding: 1px 6px; }
+.cage-set { margin-top: 12px; }
+.cage-set summary { cursor: pointer; font-weight: 600; }
+.cage-set label { display: inline-flex; gap: 6px; align-items: center; }
