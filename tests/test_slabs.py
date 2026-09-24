@@ -446,3 +446,11 @@ def test_added_layers_sit_inside_their_mesh():
     up = [r["above_soffit_mm"] for r in faces["bottom"]]
     down = [r["above_soffit_mm"] for r in faces["top"]]
     assert up == sorted(up) and down == sorted(down, reverse=True)  # bottom layers go up, top layers down
+
+
+def test_slab_station_diagrams_have_the_qp_envelope_too():
+    sd = design_deck()["strip_design"]
+    assert set(sd["profile_qp"]) == set(sd["profile"]) and sd["across_profile_qp"]["points"]
+    # QP moments are smaller than ULS ones in this workbook.
+    top = max(abs(q["column_max"]) for q in sd["profile"]["M11"])
+    assert max(abs(q["column_max"]) for q in sd["profile_qp"]["M11"]) < top

@@ -168,6 +168,9 @@ def test_design_beam_with_supports_and_export():
         els,
         {"1": "X", "2": "Y"},
     )
+    # The QP diagrams: the same positions, the QP envelope and its crack width over the limit.
+    assert d["profile_qp"] and {"s", "u", "Mv_max", "Mv_min"} <= set(d["profile_qp"][0])
+    assert max(q["Mv_max"] for q in d["profile_qp"]) < max(q["Mv_max"] for q in d["profile"])
     # By default every result is designed, the peak inside the pile too, as the office's beam designs.
     every = design_beam(
         "Front Beam",

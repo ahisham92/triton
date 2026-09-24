@@ -2453,6 +2453,8 @@ def design_slab(
             "table": strip_table(strip_rows, frame) + overall_table(overall_rows),
             "profile": strip_profile(uls_m, uloc, size, axes),
             "across_profile": across_profile(uls_m, frame, size, axes),
+            "profile_qp": strip_profile(qp_m, qloc, size, axes) if qloc is not None else {},
+            "across_profile_qp": across_profile(qp_m, frame, size, axes) if len(qp_m) else None,
             "start": frame["start"],
             "end": frame["end"],
             "origin": frame["origin"],

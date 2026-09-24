@@ -2825,6 +2825,19 @@ function wireStripTable(card, d) {
   }));
 }
 
+// A ULS / SLS (QP) switch for a diagram: the same axes and signs, the other results.
+const LIMIT_NAME = { uls: "ULS", qp: "SLS (QP)" };
+function limitSwitch(hasQp, label = "") {
+  if (!hasQp) return "";
+  return `${label ? `<span class="status">${esc(label)}</span>` : ""}<span class="limit-switch" role="group" aria-label="Results shown">${["uls", "qp"].map((m) => `<button class="quiet${m === "uls" ? " on" : ""}" data-limit="${m}">${LIMIT_NAME[m]}</button>`).join("")}</span>`;
+}
+function wireLimitSwitch(host, onPick) {
+  host.querySelectorAll("[data-limit]").forEach((b) => (b.onclick = () => {
+    host.querySelectorAll("[data-limit]").forEach((x) => x.classList.toggle("on", x === b));
+    onPick(b.dataset.limit);
+  }));
+}
+
 function stationEditor(card, d) {
   // Column and field strip moments across the deck, sea side on the left, with the stations on them:
   // drag a station to move it, add or delete stations, then design the slab with them.
@@ -2838,7 +2851,7 @@ function stationEditor(card, d) {
   let st = sd.stations.slice();
   const own = sec().slab_strips?.[d.element]?.stations;
   ctl.innerHTML = `<div class="legend"><span><i></i>Column strip, largest</span><span><i class="low"></i>Column strip, smallest</span><span><i class="field"></i>Field strip, largest</span><span><i class="field low"></i>Field strip, smallest</span><span>▲ row of piles</span></div>
-    <div class="row">${names.map((n) => `<button class="quiet${n === which ? " on" : ""}" data-m="${esc(n)}">${esc(n)}</button>`).join("")}</div>
+    <div class="row">${names.map((n) => `<button class="quiet${n === which ? " on" : ""}" data-m="${esc(n)}">${esc(n)}</button>`).join("")}${limitSwitch(sd.profile_qp && Object.keys(sd.profile_qp).length, "Results:")}</div>
     <div data-st-tools><p class="status">Drag a station's circle to move it, press × to delete it, or Add station. You can also type the stations. Then Design with these stations. ${own ? "These are your stations." : "These are Triton's stations: 2 m each side of every row of piles."}</p>
     <div class="row"><input data-st-text style="flex:1;min-width:200px" aria-label="Stations (m from the sea side)"><button class="quiet" data-st-add>Add station</button><button data-st-design>Design with these stations</button>${own ? '<button class="quiet" data-st-auto>Triton\'s stations</button>' : ""}<span class="status" data-st-status></span></div></div>
     <p class="status" data-st-across hidden></p>`;
@@ -2846,7 +2859,8 @@ function stationEditor(card, d) {
   const status = ctl.querySelector("[data-st-status]");
   const round = (v) => Math.round(v * 20) / 20;
   let c = null;
-  const ap = sd.across_profile;
+  let mode = "uls";
+  let ap = sd.across_profile;
   const tools = ctl.querySelector("[data-st-tools]"), acrossNote = ctl.querySelector("[data-st-across]");
   const legend = ctl.querySelector(".legend");
   const drawAcross = () => {
@@ -2857,7 +2871,7 @@ function stationEditor(card, d) {
     const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals), pad = (hi - lo) * 0.1 || 1;
     c = frame(el, { w: 820, h: 360, xDomain: ap.range, yDomain: [lo - pad, hi + pad],
       xLabel: `${ap.axis} along the quay (m)`, yLabel: `${ap.moment} kNm/m (− hogging up, + sagging down)`, yReverse: true,
-      title: `${ap.moment} along the quay, ULS envelope over the whole deck. Hogging (top steel) up, sagging (bottom steel) down` });
+      title: `${ap.moment} along the quay, ${LIMIT_NAME[mode]} envelope over the whole deck. Hogging (top steel) up, sagging (bottom steel) down` });
     c.svg.classList.remove("editing");
     const path = (k) => pts.map((q, i) => `${i ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
     const bot = c.h - c.m.b;
@@ -2876,17 +2890,18 @@ function stationEditor(card, d) {
     c.svg.onmouseleave = () => (c.tip.hidden = true);
   };
   const draw = () => {
+    ap = mode === "qp" ? sd.across_profile_qp || sd.across_profile : sd.across_profile;
     const across = ap && which === ap.moment;
     tools.hidden = across;
     acrossNote.hidden = !across;
     if (legend) legend.innerHTML = across ? '<span><i></i>Largest over the deck</span><span><i class="low"></i>Smallest over the deck</span><span>▲ line of piles</span>' : '<span><i></i>Column strip, largest</span><span><i class="low"></i>Column strip, smallest</span><span><i class="field"></i>Field strip, largest</span><span><i class="field low"></i>Field strip, smallest</span><span>▲ row of piles</span>';
     if (across) return drawAcross();
-    const prof = sd.profile[which] || [];
+    const prof = (mode === "qp" ? sd.profile_qp : sd.profile)[which] || [];
     const vals = prof.flatMap((q) => [q.column_max, q.column_min, q.field_max, q.field_min]).filter((v) => v != null);
     const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals), pad = (hi - lo) * 0.1 || 1;
     c = frame(el, { w: 820, h: 360, xDomain: [start, end], yDomain: [lo - pad, hi + pad],
       xLabel: `Station from the ${sd.from}, sea side (m)`, yLabel: `${which} kNm/m (− hogging up, + sagging down)`, yReverse: true,
-      title: `${which} across the deck, ULS envelope of each strip's average. Hogging (top steel) up, sagging (bottom steel) down` });
+      title: `${which} across the deck, ${LIMIT_NAME[mode]} envelope of each strip's average. Hogging (top steel) up, sagging (bottom steel) down` });
     c.svg.classList.add("editing");
     const path = (k) => prof.filter((q) => q[k] != null).map((q, i) => `${i ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
     const top = c.m.t, bot = c.h - c.m.b;
@@ -2937,6 +2952,7 @@ function stationEditor(card, d) {
     st = [start, ...[...new Set(vals.map(round))].sort((a, b) => a - b), end];
     draw();
   };
+  wireLimitSwitch(ctl, (m) => { mode = m; draw(); });
   ctl.querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => {
     which = b.dataset.m;
     ctl.querySelectorAll("[data-m]").forEach((x) => x.classList.toggle("on", x === b));
@@ -3355,6 +3371,7 @@ function beamCard(b) {
     ${beamCageHtml(b)}
     ${faceNeeds(b)}
     ${g.combination ? `<p>Governing bending: ${esc(g.combination)} at ${fmt(g.s, 2)} m along the beam. N = ${fmt(g.N_kN)} kN, M<sub>v</sub> = ${fmt(g.Mv_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_v_kNm)}), M<sub>h</sub> = ${fmt(g.Mh_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_h_kNm)}), exponent a = ${fmt(g.a, 2)}. ${esc(bend.method || "")}.</p>` : ""}
+    <div class="row" data-kind="limit-switch">${limitSwitch(b.profile_qp?.length, "Moment and utilisation diagrams:")}</div>
     <div class="charts"><div class="chart" data-kind="moments"></div><div class="chart" data-kind="profile"></div></div>` : ""}
     <h3 style="margin-top:18px">Crack widths</h3>
     <div class="scroll"><table><tr><th>Check</th><th>Face</th><th>w<sub>k</sub></th><th>Limit</th><th>Details</th><th></th></tr>
@@ -3387,9 +3404,16 @@ function beamCard(b) {
   wireBeamCage(card, b);
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
   if (b.profile?.length) {
-    beamMoments(card.querySelector('[data-kind="moments"]'), b.profile, b.supports, b.support_results === "faces");
-    const prof = { profile: b.profile.map((q) => ({ z: q.s, util: q.u })) };
-    alongChart(card.querySelector('[data-kind="profile"]'), prof.profile, "Utilisation along the beam", "Utilisation", (q) => q.util, 1, b.supports, b.support_results === "faces");
+    const drawBeam = (mode) => {
+      const qp = mode === "qp";
+      const rows = qp ? b.profile_qp : b.profile;
+      beamMoments(card.querySelector('[data-kind="moments"]'), rows, b.supports, b.support_results === "faces", mode);
+      alongChart(card.querySelector('[data-kind="profile"]'), rows.map((q) => ({ z: q.s, util: q.u })),
+        qp ? "Crack width / limit along the beam, SLS (QP)" : "Utilisation along the beam, ULS", qp ? "wk / limit" : "Utilisation",
+        (q) => q.util, 1, b.supports, b.support_results === "faces");
+    };
+    drawBeam("uls");
+    wireLimitSwitch(card.querySelector('[data-kind="limit-switch"]'), drawBeam);
   }
   return card;
 }
@@ -3504,13 +3528,13 @@ function supportBands(c, supports, lo, hi, cut = true) {
 const acrossSupport = (supports, a, b) => (supports || []).some((q) => q.s > Math.min(a, b) && q.s < Math.max(a, b));
 const supportLegend = (supports, cut = true) => (supports?.length ? `<p class="status" style="margin:4px 0 0"><span class="support-key"></span> ${esc(supports[0].element)}${new Set(supports.map((q) => q.element)).size > 1 ? " and other supports" : ""}${cut ? ": nothing is designed inside them (FE peaks in the connection); bending is taken at their faces (Design settings)." : ": their results are designed like the rest of the beam (Design settings can leave them out)."}</p>` : "");
 
-function beamMoments(el, prof, supports = [], cut = true) {
-  // Vertical bending envelope along the beam (ULS), sagging +.
+function beamMoments(el, prof, supports = [], cut = true, mode = "uls") {
+  // Vertical bending envelope along the beam (ULS or QP), sagging +.
   const xs = prof.map((q) => q.s);
   const lo = Math.min(0, ...prof.map((q) => q.Mv_min)), hi = Math.max(0, ...prof.map((q) => q.Mv_max));
   const padm = (hi - lo) * 0.05 || 1;
   const c = frame(el, { xDomain: [Math.min(...xs), Math.max(...xs)], yDomain: [lo - padm, hi + padm],
-    xLabel: "Position along the beam (m)", yLabel: "M vertical (kNm)", title: "Vertical bending, ULS envelope (sagging +)" });
+    xLabel: "Position along the beam (m)", yLabel: "M vertical (kNm)", title: `Vertical bending, ${LIMIT_NAME[mode]} envelope (sagging +)` });
   // Break the line over the supports, where there are no results.
   const line = (k) => prof.map((q, i) => `${i && !(cut && acrossSupport(supports, q.s, prof[i - 1].s)) ? "L" : "M"}${c.x(q.s).toFixed(1)},${c.y(q[k]).toFixed(1)}`).join("");
   c.g.innerHTML = supportBands(c, supports, Math.min(...xs), Math.max(...xs), cut) + `<line class="grid" x1="${c.m.l}" x2="${c.w - c.m.r}" y1="${c.y(0)}" y2="${c.y(0)}"/>
@@ -3799,6 +3823,7 @@ function pileCard(p) {
     ${levelSketch(p)}
     ${pileCrackBlock(p.cracks)}
     ${crackPicturesHtml(pileCrackItems(p))}
+    <div class="row" data-kind="limit-switch">${limitSwitch(p.moments_qp?.length || p.cracks?.profile?.length, "Utilisation and moment diagrams:")}</div>
     <div class="charts"><div class="chart" data-kind="nm"></div><div class="chart" data-kind="profile"></div></div>
     ${p.moments?.length ? `<div class="charts"><div class="chart" data-kind="moments"></div><div data-kind="peaks"></div></div>` : ""}
     ${setsBlock(p.governing_sets)}
@@ -3811,14 +3836,23 @@ function pileCard(p) {
   mountCrackPictures(card, pileCrackItems(p));
   if (a?.rings) sectionDrawing(card.querySelector('[data-kind="section"]'), p);
   if (p.curtailment?.runs?.length) elevationDrawing(card.querySelector('[data-kind="elevation"]'), p.curtailment);
-  if (p.curve.length) {
-    nmChart(card.querySelector('[data-kind="nm"]'), p);
-    profileChart(card.querySelector('[data-kind="profile"]'), p);
-  }
-  if (p.moments?.length) {
-    momentChart(card.querySelector('[data-kind="moments"]'), p);
-    peaksBlock(card.querySelector('[data-kind="peaks"]'), p.peaks || []);
-  }
+  const drawPile = (mode) => {
+    const pel = card.querySelector('[data-kind="profile"]');
+    if (p.curve.length && pel) {
+      if (mode === "qp") {
+        const lim = p.cracks?.limit_mm;
+        const rows = (p.cracks?.profile || []).map((q) => ({ z: q.z, util: q.wk / lim }));
+        if (rows.length) profileChart(pel, { profile: rows }, "Crack width / limit along the pile, SLS (QP)");
+        else pel.innerHTML = `<p class="status">${esc(p.cracks?.casing || p.cracks?.note || "No QP crack check.")}</p>`;
+      } else profileChart(pel, p, "Utilisation along the pile, ULS");
+    }
+    if (p.moments?.length) momentChart(card.querySelector('[data-kind="moments"]'), p, mode);
+  };
+  if (p.curve.length) nmChart(card.querySelector('[data-kind="nm"]'), p);
+  drawPile("uls");
+  if (p.moments?.length) peaksBlock(card.querySelector('[data-kind="peaks"]'), p.peaks || []);
+  const sw = card.querySelector('[data-kind="limit-switch"]');
+  if (sw) wireLimitSwitch(sw, drawPile);
   return card;
 }
 
@@ -3925,15 +3959,17 @@ function pileCrackBlock(c) {
     <p class="status">EN 1992-1-1 7.3.4 at the extreme bar of the cracked section, E<sub>c,eff</sub> = E<sub>cm</sub>/(1 + φ). A<sub>c,eff</sub> is the circular segment of depth h<sub>c,ef</sub> at the tension face (a ring round the pile when it is all in tension). The cage choice and curtailment keep w<sub>k</sub> within the limit.</p>`;
 }
 
-function momentChart(el, p) {
-  // Largest resultant moment at each level (ULS), with isolated peaks marked.
-  const prof = p.moments;
-  const peaks = (p.peaks || []).filter((q) => q.combination && !/QP/.test(q.combination));
+function momentChart(el, p, mode = "uls") {
+  // Largest resultant moment at each level (ULS or QP), with isolated peaks marked.
+  const qp = mode === "qp";
+  const prof = qp ? p.moments_qp || [] : p.moments;
+  const peaks = (p.peaks || []).filter((q) => q.combination && /QP/.test(q.combination) === qp);
+  if (!prof.length) { el.innerHTML = `<p class="status">${qp && !p.moments_qp ? "Design this pile again to see its SLS (QP) moments." : `No ${LIMIT_NAME[mode]} results.`}</p>`; return; }
   const zs = prof.map((q) => q.z).concat(peaks.map((q) => q.z));
   const maxM = Math.max(1, ...prof.map((q) => q.M_kNm), ...peaks.map((q) => q.M_kNm)) * 1.05;
   const c = frame(el, {
     xDomain: [0, maxM], yDomain: [Math.min(...zs), Math.max(...zs)],
-    xLabel: "M (kNm)", yLabel: "Level z (m)", title: "Moment along the pile (ULS envelope)",
+    xLabel: "M (kNm)", yLabel: "Level z (m)", title: `Moment along the pile (${LIMIT_NAME[mode]} envelope)`,
   });
   const path = prof.map((q, i) => `${i ? "L" : "M"}${c.x(q.M_kNm).toFixed(1)},${c.y(q.z).toFixed(1)}`).join("");
   c.g.innerHTML = `<path class="series" d="${path}"/>` + peaks

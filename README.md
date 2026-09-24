@@ -459,6 +459,9 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   the report. The pick is kept with the section.
 - **Moment diagrams:** the slab station diagrams are drawn as structural moment diagrams, hogging
   (top steel) up and sagging (bottom steel) down; the values keep their sign (sagging +).
+- **ULS and SLS (QP):** every moment diagram has a ULS / SLS (QP) switch with the same axes and
+  signs: the slab station diagrams, the beam's vertical bending with its utilisation (crack width
+  over its limit for QP) and the pile's moment and utilisation (crack width over its limit for QP).
 - **Mesh and additional bars:** four meshes, bottom and top, along X and along Y, each laid over
   the whole slab. The slab is split into a grid of cells (1 m by default) only to find where a mesh
   is not enough: there, additional bars go between the mesh bars (at the mesh spacing or every

@@ -160,6 +160,7 @@ class PileDesign:
     bands: list[list[float]] = field(default_factory=list)
     tension: dict = field(default_factory=dict)
     moments: list[dict] = field(default_factory=list)
+    moments_qp: list[dict] = field(default_factory=list)  # the same along the pile for the QP results
     notes: list[str] = field(default_factory=list)
     curve: list[list[float]] = field(default_factory=list)
     profile: list[dict] = field(default_factory=list)
@@ -192,6 +193,7 @@ class PileDesign:
             "bands": self.bands,
             "tension": self.tension,
             "moments": self.moments,
+            "moments_qp": self.moments_qp,
             "steel_ratio_kg_m3": round(self.steel_ratio_kg_m3, 1),
             "reinforcement_ratio_pct": round(100 * self.reinforcement_ratio, 3),
             "alternatives": self.alternatives,
@@ -736,13 +738,8 @@ def design_pile(
         cracks=cracks,
         bands=util_bands(loads),
         tension=pile_tension(pd.concat([loads, qp_loads(sheets, pile.head_level, above)]), pile.diameter),
-        moments=[
-            {"z": float(z), "M_kNm": round(float(m), 1)}
-            for z, m in loads.groupby(loads["Z"].mul(2).round() / 2)["M"]
-            .max()
-            .sort_index(ascending=False)
-            .items()
-        ],
+        moments=moment_profile(loads),
+        moments_qp=moment_profile(qp_loads(sheets, pile.head_level, above)),
         notes=notes,
         curve=np.round(sec.interaction(), 1).tolist(),
         profile=[{"z": float(r.Z), "util": float(r.util)} for r in profile.itertuples()],
@@ -867,6 +864,16 @@ def _fewest(fam: list[Arrangement], check) -> Arrangement | None:
         else:
             lo = mid + 1
     return fam[hi]
+
+
+def moment_profile(f: pd.DataFrame) -> list[dict]:
+    """Largest resultant moment per 0.5 m level, top down."""
+    if f is None or f.empty:
+        return []
+    return [
+        {"z": float(z), "M_kNm": round(float(m), 1)}
+        for z, m in f.groupby(f["Z"].mul(2).round() / 2)["M"].max().sort_index(ascending=False).items()
+    ]
 
 
 def crack_summary(pile: PileInput, settings: DesignSettings, qp: pd.DataFrame, stations: list[tuple]) -> dict:

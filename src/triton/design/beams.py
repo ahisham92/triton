@@ -1313,6 +1313,7 @@ def design_beam(
         "tension": beam_tension([mom, qp_all], lay.start, BAND, lambda i: _band_at(lay, i), g.b, g.h),
         "crack_bands": beam_crack_bands(crack_sec, g, cage, qp_all, e_eff, conc, limits, lay),
         "profile": _profile(mom, u),
+        "profile_qp": _profile_qp(crack_sec, g, cage, qp_all, e_eff, conc, limits),
         "governing_sets": sets,
     }
 
@@ -1328,6 +1329,30 @@ def _profile(mom: pd.DataFrame, u: np.ndarray) -> list[dict]:
         }
         for s, r in f.iterrows()
     ]
+
+
+def _profile_qp(sec, g, cage, qp: pd.DataFrame, e_eff, conc, limits) -> list[dict]:
+    """As ``_profile`` for the QP results: the vertical bending envelope and, as the utilisation, the
+    crack width over its limit at the largest sagging and hogging moment of each position."""
+    if qp is None or qp.empty:
+        return []
+    out = []
+    for s, rows in qp.groupby("s"):
+        u = 0.0
+        for i in {rows["Mv"].idxmax(), rows["Mv"].idxmin()}:
+            r = rows.loc[i]
+            face = "bottom" if r["Mv"] >= 0 else "top"
+            c = face_crack(sec, g, getattr(cage, face), float(r["N"]), float(r["Mv"]), e_eff, conc)
+            u = max(u, c["wk"] / limits[face])
+        out.append(
+            {
+                "s": float(s),
+                "u": round(u, 3),
+                "Mv_max": round(float(rows["Mv"].max()), 1),
+                "Mv_min": round(float(rows["Mv"].min()), 1),
+            }
+        )
+    return out
 
 
 def beam_crack_terms(sec, g: Geometry, cage: Cage, n: float, mv: float, e_eff: float, conc, limits) -> dict:
