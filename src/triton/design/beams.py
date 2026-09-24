@@ -46,6 +46,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..axes import sag_factor
 from ..elements import CombinationType, ElementType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
@@ -755,31 +756,38 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
     for phi in [d for d in r.bar_diameters if d >= MIN_BAR]:
         s = r.max_spacing
         while s >= max(100.0, phi + r.min_clear_spacing) - 1e-9:
-            options.append((1000 * math.pi * phi * phi / 4 / s, phi, s))
+            # One layer, or two (the second under the first, a clear gap of max(25 mm, Ø) between).
+            for layers in range(1, r.max_layers + 1):
+                options.append((layers * 1000 * math.pi * phi * phi / 4 / s, phi, s, layers))
             s -= r.spacing_step
-    options.sort()
+    # Least steel first; a second layer is placed only where one layer is not enough.
+    options.sort(key=lambda o: (o[0] * (1 + 0.25 * (o[3] - 1)), o[3]))
 
-    def d_of(phi):
-        return h - (g.cover + g.link + long_phi + phi / 2)
+    def pitch(phi):
+        return phi + max(25.0, phi)
+
+    def d_of(phi, layers=1):
+        return h - (g.cover + g.link + long_phi + phi / 2) - (layers - 1) * pitch(phi) / 2
 
     def section(top, bot):
         bars = []
-        for (_, phi, s), up in ((top, 1), (bot, -1)):
+        for (_, phi, s, layers), up in ((top, 1), (bot, -1)):
             n = max(2, round(1000 / s))
-            v = up * (h / 2 - (g.cover + g.link + long_phi + phi / 2))
-            bars.append(
-                Bars(
-                    np.linspace(-500 + s / 2, 500 - s / 2, n),
-                    np.full(n, v),
-                    np.full(n, math.pi * phi**2 / 4 * 1000 / s / n),
+            for k in range(layers):
+                v = up * (h / 2 - (g.cover + g.link + long_phi + phi / 2) - k * pitch(phi))
+                bars.append(
+                    Bars(
+                        np.linspace(-500 + s / 2, 500 - s / 2, n),
+                        np.full(n, v),
+                        np.full(n, math.pi * phi**2 / 4 * 1000 / s / n),
+                    )
                 )
-            )
         return RectSection(
             1000.0, h, Bars.join(*bars), cl, sl, strips=120, deduct=settings.partial_factors.deduct_bar_area
         )
 
     as_min = as_min_beam(conc.fctm, fyk, 1000, d_of(16))
-    ti = bi = next(i for i, o in enumerate(options) if o[0] >= as_min)
+    ti = bi = next(i for i, o in enumerate(options) if o[0] >= as_min and o[3] == 1)
     limits = {"top": beam.crack_width_limit, "bottom": beam.crack_width_limit_bottom}
     status = "ok"
     for _ in range(200):
@@ -794,7 +802,7 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
             c = crack_width(
                 sig,
                 h=h,
-                d=d_of(o[1]),
+                d=d_of(o[1], o[3]),
                 x=res["x"],
                 b=1000,
                 area=o[0],
@@ -831,7 +839,8 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
     j = int(np.argmax(u)) if len(u) else None
 
     def lab(o):
-        return {"phi": o[1], "spacing_mm": o[2], "as_mm2_per_m": round(o[0]), "label": f"Ø{o[1]} @ {o[2]:g}"}
+        text = f"Ø{o[1]} @ {o[2]:g}" + (f" in {o[3]} layers" if o[3] > 1 else "")
+        return {"phi": o[1], "spacing_mm": o[2], "layers": o[3], "as_mm2_per_m": round(o[0]), "label": text}
 
     cracks = {f: {**w, "limit": limits[f], "passed": w["wk"] <= limits[f] + 1e-9} for f, w in worst.items()}
     out = {
@@ -840,7 +849,7 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
         "utilisation": round(u_max, 3) if math.isfinite(u_max) else None,
         "cracks": cracks,
         "passed": status == "ok" and u_max <= 1 + 1e-6 and all(c["passed"] for c in cracks.values()),
-        "d_mm": round(d_of(options[min(ti, bi)][1])),
+        "d_mm": round(min(d_of(options[ti][1], options[ti][3]), d_of(options[bi][1], options[bi][3]))),
         "as_min_face": min(options[ti][0], options[bi][0]),
         "kg_per_m": round((options[ti][0] + options[bi][0]) / 1e6 * (g.b / 1000) * STEEL_DENSITY, 1),
     }
@@ -868,11 +877,12 @@ def design_beam(
     elements: dict[str, Any],
     axes: dict[str, str] | None,
     user_cage: BeamCage | None = None,
+    sign: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Choose the beam's longitudinal bars, or check the ones the user set (``user_cage``)."""
     beam = with_project_grades(beam, settings.materials, settings.durability)
     lay = layout(sheets, axes)
-    sag = 1.0 if settings.plate_positive_moment == "sagging" else -1.0
+    sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
     conc = concrete(beam.concrete)
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     b = beam.width if beam.width is not None else round(lay.width * 1000)
@@ -904,7 +914,7 @@ def design_beam(
             if peak is not None
             else "Section forces integrated over the model's width (Design settings)."
         ),
-        "Positive plate moments taken as " + settings.plate_positive_moment + " (Design settings).",
+        sign_note,
     ]
     if supports and cut:
         names = sorted({q.element for q in supports})

@@ -1685,7 +1685,7 @@ function renderReport(d) {
   const axes = d.axes || [];
   document.getElementById("axes-block").hidden = !axes.length;
   document.getElementById("axes").innerHTML = "<tr><th>Element</th><th></th><th>Finding</th></tr>" + axes
-    .map((a) => `<tr><th>${esc(a.element)}</th><td><span class="sev ${a.clear ? "ok" : "warning"}">${a.clear ? "clear" : "unclear"}</span></td><td>${esc(a.text)}</td></tr>`)
+    .map((a) => `<tr><th>${esc(a.element)}</th><td><span class="sev ${a.clear ? "ok" : "warning"}">${a.clear ? "clear" : "unclear"}</span></td><td>${esc(a.text)}${a.sign_text ? `<br>${esc(a.sign_text)}` : ""}</td></tr>`)
     .join("");
   document.getElementById("report").hidden = false;
 }

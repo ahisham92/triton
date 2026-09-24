@@ -294,7 +294,12 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
             ("γM0 / γM1", f"{pf.gamma_m0:g} / {pf.gamma_m1:g}"),
             ("αcc", f"{pf.alpha_cc:g}"),
             ("Concrete area", "net of the bars" if pf.deduct_bar_area else "gross (as AdSec)"),
-            ("Plate moments", f"positive = {s.plate_positive_moment}"),
+            (
+                "Plate moments",
+                "positive read from the results (Auto; see each slab and beam)"
+                if s.plate_positive_moment == "auto"
+                else f"positive = {s.plate_positive_moment}",
+            ),
             ("Shear checked at", f"{s.shear_check_distance} from the support face"),
             (
                 "Beam bending and shear",

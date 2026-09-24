@@ -132,3 +132,59 @@ def test_elements_of_one_type_that_disagree():
         )
     )
     assert [i.code for i in issues] == ["axes_differ"]
+
+
+def loaded_plate(positive="sagging", shear_sign=1.0, name_width=(30.0, 30.0)):
+    """A plate under a downward load, simply supported on its edges: sagging Mx = A sin(px) sin(qy) with
+    Qx = dMx/dx, and div Q = -p < 0. Plaxis may call either face positive and give Q either sign."""
+    a, b = name_width
+    xs, ys = np.meshgrid(np.arange(0, a + 0.01, 0.5), np.arange(0, b + 0.01, 0.5))
+    x, y = xs.ravel(), ys.ravel()
+    p, q = np.pi / a, np.pi / b
+    mx, my = 400 * np.sin(p * x) * np.sin(q * y), 250 * np.sin(p * x) * np.sin(q * y)
+    qx, qy = 400 * p * np.cos(p * x) * np.sin(q * y), 250 * q * np.sin(p * x) * np.cos(q * y)
+    m = 1.0 if positive == "sagging" else -1.0
+    return pd.DataFrame(
+        {
+            "Node": np.arange(len(x)) + 1,
+            "X": x,
+            "Y": y,
+            "Z": 2.7,
+            "N_1": 50 * np.sin(p * x),
+            "N_2": 20 * np.cos(q * y),
+            "Q_12": 0.0,
+            "Q_13": shear_sign * qx,
+            "Q_23": shear_sign * qy,
+            "M_11": m * mx,
+            "M_22": m * my,
+            "M_12": 0.0,
+        }
+    )
+
+
+def test_plate_sign_read_from_equilibrium_whatever_the_shear_sign():
+    for positive in ("sagging", "hogging"):
+        for shear in (1.0, -1.0):
+            found, issues = infer_axes(elements(Deck=loaded_plate(positive, shear)))
+            (d,) = found
+            assert d["positive"] == positive and d["positive_clear"], (positive, shear, d.get("sign_text"))
+            assert f"Positive M11 and M22 are {positive}" in d["sign_text"]
+            assert not [i for i in issues if i.code == "plate_sign_differs"]
+
+
+def test_sag_factor_follows_the_setting_or_the_results():
+    from triton.axes import sag_factor
+
+    assert sag_factor("sagging", {"positive": "hogging"})[0] == 1.0
+    assert sag_factor("hogging", None)[0] == -1.0
+    sag, note = sag_factor("auto", {"positive": "hogging", "sign_text": "Positive M11 and M22 are hogging."})
+    assert sag == -1.0 and "Auto" in note
+    sag, note = sag_factor("auto", None)
+    assert sag == 1.0 and "could not read" in note
+
+
+def test_a_narrow_beam_takes_the_deck_sign():
+    beam = loaded_plate("hogging", 1.0, (30.0, 2.0))  # too narrow to read on its own
+    found, issues = infer_axes(elements(Deck=loaded_plate("hogging"), **{"Front Beam": beam}))
+    b = next(a for a in found if a["element"] == "Front Beam")
+    assert b["positive"] == "hogging" and b["sign_from"] == "Deck" and "as in Deck" in b["sign_text"]

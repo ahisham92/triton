@@ -7,6 +7,7 @@ from collections.abc import Callable, Collection
 from dataclasses import replace
 from typing import Any
 
+from ..axes import infer_axes
 from ..elements import ElementType
 from ..forces import scale_forces
 from ..geometry import section_geometry
@@ -218,7 +219,14 @@ def run_section(
             skipped.append(f"{name}: no usable results in the workbook.")
     beams = []
     geometry = None
-    axes = {a["element"]: a.get("local") for a in (getattr(workbook, "axes", None) or [])}
+    found = getattr(workbook, "axes", None) or []
+    plates = [n for n, e in section.elements.items() if isinstance(e, (BeamInput, SlabInput)) and take(n)]
+    if settings.plate_positive_moment == "auto" and any(
+        a["kind"] == "plate" and a["element"] in plates and "positive" not in a for a in found
+    ):
+        found = infer_axes(workbook.elements())[0]  # read before Triton read the sign
+    axes = {a["element"]: a.get("local") for a in found}
+    signs = {a["element"]: a for a in found if a["kind"] == "plate"}
     for name, element in section.elements.items():
         if not isinstance(element, BeamInput) or not take(name):
             continue
@@ -239,6 +247,7 @@ def run_section(
             section.elements,
             axes.get(name),
             section.beam_cages.get(name),
+            signs.get(name),
         )
         b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
         beams.append(b)
@@ -267,6 +276,7 @@ def run_section(
             axes.get(name),
             pile_sheets,
             section.slab_strips.get(name),
+            signs.get(name),
         )
         d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
         slabs.append(d)

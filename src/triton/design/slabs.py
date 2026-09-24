@@ -51,6 +51,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..axes import sag_factor
 from ..elements import CombinationType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
@@ -1242,6 +1243,7 @@ def design_slab(
     axes: dict[str, str] | None,
     pile_sheets: dict[str, dict[str, SheetData]],
     choices: SlabStrips | None = None,
+    sign: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     slab = with_project_grades(slab, settings.materials, settings.durability)
     choices = choices or SlabStrips()
@@ -1249,7 +1251,7 @@ def design_slab(
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     fyd = fyk / settings.partial_factors.gamma_s
     e_eff = conc.ecm / (1 + settings.cracking.creep_coefficient)
-    sag = 1.0 if settings.plate_positive_moment == "sagging" else -1.0
+    sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
     h = slab.thickness
     size = slab.zone_size
     uls = slab_loads(sheets, axes, sag, qp=False)
@@ -1269,7 +1271,7 @@ def design_slab(
         "Bars along X take Mx = "
         + _map(axes)["Mx"].replace("_", "")
         + (" (from the directions check)." if axes else " (assumed: the directions check had no answer)."),
-        "Positive plate moments taken as " + settings.plate_positive_moment + " (Design settings).",
+        sign_note,
         (
             "Wood–Armer moments from Mx, My and the twisting moment Mxy; "
             if slab.twisting == "wood_armer"

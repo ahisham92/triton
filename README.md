@@ -395,8 +395,12 @@ are closer than that.
   shear, the transverse shear per metre, and the 9.2.2 minimum and spacing rules.
 - **Transverse bars:** top and bottom bars per metre from the transverse moments at each node,
   with their own QP crack widths.
-- Plate moment sign: positive M11/M22 is sagging by default (Design settings). In the sample the
-  deck's M11 peaks negative at every pile head.
+- Plate moment sign: Auto by default (Design settings). Triton reads it from the plate's own
+  equilibrium: on a 1 m grid away from the piles, walls and edges, the shears follow the slope of
+  the moments (Q = s·dM/dx) and the load the deck carries sets the sign of div Q; positive M is
+  hogging when the two share a sign, whatever sign Plaxis gives Q. A beam too narrow to read takes
+  the sign of the deck with the same local axes. The evidence is on the Workbook tab and in each
+  slab and beam's notes. Sagging or Hogging can still be set by hand. The sample reads as hogging.
 - **Bollard (front beam, optional):** the tie bars that take the bollard pull back into the deck,
   as the office drawing SC-502 (150 t, 2Ø32 straight and 3Ø32 at ±45°, 8.11° down, lapped 1600 mm
   with the slab bottom bars). The factored pull square to the quay face against

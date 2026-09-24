@@ -34,6 +34,8 @@ from .issues import Issue, Severity
 CLEAR = 0.3  # the better assignment's rank correlation must reach this
 MARGIN = 0.2  # and beat the other one by this much
 NEIGHBOURS = 16
+GRID = 1.0  # m, cells the plate sign is read on
+SUPPORT_CLEAR = 1.8  # m, cells this close to a pile or wall are left out of it
 WALLS = (ElementType.COMBI_WALL, ElementType.SHEET_PILE_WALL)
 
 
@@ -160,7 +162,11 @@ def _gradients(points: np.ndarray, frame: pd.DataFrame, cols: list[str]) -> dict
 
 
 def plate_axes(
-    name: str, combos: dict[str, SheetData], line: str | None, vertical: bool
+    name: str,
+    combos: dict[str, SheetData],
+    line: str | None,
+    vertical: bool,
+    supports: np.ndarray | None = None,
 ) -> dict[str, Any] | None:
     got = _governing(combos, ("M_11", "M_22"))
     cols = ["M_11", "M_22", "M_12", "Q_13", "Q_23", "N_1", "N_2"]
@@ -175,7 +181,7 @@ def plate_axes(
         plane = [plane[0], "Z"]
     if min(ext[a] for a in plane) < 0.5:
         return None  # results along a line: no plane to fit
-    g = _gradients(f[plane].to_numpy(float), f, ["M_11", "M_22", "M_12", "N_1", "N_2"])
+    g = _gradients(f[plane].to_numpy(float), f, ["M_11", "M_22", "M_12", "N_1", "N_2", "Q_13", "Q_23"])
     q13, q23 = f["Q_13"].to_numpy(float), f["Q_23"].to_numpy(float)
 
     def fit(i: int, j: int) -> float:  # local 1 along plane[i], local 2 along plane[j]
@@ -217,7 +223,7 @@ def plate_axes(
         f"Local 1 is global {word(one)} and local 2 is global {word(two)}: M11 and N1 act along {one}, "
         f"M22 and N2 along {two}. Found because {how}, in {combo}."
     )
-    return {
+    out = {
         "element": name,
         "kind": "plate",
         "combination": combo,
@@ -226,22 +232,164 @@ def plate_axes(
         "swapped_fit": round(other_fit, 2),
         "clear": clear,
         "text": text,
+        "nodes": len(f),
     }
+    if not vertical:
+        out.update(plate_sign(combos, plane, plane.index(one), supports) or {})
+    return out
+
+
+def plate_sign(
+    combos: dict[str, SheetData], plane: list[str], i: int, supports: np.ndarray | None = None
+) -> dict[str, Any] | None:
+    """Whether positive M11/M22 is sagging or hogging, from the plate's own equilibrium.
+
+    Q = s·dM/dx ties the shear to the moment (s is Plaxis's shear sign, unknown here), and the load the
+    plate carries between its supports, mostly gravity, makes div Q = -s·p. So positive M is hogging
+    when the slope and the median div Q share a sign, whatever sign Plaxis gives Q. Nodal shears are
+    noisy, so both are read on a 1 m grid of averages, away from the plate's edges and from anything
+    that holds it up (pile heads, walls: `supports`, plan coordinates), where the reactions come in.
+    Read in each combination; the answer is the one most of them give.
+    """
+    j = 1 - i
+    votes: list[tuple[str, float, float, str]] = []
+    for combo in sorted(combos, key=lambda c: (combination_type(c) is not CombinationType.SLS_QP, c)):
+        f = combos[combo].frame
+        cols = ["M_11", "M_22", "M_12", "Q_13", "Q_23"]
+        if f is None or not {*cols, *plane} <= set(f.columns) or len(f) < 10:
+            continue
+        f = f.drop_duplicates("Node") if "Node" in f.columns else f
+        u, v = f[plane[i]].to_numpy(float), f[plane[j]].to_numpy(float)
+        far = np.ones(len(f), bool)
+        if supports is not None and len(supports):
+            su, sv = supports[:, "XYZ".index(plane[i])], supports[:, "XYZ".index(plane[j])]
+            for s0 in range(0, len(su), 200):
+                du = u[:, None] - su[None, s0 : s0 + 200]
+                dv = v[:, None] - sv[None, s0 : s0 + 200]
+                far &= (np.hypot(du, dv) > SUPPORT_CLEAR).all(1)
+        cell = pd.DataFrame(
+            {"i": np.floor(u / GRID).astype(int), "j": np.floor(v / GRID).astype(int), "far": far}
+        )
+        cell[cols] = f[cols].to_numpy(float)
+        g = cell.groupby(["i", "j"])
+        avg, ok = g[cols].mean(), g["far"].all()
+        ii = np.arange(avg.index.get_level_values(0).min(), avg.index.get_level_values(0).max() + 1)
+        jj = np.arange(avg.index.get_level_values(1).min(), avg.index.get_level_values(1).max() + 1)
+        grid = {c: avg[c].unstack().reindex(index=ii, columns=jj).to_numpy(float) for c in cols}
+        m = ok.unstack().reindex(index=ii, columns=jj).fillna(False).to_numpy(bool).copy()
+        if m.shape[0] < 6 or m.shape[1] < 6:
+            continue
+        m[[0, 1, -2, -1], :] = False
+        m[:, [0, 1, -2, -1]] = False
+
+        def d1(x: np.ndarray, axis: int) -> np.ndarray:
+            return (np.roll(x, -1, axis) - np.roll(x, 1, axis)) / (2 * GRID)
+
+        lhs1 = d1(grid["M_11"], 0) + d1(grid["M_12"], 1)
+        lhs2 = d1(grid["M_22"], 1) + d1(grid["M_12"], 0)
+        div = d1(grid["Q_13"], 0) + d1(grid["Q_23"], 1)
+        k = m & np.isfinite(lhs1) & np.isfinite(lhs2) & np.isfinite(div)
+        if k.sum() < 20:
+            continue
+        a, b = _corr(grid["Q_13"][k], lhs1[k]), _corr(grid["Q_23"][k], lhs2[k])
+        med = float(np.median(div[k]))
+        if not (np.isfinite(a) and np.isfinite(b)) or np.sign(a) != np.sign(b) or abs(a + b) / 2 < 0.5:
+            continue
+        if abs(med) < 1.0 or np.mean(np.sign(div[k]) == np.sign(med)) < 0.6:
+            continue  # no clear load between the supports
+        votes.append(("hogging" if np.sign(a) * np.sign(med) > 0 else "sagging", (a + b) / 2, med, combo))
+    if not votes:
+        return None
+    hog = sum(v[0] == "hogging" for v in votes)
+    sign = "hogging" if hog * 2 > len(votes) else "sagging"
+    agree = max(hog, len(votes) - hog)
+    ex = next(v for v in votes if v[0] == sign)
+    text = (
+        f"Positive M11 and M22 are {sign}: away from the supports the shears follow the moment slopes with "
+        f"a {'positive' if ex[1] > 0 else 'negative'} sign (r {abs(ex[1]):.2f}) and the load between the "
+        f"supports gives a median div Q of {ex[2]:+.1f} kN/m² in {ex[3]}; {agree} of {len(votes)} "
+        "combinations read agree."
+    )
+    return {"positive": sign, "positive_clear": agree == len(votes), "sign_text": text}
+
+
+def _supports(elements: dict[str, dict[str, SheetData]], specs: dict[str, Any], name: str) -> np.ndarray:
+    """Nodes (X, Y, Z) of everything that could hold a horizontal plate up: piles, walls, other plates' edges
+    are not included (beams sharing the deck's edge carry it, but so does the deck them)."""
+    pts = []
+    for other, combos in elements.items():
+        spec = specs.get(other)
+        if other == name or spec is None or not (spec.kind is ResultKind.BEAM or spec.type in WALLS):
+            continue
+        f = next((s.frame for s in combos.values() if s.frame is not None), None)
+        if f is not None and {"X", "Y", "Z"} <= set(f.columns):
+            pts.append(f[["X", "Y", "Z"]].drop_duplicates().to_numpy(float))
+    return np.concatenate(pts) if pts else np.empty((0, 3))
+
+
+def _share_sign(found: list[dict[str, Any]], issues: list[Issue]) -> None:
+    """Plates of one model share Plaxis's sign convention: a plate whose own results cannot tell (a narrow
+    beam, a deck without clear load) takes the sign of the largest plate with the same local axes that can."""
+    told = [a for a in found if a["kind"] == "plate" and a.get("positive") and a.get("positive_clear")]
+    for a in found:
+        if a["kind"] != "plate" or a.get("positive_clear") or a["type"] in {t.value for t in WALLS}:
+            continue
+        same = [t for t in told if t["local"] == a["local"]]
+        if not same:
+            continue
+        src = max(same, key=lambda t: t.get("nodes", 0))
+        own = a.get("positive")
+        a["positive"], a["positive_clear"] = src["positive"], True
+        a["sign_text"] = (
+            f"Positive M11 and M22 are {src['positive']}, as in {src['element']}, which has the same "
+            "local axes and shows it clearly."
+        )
+        a["sign_from"] = src["element"]
+        if own and own != src["positive"]:
+            a["sign_text"] += f" Its own results lean {own}, but not clearly."
+    signs = {a["positive"] for a in told}
+    if len(signs) > 1:
+        desc = "; ".join(f"{a['element']}: {a['positive']}" for a in told)
+        issues.append(
+            Issue(
+                Severity.WARNING,
+                "plate_sign_differs",
+                f"The plates do not agree on what positive M11 and M22 mean ({desc}). Check their local "
+                "axes in the Plaxis model, and set 'Positive plate moments' in Design settings yourself.",
+            )
+        )
+
+
+def sag_factor(setting: str, found: dict[str, Any] | None) -> tuple[float, str]:
+    """+1 when positive plate moments are sagging, -1 when hogging, and the note that says why."""
+    if setting != "auto":
+        sag = 1.0 if setting == "sagging" else -1.0
+        return sag, f"Positive plate moments taken as {setting} (Design settings)."
+    if found and found.get("positive"):
+        sag = 1.0 if found["positive"] == "sagging" else -1.0
+        return sag, f"{found.get('sign_text', '')} (Design settings: Auto.)"
+    return 1.0, (
+        "Positive plate moments taken as sagging: Auto could not read the sign from the results. Check a "
+        "moment you know (hogging over a pile head) and set 'Positive plate moments' in Design settings."
+    )
 
 
 def infer_axes(elements: dict[str, dict[str, SheetData]]) -> tuple[list[dict[str, Any]], list[Issue]]:
     """Axis findings per element, and warnings where they are unclear or disagree."""
     line = quay_line(elements)
     found, issues = [], []
+    specs = {n: next((s.parsed.spec for s in c.values() if s.parsed), None) for n, c in elements.items()}
     for name, combos in elements.items():
-        spec = next((s.parsed.spec for s in combos.values() if s.parsed), None)
+        spec = specs[name]
         if spec is None:
             continue
         try:
             if spec.kind is ResultKind.BEAM:
                 a = beam_axes(name, combos, line)
             else:
-                a = plate_axes(name, combos, line, vertical=spec.type in WALLS)
+                vertical = spec.type in WALLS
+                held = None if vertical else _supports(elements, specs, name)
+                a = plate_axes(name, combos, line, vertical=vertical, supports=held)
         except (ValueError, np.linalg.LinAlgError):
             a = None
         if a is None:
@@ -258,6 +406,7 @@ def infer_axes(elements: dict[str, dict[str, SheetData]]) -> tuple[list[dict[str
                     element=name,
                 )
             )
+    _share_sign(found, issues)
     # Elements of one type should agree (all piles bending mainly about the same local axis, all decks alike).
     by_type: dict[str, dict[str, list[str]]] = {}
     for a in found:

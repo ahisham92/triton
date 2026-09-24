@@ -353,11 +353,13 @@ class DesignSettings(_Model):
     reinforcement: ReinforcementSettings = Field(default_factory=ReinforcementSettings, title="Reinforcement")
     piles: PileReinforcement = Field(default_factory=PileReinforcement, title="Pile reinforcement")
     cracking: Cracking = Field(default_factory=Cracking, title="Cracking and restraint")
-    plate_positive_moment: Literal["sagging", "hogging"] = Field(
-        "sagging",
+    plate_positive_moment: Literal["auto", "sagging", "hogging"] = Field(
+        "auto",
         title="Positive plate moments (M11, M22) in the workbook",
-        description="Sagging: positive M puts the bottom face of slabs and beams in tension. In the sample "
-        "the deck's M11 peaks negative at every pile head, so positive is sagging there.",
+        description="Auto reads it from each workbook: away from the piles and walls the shears follow the "
+        "slope of the moments, and the load the deck carries between them sets which way, whatever sign "
+        "Plaxis gives the shears (Workbook tab, directions check). Sagging: positive M puts the bottom face "
+        "of slabs and beams in tension; hogging: the top face. The sample model reads as hogging.",
     )
     beam_actions: Literal["peak_width", "integrated"] = Field(
         "peak_width",
