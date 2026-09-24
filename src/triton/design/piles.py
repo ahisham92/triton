@@ -508,6 +508,7 @@ def design_pile(
             "toe_level_m": round(float(loads["Z"].min()), 2),
             "head_level_set": pile.head_level is not None,
             "soffit_m": pile.head_level,
+            "results_to_m": None if pile.head_level is None else round(pile.head_level + above, 3),
         }
     if pile.casing is not None:
         geom |= {

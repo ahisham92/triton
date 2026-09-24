@@ -3840,13 +3840,15 @@ function levelSketch(p) {
   const z = (v) => Math.round(v * 100) / 100;
   const marks = [];
   const add = (v, text) => v != null && marks.push({ v: z(v), text });
+  if (s.results_to_m != null && s.results_to_m > s.soffit_m + 1e-6)
+    add(s.results_to_m, `Results used up to (soffit + ${fmt((s.results_to_m - s.soffit_m) * 100)} cm)`);
   if (s.head_level_m != null && s.soffit_m != null && s.head_level_m > s.soffit_m + 1e-6)
-    add(s.head_level_m, `Design top (soffit + ${fmt((s.head_level_m - s.soffit_m) * 100)} cm)`);
+    add(s.head_level_m, "Design top (highest result used)");
   add(s.soffit_m, "Slab soffit = pile top");
   if (s.casing_m) {
     add(s.casing_m[1], "Casing top");
     add(s.casing_m[0], "Casing bottom");
-    if (s.no_crack_m && s.no_crack_m[1] > s.casing_m[1] + 1e-6) add(s.no_crack_m[1], "No crack check up to");
+    if (s.no_crack_m && s.no_crack_m[1] > s.casing_m[1] + 1e-6) add(s.no_crack_m[1], "no crack check to here");
   }
   const g = p.cracks?.governing;
   if (g) add(g.z, `Worst QP crack (${fmt(p.cracks.wk_mm, 2)} mm)`);
@@ -3855,14 +3857,15 @@ function levelSketch(p) {
   const top = 30, gap = 38, h = top + gap * (rows.length - 1) + 40;
   const y = (v) => top + gap * levels.indexOf(z(v));
   const soffitY = s.soffit_m != null ? y(s.soffit_m) : top;
-  const pileY = levels.includes(z(s.head_level_m ?? NaN)) ? y(s.head_level_m) : soffitY;
+  const pileTop = [s.results_to_m, s.head_level_m].find((v) => v != null && levels.includes(z(v)));
+  const pileY = pileTop != null ? y(pileTop) : soffitY;
   const band = s.no_crack_m || s.casing_m;
   const cas = s.casing_m ? `<rect x="58" y="${y(s.casing_m[1])}" width="4" height="${y(s.casing_m[0]) - y(s.casing_m[1])}" fill="var(--accent)"/><rect x="118" y="${y(s.casing_m[1])}" width="4" height="${y(s.casing_m[0]) - y(s.casing_m[1])}" fill="var(--accent)"/>` : "";
   const nc = band ? `<rect x="62" y="${y(band[1])}" width="56" height="${y(band[0]) - y(band[1])}" fill="var(--accent-bg)"/>` : "";
   const lines = rows.map((r) => `<line x1="40" x2="150" y1="${y(r.v)}" y2="${y(r.v)}" stroke="var(--muted)" stroke-dasharray="3 3"/>
     <text x="158" y="${y(r.v) + 4}" font-size="12" fill="var(--text)">${fmt(r.v, 2)} m  ${esc(r.text)}</text>`).join("");
   return `<h3>Levels at the pile head</h3>
-    <svg class="level-sketch" viewBox="0 0 560 ${h}" width="100%" style="max-width:560px" role="img" aria-label="Pile head levels">
+    <svg class="level-sketch" viewBox="0 0 680 ${h}" width="100%" style="max-width:680px" role="img" aria-label="Pile head levels">
       <rect x="20" y="4" width="140" height="${soffitY - 4}" fill="var(--miss-bg)" stroke="var(--line)"/>
       <text x="26" y="18" font-size="11" fill="var(--muted)">slab</text>
       <rect x="62" y="${pileY}" width="56" height="${h - pileY}" fill="var(--panel)" stroke="var(--muted)"/>
