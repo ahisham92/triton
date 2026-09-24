@@ -1242,10 +1242,14 @@ def _drawings(
     picked = ",".join([e for e in element or [] if e] + ([elements] if elements else []))
     _, results, suffix = _picked(section, results, picked)
     data = drawings.drawings(project.info.name, results, project.drawings, section.name, None)
+    extra = furniture_report.bollard_views(results)
     furn = _furniture_saved(project_id, section_id) if not suffix else None
     if furn and furn.get("use", True):
-        data["views"] += furniture_report.views(furn)
-        data["layers"] = {**furniture_report.LAYERS, **data["layers"]}
+        extra += furniture_report.views(furn)
+    if extra:
+        data["views"] += extra
+        keys = {it["layer"] for v in data["views"] for it in v["items"]}
+        data["layers"] = {**furniture_report.LAYERS, **drawings.layer_names(project.drawings, keys)}
     if not data["views"]:
         raise HTTPException(
             404,

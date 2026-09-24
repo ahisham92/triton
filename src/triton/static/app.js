@@ -4216,7 +4216,18 @@ function beamCard(b) {
       ${Object.entries(tr.cracks || {}).map(([f, x]) => `QP crack at the ${f}: ${fmt(x.wk, 3)} mm of ${fmt(x.limit, 2)}.`).join(" ")}</p>` : ""}
     ${b.bollard ? `<h3 style="margin-top:18px">Bollard tie bars ${ok(b.bollard.passed)}</h3>
     <p>${fmt(b.bollard.capacity_t)} t bollard: F<sub>Ed</sub> = ${fmt(b.bollard.F_Ed_kN)} kN against ${fmt(b.bollard.R_kN)} kN from ${esc(b.bollard.ties.map((t) => `${t.bars} at ${fmt(t.angle_deg)}°`).join(", "))} (utilisation ${fmt(b.bollard.tie_utilisation, 2)}). Laps with the slab bottom bars: ${fmt(Math.max(...b.bollard.laps.map((x) => x.l0_mm)))} mm needed, ${fmt(b.bollard.lap_length_mm)} mm given.</p>
-    <p class="status">${esc(b.bollard.method)}</p>` : ""}
+    <p class="status">${esc(b.bollard.method)}</p>
+    ${b.bollard.beam_bars ? `<h4>Extra bars in the beam for the bollard</h4>
+      <div class="scroll"><table class="cost"><tr><th>For</th><th>Needs</th><th>Bars</th></tr>
+      ${b.bollard.beam_bars.rows.map((x) => `<tr><td>${esc(x.what)}</td><td>${esc(x.need)}</td><td>${esc(x.bars)}</td></tr>`).join("")}
+      <tr><td><strong>Top, in all</strong></td><td>${fmt(b.bollard.beam_bars.top_total_mm2)} mm²</td><td><strong>${esc(b.bollard.beam_bars.top_bars)}</strong></td></tr></table></div>
+      <p class="status">T = ${fmt(b.bollard.beam_bars.T_kNm)} kNm, ${fmt(b.bollard.beam_bars.T_Ed_kNm)} kNm each side; struts T<sub>Rd,max</sub> ${fmt(b.bollard.beam_bars.T_Rd_max_kNm)} kNm. ${esc(b.bollard.beam_bars.note)}</p>` : ""}
+    ${b.bollard.thickening ? `<h4>Thickened slab to slab ${ok(b.bollard.thickening.passed)}</h4>
+      <p>${fmt(b.bollard.thickening.thickening_mm)} mm at the bollard to ${fmt(b.bollard.thickening.slab_mm)} mm, ${fmt(b.bollard.thickening.width_m)} m wide:
+      N = ${fmt(b.bollard.thickening.N_kN)} kN at e = ${fmt(b.bollard.thickening.e_mm)} mm below mid-depth.
+      Bottom needs ${fmt(b.bollard.thickening.bottom.need_mm2)} mm², the ties give ${fmt(b.bollard.thickening.bottom.ties_mm2)} mm² (utilisation ${fmt(b.bollard.thickening.bottom.utilisation, 2)});
+      top needs ${fmt(b.bollard.thickening.top.need_mm2)} mm² of ${fmt(b.bollard.thickening.top.mesh_mm2)} mm² mesh.
+      Shear V = ${fmt(b.bollard.thickening.V_kN)} kN: ${esc(b.bollard.thickening.links_note)}. The thickening's bottom bars run ${fmt(b.bollard.thickening.lap_past_step_mm)} mm past the step.</p>` : ""}` : ""}
     ${b.truss?.cases ? `<h3 style="margin-top:18px">Truss between king piles ${ok(b.truss.passed)}</h3>
     <p>King piles ${fmt(b.truss.spacing_m, 2)} m apart${b.truss.spacing_from === "input" ? "" : " (from the workbook)"}, lever arm ${fmt(b.truss.lever_arm_mm)} mm, θ = ${fmt(b.truss.theta_deg, 1)}°: T = ${fmt(b.truss.tie_factor, 3)} P on ${fmt(b.truss.As_provided_mm2)} mm² of bottom bars at ${fmt(b.truss.working_stress_MPa)} MPa.</p>
     <div class="scroll"><table><tr><th>Case</th><th>Slab mm</th><th>P kN</th><th>T kN</th><th>A<sub>s,req</sub> mm²</th><th>Ratio</th></tr>

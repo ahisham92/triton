@@ -365,3 +365,59 @@ def views(res: dict[str, Any]) -> list[dict[str, Any]]:
         v.text((min(xs) - 300, max(ys) + a["edges_mm"]["+v"] + 100), i["title"])
         out.append(v.as_dict())
     return out
+
+
+def bollard_views(results: dict[str, Any]) -> list[dict[str, Any]]:
+    """A section square to the quay through each beam's bollard (1:50, mm): the beam with its extra
+    top bars, the thickened slab, the step to the slab, and the tie bars down to the slab's bottom
+    layer and past the step."""
+    import math as _m
+
+    from .drawings import View, bar_key
+
+    out = []
+    for b in results.get("beams") or []:
+        bo = b.get("bollard") or {}
+        th = bo.get("thickening")
+        bb = bo.get("beam_bars")
+        if not (th or bb):
+            continue
+        g = b.get("geometry") or {}
+        width = float(g.get("b_mm") or b.get("width_mm") or 2000.0)
+        depth = float(g.get("h_mm") or b.get("depth_mm") or 1600.0)
+        v = View(f"{b['element']} bollard", f"{b['element']}: section at the bollard", 50, b["element"])
+        v.rect("concrete", (0, 0), (width, -depth))
+        x = width
+        tie_d = 32
+        if th:
+            thick, slab, lt = th["thickening_mm"], th["slab_mm"], th["length_m"] * 1000
+            v.rect("concrete", (x, 0), (x + lt, -thick))
+            v.rect("concrete", (x + lt, 0), (x + lt + 3000, -slab))
+            v.text((x + lt + 100, -slab - 400), f"Step {thick:g} to {slab:g} mm: N {th['N_kN']:g} kN")
+            v.text((x + lt + 100, -slab - 700), f"Bottom bars {th['lap_past_step_mm']} mm past the step")
+            level = -slab + 60
+            end = x + lt + th["lap_past_step_mm"] + 1600
+        else:
+            level = -depth + 60
+            end = x + 2000
+        top = -60.0
+        drop = abs(level - top)
+        run = drop / max(_m.tan(_m.radians(8.11)), 1e-6)
+        start = width / 2
+        v.line(bar_key(tie_d), (start, top), (min(start + run, end), level))
+        if start + run < end:
+            v.line(bar_key(tie_d), (start + run, level), (end, level))
+        v.text((start, 250), f"Bollard ties to the slab's bottom layer ({len(bo.get('ties') or [])} groups)")
+        if bb:
+            n = int(bb["top_bars"].split("Ø")[0])
+            d = float(bb["top_bars"].split("Ø")[1])
+            pitch = (width - 300) / max(n - 1, 1)
+            for i in range(n):
+                v.bar(d, (150 + i * pitch, -130))
+            v.text(
+                (0, -depth - 400),
+                f"Extra for the bollard: {bb['top_bars']} top, torsion "
+                f"{bb['rows'][1]['bars']}, links {bb['rows'][0]['bars']}",
+            )
+        out.append(v.as_dict())
+    return out

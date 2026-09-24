@@ -52,5 +52,6 @@ select = ["E", "F", "I", "B", "UP"]
 "src/triton/furniture_report.py" = ["E501"]
 "src/triton/design/furniture.py" = ["E501"]
 "src/triton/design/anchors.py" = ["E501"]
+"src/triton/design/bollard.py" = ["E501"]
 # The slab design's helpers are closures over one layer, called within that layer's loop.
 "src/triton/design/slabs.py" = ["B023"]

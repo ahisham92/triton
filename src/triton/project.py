@@ -1256,6 +1256,34 @@ class Bollard(_Model):
     lap_length: float = _mm(
         "Lap with the slab bottom bars", 1600.0, gt=0, description="SC-502: at least 1600 mm."
     )
+    line_height: float = _m("Line pull height above the cope", 0.35, gt=0)
+    max_line_angle: float = Field(
+        60.0,
+        title="Line angle above horizontal up to",
+        ge=0,
+        le=90,
+        description="For the uplift on the beam.",
+        json_schema_extra={"unit": "°"},
+    )
+    span: float | None = _m(
+        "Beam span either side (king pile spacing)",
+        None,
+        gt=0,
+        description="Empty: the truss check's king pile spacing, else 3.2 m.",
+    )
+    extra_bar: int = Field(25, title="Extra longitudinal bar", json_schema_extra={"unit": "mm"})
+    extra_link: int = Field(16, title="Extra link bar", json_schema_extra={"unit": "mm"})
+    slab_thickness: float = _mm("Slab thickness beyond the thickening", 700.0, gt=0)
+    thickening: float | None = _mm(
+        "Slab thickness at the bollard",
+        1400.0,
+        gt=0,
+        description="The slab thickened behind the beam at the bollard (the office's 1.4 m). Empty: none.",
+    )
+    thickening_length: float = _m("Thickening length back from the beam", 3.0, gt=0)
+    thickening_width: float = _m("Thickening width along the quay", 4.0, gt=0)
+    slab_bar: int = Field(20, title="Slab mesh bar at the step", json_schema_extra={"unit": "mm"})
+    slab_spacing: float = _mm("Slab mesh spacing at the step", 150.0, gt=0)
 
 
 class BeamRoom(_Model):
