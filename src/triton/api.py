@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import re
 import secrets
 import shutil
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -223,9 +225,9 @@ def _suffix(filename: str) -> str:
     return suffix
 
 
-def _import_path(path: Path) -> ImportResult:
+def _import_path(path: Path, progress: Callable[[float, str], None] | None = None) -> ImportResult:
     try:
-        return import_workbook(path)
+        return import_workbook(path, progress)
     except UnsupportedWorkbook as e:
         raise HTTPException(400, str(e)) from e
     except Exception as e:  # corrupt or password-protected files
@@ -239,6 +241,63 @@ def _import_upload(file: UploadFile) -> ImportResult:
         with path.open("wb") as out:
             shutil.copyfileobj(file.file, out, length=1024 * 1024)
         return _import_path(path)
+
+
+# --- Progress of long steps -------------------------------------------------------------------
+# Reading a whole project's workbook or designing a section takes a while. The step writes how far
+# it has got to a small file; the page asks for it (from another worker) to show a percentage and
+# the time left.
+
+PROGRESS_KEY = re.compile(r"[0-9a-zA-Z_-]{1,80}")
+
+
+def _progress_path(key: str) -> Path:
+    if not PROGRESS_KEY.fullmatch(key):
+        raise HTTPException(404, "No such step.")
+    root = Path(os.environ.get("TRITON_DATA_DIR", "data")) / "progress"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{key}.json"
+
+
+class _Progress:
+    def __init__(self, key: str) -> None:
+        self.path, self.started, self.written = _progress_path(key), time.time(), 0.0
+        self(0.0, "Starting")
+
+    def __call__(self, fraction: float, step: str) -> None:
+        now = time.time()
+        if now - self.written < 0.5 and 0 < fraction < 1:
+            return
+        self.written = now
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps({"fraction": round(fraction, 4), "step": step, "started": self.started}), "utf-8"
+        )
+        tmp.replace(self.path)
+
+    def __enter__(self) -> _Progress:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.path.unlink(missing_ok=True)
+
+
+@app.get("/api/progress/{key}")
+def progress(key: str) -> dict:
+    path = _progress_path(key)
+    try:
+        state = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError) as e:
+        raise HTTPException(404, "Not running.") from e
+    elapsed = time.time() - state["started"]
+    fraction = state["fraction"]
+    remaining = elapsed * (1 - fraction) / fraction if fraction >= 0.03 and elapsed >= 2 else None
+    return {
+        "fraction": fraction,
+        "step": state["step"],
+        "elapsed_s": round(elapsed),
+        "remaining_s": None if remaining is None else round(remaining),
+    }
 
 
 # --- Uploads in pieces --------------------------------------------------------------------
@@ -303,10 +362,17 @@ async def upload_piece(upload_id: str, request: Request, offset: int = 0) -> dic
     return {"id": upload_id, "received": received}
 
 
-def _take_upload(upload_id: str) -> tuple[str, ImportResult]:
+def _take_upload(upload_id: str, keep: Callable[[str, ImportResult], dict] | None = None) -> dict:
+    """Read the joined upload (progress under its id), hand it to ``keep``, then delete it."""
     d = _upload_dir(upload_id)
     try:
-        return (d / "name").read_text("utf-8"), _import_path(_upload_file(d))
+        with _Progress(upload_id) as tell:
+            filename = (d / "name").read_text("utf-8")
+            result = _import_path(_upload_file(d), tell)
+            if keep is None:
+                return {"file": filename, **result.summary()}
+            tell(0.95, "Saving")
+            return keep(filename, result)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -318,8 +384,7 @@ def check_workbook(file: UploadFile) -> dict:
 
 @app.post("/api/workbooks/check/{upload_id}")
 def check_uploaded_workbook(upload_id: str) -> dict:
-    filename, result = _take_upload(upload_id)
-    return {"file": filename, **result.summary()}
+    return _take_upload(upload_id)
 
 
 SECTION = "/api/projects/{project_id}/sections/{section_id}"
@@ -335,8 +400,9 @@ def upload_section_workbook(project_id: str, section_id: str, file: UploadFile) 
 @app.post(SECTION + "/workbook/{upload_id}")
 def keep_uploaded_workbook(project_id: str, section_id: str, upload_id: str) -> dict:
     _section(_get(project_id), section_id)
-    filename, result = _take_upload(upload_id)
-    return store().save_workbook(project_id, section_id, filename, result)
+    return _take_upload(
+        upload_id, lambda filename, result: store().save_workbook(project_id, section_id, filename, result)
+    )
 
 
 def _workbook(project_id: str, section: Section) -> ImportResult | None:
@@ -371,8 +437,10 @@ def design_section(project_id: str, section_id: str) -> dict:
     workbook = _workbook(project_id, section)
     if workbook is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
-    results = run_section(project.design, section, workbook)
-    store().save_results(project_id, section_id, results)
+    with _Progress(f"design-{project_id}-{section_id}") as tell:
+        results = run_section(project.design, section, workbook, tell)
+        tell(0.97, "Saving")
+        store().save_results(project_id, section_id, results)
     return results
 
 

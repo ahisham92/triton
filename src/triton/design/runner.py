@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
@@ -86,8 +87,21 @@ def combi_bands(wall: dict[str, Any], positions: list[list[float]]) -> list[list
     return [[x, y, z, round(u, 3)] for (x, y, z), u in out.items()]
 
 
-def run_section(settings: DesignSettings, section: Section, workbook: ImportResult) -> dict[str, Any]:
-    """Design the piles, combi walls and beams of one section; pick the sheet pile wall's governing sets."""
+def run_section(
+    settings: DesignSettings,
+    section: Section,
+    workbook: ImportResult,
+    progress: Callable[[float, str], None] | None = None,
+) -> dict[str, Any]:
+    """Design the piles, combi walls and beams of one section; pick the sheet pile wall's governing sets.
+    ``progress(fraction, step)`` is told as each element is started."""
+    started: list[str] = []
+
+    def tick(name: str) -> None:
+        if progress:
+            progress(len(started) / max(len(section.elements), 1), f"Designing {name}")
+        started.append(name)
+
     raw = workbook.elements()
     sheets = factored_elements(section, workbook)
     known = {s.name for s in workbook.sheets}
@@ -104,6 +118,7 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
         top = element.top_level_to_ignore if isinstance(element, CombiWallInput) else element.head_level
         if top is not None:
             top += settings.results_into_connection / 1e3
+        tick(name)
         own, peaks = treat_peaks(name, sheets[name], section.peaks, section.peak_ratio, excluded, top)
         notes = [_multiplier_note(section, own), _zone_note(section), _peak_note(section, peaks)]
         notes = [n for n in notes if n]
@@ -164,6 +179,7 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
         if geometry is None:
             geometry = section_geometry(workbook)
         own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
+        tick(name)
         b = design_beam(name, element, settings, own, geometry, section.elements, axes.get(name))
         b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
         beams.append(b)
@@ -181,6 +197,7 @@ def run_section(settings: DesignSettings, section: Section, workbook: ImportResu
         if geometry is None:
             geometry = section_geometry(workbook)
         own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
+        tick(name)
         d = design_slab(name, element, settings, own, geometry, section.elements, axes.get(name), pile_sheets)
         d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
         slabs.append(d)

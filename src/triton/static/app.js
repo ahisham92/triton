@@ -558,6 +558,33 @@ function checkerHtml() {
     </div>`;
 }
 
+// Long steps (reading a workbook, designing a section) report how far they have got; the page asks
+// every second and a half and shows the step, a percentage and the time left.
+function leftText(s) {
+  if (s == null) return "";
+  if (s < 60) return `, about ${Math.max(5, Math.ceil(s / 5) * 5)} s left`;
+  return `, about ${Math.ceil(s / 60)} min left`;
+}
+
+function watchProgress(key, show) {
+  let stopped = false;
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const p = await api(`${ROOT}/api/progress/${key}`);
+      if (!stopped) show(`${p.step}: ${Math.round(p.fraction * 100)}%${leftText(p.remaining_s)}`);
+    } catch {
+      /* not started yet, or already finished */
+    }
+    if (!stopped) timer = setTimeout(tick, 1500);
+  };
+  let timer = setTimeout(tick, 1000);
+  return () => {
+    stopped = true;
+    clearTimeout(timer);
+  };
+}
+
 // Workbooks go up in pieces: hosts cap one request (PythonAnywhere at about 100 MB), and a whole
 // project's workbook can be bigger than that. A piece that fails is sent again.
 const PIECE = 8 * 1024 * 1024;
@@ -600,10 +627,17 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
     try {
       const mb = (n) => (n / 1048576).toFixed(0);
       const id = await sendInPieces(f, (at) => {
-        status.textContent = `Uploading ${f.name}: ${mb(at)} of ${mb(f.size)} MB`;
+        const pct = Math.round((100 * at) / Math.max(f.size, 1));
+        status.textContent = `Uploading ${f.name}: ${pct}% (${mb(at)} of ${mb(f.size)} MB)`;
       });
       status.textContent = `Reading ${f.name}…`;
-      const data = await api(`${url}/${id}`, { method: "POST" });
+      const stop = watchProgress(id, (text) => (status.textContent = text));
+      let data;
+      try {
+        data = await api(`${url}/${id}`, { method: "POST" });
+      } finally {
+        stop();
+      }
       renderReport(data);
       onReport?.(data);
       document.getElementById("status").textContent = `Checked ${data.file}`;
@@ -851,10 +885,14 @@ async function renderDesignTab(host) {
     if (state.errors?.length) return;
     const status = document.getElementById("design-status");
     status.textContent = "Designing…";
+    const stop = watchProgress(`design-${state.project.id}-${sec().id}`, (text) => (status.textContent = text));
     try {
-      renderResults(await api(`${url}/design`, { method: "POST" }));
+      const res = await api(`${url}/design`, { method: "POST" });
+      stop();
+      renderResults(res);
       status.textContent = "Done.";
     } catch (e) {
+      stop();
       status.textContent = e.message;
     }
   };

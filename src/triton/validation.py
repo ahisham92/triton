@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
@@ -106,8 +107,14 @@ def _issue_sort_key(i: Issue) -> tuple[int, str, str]:
     return rank, i.sheet or "", i.code
 
 
-def import_workbook(path: str | Path) -> ImportResult:
-    return import_sheets(read_workbook(path))
+def import_workbook(path: str | Path, progress: Callable[[float, str], None] | None = None) -> ImportResult:
+    """``progress(fraction, step)`` is told how far it has got: reading is most of the time, the
+    checks the rest."""
+    if progress is None:
+        return import_sheets(read_workbook(path))
+    raw = read_workbook(path, lambda done, sheet: progress(0.85 * done, f"Reading {sheet}"))
+    progress(0.85, "Checking the sheets")
+    return import_sheets(raw)
 
 
 def import_sheets(raw: dict[str, list[Row]]) -> ImportResult:

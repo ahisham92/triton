@@ -96,3 +96,30 @@ def test_abandoned_uploads_are_cleared(data_dir):
     os.utime(data_dir / "uploads" / stale, (old, old))
     client.post("/api/uploads", json={"filename": "w.xlsx"})
     assert not (data_dir / "uploads" / stale).exists()
+
+
+def test_reading_reports_how_far_it_has_got(tmp_path):
+    from triton.validation import import_workbook
+
+    path = tmp_path / "w.xlsx"
+    path.write_bytes(workbook_bytes())
+    seen = []
+    import_workbook(path, lambda fraction, step: seen.append((fraction, step)))
+    fractions = [f for f, _ in seen]
+    assert fractions == sorted(fractions) and fractions[-1] == 0.85
+    assert seen[0][1].startswith("Reading SPW-") and seen[-1][1] == "Checking the sheets"
+    assert abs(seen[-2][0] - 0.85) < 1e-9  # every sheet read
+
+
+def test_progress_is_served_while_a_step_runs_and_gone_after(monkeypatch):
+    from triton import api
+
+    assert client.get("/api/progress/nothing-here").status_code == 404
+    assert client.get("/api/progress/..%2Fetc").status_code == 404
+    with api._Progress("abc") as tell:
+        monkeypatch.setattr(api.time, "time", lambda real=time.time: real() + 10)
+        tell(0.5, "Reading Pile(1)-QP")
+        state = client.get("/api/progress/abc").json()
+        assert state["fraction"] == 0.5 and state["step"] == "Reading Pile(1)-QP"
+        assert 9 <= state["remaining_s"] <= 11  # as long again as it has taken
+    assert client.get("/api/progress/abc").status_code == 404

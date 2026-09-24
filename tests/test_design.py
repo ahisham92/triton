@@ -287,9 +287,13 @@ def test_structural_casing_is_noted():
 def test_runner_designs_piles_and_skips_missing_ones(workbook):
     section = Section()
     section.add_elements(["Pile(1)", "Pile(2)", "Pile(9)", "Deck"])
-    out = run_section(DesignSettings(), section, import_sheets(workbook))
+    seen = []
+    out = run_section(
+        DesignSettings(), section, import_sheets(workbook), lambda f, step: seen.append((f, step))
+    )
     assert [p["element"] for p in out["piles"]] == ["Pile(1)", "Pile(2)"]
     assert out["skipped"] == ["Pile(9): no usable results in the workbook."]
+    assert seen[:2] == [(0.0, "Designing Pile(1)"), (0.25, "Designing Pile(2)")]
 
 
 # --- API ---------------------------------------------------------------------------------
