@@ -205,7 +205,71 @@ def _beam_views(b: dict[str, Any]) -> list[View]:
         (-W / 2, y - 15 * v.scale),
         f"Along {along} from {_f(b.get('start_m'))} to {_f(b.get('end_m'))} m, top at {_f(b.get('level_m'))}",
     )
-    return [v]
+    return [v] + [_room_view(b, rm) for rm in b.get("rooms") or []]
+
+
+def _room_view(b: dict[str, Any], rm: dict[str, Any]) -> View:
+    """A section through a room cut into the beam: the concrete left, the room and its bars."""
+    W, H, cover = b["width_mm"], b["depth_mm"], b["cover_mm"] or 0
+    u0, u1, v0, v1 = rm["void_mm"]
+    v = View(
+        f"{b['element']} - {rm['name']}", f"{b['element']}: section through {rm['name']}", 20, b["element"]
+    )
+    if v1 >= H / 2 - 1e-6:  # open at the top: the outline goes down round the room
+        pts = [
+            (-W / 2, H / 2),
+            (-W / 2, -H / 2),
+            (W / 2, -H / 2),
+            (W / 2, H / 2),
+            (u1, H / 2),
+            (u1, v0),
+            (u0, v0),
+            (u0, H / 2),
+            (-W / 2, H / 2),
+        ]
+        for a, c in zip(pts[:-1], pts[1:], strict=True):
+            v.line("concrete", a, c)
+    else:
+        v.rect("concrete", (-W / 2, -H / 2), (W / 2, H / 2))
+        v.rect("concrete", (u0, v0), (u1, v1))
+    plus, minus = (u1, W / 2), (-W / 2, u0)
+    walls = {"land": plus, "sea": minus} if rm.get("land_side") == "+" else {"land": minus, "sea": plus}
+    for name, lk in (rm.get("wall_links") or {}).items():
+        phi = lk.get("diameter_mm")
+        if phi and name in walls:
+            e = cover + phi / 2
+            lo, hi = walls[name]
+            v.rect(bar_key(phi), (lo + e, -H / 2 + e), (hi - e, H / 2 - e))
+    for bar in rm["bars"]:
+        v.bar(bar["diameter_mm"], (bar["y_mm"], bar["z_mm"]))
+    y = -H / 2 - 12 * v.scale
+    v.text((-W / 2, H / 2 + 6 * v.scale), f"{b['element']} {rm['name']}  1:{v.scale}", 1.4)
+    v.text((-W / 2, y), f"{_mm(u1 - u0)} x {_mm(v1 - v0)} room from {rm['start_m']:g} to {rm['end_m']:g} m")
+    links = [
+        f"{k} wall Ø{_mm(lk['diameter_mm'])} @ {_mm(lk['spacing_mm'] or 0)}"
+        for k, lk in sorted((rm.get("wall_links") or {}).items())
+        if lk.get("diameter_mm")
+    ]
+    if links:
+        v.text((-W / 2, y - 5 * v.scale), "Closed links: " + ", ".join(links))
+    fl = rm.get("floor_per_metre") or {}
+    wl = rm.get("walls_per_metre") or {}
+    parts = [
+        f"floor {f} Ø{_mm(t['diameter_mm'])} @ {_mm(t['spacing_mm'] or 0)}"
+        for f, t in fl.items()
+        if t.get("diameter_mm")
+    ]
+    if wl.get("diameter_mm"):
+        parts.append(f"walls Ø{_mm(wl['diameter_mm'])} @ {_mm(wl['spacing_mm'] or 0)} each face")
+    if parts:
+        v.text((-W / 2, y - 10 * v.scale), "Across: " + ", ".join(parts))
+    if rm.get("diagonals"):
+        v.text(
+            (-W / 2, y - 15 * v.scale),
+            f"Wall top bars {_mm(rm.get('wall_top_bars_past_ends_mm') or 0)} past "
+            f"each end; {rm['diagonals']}",
+        )
+    return v
 
 
 # --- slabs -------------------------------------------------------------------------------------------

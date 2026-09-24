@@ -398,6 +398,46 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
             ["Load multiplier", "Sheets"],
             [[f"× {f.factor:g}", ", ".join(f.sheets)] for f in factors if getattr(f, "sheets", None)],
         )
+    _joints(r, s, res.get("joints"))
+
+
+def _joints(r: Report, s: DesignSettings, j: dict | None) -> None:
+    """2.6: where the expansion joints are and the segment lengths the restraint checks use."""
+    if not j or not j.get("segments"):
+        return
+    rules = s.joints
+    r.h(2, "2.6 Expansion joints")
+    r.p(
+        f"The berth ({j['berth_length_m']:.1f} m, from {j.get('runs_from', 'the inputs')}) is split by "
+        f"{len(j['joints'])} expansion joints into segments of at most {rules.max_segment:g} m and at least "
+        f"{rules.min_segment:g} m, as nearly equal as possible"
+        + (
+            ", mid-way between two rows of piles"
+            if j.get("position") == "midway"
+            else ", at a doubled row of piles"
+            if j.get("position") == "at_row"
+            else ""
+        )
+        + (
+            f", at least {rules.furniture_clearance:g} m clear of the quay furniture"
+            if rules.furniture_clearance and j.get("furniture")
+            else ""
+        )
+        + (", with a joint at each corner" if rules.at_corners and len(j.get("runs") or []) > 1 else "")
+        + "."
+        + (
+            " Each beam and slab's restraint check takes the longest segment of its part of the berth as the "
+            "length between movement joints."
+            if rules.use_in_restraint
+            else ""
+        )
+    )
+    r.table(
+        ["Segment", "From (m)", "To (m)", "Length (m)"],
+        [[g["name"], f"{g['start']:.1f}", f"{g['end']:.1f}", f"{g['length']:.1f}"] for g in j["segments"]],
+    )
+    for w in j.get("warnings") or []:
+        r.note(w)
 
 
 def _limit(element: Any) -> float | None:
@@ -1336,6 +1376,20 @@ def _beam(r: Report, b: dict) -> None:
     if rows:
         r.h(3, "Crack widths")
         r.table(["Check", "Face", "wk mm", "Limit mm", "σs MPa", "sr,max mm", "Result"], rows)
+    segs = (b.get("restraint") or {}).get("segments") or []
+    if len(segs) > 1:
+        r.p("Restraint crack width for each segment length between expansion joints the beam runs through:")
+        r.table(
+            ["Segment length m", "R", "Top wk mm", "Bottom wk mm", "Side wk mm"],
+            [
+                [
+                    g["length_m"],
+                    g["R"],
+                    *[(g["faces"].get(f) or {}).get("wk") for f in ("top", "bottom", "side")],
+                ]
+                for g in segs
+            ],
+        )
     sh = b.get("shear") or {}
     if sh.get("link"):
         r.h(3, "Links")
@@ -1413,9 +1467,114 @@ def _beam(r: Report, b: dict) -> None:
         r.kv([("Result", _ok(tr.get("passed")))])
     elif tr:
         r.note(tr.get("note", ""))
+    for rm in b.get("rooms") or []:
+        _room(r, rm)
     for n in b.get("notes", []):
         r.note(n)
     _sets(r, b.get("governing_sets"), "Governing sets")
+
+
+WALL = {"sea": "Sea-side wall", "land": "Land-side wall", "floor": "Floor", "roof": "Roof"}
+
+
+def _room(r: Report, rm: dict) -> None:
+    """A room cut into the beam: its section, checks and extra bars."""
+    r.h(3, f"{rm['name']}: room in the beam from {rm['start_m']:g} to {rm['end_m']:g} m")
+    x = rm.get("section")
+    if not x:
+        for n in rm.get("notes", []):
+            r.note(n)
+        r.kv([("Result", _ok(False))])
+        return
+    for w in rm.get("warnings") or []:
+        r.note(w)
+    bars = rm["bars"]
+    fr = rm["frame"]
+    g = rm["bending"].get("governing") or {}
+    r.kv(
+        [
+            (
+                "Room",
+                f"{x['width_mm']} × {x['height_mm']} mm"
+                + (f" under a {x['top_mm']} mm roof" if x["top_mm"] else ", open at the top"),
+            ),
+            ("Concrete below", f"{x['bottom_mm']} mm"),
+            ("Walls", f"{x['wall_sea_mm']} mm sea side, {x['wall_land_mm']} mm land side"),
+            ("Stations over the room", rm.get("stations")),
+            (
+                "N with biaxial bending",
+                f"{rm['bending']['utilisation']} ({g.get('combination')} at {g.get('s')} m: N {g.get('N_kN')} kN, "
+                f"Mv {g.get('Mv_kNm')} kNm of {g.get('MRd_v_kNm')}, Mh {g.get('Mh_kNm')} kNm of {g.get('MRd_h_kNm')})"
+                if g
+                else rm["bending"]["utilisation"],
+            ),
+        ]
+    )
+    r.table(
+        ["Part", "V share", "T share", "V (kN)", "T (kNm)", "Links", "Utilisation"],
+        [
+            [
+                WALL.get(k, k),
+                s.get("V_share"),
+                s.get("T_share"),
+                (s.get("governing") or {}).get("V_kN"),
+                (s.get("governing") or {}).get("T_kNm"),
+                (s.get("link") or {}).get("label") or "not needed",
+                s.get("utilisation"),
+            ]
+            for k, s in rm["shear"].items()
+        ],
+    )
+    r.table(
+        ["Crack (QP)", "wk (mm)", "Limit (mm)", "Result"],
+        [
+            ["Top of the walls" if f == "top" else "Bottom", c["wk"], c["limit"], _ok(c["passed"])]
+            for f, c in rm["cracks"].items()
+        ],
+    )
+    fl, wl = fr["floor"], fr["walls"]
+    r.p(
+        f"Across the room (per metre): M {fr['M_kNm_per_m']['max']} / {fr['M_kNm_per_m']['min']} kNm/m from the "
+        f"plates, plus the floor's span of {fr['floor_load']['span_m']} m under {fr['floor_load']['uls_kPa']} kPa "
+        "(ULS)."
+    )
+    r.table(
+        ["Across, per metre", "Thickness (mm)", "Top / inside", "Bottom / outside", "Utilisation"],
+        [
+            ["Floor", fl["thickness_mm"], fl["top"]["label"], fl["bottom"]["label"], fl["utilisation"]],
+            ["Walls", wl["thickness_mm"], wl["top"]["label"], wl["bottom"]["label"], wl["utilisation"]],
+            [
+                "Floor shear",
+                fl["thickness_mm"],
+                fr["floor_shear"].get("links") or "no links",
+                "",
+                fr["floor_shear"]["utilisation"],
+            ],
+        ],
+    )
+    r.kv(
+        [
+            (
+                "Beam top bars cut",
+                f"{bars['cut_top']['count']}Ø{bars['cut_top']['phi']} ({bars['cut_top']['area_mm2']} mm²)",
+            ),
+            (
+                "Top of each wall",
+                f"{bars['wall_top']['label']}, {rm['corners']['wall_top_bars_past_ends_mm']} mm past each end",
+            ),
+            ("Extra bottom bars", bars["bottom_extra"]["label"]),
+            ("Inside faces of the walls", bars["inner_sides"]["label"]),
+            ("Inside corners", fr["corner_bars"]["label"]),
+            ("Corners of the opening", rm["corners"]["diagonals"]),
+            ("Extra steel over the room", f"{rm['extra_steel_kg']} kg"),
+            ("Utilisation (all checks)", rm.get("utilisation")),
+            ("Result", _ok(rm.get("passed"))),
+        ]
+    )
+    if rm.get("suggestion"):
+        r.note(rm["suggestion"]["text"])
+    for n in rm.get("notes", []):
+        r.note(n)
 
 
 LAYER = {"bottom_x": "bottom X", "bottom_y": "bottom Y", "top_x": "top X", "top_y": "top Y"}

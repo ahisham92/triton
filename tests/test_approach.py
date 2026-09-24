@@ -130,7 +130,7 @@ def test_rear_beam_takes_the_ledge():
     )
     plain = design_beam(*args)
     ledge = design_approach(ApproachSlabInput(), DesignSettings(), el["Rear Beam"])["ledge"]
-    loaded = design_beam(*args, None, None, ledge)
+    loaded = design_beam(*args, ledge=ledge)
     assert loaded["ledge_added"]["spacing_m"] == 6.0
     assert loaded["shear"]["governing"]["T_kNm"] > plain["shear"]["governing"]["T_kNm"] + 100
     assert loaded["shear"]["utilisation"] > plain["shear"]["utilisation"]

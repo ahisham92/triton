@@ -14,7 +14,8 @@ have to repeat any design logic:
 Beams (``beams``): the straight cage between the beam's ends along global X or
 Y, each longitudinal bar at its place in the section (y across from the
 centreline, z up from mid-depth, mm), the links, and the transverse bars of the
-top and bottom faces per metre. ``level_m`` is the plate's level in the model.
+top and bottom faces per metre. ``level_m`` is the plate's level in the model. Rooms cut into the
+beam (``rooms``) give their hole in the section and the bars over their length.
 
 Slabs (``slabs``): per face and direction, the basic mesh and each zone of
 added bars (a plan rectangle), layer by layer with the distance of each layer
@@ -173,6 +174,38 @@ def _beam(b: dict[str, Any]) -> dict[str, Any]:
             }
             for face, t in trans.items()
             if face in ("top", "bottom") and isinstance(t, dict)
+        },
+        "rooms": [_room(rm) for rm in b.get("rooms") or [] if rm.get("section")],
+    }
+
+
+def _room(rm: dict[str, Any]) -> dict[str, Any]:
+    """A room cut into the beam: where it is, the hole in the section (y from, y to, z from, z to, mm)
+    and every longitudinal bar over its length."""
+    walls = {k: (v.get("link") or {}) for k, v in (rm.get("shear") or {}).items() if k in ("sea", "land")}
+    fr = rm.get("frame") or {}
+    return {
+        "name": rm["name"],
+        "start_m": rm["start_m"],
+        "end_m": rm["end_m"],
+        "void_mm": rm["section"]["void_mm"],
+        "land_side": rm["section"]["land_side"],
+        "bars": [{"y_mm": y, "z_mm": z, "diameter_mm": phi} for y, z, phi in rm["bars"]["all"]],
+        "wall_links": {
+            k: {"diameter_mm": v.get("phi"), "spacing_mm": v.get("spacing_mm")} for k, v in walls.items() if v
+        },
+        "wall_top_bars_past_ends_mm": (rm.get("corners") or {}).get("wall_top_bars_past_ends_mm"),
+        "diagonals": (rm.get("corners") or {}).get("diagonals"),
+        "floor_per_metre": {
+            f: {
+                "diameter_mm": (fr.get("floor") or {}).get(f, {}).get("phi"),
+                "spacing_mm": (fr.get("floor") or {}).get(f, {}).get("spacing_mm"),
+            }
+            for f in ("top", "bottom")
+        },
+        "walls_per_metre": {
+            "diameter_mm": (fr.get("walls") or {}).get("top", {}).get("phi"),
+            "spacing_mm": (fr.get("walls") or {}).get("top", {}).get("spacing_mm"),
         },
     }
 

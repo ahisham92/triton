@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from . import alignment, clashes, trials
+from . import alignment, clashes, joints, trials
 from .design import (
     approach,
     beams,
@@ -30,6 +30,7 @@ from .design import (
     pile_shear,
     piles,
     rect,
+    rooms,
     sheet_piles,
     slabs,
     spw_design,
@@ -80,6 +81,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
         ("Crack widths and restraint", crack),
         ("Bollard tie bars (front beam)", bollard),
         ("Truss model (front beam)", truss),
+        ("Rooms cut into the beam", rooms),
     ],
     "Approach slab and ledge": [
         ("Approach slab, ledge and what the rear beam takes", approach),
@@ -89,6 +91,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
 
 GENERAL = [
     ("Corner berths: a quay that turns", alignment),
+    ("Expansion joints along the berth", joints),
     ("Comparisons (trial sizes)", trials),
     ("Over-reinforced sections (slabs and beams)", ductility),
     ("Reinforcement clashes at the pile heads", clashes),
