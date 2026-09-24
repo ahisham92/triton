@@ -641,9 +641,19 @@ def design_pile(
         notes=notes,
         curve=np.round(sec.interaction(), 1).tolist(),
         profile=[{"z": float(r.Z), "util": float(r.util)} for r in profile.itertuples()],
+        # [combination, N, M, utilisation, M signed as its larger component], the last for the
+        # closed N–M diagram, where each point sits on the side of the moment that dominates it.
         points=[
-            [c, round(n, 1), round(m, 1), round(u, 3)]
-            for c, n, m, u in loads[["combination", "N", "M", "util"]].itertuples(index=False)
+            [
+                c,
+                round(n, 1),
+                round(m, 1),
+                round(u, 3),
+                round(math.copysign(m, a3 if abs(a3) >= abs(a2) else a2), 1),
+            ]
+            for c, n, m, u, a2, a3 in loads[["combination", "N", "M", "util", "M_2", "M_3"]].itertuples(
+                index=False
+            )
         ],
         user_set=cage is not None,
     )

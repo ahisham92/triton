@@ -3592,53 +3592,62 @@ function showTip(c, evt, html) {
 }
 
 function nmChart(el, p, whole = false) {
-  // x: M (kNm), y: N (kN, compression up). Capacity curve for persistent factors. The curve runs from
-  // the full tension to the full squash load, tens of MN, while pile loads are a few MN at most, so by
-  // default the view is zoomed round the loads; "Whole capacity curve" shows all of it.
-  const curve = p.curve;
-  const pts = p.points;
-  const loadN = pts.map((q) => q[1]).concat(p.governing?.N_kN ?? []);
-  const curveN = curve.map((q) => q[0]);
-  let nLo = Math.min(...curveN), nHi = Math.max(...curveN);
-  let yDomain = [nLo * 1.05, nHi * 1.05];
-  if (!whole && loadN.length) {
-    const lo = Math.min(...loadN), hi = Math.max(...loadN);
-    const pad = Math.max(0.3 * (hi - lo), 0.04 * (nHi - nLo), 200);
-    nLo = Math.max(lo - pad, nLo);
-    nHi = Math.min(hi + pad, nHi);
-    yDomain = [nLo, nHi];
-  }
-  // The capacity at the edges of the view, so the curve's widest part in view sets the M axis.
-  const inView = curve.filter((q) => q[0] >= yDomain[0] && q[0] <= yDomain[1]).map((q) => q[1]);
+  // The closed N–M interaction diagram: N up (compression +), M across, the capacity curve drawn for
+  // both signs of M. Each result sits at its resultant √(M2² + M3²), on the side of the sign of its
+  // larger component. The curve runs from the full tension to the squash load, tens of MN, while
+  // pile loads are a few MN, so the chart opens zoomed round the loads; the other view shows it all.
+  const half = p.curve;
+  const curve = half.concat(half.slice().reverse().map(([n, m]) => [n, -m]));
+  const pts = p.points.map((q) => [q[0], q[1], q[4] ?? q[2], q[3]]);
+  const curveN = half.map((q) => q[0]);
+  const full = [Math.min(...curveN), Math.max(...curveN)];
+  const fullM = Math.max(...half.map((q) => q[1]), ...pts.map((q) => Math.abs(q[2])), 1);
+  // The window round the loads.
+  const loadN = pts.map((q) => q[1]);
+  const lo = Math.min(...loadN), hi = Math.max(...loadN);
+  const pad = Math.max(0.3 * (hi - lo), 0.04 * (full[1] - full[0]), 200);
+  const win = loadN.length ? [Math.max(lo - pad, full[0]), Math.min(hi + pad, full[1])] : full;
   const edgeM = (n) => {
     let best = 0;
-    for (let i = 1; i < curve.length; i++) {
-      const [a, b] = [curve[i - 1], curve[i]];
+    for (let i = 1; i < half.length; i++) {
+      const [a, b] = [half[i - 1], half[i]];
       if ((a[0] - n) * (b[0] - n) <= 0 && a[0] !== b[0]) best = Math.max(best, a[1] + ((n - a[0]) / (b[0] - a[0])) * (b[1] - a[1]));
     }
     return best;
   };
-  const maxM = Math.max(...inView, edgeM(yDomain[0]), edgeM(yDomain[1]), ...pts.map((q) => q[2]), 1) * 1.05;
+  const winM = Math.max(...half.filter((q) => q[0] >= win[0] && q[0] <= win[1]).map((q) => q[1]), edgeM(win[0]), edgeM(win[1]),
+    ...pts.map((q) => Math.abs(q[2])), 1) * 1.08;
+  const yDomain = whole ? [full[0] - 0.05 * (full[1] - full[0]), full[1] + 0.05 * (full[1] - full[0])] : win;
+  const X = whole ? fullM * 1.08 : winM;
   const c = frame(el, {
-    xDomain: [0, maxM], yDomain,
-    xLabel: "M (kNm)", yLabel: "N (kN, compression +)",
-    title: whole ? "N–M interaction, all ULS results (whole capacity curve)" : "N–M interaction, all ULS results (zoomed to the loads)",
+    xDomain: [-X, X], yDomain,
+    xLabel: "M (kNm), side set by the sign of the larger of M2 and M3", yLabel: "N (kN, compression +)",
+    title: whole ? "N–M interaction, all ULS results (whole diagram)" : "N–M interaction, all ULS results (zoomed to the loads)",
   });
   const clip = `nmclip${Math.random().toString(36).slice(2, 8)}`;
-  const path = curve.map((q, i) => `${i ? "L" : "M"}${c.x(q[1]).toFixed(1)},${c.y(q[0]).toFixed(1)}`).join("");
-  const g = p.governing;
-  const label = curve.find((q) => q[0] >= yDomain[0] && q[0] <= yDomain[1] && q[1] > 0) || curve[Math.floor(curve.length / 3)];
+  const path = curve.map((q, i) => `${i ? "L" : "M"}${c.x(q[1]).toFixed(1)},${c.y(q[0]).toFixed(1)}`).join("") + "Z";
+  // The governing point: the most utilised result.
+  let gi = -1;
+  pts.forEach((q, i) => { if (gi < 0 || q[3] > pts[gi][3]) gi = i; });
+  const gp = gi >= 0 ? pts[gi] : null;
+  const zoomBox = whole && loadN.length
+    ? `<rect class="zoom-box" x="${c.x(-winM)}" y="${c.y(win[1])}" width="${c.x(winM) - c.x(-winM)}" height="${c.y(win[0]) - c.y(win[1])}"/>
+       <text class="label" x="${c.x(winM) + 4}" y="${c.y(win[1]) + 12}">loads</text>`
+    : "";
   c.g.innerHTML = `<defs><clipPath id="${clip}"><rect x="${c.m.l}" y="${c.m.t}" width="${c.w - c.m.l - c.m.r}" height="${c.h - c.m.t - c.m.b}"/></clipPath></defs>
     <g clip-path="url(#${clip})">
-    ${yDomain[0] < 0 && yDomain[1] > 0 ? `<line class="zero" x1="${c.x(0)}" x2="${c.x(maxM)}" y1="${c.y(0)}" y2="${c.y(0)}"/>` : ""}
+    <path class="cap-area" d="${path}"/>
+    ${yDomain[0] < 0 && yDomain[1] > 0 ? `<line class="zero" x1="${c.x(-X)}" x2="${c.x(X)}" y1="${c.y(0)}" y2="${c.y(0)}"/>` : ""}
+    <line class="zero" x1="${c.x(0)}" x2="${c.x(0)}" y1="${c.m.t}" y2="${c.h - c.m.b}"/>
     ${pts.map((q) => `<circle class="pt" cx="${c.x(q[2]).toFixed(1)}" cy="${c.y(q[1]).toFixed(1)}" r="3"/>`).join("")}
     <path class="cap" d="${path}"/>
-    ${g.combination ? `<circle class="gov" cx="${c.x(g.M_kNm)}" cy="${c.y(g.N_kN)}" r="5"/>
-      <text class="label" x="${c.x(g.M_kNm) - 8}" y="${c.y(g.N_kN) - 8}" text-anchor="end">governing, ${fmt(p.utilisation, 2)}</text>` : ""}
-    <text class="label" x="${c.x(label[1]) - 6}" y="${c.y(label[0]) - 6}" text-anchor="end">capacity</text></g>`;
+    ${zoomBox}
+    ${gp ? `<circle class="gov" cx="${c.x(gp[2])}" cy="${c.y(gp[1])}" r="5"/>
+      <text class="label" x="${c.x(gp[2]) + (gp[2] >= 0 ? -8 : 8)}" y="${c.y(gp[1]) - 8}" text-anchor="${gp[2] >= 0 ? "end" : "start"}">governing, ${fmt(p.utilisation, 2)}</text>` : ""}
+    </g>`;
   const pick = document.createElement("div");
   pick.className = "row nm-view";
-  pick.innerHTML = `<button class="quiet${whole ? "" : " on"}" data-nm="zoom">Around the loads</button><button class="quiet${whole ? " on" : ""}" data-nm="whole">Whole capacity curve</button>`;
+  pick.innerHTML = `<button class="quiet${whole ? "" : " on"}" data-nm="zoom">Around the loads</button><button class="quiet${whole ? " on" : ""}" data-nm="whole">Whole diagram</button>`;
   el.append(pick);
   pick.querySelectorAll("[data-nm]").forEach((b) => (b.onclick = () => nmChart(el, p, b.dataset.nm === "whole")));
   const xs = pts.map((q) => c.x(q[2]));
@@ -3654,7 +3663,7 @@ function nmChart(el, p, whole = false) {
     }
     if (best < 0) { c.tip.hidden = true; return; }
     const q = pts[best];
-    showTip(c, evt, `<b>${esc(q[0])}</b><br>N ${fmt(q[1])} kN<br>M ${fmt(q[2])} kNm<br>utilisation ${fmt(q[3], 3)}`);
+    showTip(c, evt, `<b>${esc(q[0])}</b><br>N ${fmt(q[1])} kN${q[1] < 0 ? " (tension)" : ""}<br>M ${fmt(Math.abs(q[2]))} kNm (resultant)<br>utilisation ${fmt(q[3], 3)}`);
   };
   c.svg.onmouseleave = () => (c.tip.hidden = true);
 }
