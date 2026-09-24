@@ -85,7 +85,10 @@ def plan_png(
                 if s0 - 2 <= it["s_m"] <= e + 2:
                     half = pro["length"] / 2000
                     d.rectangle(
-                        [P(it["s_m"] - half, -out_m), P(it["s_m"] + half, 0)], fill=BEAM, outline=MUTED, width=1
+                        [P(it["s_m"] - half, -out_m), P(it["s_m"] + half, 0)],
+                        fill=BEAM,
+                        outline=MUTED,
+                        width=1,
                     )
         for kind, items in lay["items"].items():
             c = COL.get(kind, INK)
@@ -378,7 +381,9 @@ def views(res: dict[str, Any]) -> list[dict[str, Any]]:
     blk = next((i for i in res["items"] if i["item"] == "fender_blocks"), None)
     if blk:
         g = blk["geometry"]
-        v = View("Fender protrusion", "Fender protrusion: cross-section through the front beam", 50, "Furniture")
+        v = View(
+            "Fender protrusion", "Fender protrusion: cross-section through the front beam", 50, "Furniture"
+        )
         # Across the quay (sea to the left, x from the block's sea face), up from the cope (y = 0 at the cope).
         a, B = g["projection_mm"], g["beam_width_mm"]
         v.rect("concrete", (a, 0), (a + B, -g["beam_depth_mm"]))

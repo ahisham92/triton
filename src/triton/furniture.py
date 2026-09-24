@@ -612,7 +612,9 @@ def design(
             centre = p.fender_centre_below_cope or p.depth / 2000
             on_block = fd.Beam(front.width + p.projection, p.depth, p.concrete or front.concrete, front.name)
             items.append(fd.fender(f.fenders.model_copy(update={"centre_below_cope": centre}), on_block))
-            items[-1]["title"] += f" on the protrusion ({p.depth:.0f} mm deep face, centre {centre:g} m below the cope)"
+            items[-1]["title"] += (
+                f" on the protrusion ({p.depth:.0f} mm deep face, centre {centre:g} m below the cope)"
+            )
         else:
             items.append(fd.fender(f.fenders, front))
     if f.protrusion:
@@ -633,7 +635,9 @@ def design(
         rail = lay["rail_front_m"] if lay["rail_front_m"] is not None else front.width / 2000
         items.append(protrusion.clearance(f.sts_crane, f.fenders, f.protrusion, rail))
         if lay["rail_front_m"] is None:
-            items[-1]["notes"].append("No crane rails in the items: the front rail is taken over the beam's centre.")
+            items[-1]["notes"].append(
+                "No crane rails in the items: the front rail is taken over the beam's centre."
+            )
     if f.bollards:
         items.append(fd.bollard(f.bollards, front))
         own = next(
