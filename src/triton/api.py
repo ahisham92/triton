@@ -14,9 +14,9 @@ import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
@@ -1059,34 +1059,40 @@ def pile_cage_export(project_id: str, section_id: str) -> JSONResponse:
     )
 
 
-def _drawings(project_id: str, section_id: str, element: str | None) -> tuple[str, dict]:
+def _drawings(project_id: str, section_id: str, element: list[str] | None) -> tuple[str, dict]:
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
-    data = drawings.drawings(project.info.name, results, project.drawings, section.name, element or None)
+    element = [e for e in element or [] if e]
+    data = drawings.drawings(project.info.name, results, project.drawings, section.name, element)
     if not data["views"]:
         raise HTTPException(
             404,
             "Nothing to draw: no designed pile, combi wall, beam or slab"
-            + (f" named {element}." if element else "."),
+            + (f" named {', '.join(element)}." if element else "."),
         )
-    name = drawings.safe_name(" ".join(x for x in (project.info.name, section.name, element) if x)).replace(
+    only = element[0] if len(element) == 1 else f"{len(element)} elements" if element else ""
+    name = drawings.safe_name(" ".join(x for x in (project.info.name, section.name, only) if x)).replace(
         " ", "_"
     )
     return name, data
 
 
 @app.get(SECTION + "/design/drawings.json")
-def drawings_for_revit(project_id: str, section_id: str, element: str | None = None) -> JSONResponse:
+def drawings_for_revit(
+    project_id: str, section_id: str, element: Annotated[list[str] | None, Query()] = None
+) -> JSONResponse:
     """Reinforcement drawings as 2D lines (format triton.drawings/1), for the Revit script."""
     name, data = _drawings(project_id, section_id, element)
     return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}-drawings.json"'})
 
 
 @app.get(SECTION + "/design/drawings.dxf")
-def drawings_for_autocad(project_id: str, section_id: str, element: str | None = None) -> Response:
+def drawings_for_autocad(
+    project_id: str, section_id: str, element: Annotated[list[str] | None, Query()] = None
+) -> Response:
     """The same drawings as an AutoCAD DXF, one layer per bar size."""
     name, data = _drawings(project_id, section_id, element)
     return Response(

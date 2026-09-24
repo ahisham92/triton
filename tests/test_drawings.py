@@ -39,6 +39,8 @@ def test_views_of_every_element():
             assert f"Deck - {face} bars along {along}" in names
     assert {"Deck - mesh cut across X", "Deck - mesh cut across Y", "Deck - shear links"} <= set(names)
     assert [v["name"] for v in sample(element="Front Beam")["views"]] == ["Front Beam - section"]
+    both = {v["element"] for v in sample(element=["Front Beam", "Deck"])["views"]}
+    assert both == {"Front Beam", "Deck"}
 
 
 def test_pile_section_has_every_bar_on_its_circle():
