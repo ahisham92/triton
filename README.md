@@ -317,6 +317,13 @@ bars, about 1 m wide (1050 mm for a 150 mm mesh, 1000 mm for 200 mm, as the offi
 faces' bars and the Slabs sheet's sets, the forces per metre multiplied by width / 1000 (x 1.05 for
 1050 mm). Where the other face has a different spacing its bar count is rounded to the strip.
 
+## Method tab
+
+The project's Method tab says how each kind of element in the project is designed (the design
+modules' own descriptions, so it always matches the code), with every choice of method on Design
+settings and on each element: the one in use and the others. The slab's pile-face methods are set
+out side by side at the top.
+
 ## Calculation reports
 
 **Report** on the Design tab: Summary or Detailed, as Word, PDF or Excel
@@ -478,8 +485,17 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   layer 1 is the mesh at the cover with bars between its bars, then layers 2, 3… each with its own
   Ø and spacing, and the depth of each layer is shown. Diagrams along X and along Y show the mesh of
   each face and where additional bars are added.
-- **Moments at the pile faces:** averaged over a ring one pile diameter wide round each pile, per
-  combination (default for new slabs), or designed as they are (slab setting).
+- **Moments at the pile faces** (slab setting; nodes inside a pile are always left out):
+  - *Peak:* the moments just outside the pile as they are.
+  - *Face mean* (default): each face on its own, from the face out to one slab thickness over the
+    pile diameter plus the slab thickness each side, only the moment that face's bars carry (Mx at
+    the ±X faces, My at the ±Y faces) and Mxy, per combination; opposite faces are never mixed.
+  - *Ring mean:* all round the pile over a ring one diameter wide, per combination (the method
+    before 2026-09-24; it mixes opposite faces, so a 1624 face and a 40 face average to 773).
+  - *Envelope then face mean:* each node's worst value over the combinations, then the face mean.
+
+  Saved slabs set to "Average" now use the face mean, "Design" the peak. Whatever the method, the
+  strips then average across their width at each cut, per combination, and design the worst one.
 - **Mobile crane:** areas with the extra factored actions from the SAP model (factored crane minus
   factored live load, M, V, N per metre) are added to every ULS combination over each area, so
   the governing combination carries them. Pile reactions for punching stay as Plaxis gives them.

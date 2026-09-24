@@ -136,6 +136,7 @@ async function projectPage(id, tab, sectionId) {
     ["view3d", "3D view"],
     ["costing", "Costing"],
     ["compare", "Comparisons"],
+    ["method", "Method"],
   ];
   const picker = SECTION_TABS.has(tab)
     ? `<div class="row section-pick"><label for="section-pick">Section</label>
@@ -185,6 +186,7 @@ async function projectPage(id, tab, sectionId) {
   else if (tab === "workbook") renderWorkbookTab(host);
   else if (tab === "view3d") renderView3dTab(host);
   else if (tab === "costing") renderCostingTab(host);
+  else if (tab === "method") renderMethodTab(host);
   else if (tab === "compare")
     renderTrials(host, {
       api, again, esc, fmt, secUrl, ROOT,
@@ -604,7 +606,8 @@ function prettyOption(o) {
     lap: "Lapped", raw: "Raw values", average: "Average with neighbours", unified: "Unified", zoned: "Zoned", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
     min_cost: "Lowest cost", en1992: "EN 1992-1-1 (Table 4.4N)", en1993_5: "EN 1993-5 (Table 4.2)", bs6349: "BS 6349-1-4 (maritime)", uniform: "Uniform slab", column_and_field: "Column and field strips",
     office: "Office sheets", ec2: "EN 1992-1-1", ec3: "EN 1993 (plastic filled, shell buckling empty)", ei_split: "E·I split where filled", all: "All actions on the tube",
-    feltham: "Feltham", two_legs: "Two legs per hoop" };
+    feltham: "Feltham", two_legs: "Two legs per hoop", peak: "Peak (as they are)", face_mean: "Face mean (each face on its own)",
+    ring_mean: "Ring mean (all round the pile)", envelope_face_mean: "Envelope, then face mean" };
   return map[o] || o;
 }
 
@@ -2510,6 +2513,85 @@ function alertsHtml(list) {
 // Quantities and cost of each designed section along its berth, and the sections side by side.
 // The inputs (berth length, spacing or number of each element, lengths) are saved with each section;
 // the unit prices are on the Project tab.
+// ---------------------------------------------------------------- method tab
+const optName = (o) => {
+  const p = prettyOption(o);
+  return p !== o ? p : String(o).replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+};
+
+// A design module's description as HTML: paragraphs, "* " bullet lists and indented formulas.
+function docHtml(text) {
+  const inline = (t) => esc(t).replace(/``([^`]+)``/g, "<code>$1</code>");
+  return text
+    .split(/\n\s*\n/)
+    .map((block) => {
+      const lines = block.split("\n");
+      if (lines.every((l) => /^ {4}/.test(l))) return `<pre class="formula">${esc(lines.map((l) => l.slice(4)).join("\n"))}</pre>`;
+      if (/^\s*[*-] /.test(lines[0])) {
+        const items = [];
+        for (const l of lines) {
+          if (/^\s*[*-] /.test(l)) items.push(l.replace(/^\s*[*-] /, ""));
+          else if (items.length) items[items.length - 1] += " " + l.trim();
+        }
+        return `<ul>${items.map((i) => `<li>${inline(i)}</li>`).join("")}</ul>`;
+      }
+      const lead = lines.findIndex((l) => /^\s*[*-] /.test(l));
+      if (lead > 0) return docHtml(lines.slice(0, lead).join("\n")) + docHtml(lines.slice(lead).join("\n"));
+      if (/^\d+\. /.test(lines[0])) return `<p>${inline(lines.join(" "))}</p>`;
+      return `<p>${inline(lines.map((l) => l.trim()).join(" "))}</p>`;
+    })
+    .join("");
+}
+
+function optionRows(options, withElement) {
+  return options
+    .map(
+      (o) => `<tr>${withElement ? `<td>${esc(o.element)}${o.section && state.project.sections.length > 1 ? `<br><span class="status">${esc(o.section)}</span>` : ""}</td>` : ""}
+        <td>${esc(o.title)}${o.description ? `<br><span class="status">${esc(o.description)}</span>` : ""}</td>
+        <td><strong>${o.chosen === null ? "–" : esc(optName(o.chosen))}</strong></td>
+        <td class="status">${o.choices.filter((c) => c !== o.chosen).map((c) => esc(optName(c))).join("<br>")}</td></tr>`,
+    )
+    .join("");
+}
+
+async function renderMethodTab(host) {
+  host.innerHTML = '<p class="status">Loading…</p>';
+  let m;
+  try {
+    m = await api(`${ROOT}/api/projects/${state.project.id}/method`);
+  } catch (e) {
+    host.innerHTML = `<p class="status">${esc(e.message)}</p>`;
+    return;
+  }
+  const head = (el) => `<tr>${el ? "<th>Element</th>" : ""}<th>Setting</th><th>In use</th><th>Other choices</th></tr>`;
+  const faces = m.kinds.find((k) => k.pile_faces)?.pile_faces;
+  const facesBlock = faces
+    ? `<h2>Slab moments at the pile faces</h2>
+      <p class="sub">Plate results peak at the pile heads. Nodes inside a pile are always left out; the moments just outside it are then treated by one of these methods (slab setting "Moments at the pile faces"). After that, every method averages across the strip's width at each cut, for each combination, and designs the worst combination.</p>
+      <div class="panel scroll"><table class="method-table"><tr><th>Method</th><th>What it does</th><th>Used by</th></tr>
+      ${faces.methods
+        .map((f) => {
+          const users = faces.chosen.filter((c) => c.value === f.value).map((c) => c.element + (state.project.sections.length > 1 ? ` (${c.section})` : ""));
+          return `<tr class="${users.length ? "method-on" : ""}"><td><strong>${esc(f.label)}</strong></td><td>${esc(f.text)}</td><td>${users.length ? esc(users.join(", ")) : '<span class="status">–</span>'}</td></tr>`;
+        })
+        .join("")}</table></div>`
+    : "";
+  host.innerHTML = `<p class="sub">How Triton designs each kind of element in this project, from the design code's own descriptions, and every choice of method with the one in use. Change a choice on Design settings (whole project) or on the element (Elements tab), then design again.</p>
+    ${facesBlock}
+    <h2>Whole project (Design settings)</h2>
+    <div class="panel scroll"><table class="method-table">${head(false)}${optionRows(m.project_options, false)}</table></div>
+    ${m.kinds
+      .map(
+        (k) => `<h2>${esc(k.kind)}</h2>
+        <p class="status">${esc(k.elements.map((e) => e.element).join(", "))}</p>
+        ${k.options.length ? `<div class="panel scroll"><table class="method-table">${head(true)}${optionRows(k.options, true)}</table></div>` : ""}
+        ${k.topics.map((t) => `<details class="panel method-doc"><summary>${esc(t.title)}</summary>${docHtml(t.text)}</details>`).join("")}`,
+      )
+      .join("")}
+    ${m.general.map((t) => `<h2>${esc(t.title)}</h2><details class="panel method-doc" open><summary>${esc(t.title)}</summary>${docHtml(t.text)}</details>`).join("")}
+    ${m.empty ? '<p class="status">No elements yet: add them on the Elements tab.</p>' : ""}`;
+}
+
 async function renderCostingTab(host) {
   let p = state.project;
   const cur = p.prices.currency || "";
