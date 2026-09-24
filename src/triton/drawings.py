@@ -163,6 +163,18 @@ def _pile_elevation(p: dict[str, Any], el: str) -> View:
         y = level * 1000
         v.line("zones", (-D / 2 - 8 * v.scale, y), (-D / 2, y))
         v.text((-D / 2 - 30 * v.scale, y + v.scale), f"{_f(level)} {what}".strip(), 0.9)
+    for j in p.get("construction_joints") or []:
+        if j.get("level_m") is None:
+            continue
+        y = j["level_m"] * 1000
+        v.line("zones", (-D / 2 - 4 * v.scale, y), (D / 2 + 4 * v.scale, y))
+        for x in j["additional"]:
+            r, half = x.get("radius_mm"), x.get("length_m", 0) * 500
+            if r:
+                for s in (-1, 1):
+                    v.line(bar_key(x["diameter_mm"]), (s * r, y - half), (s * r, y + half))
+        words = "; ".join(x["label"] for x in j["additional"]) or "no additional bars"
+        v.text((D / 2 + 4 * v.scale, y + v.scale), f"Construction joint {_f(j['level_m'])}: {words}", 0.8)
     n = p.get("count") or 1
     highest = max([top] + [r["bar_top_m"] for run in p["runs"] for r in run["rows"]])
     v.text((-D / 2, highest * 1000 + 6 * v.scale), f"{el} elevation, {n} No., Ø{_mm(D)}  1:{v.scale}", 1.4)
@@ -205,6 +217,14 @@ def _beam_views(b: dict[str, Any]) -> list[View]:
         (-W / 2, y - 15 * v.scale),
         f"Along {along} from {_f(b.get('start_m'))} to {_f(b.get('end_m'))} m, top at {_f(b.get('level_m'))}",
     )
+    k = 0
+    for j in b.get("construction_joints") or []:
+        h = j.get("height_above_soffit_mm")
+        if h is not None and 0 < h < H:
+            v.line("zones", (-W / 2 - 4 * v.scale, -H / 2 + h), (W / 2 + 4 * v.scale, -H / 2 + h))
+        for words in [x["label"] for x in j["additional"]] or ["no additional bars"]:
+            v.text((-W / 2, y - (20 + 5 * k) * v.scale), f"Construction joint, {j['where']}: {words}", 0.8)
+            k += 1
     return [v] + [_room_view(b, rm) for rm in b.get("rooms") or []]
 
 
@@ -384,6 +404,22 @@ def _slab_views(d: dict[str, Any]) -> list[View]:
                     parts.append(f"L{lay['layer']} Ø{b['diameter_mm']} @ {_mm(b['spacing_mm'])}")
             if parts:
                 v.text((zx0 + 2 * v.scale, zy0 + 2 * v.scale), " + ".join(parts), 0.8)
+        for j in d.get("construction_joints") or []:
+            ln = j.get("line") or {}
+            if ln.get("along") != along or ln.get("at_m") is None or not ln.get("range_m"):
+                continue
+            c = ln["at_m"] * 1000
+            r0, r1 = (t * 1000 for t in ln["range_m"])
+            p, q = (c, r0), (c, r1)
+            v.line("zones", p if along == "X" else p[::-1], q if along == "X" else q[::-1])
+            for x in j["additional"]:
+                half = x.get("length_m", 0) * 500
+                s0 = (x["from_m"] if x.get("from_m") is not None else ln["range_m"][0]) * 1000
+                s1 = (x["to_m"] if x.get("to_m") is not None else ln["range_m"][1]) * 1000
+                draw(x["diameter_mm"], x["spacing_mm"], x["spacing_mm"] / 4, (c - half, c + half), (s0, s1))
+            words = "; ".join(x["label"] for x in j["additional"]) or "no additional bars"
+            at = (c + 2 * v.scale, r0 + 2 * v.scale) if along == "X" else (r0 + 2 * v.scale, c + 2 * v.scale)
+            v.text(at, f"Construction joint: {words}", 0.8)
         v.text(
             (X0, Y1 + 12 * v.scale), f"{d['element']} {f['face']} face, bars along {along}  1:{v.scale}", 1.4
         )

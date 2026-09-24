@@ -3925,6 +3925,7 @@ function slabCard(d) {
     ${d.frame_note ? `<p class="status">${esc(d.frame_note)}</p>` : ""}
     ${(d.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${voidsBlock(d)}
+    ${jointsBlock(d.construction_joints)}
     ${v3dSlot(d.element)}
     ${d.strip_design ? `<h3 style="margin-top:18px">Moments across the deck and the stations</h3>
       <div class="chart wide" data-kind="stations"></div><div data-kind="station-ctl"></div>
@@ -4182,6 +4183,7 @@ function beamCard(b) {
     </table></div></div>
     ${beamCageHtml(b)}
     ${faceNeeds(b)}
+    ${jointsBlock(b.construction_joints)}
     ${g.combination ? `<p>Governing bending: ${esc(g.combination)} at ${fmt(g.s, 2)} m along the beam. N = ${fmt(g.N_kN)} kN, M<sub>v</sub> = ${fmt(g.Mv_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_v_kNm)}), M<sub>h</sub> = ${fmt(g.Mh_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_h_kNm)}), exponent a = ${fmt(g.a, 2)}. ${esc(bend.method || "")}.</p>` : ""}
     <div class="row" data-kind="limit-switch">${limitSwitch(b.profile_qp?.length, "Moment and utilisation diagrams:")}</div>
     <div class="charts"><div class="chart" data-kind="moments"></div><div class="chart" data-kind="profile"></div></div>` : ""}
@@ -4813,6 +4815,7 @@ function pileCard(p) {
       <p class="status">Clear gap between rows: ${lim.row_gap_mm == null ? "EN 1992-1-1 8.2 minimum" : `${fmt(lim.row_gap_mm)} mm`}.</p></div></div>` : ""}
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
     ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
+    ${jointsBlock(p.construction_joints)}
     ${casingBlock(p.casing)}
     ${connectionBlock(p.connection)}
     ${levelSketch(p)}
@@ -5086,6 +5089,30 @@ function shearBlock(sh, above = "the slab") {
     </table></div>
     <p class="status">${esc(sh.method)}. Largest spacing ${fmt(sh.max_spacing_mm)} mm, smallest link Ø${fmt(sh.min_link_diameter_mm)} (9.5.3). ${fmt(sh.links_kg)} kg of links per pile${sh.inner_rings ? `, of which ${fmt(sh.inner_links_kg)} kg in ${sh.inner_rings} inner ring${sh.inner_rings > 1 ? "s" : ""} around the inner row${sh.inner_rings > 1 ? "s" : ""}` : ""}.</p>
     ${sh.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
+}
+
+// Construction joints set on the element: the check at each and the bars it needs there.
+function jointsBlock(list) {
+  if (!list?.length) return "";
+  const pm = (j) => (j.provided_mm2_per_m != null ? "mm²/m" : "mm²");
+  const val = (j, k) => j[`${k}_mm2_per_m`] ?? j[`${k}_mm2`];
+  const extra = (j) => {
+    const parts = (j.stretches?.length ? j.stretches : j.additional ? [{ bars: j.additional }] : [])
+      .map((s) => (s.bars ? esc(s.bars.label) : `${fmt(s.additional_mm2_per_m)} mm²/m more from ${fmt(s.from_m, 2)} to ${fmt(s.to_m, 2)} m: no allowed bar fits`));
+    return parts.length ? parts.map((t) => `<b>${t}</b>`).join("<br>") : "";
+  };
+  return `<h3 style="margin-top:18px">Construction joints</h3>
+    <div class="scroll"><table><tr><th>Joint</th><th>Surface</th><th>Bars crossing</th><th>v<sub>Edi</sub> / v<sub>Rdi</sub></th><th>Needed (tension + shear)</th><th>Utilisation</th><th>Additional bars at this joint</th><th></th></tr>
+    ${list.map((j) => `<tr><td>${esc(j.where)}${j.note ? `<br><span class="status">${esc(j.note)}</span>` : ""}</td>
+      <td>${esc(j.surface)} (c ${fmt(j.c, 3)}, μ ${fmt(j.mu, 2)})</td>
+      <td>${j.crossing ? `${esc(j.crossing.label)}<br>${fmt(val(j, "provided"))} ${pm(j)}` : "–"}</td>
+      <td>${j.v_Edi_MPa != null ? `${fmt(j.v_Edi_MPa, 2)} / ${fmt(j.v_Rdi_MPa, 2)} MPa (max ${fmt(j.v_Rdi_max_MPa, 2)})` : "–"}</td>
+      <td>${val(j, "needed") != null ? `${fmt(val(j, "tension"))} + ${fmt(val(j, "shear"))} = ${fmt(val(j, "needed"))} ${pm(j)}` : "–"}</td>
+      <td>${j.utilisation != null ? `<b class="${j.utilisation > 1 ? "bad" : ""}">${fmt(j.utilisation, 2)}</b>` : "–"}</td>
+      <td>${extra(j) || esc(j.status || "")}${(j.laps || []).map((w) => `<br><span class="status">${esc(w)}</span>`).join("")}</td>
+      <td>${j.passed == null ? "" : j.passed ? '<span class="sev ok">OK</span>' : '<span class="sev error">more bars</span>'}</td></tr>`).join("")}
+    </table></div>
+    <p class="status">EN 1992-1-1 6.2.5 at each joint with the Plaxis actions there (ULS): the bars crossing it carry the tension of N with M, and the shear friction steel on top of it. Details of each check in the report.</p>`;
 }
 
 function curtailmentBlock(c) {

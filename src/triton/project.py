@@ -516,6 +516,64 @@ class Casing(_Model):
         return self
 
 
+Surface = Literal["very smooth", "smooth", "rough", "indented"]
+_SURFACE = (
+    "EN 1992-1-1 6.2.5(2): very smooth (cast against steel or timber), smooth (slipformed, or left without "
+    "treatment after vibration), rough (at least 3 mm roughness at about 40 mm spacing, e.g. raked or "
+    "exposed aggregate) or indented (shear keys)."
+)
+
+
+class PileJoint(_Model):
+    """A construction joint across the pile at a level: the pile top under the slab or beam, or a pour
+    break."""
+
+    level: float = _m(
+        "Joint level Z", 0.0, description="e.g. the pile top level for the joint into the slab."
+    )
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Pile to slab, pour break.")
+
+
+class BeamJoint(_Model):
+    """A construction joint in a beam: a horizontal joint at a level (the beam cast in lifts, or up to the
+    slab soffit), or a vertical stop end at a position along the beam."""
+
+    kind: Literal["level", "along"] = Field(
+        "level",
+        title="Joint",
+        description="level: horizontal, at level Z. along: vertical, at a position along the beam (X or Y "
+        "along it).",
+    )
+    at: float = _m("Level Z, or position along the beam", 0.0)
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Slab soffit, first lift.")
+
+
+class SlabJoint(_Model):
+    """A construction joint through the slab along a line: at an X or a Y, or at a beam's face (the slab cast
+    against a beam)."""
+
+    line: Literal["at X", "at Y", "beam face"] = Field(
+        "at X",
+        title="Joint line",
+        description="at X: the joint runs along Y at that X (bars along X cross it). at Y: along X at that "
+        "Y. beam face: the slab's joint with the beam named, at the beam's face.",
+    )
+    at: float | None = _m("X or Y of the line", None, description="Not used at a beam face.")
+    beam: str = Field("", title="Beam (beam face)", description="e.g. Front Beam.")
+    start: float | None = _m("From (along the line)", None, description="Empty: the whole slab.")
+    end: float | None = _m("To (along the line)", None)
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Pour 1 / pour 2.")
+
+
+_JOINTS = (
+    "Each joint is checked in the design (EN 1992-1-1 6.2.5 shear across it, and the bars crossing it carry "
+    "the tension there); where the bars are not enough, the additional bars at that joint are given."
+)
+
+
 class PileInput(_ConcreteSection):
     kind: Literal["pile"] = "pile"
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
@@ -550,6 +608,9 @@ class PileInput(_ConcreteSection):
         title="This pile has a permanent steel casing",
         description="Tick it and give the casing's top and bottom levels: there is no crack width check "
         "between them. Leave it unticked for a plain concrete pile.",
+    )
+    construction_joints: list[PileJoint] = Field(
+        default_factory=list, title="Construction joints", description=_JOINTS
     )
 
 
@@ -1144,6 +1205,9 @@ class SlabInput(_ConcreteSection):
         "webs between the voids with links in the webs only; the voids stop short of the piles, so the slab "
         "is solid over them.",
     )
+    construction_joints: list[SlabJoint] = Field(
+        default_factory=list, title="Construction joints", description=_JOINTS
+    )
 
 
 class TieBars(_Model):
@@ -1330,6 +1394,11 @@ class BeamInput(_ConcreteSection):
         title="Rooms in the beam",
         description="Rooms cut into the beam from the top, e.g. for electrical work. Each is checked on the "
         "section left (floor and walls) for the Plaxis actions over its length.",
+    )
+    construction_joints: list[BeamJoint] = Field(
+        default_factory=list,
+        title="Construction joints",
+        description=_JOINTS + " The slab's joint at the beam face is set on the slab.",
     )
 
 
