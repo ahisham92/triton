@@ -355,7 +355,9 @@ def cost_section(
             f"{width:.1f} m wide × {h * 1000:.0f} mm, {st.get('kg_per_m2') or 0:.0f} kg/m² of bars"
             + (f" + {link_kg_m2:.0f} kg/m² of shear and punching links" if link_kg_m2 >= 0.5 else "")
         )
-        row.concrete_m3 = area_m2 * h
+        row.concrete_m3 = area_m2 * h * (st.get("concrete_share") or 1.0)
+        if (st.get("concrete_share") or 1.0) < 1:
+            row.basis.append(f"voids take {100 * (1 - st['concrete_share']):.1f}% of the concrete")
         row.rebar_t = area_m2 * ((st.get("kg_per_m2") or 0) + link_kg_m2) / 1000
         row.add(_price(prices.concrete_slab, row.concrete_m3), "slab concrete price")
         row.add(_price(prices.rebar, row.rebar_t), "reinforcement price")
