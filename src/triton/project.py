@@ -2062,6 +2062,41 @@ class Displacement(_Model):
         return None if self.limit is None else abs(self.value) <= self.limit + 1e-9
 
 
+class DeflectionSettings(_Model):
+    """How the Design tab estimates displacements from the straining actions (no Plaxis displacement
+    run). Not a design input: it never makes the design out of date."""
+
+    toe: Literal["fixed", "firm_soil"] = Field(
+        "fixed",
+        title="Piles and walls at the toe",
+        description="Fixed: no displacement and no rotation at the toe (deeply embedded). Firm soil: no "
+        "displacement at the toe or at the firm soil level; the toe rotates to suit.",
+    )
+    firm_soil_level: float | None = _m(
+        "Firm soil level (piles)",
+        None,
+        description="For 'Firm soil'. Empty: the combi wall's and sheet pile wall's own firm soil level; "
+        "piles without one are fixed at the toe.",
+    )
+    stiffness: Literal["gross", "cracked"] = Field(
+        "gross",
+        title="Stiffness",
+        description="Gross: uncracked E·I. Cracked: piles by EN 1992-1-1 7.4.3 (ζ between the uncracked "
+        "and the fully cracked curvature, β 0.5), the combi wall infill at 0.6 Ecm·Ic (EN 1994-1-1 "
+        "6.7.3.3). Steel does not crack; slabs and beams stay gross.",
+    )
+    long_term: bool = Field(
+        False,
+        title="Long term (creep)",
+        description="Concrete at Ec,eff = Ecm / (1 + φ), φ the creep coefficient of Design settings.",
+    )
+    combination: str = Field(
+        "",
+        title="Combination",
+        description="Empty: the QP combination where there is one, else each element's governing phase.",
+    )
+
+
 class ElementCheck(_Model):
     """The checker's word on one element's design."""
 
@@ -2137,6 +2172,12 @@ class Section(_Model):
         title="Displacements",
         description="Values received from the geotechnical team (not read from the workbook), each with its "
         "limit; checked as typed, so they are open while the model is locked.",
+    )
+    deflection: DeflectionSettings = Field(
+        default_factory=DeflectionSettings,
+        title="Estimated displacements",
+        description="How displacements are estimated from the straining actions on the Design tab; not a "
+        "design input, so it is open while the model is locked.",
     )
     checks: dict[str, ElementCheck] = Field(
         default_factory=dict,

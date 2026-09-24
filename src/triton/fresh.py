@@ -32,6 +32,7 @@ _SECTION_OWN = {
     "checks",
     "furniture",
     "displacements",
+    "deflection",
     "joints",
 }
 

@@ -12,7 +12,7 @@ from typing import Any
 
 from . import clock
 from .alignment import named_parts
-from .figures import slab_stations
+from .figures import deflected_shape, slab_stations
 from .materials import STEEL_DENSITY
 from .project import DesignSettings, Project, Section
 
@@ -141,6 +141,7 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     for a in results.get("approach_slabs", []):
         _approach_summary(r, a)
     _construction_joints(r, results)
+    _deflections(r, results.get("deflections"))
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
         for p in results.get("piles", []):
@@ -1099,6 +1100,62 @@ def _joint_calcs(r: Report, d: dict) -> None:
         r.kv(pairs)
         for w in j.get("laps") or []:
             r.note(w)
+
+
+TOE_WORDS = {
+    "fixed": "fixed at the toe (no displacement and no rotation), the member being deeply embedded",
+    "firm_soil": "held at the toe and at the firm soil level (no displacement at either), the toe rotating",
+}
+
+
+def _deflections(r: Report, est: dict | None) -> None:
+    """3.8: the displacements estimated from the straining actions (not a Plaxis displacement run)."""
+    if not est or not (est.get("elements") or est.get("skipped")):
+        return
+    ds = est.get("settings") or {}
+    stiffness = (
+        "cracked where the moment passes the cracking moment (EN 1992-1-1 7.4.3 for the piles, 0.6 Ecm·Ic for "
+        "the combi wall infill, EN 1994-1-1 6.7.3.3)"
+        if ds.get("stiffness") == "cracked"
+        else "gross (uncracked)"
+    )
+    r.h(2, "3.8 Estimated displacements from the straining actions")
+    r.p(
+        "ESTIMATE, not a Plaxis displacement result. Each member's curvature M / EI, from the moments in the "
+        f"workbook, is integrated twice along it; piles and walls are {TOE_WORDS.get(ds.get('toe'), '')}, with "
+        f"{stiffness} E·I{' and long-term concrete Ec,eff = Ecm / (1 + φ)' if ds.get('long_term') else ''}. "
+        "Slabs and beams are a simple strip estimate relative to their supports. The estimate is the members' own "
+        "bending: it leaves out the soil springs, the toe moving in the ground, axial shortening and "
+        "second-order effects, and it is only as good as the Plaxis moments. Signs follow each member's local "
+        "axes; the size and the shape are what it gives."
+    )
+    rows = [
+        [
+            e["element"],
+            e["combination"],
+            e["max_direction"],
+            "–" if e.get("head_mm") is None else e["head_mm"],
+            e["max_mm"],
+            f"{e['max_at']:g} m {'level' if e.get('axis') == 'level' else 'along'}",
+        ]
+        for e in est.get("elements") or []
+    ]
+    if rows:
+        r.caption("Table 3-10: Estimated displacements (from the straining actions)")
+        r.table(["Element", "Combination", "Direction", "Head / top (mm)", "Largest (mm)", "At"], rows)
+    r.bullets(
+        [
+            f"{e['element']}: {e['at']}. {e['boundary']} {e['stiffness']} Combination {e['combination']}: "
+            f"{e['combination_note']}."
+            for e in est.get("elements") or []
+        ]
+    )
+    r.bullets(est.get("skipped") or [])
+    n = 0
+    for e in est.get("elements") or []:
+        if e.get("axis") == "level":
+            n += 1
+            r.image(deflected_shape(e), f"Figure 3-{n + 1}: {e['element']}, estimated deflected shape")
 
 
 def _sets(r: Report, sets: list[dict], title: str) -> None:

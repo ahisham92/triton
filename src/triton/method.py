@@ -26,6 +26,7 @@ from .design import (
     construction_joints,
     crack,
     curtailment,
+    deflection,
     ductility,
     furniture,
     governing,
@@ -106,6 +107,7 @@ GENERAL = [
     ("Quay furniture: arrangement along the berth", furniture_layout),
     ("Quay furniture: design of each item", furniture),
     ("Anchor bolts cast into the beams (EN 1992-4)", anchors),
+    ("Estimated displacements from the straining actions", deflection),
 ]
 
 # Methods of the slab's moments at the pile faces, in the order the options are offered.
