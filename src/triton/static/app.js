@@ -4122,8 +4122,13 @@ function beamCard(b) {
       ${b.truss.cases.map((c) => `<tr><td>${esc(c.case)}</td><td>${fmt(c.slab_thickness_mm)}</td><td>${fmt(c.P_kN)}</td><td>${fmt(c.T_kN)}</td><td>${fmt(c.As_req_mm2)}</td>
         <td class="cell ${c.utilisation <= 1 ? "ok" : "error"}">${fmt(c.utilisation, 2)}</td></tr>`).join("")}</table></div>
     <p class="status">${esc(b.truss.method)}</p>` : b.truss?.note ? `<p class="status">${esc(b.truss.note)}</p>` : ""}
+    ${roomsHtml(b)}
     ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}`;
   mountCrackPictures(card, beamCrackItems(b));
+  (b.rooms || []).forEach((rm, i) => {
+    const el = card.querySelector(`[data-room-section="${i}"]`);
+    if (el && rm.section) roomSection(el, b, rm);
+  });
   wireBeamCage(card, b);
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);
   if (b.profile?.length) {
@@ -4139,6 +4144,74 @@ function beamCard(b) {
     wireLimitSwitch(card.querySelector('[data-kind="limit-switch"]'), drawBeam);
   }
   return card;
+}
+
+// Rooms cut into the beam (e.g. for electrical work): the section left and its extra bars.
+function roomsHtml(b) {
+  if (!b.rooms?.length) return "";
+  const ok = (x) => `<span class="sev ${x ? "ok" : "error"}">${x ? "passes" : "fails"}</span>`;
+  const u = (x) => `<td class="cell ${x != null && x <= 1 ? "ok" : "error"}">${fmt(x, 2)}</td>`;
+  return b.rooms.map((rm, i) => {
+    const head = `<h3 style="margin-top:18px">${esc(rm.name)}, ${fmt(rm.start_m, 2)} to ${fmt(rm.end_m, 2)} m along the beam ${ok(rm.passed)}</h3>`;
+    if (!rm.section) return `${head}${(rm.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
+    const x = rm.section, bars = rm.bars || {}, fr = rm.frame || {}, g = rm.bending?.governing || {};
+    const walls = Object.entries(rm.shear || {}).filter(([k]) => k === "sea" || k === "land");
+    const partName = { sea: "Sea-side wall", land: "Land-side wall", floor: "Floor", roof: "Roof" };
+    const crack = Object.entries(rm.cracks || {}).map(([f, c]) => `QP crack at the ${f === "top" ? "top of the walls" : "bottom"}: ${fmt(c.wk, 3)} mm of ${fmt(c.limit, 2)}`).join("; ");
+    const perM = (p) => p ? `top ${esc(p.top.label)}, bottom ${esc(p.bottom.label)} (utilisation ${fmt(p.utilisation, 2)}${Object.entries(p.cracks || {}).map(([f, c]) => `, crack ${f} ${fmt(c.wk, 3)} of ${fmt(c.limit, 2)} mm`).join("")})` : "";
+    return `${head}
+    ${(rm.warnings || []).map((w) => `<p class="status sev error" style="display:block">${esc(w)}</p>`).join("")}
+    ${rm.suggestion ? `<p><b>${esc(rm.suggestion.text)}</b></p>` : ""}
+    <div class="counts" style="margin-top:0">
+      <div class="count"><b>${fmt(rm.utilisation, 2)}</b>room utilisation (all checks)</div>
+      <div class="count"><b>${fmt(x.bottom_mm)} mm</b>concrete below, room ${fmt(x.height_mm)} high</div>
+      <div class="count"><b>${fmt(x.wall_sea_mm)} / ${fmt(x.wall_land_mm)} mm</b>walls, sea / land side</div>
+      <div class="count"><b>${fmt(rm.extra_steel_kg)} kg</b>extra bars and links over ${fmt(rm.length_m, 2)} m</div>
+    </div>
+    <div class="cage"><div class="chart" data-room-section="${i}"></div><div class="scroll"><table>
+      <tr><th>Check over the room</th><th>Utilisation</th></tr>
+      <tr><td>N with biaxial bending on the section left</td>${u(rm.bending?.utilisation)}</tr>
+      ${walls.map(([k, w]) => `<tr><td>${partName[k]}: shear and torsion</td>${u(w.utilisation)}</tr>`).join("")}
+      ${["floor", "roof"].filter((k) => rm.shear?.[k]).map((k) => `<tr><td>${partName[k]}: torsion</td>${u(rm.shear[k].utilisation)}</tr>`).join("")}
+      ${Object.entries(rm.cracks || {}).map(([f, c]) => `<tr><td>QP crack, ${f === "top" ? "top of the walls" : "bottom"}</td>${u(c.wk / c.limit)}</tr>`).join("")}
+      <tr><td>Floor across the room, per metre</td>${u(fr.floor?.utilisation)}</tr>
+      <tr><td>Floor shear per metre</td>${u(fr.floor_shear?.utilisation)}</tr>
+      <tr><td>Walls at the corners, per metre</td>${u(fr.walls?.utilisation)}</tr>
+    </table></div></div>
+    <div class="scroll"><table><tr><th>Bars in the room's length</th><th></th></tr>
+      <tr><td>Beam top bars cut by the room</td><td>${bars.cut_top?.count ? `${bars.cut_top.count}Ø${bars.cut_top.phi} (${fmt(bars.cut_top.area_mm2)} mm²)` : "none"}</td></tr>
+      <tr><td>Top of each wall (replaces them)</td><td><b>${esc(bars.wall_top?.label || "none")}</b>, ${fmt(rm.corners?.wall_top_bars_past_ends_mm)} mm past each end of the room</td></tr>
+      <tr><td>Extra bottom bars (layer above the beam's)</td><td>${esc(bars.bottom_extra?.label || "none")}</td></tr>
+      <tr><td>Inside faces of the walls</td><td>${esc(bars.inner_sides?.label || "none")}</td></tr>
+      ${walls.map(([k, w]) => `<tr><td>${partName[k]} links</td><td>${w.link ? esc(w.link.label) : "none fit"}</td></tr>`).join("")}
+      ${["floor", "roof"].filter((k) => rm.shear?.[k]?.link).map((k) => `<tr><td>${partName[k]} links (torsion)</td><td>${esc(rm.shear[k].link.label)}</td></tr>`).join("")}
+      <tr><td>Floor, across the room, per metre</td><td>${perM(fr.floor)}</td></tr>
+      ${fr.floor_shear?.links ? `<tr><td>Floor shear links</td><td>${esc(fr.floor_shear.links)}</td></tr>` : ""}
+      <tr><td>Walls, vertical bars each face, per metre</td><td>${esc(fr.walls?.top?.label || "")}</td></tr>
+      <tr><td>Inside corners</td><td>${esc(fr.corner_bars?.label || "")}</td></tr>
+      <tr><td>Corners of the opening</td><td>${esc(rm.corners?.diagonals || "")}</td></tr>
+    </table></div>
+    ${g.combination ? `<p>Governing bending: ${esc(g.combination)} at ${fmt(g.s, 2)} m, N = ${fmt(g.N_kN)} kN, M<sub>v</sub> = ${fmt(g.Mv_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_v_kNm)}), M<sub>h</sub> = ${fmt(g.Mh_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_h_kNm)}).${crack ? ` ${crack}.` : ""}</p>` : ""}
+    ${walls.map(([k, w]) => w.governing ? `<p class="status">${partName[k]} (${fmt(w.b_mm)} mm, ${fmt(100 * w.V_share)}% of V, ${fmt(100 * w.T_share)}% of T): V = ${fmt(w.governing.V_kN)} kN, T = ${fmt(w.governing.T_kNm)} kNm, V<sub>Rd,c</sub> ${fmt(w.governing.VRd_c_kN)} kN, V<sub>Rd,max</sub> ${fmt(w.governing.VRd_max_kN)} kN, T<sub>Rd,max</sub> ${fmt(w.governing.TRd_max_kNm)} kNm, cot θ ${fmt(w.governing.cot_theta, 2)}${w.torsion_long_steel_mm2 ? `; torsion takes ${fmt(w.torsion_long_steel_mm2)} mm² of its longitudinal bars` : ""}.</p>` : "").join("")}
+    <p class="status">Across the room: M = ${fmt(fr.M_kNm_per_m?.max)} / ${fmt(fr.M_kNm_per_m?.min)} kNm/m from the plates, plus the floor's own span of ${fmt(fr.floor_load?.span_m, 2)} m under ${fmt(fr.floor_load?.g_kPa, 1)} kPa self weight and ${fmt(fr.floor_load?.q_kPa, 1)} kPa floor load. Horizontal shear ${fmt(rm.horizontal_shear?.V_kN)} kN through the floor${rm.section.top_mm ? " and roof" : ""} (V<sub>Rd,c</sub> ${fmt(rm.horizontal_shear?.VRd_c_kN)} kN).</p>
+    ${(rm.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
+  }).join("");
+}
+
+function roomSection(el, b, rm) {
+  // The section left by the room, to scale: outline, the room, every bar.
+  const w = b.width_mm, h = b.depth_mm;
+  const [u0, u1, v0, v1] = rm.section.void_mm;
+  const pad = Math.max(w, h) * 0.06;
+  const bars = (rm.bars?.all || []).map(([u, v, phi]) => `<circle class="bar" cx="${u}" cy="${-v}" r="${phi / 2}"><title>Ø${phi}</title></circle>`).join("");
+  el.innerHTML = `<div class="chart-title">Section through ${esc(rm.name)}: ${fmt(w)} × ${fmt(h)} mm, room ${fmt(rm.section.width_mm)} × ${fmt(rm.section.height_mm)} mm</div>
+    <svg viewBox="${-w / 2 - pad} ${-h / 2 - pad} ${w + 2 * pad} ${h + 2 * pad}" role="img" aria-label="Section through the room">
+      <rect class="outline" x="${-w / 2}" y="${-h / 2}" width="${w}" height="${h}"/>
+      ${rm.section.top_mm
+        ? `<rect x="${u0}" y="${-v1}" width="${u1 - u0}" height="${v1 - v0}" style="fill:var(--panel);stroke:var(--text);stroke-width:6"/>`
+        : `<rect x="${u0}" y="${-v1 - 8}" width="${u1 - u0}" height="${v1 - v0 + 8}" style="fill:var(--panel)"/>
+           <polyline points="${u0},${-v1} ${u0},${-v0} ${u1},${-v0} ${u1},${-v1}" style="fill:none;stroke:var(--text);stroke-width:6"/>`}
+      ${bars}</svg>`;
 }
 
 // A beam's longitudinal bars set by hand, face by face; Check designs just that beam with them.
