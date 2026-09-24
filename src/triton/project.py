@@ -19,6 +19,7 @@ from .design.sheet_piles import SECTION_NAMES as SHEET_PILE_SECTIONS
 from .design.sheet_piles import normalise as _normalise_sheet_pile
 from .durability import bs6349_corrosion, bs6349_covers
 from .elements import ElementType, parse_sheet_name
+from .furniture_inputs import QuayFurniture, SectionFurniture
 from .materials import (
     BAR_DIAMETERS,
     CONCRETE_GRADES,
@@ -1450,6 +1451,9 @@ def _other_items() -> list[OtherItem]:
         OtherItem(name="Fenders", unit="each", spacing=20.0),
         OtherItem(name="Bollards", unit="each", spacing=30.0),
         OtherItem(name="Crane rails", unit="m", runs=2.0),
+        OtherItem(name="Ladders", unit="each", spacing=30.0),
+        OtherItem(name="Storm pins", unit="each"),
+        OtherItem(name="Crane stoppers", unit="each"),
     ]
 
 
@@ -1779,6 +1783,11 @@ class Section(_Model):
     )
     costing: SectionCosting = Field(default_factory=SectionCosting, title="Costing")
     alignment: Alignment = Field(default_factory=Alignment, title="Berth alignment")
+    furniture: SectionFurniture = Field(
+        default_factory=SectionFurniture,
+        title="Quay furniture on this berth",
+        description="The items are the project's (Furniture tab); this is only where this berth differs.",
+    )
     user_cages: dict[str, UserCage] = Field(
         default_factory=dict,
         title="Cages set by the user",
@@ -1938,6 +1947,12 @@ class Project(_Model):
     design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
     prices: Prices = Field(default_factory=Prices, title="Prices")
     drawings: DrawingSettings = Field(default_factory=DrawingSettings, title="Drawings (AutoCAD and Revit)")
+    furniture: QuayFurniture = Field(
+        default_factory=QuayFurniture,
+        title="Quay furniture",
+        description="Fenders, bollards, ladders, storm pins, crane rails and stoppers, tie rods: the same "
+        "on every section's berth.",
+    )
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
     revisions: list[Revision] = Field(default_factory=list, title="Issued revisions")
     locked: bool = Field(

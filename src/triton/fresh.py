@@ -30,6 +30,7 @@ _SECTION_OWN = {
     "slab_strips",
     "clashes",
     "checks",
+    "furniture",
 }
 
 

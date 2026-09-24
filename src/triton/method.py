@@ -15,7 +15,9 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from . import alignment, clashes, trials
+from . import furniture as furniture_layout
 from .design import (
+    anchors,
     beams,
     bollard,
     circular,
@@ -23,6 +25,7 @@ from .design import (
     crack,
     curtailment,
     ductility,
+    furniture,
     governing,
     peaks,
     pile_cracks,
@@ -88,6 +91,9 @@ GENERAL = [
     ("Over-reinforced sections (slabs and beams)", ductility),
     ("Reinforcement clashes at the pile heads", clashes),
     ("AdSec load sets and signs", governing),
+    ("Quay furniture: arrangement along the berth", furniture_layout),
+    ("Quay furniture: design of each item", furniture),
+    ("Anchor bolts cast into the beams (EN 1992-4)", anchors),
 ]
 
 # Methods of the slab's moments at the pile faces, in the order the options are offered.

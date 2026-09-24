@@ -30,12 +30,14 @@ from . import (
     durability,
     dxf,
     fresh,
+    furniture_report,
     method,
     package,
     revisions,
     revit,
     trials,
 )
+from . import furniture as furniture_mod
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
@@ -320,7 +322,7 @@ LOCKED = "The model is locked since it was designed. Press Unlock to edit first.
 def _model(p: Project) -> dict:
     """What the lock protects: everything the design depends on (not prices, costing or drawing names)."""
     d = p.model_dump(
-        mode="json", exclude={"locked", "created_at", "updated_at", "prices", "drawings", "revisions"}
+        mode="json", exclude={"locked", "created_at", "updated_at", "prices", "drawings", "revisions", "furniture"}
     )
     d["info"] = {k: v for k, v in d["info"].items() if k in ("name", "number", "client", "location")}
     for s in d["sections"]:
@@ -330,6 +332,7 @@ def _model(p: Project) -> dict:
         s.pop("beam_cages", None)
         s.pop("slab_strips", None)
         s.pop("clashes", None)  # the Clashes tab never changes the design
+        s.pop("furniture", None)  # designed on its own tab, from the element design
         for el in s.get("elements", {}).values():  # a sheet pile wall's "ignore N or Q", ticked on its card
             if el.get("kind") == "sheet_pile_wall":
                 el.pop("ignore", None)
@@ -1253,6 +1256,10 @@ def _drawings(
     picked = ",".join([e for e in element or [] if e] + ([elements] if elements else []))
     _, results, suffix = _picked(section, results, picked)
     data = drawings.drawings(project.info.name, results, project.drawings, section.name, None)
+    furn = _furniture_saved(project_id, section_id) if not suffix else None
+    if furn and furn.get("use", True):
+        data["views"] += furniture_report.views(furn)
+        data["layers"] = {**furniture_report.LAYERS, **data["layers"]}
     if not data["views"]:
         raise HTTPException(
             404,
@@ -1422,7 +1429,8 @@ def project_costing(project_id: str) -> dict:
         if res is not None:
             res = fresh.with_status(project, s, res, store().workbook_summary(project_id, s.id))
         results[s.id] = res
-    return cost_project(project, results)
+    counts = {s.id: furniture_mod.counts_for_costing(_furniture_saved(project_id, s.id)) for s in project.sections}
+    return cost_project(project, results, counts)
 
 
 class TrialRequest(BaseModel):
@@ -1794,3 +1802,95 @@ def spw_export(project_id: str, section_id: str) -> Response:
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}-straining-actions.xlsx"'},
     )
+
+
+# --- Quay furniture ------------------------------------------------------------------------------------
+
+
+def _furniture_saved(project_id: str, section_id: str) -> dict | None:
+    """The section's furniture as last worked out (for Costing and the drawings)."""
+    path = store()._dir(project_id, section_id) / "furniture.json"
+    try:
+        return json.loads(path.read_text("utf-8")) if path.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _berth_geometry(project_id: str, section: Section) -> list[dict]:
+    """Element positions from the workbook, kept beside it until the next upload (reading the
+    workbook takes a few seconds)."""
+    summary = store().workbook_summary(project_id, section.id) or {}
+    key = [summary.get("version"), summary.get("uploaded_at")]
+    path = store()._dir(project_id, section.id) / "furniture_geometry.json"
+    try:
+        kept = json.loads(path.read_text("utf-8"))
+        if kept.get("key") == key:
+            return kept["geometry"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    wb = _workbook(project_id, section)
+    if wb is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first: the furniture is laid out on its beams and piles.")
+    geometry = section_geometry(wb)
+    store()._write_json(path, {"key": key, "geometry": geometry})
+    return geometry
+
+
+def _furniture(project_id: str, section_id: str) -> tuple[Project, Section, dict]:
+    project = _get(project_id)
+    section = _section(project, section_id)
+    geometry = _berth_geometry(project_id, section)
+    try:
+        res = furniture_mod.design(project, section, geometry)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from None
+    store()._write_json(store()._dir(project_id, section_id) / "furniture.json", res)
+    return project, section, res
+
+
+@app.get(SECTION + "/furniture")
+def section_furniture(project_id: str, section_id: str) -> dict:
+    """The Furniture tab: the project's furniture arranged along this section's berth, and designed."""
+    return _furniture(project_id, section_id)[2]
+
+
+@app.get(SECTION + "/furniture/calc.{fmt}")
+def furniture_calc(project_id: str, section_id: str, fmt: str) -> Response:
+    """The furniture calculation as Word, PDF or Excel."""
+    if fmt not in RENDERERS:
+        raise HTTPException(404, "Calculations are Word (.docx), PDF (.pdf) or Excel (.xlsx).")
+    project, section, res = _furniture(project_id, section_id)
+    render, media = RENDERERS[fmt]
+    name = drawings.safe_name(f"{project.info.name} {section.name} quay furniture").replace(" ", "_")
+    return Response(
+        render(furniture_report.build_calc(project, section, res)),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'},
+    )
+
+
+@app.get(SECTION + "/furniture/plan.{fmt}")
+def furniture_plan(project_id: str, section_id: str, fmt: str) -> Response:
+    """The berth's furniture plan and bolt patterns as an AutoCAD DXF, a drawings file (.crm) or a PNG."""
+    project, section, res = _furniture(project_id, section_id)
+    name = drawings.safe_name(f"{project.info.name} {section.name} furniture").replace(" ", "_")
+    if fmt == "png":
+        return Response(furniture_report.plan_png(res), media_type="image/png")
+    data = {
+        "format": drawings.FORMAT,
+        "project": project.info.name,
+        "section": section.name,
+        "units": "mm",
+        "view_prefix": project.drawings.revit_view_prefix,
+        "layers": furniture_report.LAYERS,
+        "views": furniture_report.views(res),
+    }
+    if fmt == "dxf":
+        return Response(
+            dxf.to_dxf(data),
+            media_type="application/dxf",
+            headers={"Content-Disposition": f'attachment; filename="{name}.dxf"'},
+        )
+    if fmt == "crm":
+        return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}.crm"'})
+    raise HTTPException(404, "The plan is .dxf, .crm or .png.")
