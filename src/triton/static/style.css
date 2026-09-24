@@ -175,3 +175,22 @@ table.cost tr.total td { font-weight: 600; border-top: 2px solid var(--line); }
 .combo-list .chip { padding: 3px 4px 3px 10px; }
 .combo-list .x { border: 0; background: none; color: var(--muted); padding: 0 4px; cursor: pointer; font-size: 15px; }
 .combo-list input { width: 12em; }
+tr.kind th { background: var(--bg); text-transform: capitalize; }
+tr.kind th .status { text-transform: none; font-weight: 400; margin-left: 8px; }
+tr.decided-accept td { opacity: 0.7; }
+tr.decided-reject td { opacity: 0.7; text-decoration: line-through; }
+button.on { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+td.nowrap { white-space: nowrap; }
+.sheet-view { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); z-index: 50; display: flex; padding: 24px; }
+.sheet-card { background: var(--panel); border-radius: 10px; padding: 16px; flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.sheet-grid { overflow: auto; flex: 1; border: 1px solid var(--line); }
+.sheet-grid table { border-collapse: collapse; font-size: 13px; }
+.sheet-grid th, .sheet-grid td { border: 1px solid var(--line); padding: 2px 6px; white-space: nowrap; }
+.sheet-grid th { background: var(--bg); position: sticky; top: 0; }
+.sheet-grid tr th:first-child { position: sticky; left: 0; }
+.sheet-grid tr.flag.error td { background: var(--err-bg); }
+.sheet-grid tr.flag.warning td { background: var(--warn-bg); }
+.sheet-grid tr.flag.info td { background: var(--accent-bg); }
+.sheet-grid td.edited { outline: 2px solid var(--accent); }
+.sheet-issues { margin: 8px 0; padding-left: 18px; max-height: 120px; overflow: auto; }
+@media (max-width: 700px) { .sheet-view { padding: 0; } }

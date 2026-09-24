@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import json
 import os
 import pickle
@@ -68,9 +70,14 @@ class ProjectStore:
         shutil.rmtree(self._dir(project_id, section_id), ignore_errors=True)
 
     def save_workbook(
-        self, project_id: str, section_id: str, filename: str, result: ImportResult
+        self, project_id: str, section_id: str, filename: str, result: ImportResult, replace: bool = True
     ) -> dict[str, Any]:
         d = self._dir(project_id, section_id)
+        raw, result.raw = result.raw, None
+        if replace:
+            shutil.rmtree(d / "raw", ignore_errors=True)
+        for name, rows in (raw or {}).items():
+            self._save_raw(d, name, rows)
         # Only this app writes these pickles, from workbooks the user uploaded.
         with (d / "workbook.pkl.tmp").open("wb") as f:
             pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -83,6 +90,25 @@ class ProjectStore:
     def workbook_summary(self, project_id: str, section_id: str) -> dict[str, Any] | None:
         path = self._dir(project_id, section_id) / "workbook.json"
         return json.loads(path.read_text("utf-8")) if path.exists() else None
+
+    @staticmethod
+    def _raw_path(d: Path, sheet: str) -> Path:
+        return d / "raw" / (hashlib.sha1(sheet.encode()).hexdigest()[:16] + ".pkl.gz")
+
+    def _save_raw(self, d: Path, sheet: str, rows: list) -> None:
+        path = self._raw_path(d, sheet)
+        path.parent.mkdir(exist_ok=True)
+        with gzip.open(path.with_suffix(".tmp"), "wb", compresslevel=3) as f:
+            pickle.dump(rows, f, protocol=pickle.HIGHEST_PROTOCOL)
+        path.with_suffix(".tmp").replace(path)
+
+    def load_raw(self, project_id: str, section_id: str, sheet: str) -> list | None:
+        """A sheet's rows as they were read, or None for workbooks uploaded before they were kept."""
+        path = self._raw_path(self._dir(project_id, section_id), sheet)
+        if not path.exists():
+            return None
+        with gzip.open(path, "rb") as f:
+            return pickle.load(f)
 
     def load_workbook(self, project_id: str, section_id: str) -> ImportResult | None:
         path = self._dir(project_id, section_id) / "workbook.pkl"

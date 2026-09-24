@@ -572,6 +572,7 @@ function checkerHtml() {
       <h2>Sheets found</h2>
       <div class="panel scroll"><table id="coverage"></table></div>
       <h2>Problems to review</h2>
+      <div id="review-bar" hidden></div>
       <div class="panel scroll"><table id="problems"></table></div>
       <div id="axes-block" hidden><h2>Directions of the actions</h2>
         <p class="status">Worked out from the results (shears against the moments' change, forces against depth). Confirm them against the Plaxis model.</p>
@@ -746,6 +747,7 @@ async function renderWorkbookTab(host) {
     };
     renderMapping(data, refresh);
     renderCombos(data, refresh);
+    renderReview(data, refresh, url);
     if (state.geometry?.uploaded !== data.uploaded_at) state.geometry = { uploaded: data.uploaded_at };
     const missing = data.elements.filter((e) => !(e in sec().elements));
     const box = document.getElementById("add-found");
@@ -1090,6 +1092,170 @@ function renderReport(d) {
     .map((a) => `<tr><th>${esc(a.element)}</th><td><span class="sev ${a.clear ? "ok" : "warning"}">${a.clear ? "clear" : "unclear"}</span></td><td>${esc(a.text)}</td></tr>`)
     .join("");
   document.getElementById("report").hidden = false;
+}
+
+// ---------------------------------------------------------------- warnings review
+// Every warning with what accepting and rejecting it does. Nothing that changes the numbers happens
+// before it is accepted; a rejected warning leaves its sheet (or element) out of the design.
+const rowRanges = (rows) => {
+  const out = [];
+  let a = null, b = null;
+  for (const r of [...rows].sort((x, y) => x - y)) {
+    if (a == null) a = b = r;
+    else if (r === b + 1) b = r;
+    else { out.push(a === b ? `${a}` : `${a}–${b}`); a = b = r; }
+  }
+  if (a != null) out.push(a === b ? `${a}` : `${a}–${b}`);
+  return out.join(", ");
+};
+
+function renderReview(data, refresh, url) {
+  const table = document.getElementById("problems");
+  const bar = document.getElementById("review-bar");
+  if (!table || !bar) return;
+  const p = sec();
+  p.review ??= {};
+  const reviewable = (i) => i.choices && i.choices.before !== "auto";
+  const list = data.issues.filter((i) => reviewable(i) || (i.severity !== "info" && !i.choices));
+  const kinds = [...new Set(list.map((i) => i.code))];
+  const draw = () => {
+    const decided = (i) => p.review[i.id];
+    const open = list.filter((i) => reviewable(i) && !decided(i)).length;
+    bar.hidden = false;
+    bar.innerHTML = `<div class="panel row">
+        <span><b>${open}</b> to review · ${list.filter((i) => decided(i) === "accept").length} accepted · ${list.filter((i) => decided(i) === "reject").length} rejected</span>
+        <button id="review-apply">Apply decisions</button><span class="status" id="review-status"></span>
+        <span style="flex:1"></span>
+        <a class="quiet-link" href="${url}/workbook/checker.xlsx">Download the Checker (Excel)</a></div>
+      <p class="status">Click a sheet name to open it at the flagged rows: fix cells there, or in the Checker in Excel and upload it again with “Replace matching tabs”.</p>`;
+    const rows = kinds
+      .map((code) => {
+        const items = list.filter((i) => i.code === code);
+        const c = items[0].choices;
+        const head = `<tr class="kind"><th colspan="3">${esc(code.replaceAll("_", " "))} (${items.length})
+          ${c ? `<span class="status">Accept: ${esc(c.accept)}${c.reject ? ` · Reject: ${esc(c.reject)}` : ""}</span>` : '<span class="status">Fix it in the workbook, the sheet mapping or the load combinations.</span>'}</th>
+          <th>${c ? `<button class="quiet" data-all="${esc(code)}" data-d="accept">Accept all</button>${c.reject ? ` <button class="quiet" data-all="${esc(code)}" data-d="reject">Reject all</button>` : ""}` : ""}</th></tr>`;
+        return head + items
+          .map((i) => {
+            const d = decided(i);
+            const where = i.sheet
+              ? `<a href="#" data-open="${esc(i.sheet)}">${esc(i.sheet)}</a>`
+              : esc([i.element, i.combination].filter(Boolean).join(" "));
+            const show3d = !i.sheet && i.element ? ` <a href="#" data-3d="${esc(i.element)}">3D view</a>` : "";
+            return `<tr class="${d ? `decided-${d}` : ""}"><td><span class="sev ${i.severity}">${i.severity}</span></td>
+              <td>${where}${show3d}${i.rows.length ? `<div class="rows">rows ${esc(rowRanges(i.rows))}</div>` : ""}</td>
+              <td>${esc(i.message)}</td>
+              <td class="nowrap">${reviewable(i) ? `<button class="quiet ${d === "accept" ? "on" : ""}" data-id="${i.id}" data-d="accept" title="${esc(i.choices.accept)}">Accept</button>
+                ${i.choices.reject ? `<button class="quiet ${d === "reject" ? "on" : ""}" data-id="${i.id}" data-d="reject" title="${esc(i.choices.reject)}">Reject</button>` : ""}` : ""}</td></tr>`;
+          })
+          .join("");
+      })
+      .join("");
+    table.innerHTML = list.length ? `<tr><th></th><th>Sheet</th><th>What was found</th><th></th></tr>${rows}` : "<tr><td>No problems found.</td></tr>";
+    const status = () => (bar.querySelector("#review-status").textContent = "Changed: press Apply decisions.");
+    table.querySelectorAll("[data-id]").forEach((b) => (b.onclick = () => {
+      const id = b.dataset.id;
+      if (p.review[id] === b.dataset.d) delete p.review[id];
+      else p.review[id] = b.dataset.d;
+      markDirty();
+      draw();
+      status();
+    }));
+    table.querySelectorAll("[data-all]").forEach((b) => (b.onclick = () => {
+      for (const i of list) if (i.code === b.dataset.all && reviewable(i)) p.review[i.id] = b.dataset.d;
+      markDirty();
+      draw();
+      status();
+    }));
+    table.querySelectorAll("[data-open]").forEach((a) => (a.onclick = (e) => {
+      e.preventDefault();
+      openSheet(url, a.dataset.open, refresh);
+    }));
+    table.querySelectorAll("[data-3d]").forEach((a) => (a.onclick = (e) => {
+      e.preventDefault();
+      state.pick3d = a.dataset["3d"];
+      location.hash = tabHash("view3d");
+    }));
+    bar.querySelector("#review-apply").onclick = async () => {
+      const st = bar.querySelector("#review-status");
+      st.textContent = "Saving…";
+      await save();
+      if (state.errors?.length) return (st.textContent = state.errors.map((e) => e.msg).join(" "));
+      st.textContent = "Checking the workbook again…";
+      await refresh();
+    };
+  };
+  draw();
+}
+
+// A sheet as read, in a grid: flagged rows highlighted with their reasons, cells editable. Saving
+// sends the changed cells; the sheet is read again and the workbook checked again.
+async function openSheet(url, name, refresh, start = null) {
+  document.getElementById("sheet-view")?.remove();
+  const box = document.createElement("div");
+  box.id = "sheet-view";
+  box.className = "sheet-view";
+  document.body.append(box);
+  const edits = new Map();
+  const colName = (i) => { let s = ""; for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s; return s; };
+  const load = async (from) => {
+    box.innerHTML = `<div class="sheet-card"><p class="status">Opening ${esc(name)}…</p></div>`;
+    const q = new URLSearchParams({ name });
+    if (from != null) q.set("start", from);
+    const d = await api(`${url}/workbook/sheet?${q}`);
+    const flagged = d.flagged_rows;
+    const body = d.rows
+      .map((r, k) => {
+        const n = d.start + k + 1;
+        const f = d.flags[n];
+        const sev = f ? (f.some((x) => x.severity === "error") ? "error" : f.some((x) => x.severity === "warning") ? "warning" : "info") : "";
+        const cells = Array.from({ length: d.width }, (_, c) => `<td ${d.editable ? 'contenteditable="true"' : ""} data-r="${n}" data-c="${c}">${esc(r[c] ?? "")}</td>`).join("");
+        return `<tr class="${sev ? `flag ${sev}` : ""}" ${f ? `title="${esc(f.map((x) => x.message).join("\n"))}"` : ""}><th>${n}</th>${cells}</tr>`;
+      })
+      .join("");
+    const next = flagged.find((r) => r > d.start + d.rows.length);
+    const prev = [...flagged].reverse().find((r) => r <= d.start);
+    box.innerHTML = `<div class="sheet-card">
+      <div class="row"><h3 style="margin:0">${esc(name)}</h3><span class="status">rows ${d.start + 1}–${d.start + d.rows.length} of ${d.total}</span>
+        <span style="flex:1"></span>
+        ${prev ? `<button class="quiet" data-go="${Math.max(0, prev - 6)}">Previous flagged</button>` : ""}
+        ${next ? `<button class="quiet" data-go="${Math.max(0, next - 6)}">Next flagged</button>` : ""}
+        ${d.start > 0 ? `<button class="quiet" data-go="${Math.max(0, d.start - 200)}">Up</button>` : ""}
+        ${d.start + d.rows.length < d.total ? `<button class="quiet" data-go="${d.start + 200}">Down</button>` : ""}
+        ${d.editable ? '<button id="sheet-save" disabled>Save edits</button>' : ""}
+        <button class="quiet" id="sheet-close">Close</button></div>
+      ${d.issues.length ? `<ul class="sheet-issues">${d.issues.map((i) => `<li><span class="sev ${i.severity}">${i.severity}</span> ${esc(i.message)}${i.rows.length ? ` <span class="rows">rows ${esc(rowRanges(i.rows))}</span>` : ""}</li>`).join("")}</ul>` : ""}
+      ${d.editable ? "" : '<p class="status">This workbook was uploaded before its rows were kept, so this shows the rows as cleaned and cannot be edited. Upload it again to edit here.</p>'}
+      <p class="status" id="sheet-status">${d.editable ? "Click a cell to change it. Highlighted rows are the flagged ones; hover for the reason." : ""}</p>
+      <div class="sheet-grid"><table><tr><th></th>${Array.from({ length: d.width }, (_, c) => `<th>${colName(c)}</th>`).join("")}</tr>${body}</table></div></div>`;
+    box.querySelector("#sheet-close").onclick = () => box.remove();
+    box.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => load(Number(b.dataset.go))));
+    const saveBtn = box.querySelector("#sheet-save");
+    box.querySelectorAll("td[contenteditable]").forEach((td) => (td.oninput = () => {
+      edits.set(`${td.dataset.r}|${td.dataset.c}`, { row: Number(td.dataset.r), col: Number(td.dataset.c), value: td.textContent });
+      td.classList.add("edited");
+      saveBtn.disabled = false;
+      box.querySelector("#sheet-status").textContent = `${edits.size} cell(s) changed: Save edits to read the sheet again.`;
+    }));
+    if (saveBtn)
+      saveBtn.onclick = async () => {
+        saveBtn.disabled = true;
+        box.querySelector("#sheet-status").textContent = "Saving and checking the workbook again…";
+        try {
+          await api(`${url}/workbook/sheet?${new URLSearchParams({ name })}`, { method: "PUT", body: JSON.stringify({ edits: [...edits.values()] }) });
+          edits.clear();
+          await refresh();
+          await load(d.start);
+          box.querySelector("#sheet-status").textContent = "Saved. The sheet was read again; the results are out of date until you redesign.";
+        } catch (e) {
+          box.querySelector("#sheet-status").textContent = e.message;
+          saveBtn.disabled = false;
+        }
+      };
+    const first = box.querySelector("tr.flag");
+    first?.scrollIntoView({ block: "center" });
+  };
+  await load(start);
 }
 
 // ---------------------------------------------------------------- design tab
@@ -1529,7 +1695,8 @@ async function renderView3dTab(host) {
   for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
   for (const b of res?.beams || []) max[b.element] = b.utilisation;
   for (const d of res?.slabs || []) max[d.element] = d.utilisation;
-  let selected = null;
+  let selected = state.pick3d && geo.elements.some((e) => e.element === state.pick3d) ? state.pick3d : null;
+  state.pick3d = null;
   const show = () => {
     const el = geo.elements.find((e) => e.element === selected);
     view.setScene({ elements: geo.elements, bands, selected,

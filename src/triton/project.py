@@ -1198,6 +1198,11 @@ class Section(_Model):
         description="The combinations this section's workbook should have. An upload is checked against "
         "them first, and sheets are mapped only to them.",
     )
+    review: dict[str, Literal["accept", "reject"]] = Field(
+        default_factory=dict,
+        title="Reviewed warnings",
+        description="The user's decision on each workbook warning, by its id.",
+    )
     combination_map: dict[str, str] = Field(
         default_factory=dict,
         title="Workbook combinations read as",

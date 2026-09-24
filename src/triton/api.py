@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ValidationError
 
-from . import adsec, durability, fresh
+from . import adsec, checker, durability, fresh
 from .costing import cost_project
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
@@ -39,6 +39,7 @@ from .project import (
 )
 from .reader import UnsupportedWorkbook
 from .report import RENDERERS, build_report
+from .review import choices
 from .store import ProjectNotFound, ProjectStore
 from .suggest import suggest
 from .validation import (
@@ -47,6 +48,7 @@ from .validation import (
     apply_mapping,
     apply_section,
     combination_check,
+    edit_sheet,
     import_workbook,
     merge_workbooks,
 )
@@ -447,7 +449,7 @@ def _keeper(project_id: str, section_id: str, mode: str) -> Callable[[str, Impor
         mapping = {k: v.model_dump() for k, v in section.sheet_map.items()}
         merged, what = merge_workbooks(old, result, mode, mapping)
         before = (store().workbook_summary(project_id, section_id) or {}).get("file") or "workbook"
-        store().save_workbook(project_id, section_id, f"{before} + {filename}", merged)
+        store().save_workbook(project_id, section_id, f"{before} + {filename}", merged, replace=False)
         return {**section_workbook(project_id, section_id), "merged": what}
 
     return keep
@@ -470,13 +472,36 @@ def _sheet_map(section: Section) -> dict[str, dict]:
     return {k: v.model_dump() for k, v in section.sheet_map.items()}
 
 
+def _sizes(section: Section) -> dict[str, str]:
+    """Which elements are alike, for the point-count check: piles by diameter, king piles by tube."""
+    out = {}
+    for name, e in section.elements.items():
+        if isinstance(e, PileInput):
+            out[name] = f"Ø{e.diameter:g} piles"
+        elif isinstance(e, CombiWallInput):
+            out[name] = f"Ø{e.tube_diameter:g} king piles"
+    return out
+
+
+def _view(raw: ImportResult, section: Section) -> ImportResult:
+    """The workbook as the section reads it."""
+    return apply_section(
+        raw,
+        _sheet_map(section),
+        section.combinations,
+        section.combination_map,
+        section.review,
+        _sizes(section),
+    )
+
+
 def _workbook(project_id: str, section: Section) -> ImportResult | None:
     """The section's stored workbook as the section reads it: its sheet mapping applied and each
     combination read as one of the section's load combinations."""
     wb = store().load_workbook(project_id, section.id)
     if wb is None:
         return None
-    return apply_section(wb, _sheet_map(section), section.combinations, section.combination_map)
+    return _view(wb, section)
 
 
 @app.get(SECTION + "/workbook")
@@ -488,7 +513,7 @@ def section_workbook(project_id: str, section_id: str) -> dict:
     raw = store().load_workbook(project_id, section_id)
     if raw is None:
         return summary
-    wb = apply_section(raw, _sheet_map(section), section.combinations, section.combination_map)
+    wb = _view(raw, section)
     summary = {**summary, **wb.summary(), "sheet_map": list(section.sheet_map)}
     check = combination_check(
         apply_mapping(raw, _sheet_map(section)), section.combinations, section.combination_map
@@ -496,6 +521,145 @@ def section_workbook(project_id: str, section_id: str) -> dict:
     summary["combination_check"] = check
     summary["suggestions"] = suggest(summary["sheets"], list(section.elements), section.combinations)
     return summary
+
+
+# --- Sheets as read, to see and edit where a warning is ----------------------------------------
+
+SHEET_PAGE = 200
+
+
+def _raw_sheet(project_id: str, section: Section, name: str) -> tuple[ImportResult, list]:
+    wb = store().load_workbook(project_id, section.id)
+    if wb is None:
+        raise HTTPException(404, "No workbook uploaded for this section yet.")
+    if not any(s.name == name for s in wb.sheets):
+        raise HTTPException(404, f"No sheet named '{name}' in this section's workbook.")
+    return wb, store().load_raw(project_id, section.id, name)
+
+
+def _cell(v):
+    if v is None or isinstance(v, (int, float, str, bool)):
+        return v
+    return str(v)
+
+
+@app.get(SECTION + "/workbook/sheet")
+def workbook_sheet(project_id: str, section_id: str, name: str, start: int | None = None) -> dict:
+    """A page of a sheet's rows as read, with the rows each warning points at; ``start`` is the
+    0-based row to begin at (default: a little above the first flagged row)."""
+    section = _section(_get(project_id), section_id)
+    wb, raw = _raw_sheet(project_id, section, name)
+    sheet = next(s for s in wb.sheets if s.name == name)
+    issues = [i for i in sheet.issues + wb.issues if i.sheet == name]
+    flags: dict[int, list[dict]] = {}
+    for i in issues:
+        for r in i.rows:
+            flags.setdefault(r, []).append(
+                {
+                    "id": i.id,
+                    "severity": i.severity.value,
+                    "message": i.message,
+                    "decision": section.review.get(i.id),
+                }
+            )
+    if raw is None:  # uploaded before the rows were kept: show the rows as cleaned
+        f = sheet.frame
+        cols = [c for c in f.columns if c != "excel_row"]
+        by_row = (
+            {int(r["excel_row"]): [_cell(r[c]) for c in cols] for _, r in f.iterrows()} if not f.empty else {}
+        )
+        last = max(by_row, default=0)
+        rows = [[*cols]] + [by_row.get(n, []) for n in range(2, last + 1)]
+        editable = False
+    else:
+        rows, editable = raw, True
+    first = min(flags, default=1) - 1
+    if start is None:
+        start = max(0, first - 5)
+    start = max(0, min(start, max(len(rows) - 1, 0)))
+    page = [[_cell(v) for v in r] for r in rows[start : start + SHEET_PAGE]]
+    width = max((len(r) for r in page), default=0)
+    return {
+        "name": name,
+        "start": start,
+        "total": len(rows),
+        "width": width,
+        "rows": page,
+        "flags": {str(k): v for k, v in flags.items()},
+        "flagged_rows": sorted(flags),
+        "issues": [
+            {**i.to_dict(), "choices": choices(i.code), "decision": section.review.get(i.id)} for i in issues
+        ],
+        "editable": editable,
+    }
+
+
+@app.get(SECTION + "/workbook/checker.xlsx")
+def workbook_checker(project_id: str, section_id: str) -> Response:
+    """The Checker: the sheets with warnings, flagged rows highlighted with the reason as a note."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    summary = section_workbook(project_id, section_id)
+    data = checker.build(
+        summary["issues"], lambda name: store().load_raw(project_id, section_id, name), section.review
+    )
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name} checker").strip("_")
+    return Response(
+        data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{name}.xlsx"'},
+    )
+
+
+class CellEdit(BaseModel):
+    row: int  # Excel row, 1-based
+    col: int  # column, 0-based
+    value: str | float | None = None
+
+
+class SheetEdits(BaseModel):
+    edits: list[CellEdit]
+
+
+def _value(v):
+    if isinstance(v, str):
+        t = v.strip()
+        if not t:
+            return None
+        try:
+            return float(t)
+        except ValueError:
+            return t
+    return v
+
+
+@app.put(SECTION + "/workbook/sheet")
+def edit_workbook_sheet(project_id: str, section_id: str, name: str, body: SheetEdits) -> dict:
+    """Change cells of a sheet as read; the sheet is cleaned and the workbook checked again, as if
+    the corrected workbook had been uploaded."""
+    section = _section(_get(project_id), section_id)
+    wb, raw = _raw_sheet(project_id, section, name)
+    if raw is None:
+        raise HTTPException(
+            409, "This workbook was uploaded before its rows were kept: upload it again to edit it."
+        )
+    rows = [list(r) for r in raw]
+    for e in body.edits:
+        if e.row < 1 or e.col < 0 or e.row > len(rows) + 1000 or e.col > 200:
+            raise HTTPException(422, f"Row {e.row}, column {e.col + 1} is outside the sheet.")
+        while len(rows) < e.row:
+            rows.append([])
+        r = rows[e.row - 1]
+        while len(r) <= e.col:
+            r.append(None)
+        r[e.col] = _value(e.value)
+    edited = edit_sheet(wb, name, rows)
+    summary = store().workbook_summary(project_id, section_id) or {}
+    filename = summary.get("file") or "workbook"
+    if not filename.endswith("(edited)"):
+        filename += " (edited)"
+    store().save_workbook(project_id, section_id, filename, edited, replace=False)
+    return section_workbook(project_id, section_id)
 
 
 # --- Design ------------------------------------------------------------------------------

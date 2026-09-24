@@ -23,6 +23,7 @@ _SECTION_OWN = {
     "costing",
     "combinations",
     "combination_map",
+    "review",
 }
 
 
@@ -38,6 +39,7 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         "load multipliers": _hash([f.model_dump(mode="json") for f in section.load_factors]),
         "sheet mapping": _hash({k: v.model_dump(mode="json") for k, v in section.sheet_map.items()}),
         "load combinations": _hash([section.combinations, section.combination_map]),
+        "reviewed warnings": _hash(sorted(section.review.items())),
         "workbook": _hash([(workbook or {}).get(k) for k in ("version", "uploaded_at")]),
     }
     for name, element in section.elements.items():
@@ -56,7 +58,7 @@ def changes(results: dict[str, Any], now: dict[str, str]) -> list[str] | None:
         if then.get(part) == now.get(part):
             continue
         if part not in then:
-            if part == "load combinations":
+            if part in ("load combinations", "reviewed warnings"):
                 continue  # designed before combinations were defined per section
             out.append(f"{part} (added)")
         elif part not in now:
