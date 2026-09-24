@@ -208,6 +208,53 @@ def evenly(length: float, end: float, spacing: float) -> list[float]:
     return [end + i * run / (n - 1) for i in range(n)]
 
 
+def ladder_spots(fenders: list[float], spacing: float, length: float) -> list[float]:
+    """Midway between fenders, in every gap that keeps them no more than ``spacing`` apart."""
+    if len(fenders) < 2:
+        return evenly(length, min(5.0, length / 4), spacing)
+    gaps = [(a + b) / 2 for a, b in zip(fenders, fenders[1:], strict=False)]
+    gap = (fenders[-1] - fenders[0]) / (len(fenders) - 1)
+    every = max(1, int(spacing / gap + 1e-9))
+    picks = gaps[::every]
+    if gaps[-1] not in picks and length - picks[-1] > spacing / 2:
+        picks.append(gaps[-1])
+    return picks
+
+
+def stow_spots(f: QuayFurniture, sf: SectionFurniture) -> list[float]:
+    if sf.stow_positions:
+        return list(sf.stow_positions)
+    st = f.crane_stoppers
+    start = st.end_distance + st.base_length / 1000 if st else 1.0
+    return [start + f.storm_pins.crane_width * (i + 0.5) for i in range(f.storm_pins.cranes)]
+
+
+def nominal(f: QuayFurniture, sf: SectionFurniture, length: float) -> list[dict[str, Any]]:
+    """Where the items go at their spacing, before anything moves them: what the expansion joints
+    keep clear of."""
+    if not sf.use or length <= 0:
+        return []
+    out: list[tuple[str, float]] = []
+    fenders = evenly(length, f.fenders.end_distance, f.fenders.spacing) if f.fenders else []
+    out += [("Fender", s) for s in fenders]
+    if f.ladders:
+        out += [("Ladder", s) for s in ladder_spots(fenders, f.ladders.spacing, length)]
+    if f.bollards:
+        out += [("Bollard", s) for s in evenly(length, f.bollards.end_distance, f.bollards.spacing)]
+    if f.crane_rails and f.crane_stoppers:
+        half = f.crane_stoppers.base_length / 2000
+        out += [("Crane stopper", f.crane_stoppers.end_distance + half)]
+        out += [("Crane stopper", length - f.crane_stoppers.end_distance - half)]
+    if f.crane_rails and f.storm_pins and f.storm_pins.cranes:
+        out += [("Storm pin", s) for s in stow_spots(f, sf)]
+    return [{"name": n, "chainage": round(c, 3)} for n, c in out if 0 <= c <= length]
+
+
+def positions_for(project: Project, section: Section):
+    """``nominal`` for this section, as the expansion joints ask for it (by berth length)."""
+    return lambda length: nominal(project.furniture, section.furniture, length)
+
+
 def pile_heads(frame: dict[str, Any], length: float) -> list[dict[str, float]]:
     """Every pile head along the berth: the model's piles repeated at each pile line's spacing."""
     out = []
@@ -230,9 +277,11 @@ def pile_heads(frame: dict[str, Any], length: float) -> list[dict[str, float]]:
     return out
 
 
-def joints_of(frame: dict[str, Any], sf: SectionFurniture, length: float) -> tuple[list[float], str]:
-    if sf.joints:
-        return sorted(j for j in sf.joints if 0 < j < length), "given for this section"
+def joints_of(
+    frame: dict[str, Any], joints: list[float] | None, length: float, joints_from: str = ""
+) -> tuple[list[float], str]:
+    if joints is not None:
+        return sorted(j for j in joints if 0 < j < length), joints_from or "the expansion joint layout"
     sp = frame["front_beam"]["joint_spacing_m"]
     return [k * sp for k in range(1, int(length / sp + 1e-9) + 1) if k * sp < length - 1e-6], (
         f"every {sp:g} m (the front beam's length between joints)"
@@ -296,10 +345,17 @@ def _place(it: Item, placed, joints, heads, rails, rules, length: float) -> Item
     return it
 
 
-def arrange(f: QuayFurniture, sf: SectionFurniture, frame: dict[str, Any], length: float) -> dict[str, Any]:
+def arrange(
+    f: QuayFurniture,
+    sf: SectionFurniture,
+    frame: dict[str, Any],
+    length: float,
+    joints: list[float] | None = None,
+    joints_from: str = "",
+) -> dict[str, Any]:
     rules = f.rules
     heads = pile_heads(frame, length)
-    joints, joints_from = joints_of(frame, sf, length)
+    joints, joints_from = joints_of(frame, joints, length, joints_from)
     fb = frame["front_beam"]
     rail_f = rail_r = None
     rails: list[tuple[float, float]] = []
@@ -338,16 +394,7 @@ def arrange(f: QuayFurniture, sf: SectionFurniture, frame: dict[str, Any], lengt
         la = f.ladders
         half = la.recess / 2000
         depth = 0.2 + la.anchors.embedment / 1000
-        fender_s = [i.s for i in out.get("fenders", [])]
-        if len(fender_s) >= 2:
-            gaps = [(a + b) / 2 for a, b in zip(fender_s, fender_s[1:], strict=False)]
-            gap = (fender_s[-1] - fender_s[0]) / (len(fender_s) - 1)
-            every = max(1, int(la.spacing / gap + 1e-9))
-            picks = gaps[::every]
-            if gaps[-1] not in picks and length - picks[-1] > la.spacing / 2:
-                picks.append(gaps[-1])
-        else:
-            picks = evenly(length, min(5.0, length / 4), la.spacing)
+        picks = ladder_spots([i.s for i in out.get("fenders", [])], la.spacing, length)
         items = []
         for s in picks:
             items.append(
@@ -503,8 +550,15 @@ def assumptions(f: QuayFurniture) -> list[str]:
     return out
 
 
-def design(project: Project, section: Section, geometry: list[dict[str, Any]]) -> dict[str, Any]:
-    """Arrangement and design of the project's furniture on this section's berth."""
+def design(
+    project: Project,
+    section: Section,
+    geometry: list[dict[str, Any]],
+    joints: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Arrangement and design of the project's furniture on this section's berth. ``joints``: the
+    section's expansion joint layout (``joints.section_joints``); without one, a joint at each of the
+    front beam's lengths between joints."""
     f: QuayFurniture = project.furniture
     sf: SectionFurniture = section.furniture
     if not sf.use:
@@ -515,7 +569,17 @@ def design(project: Project, section: Section, geometry: list[dict[str, Any]]) -
     front = fd.Beam(fb["width_mm"], fb["depth_mm"], fb["concrete"], fb["name"])
     rear = frame["rear_beam"]
     rear_beam = fd.Beam(rear["width_mm"], rear["depth_mm"], rear["concrete"], rear["name"]) if rear else None
-    lay = arrange(f, sf, frame, length)
+    placed = None
+    placed_from = ""
+    if joints and joints.get("segments"):
+        placed = [j["chainage"] for j in joints["joints"]]
+        placed_from = "the expansion joint layout (Sections tab)"
+        if abs(joints["berth_length_m"] - length) > 0.01:
+            frame["notes"].append(
+                f"The expansion joints are laid along {joints['berth_length_m']:g} m of berth, the furniture along "
+                f"{length:g} m."
+            )
+    lay = arrange(f, sf, frame, length, placed, placed_from)
     items: list[dict[str, Any]] = []
     if f.fenders:
         items.append(fd.fender(f.fenders, front))

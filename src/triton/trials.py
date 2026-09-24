@@ -21,6 +21,7 @@ from typing import Any
 from . import fresh
 from .alignment import combine_parts
 from .costing import cost_section, model_length, slab_links
+from .furniture import positions_for
 from .design.runner import run_section
 from .materials import STEEL_DENSITY
 from .project import BeamInput, PileInput, Project, Section, SlabInput
@@ -290,7 +291,9 @@ def run(
             continue
         if tell:
             tell(i / max(len(sizes), 1), f"Designing {name} at {size_label(size)}")
-        res = run_section(project.design, trial, workbook, only=[name])
+        res = run_section(
+            project.design, trial, workbook, only=[name], furniture_at=positions_for(project, trial)
+        )
         # A corner berth's parts as one design: the worst utilisation, the steel over all of them.
         design = next((e for e in combine_parts(res).get(kind) or [] if e["element"] == name), None)
         if design is None:
@@ -611,7 +614,9 @@ def run_scenarios(
             continue
         if tell:
             tell(i / max(len(todo), 1), f"Designing {name} ({variant_label(variant, section)})")
-        res = run_section(project.design, vs, workbook, only=[name])
+        res = run_section(
+            project.design, vs, workbook, only=[name], furniture_at=positions_for(project, vs)
+        )
         design = next((e for k in DESIGN_KINDS for e in res.get(k) or [] if e["element"] == name), None)
         if design is None:
             _mark_no_results(d, key)

@@ -13,7 +13,7 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
-from .project import Project, Section
+from .project import BeamInput, Project, Section, SlabInput
 
 _SECTION_OWN = {
     "id",
@@ -31,7 +31,19 @@ _SECTION_OWN = {
     "clashes",
     "checks",
     "furniture",
+    "displacements",
+    "joints",
 }
+
+
+def _furniture_spots(project: Project, section: Section) -> list | None:
+    """The quay furniture's positions the joints keep clear of (the joints set the restraint length)."""
+    from .furniture import nominal
+
+    if section.joints.furniture:
+        return None  # positions given for the section, already in its joints
+    berth = sum(section.joints.runs) or section.costing.berth_length or 0.0
+    return nominal(project.furniture, section.furniture, berth)
 
 
 def _hash(value: Any) -> str:
@@ -41,7 +53,7 @@ def _hash(value: Any) -> str:
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
     """What the design of a section depends on, part by part, as short hashes."""
     parts = {
-        "design settings": _hash(project.design.model_dump(mode="json")),
+        "design settings": _hash(project.design.model_dump(mode="json", exclude={"joints"})),
         "working zone and peaks": _hash(section.model_dump(mode="json", exclude=_SECTION_OWN)),
         "load multipliers": _hash([f.model_dump(mode="json") for f in section.load_factors]),
         "sheet mapping": _hash({k: v.model_dump(mode="json") for k, v in section.sheet_map.items()}),
@@ -49,6 +61,22 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         "reviewed warnings": _hash(sorted(section.review.items())),
         "workbook": _hash([(workbook or {}).get(k) for k in ("version", "uploaded_at")]),
     }
+    joints = project.design.joints
+    plates = any(isinstance(e, (BeamInput, SlabInput)) for e in section.elements.values())
+    if joints.use_in_restraint and plates:
+        # The joint layout sets the beams' and slabs' restraint length: its rules, the section's runs
+        # (or the berth length on the Costing tab when no runs are given) and the furniture priced
+        # each. A section with no beam or slab does not use it, so its costing stays out of the design.
+        c = section.costing
+        parts["expansion joints"] = _hash(
+            [
+                joints.model_dump(mode="json"),
+                section.joints.model_dump(mode="json"),
+                None if section.joints.runs else c.berth_length,
+                [i.model_dump(mode="json") for i in c.items if i.unit == "each"],
+                _furniture_spots(project, section),
+            ]
+        )
     for name, element in section.elements.items():
         cage = section.user_cages.get(name) or section.beam_cages.get(name) or section.slab_strips.get(name)
         own = element.model_dump(mode="json")
@@ -70,8 +98,8 @@ def _diff(then: dict[str, str], now: dict[str, str]) -> list[str]:
         if then.get(part) == now.get(part):
             continue
         if part not in then:
-            if part in ("load combinations", "reviewed warnings"):
-                continue  # designed before combinations were defined per section
+            if part in ("load combinations", "reviewed warnings", "expansion joints"):
+                continue  # designed before these were kept
             out.append(f"{part} (added)")
         elif part not in now:
             out.append(f"{part} (removed)")

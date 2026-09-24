@@ -217,10 +217,10 @@ def test_the_berth_frame_and_arrangement():
 def test_section_berth_details():
     p = project()
     s = p.sections[0]
-    s.furniture.joints = [100.0, 200.0]
     s.furniture.stow_positions = [50.0]
     s.furniture.no_tie_rods = True
-    res = F.design(p, s, geometry())
+    layout = {"segments": [1], "berth_length_m": 300.0, "joints": [{"chainage": 100.0}, {"chainage": 200.0}]}
+    res = F.design(p, s, geometry(), layout)
     assert res["layout"]["joints_m"] == [100.0, 200.0]
     assert [x["tag"] for x in res["layout"]["items"]["storm_pins"]] == ["front rail", "rear rail"]
     assert "tie_rods" not in res["layout"]["counts"]
@@ -273,3 +273,31 @@ def test_no_workbook_says_so(tmp_path, monkeypatch):
     store().save(p)
     r = TestClient(app).get(f"/api/projects/{p.id}/sections/{p.sections[0].id}/furniture")
     assert r.status_code == 409 and "workbook" in r.json()["detail"]
+
+
+def test_the_joints_keep_clear_of_the_furniture_and_the_furniture_of_the_joints():
+    from triton.joints import section_joints
+
+    p = project()
+    s = p.sections[0]
+    at = F.positions_for(p, s)
+    spots = at(300.0)
+    assert {x["name"] for x in spots} >= {"Fender", "Bollard", "Ladder", "Crane stopper", "Storm pin"}
+    layout = section_joints(p.design, s, {}, None, "Y", at)
+    assert "Furniture tab" in layout["furniture_from"]
+    res = F.design(p, s, geometry(), layout)
+    assert res["layout"]["joints_m"] == [j["chainage"] for j in layout["joints"]]
+    assert "expansion joint layout" in res["layout"]["joints_from"]
+    for j in layout["joints"]:
+        assert all(
+            abs(j["chainage"] - x["chainage"]) >= p.design.joints.furniture_clearance - 1e-6 for x in spots
+        )
+    # The joints keep 1.5 m from the items' centres; a fender's flange is wider, so the odd one is still
+    # listed where king piles stop it moving.
+    near = [
+        it
+        for v in res["layout"]["items"].values()
+        for it in v
+        if any("expansion joint" in c for c in it["clashes"])
+    ]
+    assert len(near) <= 1

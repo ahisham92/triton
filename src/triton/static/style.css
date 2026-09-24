@@ -411,3 +411,8 @@ table.strip-table td:first-child { min-width: 150px; }
 .cl-svg.picking [data-bar], .cl-svg.picking [data-pile] { cursor: pointer; }
 .cl-3d { width: 100%; height: 360px; display: block; touch-action: none; cursor: grab; }
 tr.on td { background: var(--accent-bg); }
+
+/* Displacements typed in per section */
+.ok-chip { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
+.fail-chip { background: var(--err-bg); color: var(--err); border-color: transparent; }
+.disp-table input { width: 100%; min-width: 7em; }

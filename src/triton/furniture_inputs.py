@@ -310,12 +310,6 @@ class SectionFurniture(_Model):
     berth_length: float | None = _m(
         "Berth length", None, gt=0, description="Empty: the Costing berth length, else the model's length."
     )
-    joints: list[float] = Field(
-        default_factory=list,
-        title="Expansion joints at",
-        description="Distances from the berth start. Empty: at the joint spacing of the front beam.",
-        json_schema_extra={"unit": "m"},
-    )
     stow_positions: list[float] = Field(
         default_factory=list,
         title="Crane stow positions at",

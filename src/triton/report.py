@@ -145,6 +145,7 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     _introduction(r, project, section, results, detail)
     _criteria(r, project.design, section, results)
     _sections(r, section, results)
+    _displacements(r, section)
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
         for p in results.get("piles", []):
@@ -389,6 +390,46 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
             ["Load multiplier", "Sheets"],
             [[f"× {f.factor:g}", ", ".join(f.sheets)] for f in factors if getattr(f, "sheets", None)],
         )
+    _joints(r, s, res.get("joints"))
+
+
+def _joints(r: Report, s: DesignSettings, j: dict | None) -> None:
+    """2.6: where the expansion joints are and the segment lengths the restraint checks use."""
+    if not j or not j.get("segments"):
+        return
+    rules = s.joints
+    r.h(2, "2.6 Expansion joints")
+    r.p(
+        f"The berth ({j['berth_length_m']:.1f} m, from {j.get('runs_from', 'the inputs')}) is split by "
+        f"{len(j['joints'])} expansion joints into segments of at most {rules.max_segment:g} m and at least "
+        f"{rules.min_segment:g} m, as nearly equal as possible"
+        + (
+            ", mid-way between two rows of piles"
+            if j.get("position") == "midway"
+            else ", at a doubled row of piles"
+            if j.get("position") == "at_row"
+            else ""
+        )
+        + (
+            f", at least {rules.furniture_clearance:g} m clear of the quay furniture"
+            if rules.furniture_clearance and j.get("furniture")
+            else ""
+        )
+        + (", with a joint at each corner" if rules.at_corners and len(j.get("runs") or []) > 1 else "")
+        + "."
+        + (
+            " Each beam and slab's restraint check takes the longest segment of its part of the berth as the "
+            "length between movement joints."
+            if rules.use_in_restraint
+            else ""
+        )
+    )
+    r.table(
+        ["Segment", "From (m)", "To (m)", "Length (m)"],
+        [[g["name"], f"{g['start']:.1f}", f"{g['end']:.1f}", f"{g['length']:.1f}"] for g in j["segments"]],
+    )
+    for w in j.get("warnings") or []:
+        r.note(w)
 
 
 def _limit(element: Any) -> float | None:
@@ -779,6 +820,30 @@ def _steel_summary(r: Report, res: dict) -> None:
         )
 
 
+def _displacements(r: Report, section: Section) -> None:
+    """The displacements typed in as received from the geotechnical team, against their limits."""
+    rows = [
+        [
+            d.what,
+            d.combination,
+            d.value,
+            "–" if d.limit is None else d.limit,
+            "No limit" if d.passed is None else "OK" if d.passed else "NOT OK",
+            d.source,
+        ]
+        for d in section.displacements
+    ]
+    if not rows:
+        return
+    r.h(2, "3.5 Displacements")
+    r.p(
+        "Displacements of the section as received from the geotechnical team, checked against their limits "
+        "(the value's magnitude against the limit)."
+    )
+    r.caption("Table 3-7: Displacements")
+    r.table(["What", "Combination or phase", "Displacement (mm)", "Limit (mm)", "Check", "Source"], rows)
+
+
 def _sets(r: Report, sets: list[dict], title: str) -> None:
     for st in sets or []:
         head = f"{title}, {st.get('top', '')} to {st.get('bottom', '')} m, {st.get('cage', '')}"
@@ -1155,6 +1220,20 @@ def _beam(r: Report, b: dict) -> None:
     if rows:
         r.h(3, "Crack widths")
         r.table(["Check", "Face", "wk mm", "Limit mm", "σs MPa", "sr,max mm", "Result"], rows)
+    segs = (b.get("restraint") or {}).get("segments") or []
+    if len(segs) > 1:
+        r.p("Restraint crack width for each segment length between expansion joints the beam runs through:")
+        r.table(
+            ["Segment length m", "R", "Top wk mm", "Bottom wk mm", "Side wk mm"],
+            [
+                [
+                    g["length_m"],
+                    g["R"],
+                    *[(g["faces"].get(f) or {}).get("wk") for f in ("top", "bottom", "side")],
+                ]
+                for g in segs
+            ],
+        )
     sh = b.get("shear") or {}
     if sh.get("link"):
         r.h(3, "Links")

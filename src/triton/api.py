@@ -43,11 +43,12 @@ from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
-from .design.runner import factored_elements, run_section, section_alignment
+from .design.runner import along_axis, factored_elements, run_section, section_alignment
 from .design.spw import workbook as spw_workbook
 from .elements import ElementType
 from .geometry import section_geometry
 from .importer import is_header
+from .joints import joints_drawing, section_joints
 from .materials import catalogue
 from .project import (
     CombiWallInput,
@@ -328,6 +329,7 @@ def _model(p: Project) -> dict:
     for s in d["sections"]:
         s.pop("costing", None)
         s.pop("checks", None)  # the checker's status is not a design input
+        s.pop("displacements", None)  # typed in as received, checked as they are
         s.pop("user_cages", None)  # set on the Design tab, then checked
         s.pop("beam_cages", None)
         s.pop("slab_strips", None)
@@ -1156,7 +1158,15 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
     only = None if body.elements is None else [n for n in body.elements if n]
     deadline = time.monotonic() + body.budget_s if body.budget_s else None
     with _Progress(f"design-{project_id}-{section_id}") as tell:
-        new = run_section(project.design, section, workbook, tell, only=only, deadline=deadline)
+        new = run_section(
+            project.design,
+            section,
+            workbook,
+            tell,
+            only=only,
+            deadline=deadline,
+            furniture_at=furniture_mod.positions_for(project, section),
+        )
         summary = store().workbook_summary(project_id, section_id)
         now = fresh.fingerprint(project, section, summary)
         old = store().load_results(project_id, section_id)
@@ -1763,6 +1773,39 @@ def geometry(project_id: str, section_id: str) -> dict:
     return {"elements": elements, "axes": wb.summary()["axes"], "alignment": alignment}
 
 
+@app.get(SECTION + "/joints")
+def expansion_joints(project_id: str, section_id: str) -> dict:
+    """Where the expansion joints go along the section's berth (Design settings' rules)."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    wb = _workbook(project_id, section)
+    raw, parts = {}, []
+    if wb is not None:
+        sheets = factored_elements(section, wb)
+        parts, _ = section_alignment(section, sheets)
+        raw = wb.elements()
+    return section_joints(
+        project.design, section, raw, parts, along_axis(section), furniture_mod.positions_for(project, section)
+    )
+
+
+@app.get(SECTION + "/joints.dxf")
+def expansion_joints_dxf(project_id: str, section_id: str) -> Response:
+    """The expansion joint layout as an AutoCAD DXF: the berth laid out straight, 1:1 in mm."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    layout = expansion_joints(project_id, section_id)
+    if not layout.get("segments"):
+        raise HTTPException(409, layout.get("text") or "No joint layout yet.")
+    title = f"{project.info.name} - {section.name} - expansion joints"
+    name = f"{project.info.name} {section.name} expansion joints".replace('"', "")
+    return Response(
+        dxf.to_dxf(joints_drawing(layout, project.drawings, title)),
+        media_type="application/dxf",
+        headers={"Content-Disposition": f'attachment; filename="{name}.dxf"'},
+    )
+
+
 def _king_piles(section: Section, wb) -> list[tuple[float, float, float]]:
     """Plan position and radius (m) of every combi wall king pile in the section's workbook."""
     out = []
@@ -1836,12 +1879,47 @@ def _berth_geometry(project_id: str, section: Section) -> list[dict]:
     return geometry
 
 
+def _joints_for_furniture(project_id: str, project: Project, section: Section) -> dict | None:
+    """The section's expansion joint layout, kept until its inputs change (it reads the workbook)."""
+    summary = store().workbook_summary(project_id, section.id) or {}
+    key = hashlib.sha1(
+        json.dumps(
+            [
+                summary.get("version"),
+                summary.get("uploaded_at"),
+                project.design.joints.model_dump(mode="json"),
+                section.joints.model_dump(mode="json"),
+                section.costing.model_dump(mode="json"),
+                section.alignment.model_dump(mode="json"),
+                project.furniture.model_dump(mode="json"),
+                section.furniture.model_dump(mode="json"),
+            ],
+            sort_keys=True,
+            default=str,
+        ).encode()
+    ).hexdigest()
+    path = store()._dir(project_id, section.id) / "furniture_joints.json"
+    try:
+        kept = json.loads(path.read_text("utf-8"))
+        if kept.get("key") == key:
+            return kept["layout"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        layout = expansion_joints(project_id, section.id)
+    except HTTPException:
+        return None
+    store()._write_json(path, {"key": key, "layout": layout})
+    return layout
+
+
 def _furniture(project_id: str, section_id: str) -> tuple[Project, Section, dict]:
     project = _get(project_id)
     section = _section(project, section_id)
     geometry = _berth_geometry(project_id, section)
+    joints = _joints_for_furniture(project_id, project, section)
     try:
-        res = furniture_mod.design(project, section, geometry)
+        res = furniture_mod.design(project, section, geometry, joints)
     except ValueError as e:
         raise HTTPException(409, str(e)) from None
     store()._write_json(store()._dir(project_id, section_id) / "furniture.json", res)
