@@ -2134,14 +2134,14 @@ async function renderDesignTab(host) {
       <div class="row pick-row" id="design-pick"></div>
       <div class="row">
       <button id="run-design" ${units.length ? "" : "disabled"}>Design</button>
+      <span class="status" id="design-status">${units.length ? "" : "Add pile, combi wall, beam or slab elements first."}</span>
+      </div>
+      <div class="row pick-row" id="export-pick" hidden></div>
+      <div class="row export-links">
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download bars for Revit (JSON: pile and infill cages, beams, slab)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
       <span class="reports" id="drawings" hidden>Drawings:
-        <select id="drawing-element"><option value="">All elements</option>${units
-          .filter((n) => section.elements[n].kind !== "sheet_pile_wall")
-          .map((n) => `<option>${esc(n)}</option>`)
-          .join("")}</select>
         <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
         <a class="quiet-link" data-draw="json" href="#">Revit (drawings file)</a>
         <a class="quiet-link" href="#" id="drawing-help">How to open in Revit</a>
@@ -2153,7 +2153,6 @@ async function renderDesignTab(host) {
         <a class="quiet-link" data-fmt="xlsx" href="#">Excel</a>
       </span>
       ${Object.values(section.elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
-      <span class="status" id="design-status">${units.length ? "" : "Add pile, combi wall, beam or slab elements first."}</span>
       </div>
       <div data-slot="design-${esc(section.id)}"></div>
     </div><div id="design-out"></div>`;
@@ -2405,6 +2404,66 @@ function drawingHelp() {
   document.getElementById("drawings").closest(".panel").after(box);
 }
 
+// One pick of elements for every download in the export row: All, or only the ticked ones
+// (?elements=A,B on each link), so one element can be exported without the whole section.
+function wireExportPick(names, steelOnly, anyCages) {
+  const box = document.getElementById("export-pick");
+  if (!box) return;
+  const id = sec().id;
+  const url = secUrl();
+  state.exportPick ??= {};
+  const detail = document.getElementById("report-detail");
+  const draw = () => {
+    const picked = state.exportPick[id]?.filter((n) => names.includes(n)) ?? null;
+    box.hidden = names.length < 2;
+    box.innerHTML = `<span>Export</span>
+      <label class="chip"><input type="checkbox" data-pick="*" ${picked ? "" : "checked"}> All</label>
+      ${names
+        .map((n) => `<label class="chip"><input type="checkbox" data-pick="${esc(n)}" ${picked?.includes(n) ? "checked" : ""}> ${esc(n)}</label>`)
+        .join("")}
+      <span class="status">${
+        picked ? `The downloads below hold ${picked.length === 1 ? esc(picked[0]) : `these ${picked.length} elements`} only.` : "The downloads below hold every designed element."
+      }</span>`;
+    box.querySelectorAll("[data-pick]").forEach(
+      (c) =>
+        (c.onchange = () => {
+          const n = c.dataset.pick;
+          const now = new Set(picked || []);
+          if (n === "*") now.clear();
+          else if (c.checked) now.add(n);
+          else now.delete(n);
+          state.exportPick[id] = now.size && now.size < names.length ? names.filter((x) => now.has(x)) : null;
+          draw();
+        })
+    );
+    const q = picked ? `elements=${encodeURIComponent(picked.join(","))}` : "";
+    const link = (path, more = "") => {
+      const query = [more, q].filter(Boolean).join("&");
+      return `${url}/design/${path}${query ? `?${query}` : ""}`;
+    };
+    // The sheet pile wall has only governing sets and reports: no bars, AdSec files or drawings.
+    const bars = anyCages && !(picked && picked.every((n) => steelOnly.has(n)));
+    const setHref = (elId, path) => {
+      const a = document.getElementById(elId);
+      if (!a) return;
+      a.href = link(path);
+      a.hidden = !bars;
+    };
+    setHref("cages", "cages.json");
+    setHref("ads", "adsec.zip");
+    const sets = document.getElementById("sets");
+    if (sets) sets.href = link("governing.xlsx");
+    document.querySelectorAll("#reports a[data-fmt]").forEach((a) => (a.href = link(`report.${a.dataset.fmt}`, `detail=${detail.value}`)));
+    const dr = document.getElementById("drawings");
+    if (dr) {
+      dr.hidden = !bars;
+      dr.querySelectorAll("a[data-draw]").forEach((a) => (a.href = link(`drawings.${a.dataset.draw}`)));
+    }
+  };
+  if (detail) detail.onchange = draw;
+  draw();
+}
+
 function drawResults(res, full = res) {
   const out = document.getElementById("design-out");
   const walls = res.combi_walls || [];
@@ -2417,28 +2476,14 @@ function drawResults(res, full = res) {
   const ads = document.getElementById("ads");
   if (ads) ads.hidden = !anyCages;
   const reports = document.getElementById("reports");
-  if (reports) {
-    reports.hidden = false;
-    const detail = document.getElementById("report-detail");
-    const setLinks = () =>
-      reports.querySelectorAll("a[data-fmt]").forEach((a) => {
-        a.href = `${secUrl()}/design/report.${a.dataset.fmt}?detail=${detail.value}`;
-      });
-    detail.onchange = setLinks;
-    setLinks();
-  }
+  if (reports) reports.hidden = false;
   const sets = document.getElementById("sets");
   if (sets) sets.hidden = !anyCages && !(full.sheet_pile_walls || []).length;
   const draw = document.getElementById("drawings");
+  if (draw) draw.hidden = !anyCages;
+  const exported = ["piles", "combi_walls", "sheet_pile_walls", "beams", "slabs"].flatMap((k) => (full[k] || []).map((x) => x.element));
+  wireExportPick(exported, new Set((full.sheet_pile_walls || []).map((x) => x.element)), anyCages);
   if (draw) {
-    draw.hidden = !anyCages;
-    const pick = document.getElementById("drawing-element");
-    const setLinks = () =>
-      draw.querySelectorAll("a[data-draw]").forEach((a) => {
-        a.href = `${secUrl()}/design/drawings.${a.dataset.draw}${pick.value ? `?element=${encodeURIComponent(pick.value)}` : ""}`;
-      });
-    pick.onchange = setLinks;
-    setLinks();
     document.getElementById("drawing-help").onclick = (e) => {
       e.preventDefault();
       drawingHelp();

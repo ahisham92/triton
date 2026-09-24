@@ -1052,51 +1052,84 @@ def section_results(project_id: str, section_id: str) -> dict:
     return _results(project_id, section_id)[2]
 
 
+def _picked(section: Section, results: dict, elements: str | None) -> tuple[Section, dict, str]:
+    """Only the elements picked for an export (comma list; empty = all), with a file name suffix."""
+    names = [n.strip() for n in (elements or "").split(",") if n.strip()]
+    if not names:
+        return section, results, ""
+    unknown = [n for n in names if n not in section.elements]
+    if unknown:
+        raise HTTPException(404, f"No element named {', '.join(unknown)} in {section.name}.")
+    keep = set(names)
+    out = {
+        k: [x for x in v if not (isinstance(x, dict) and "element" in x) or x["element"] in keep]
+        if isinstance(v, list)
+        else v
+        for k, v in results.items()
+    }
+    if isinstance(results.get("element_inputs"), dict):
+        out["element_inputs"] = {n: v for n, v in results["element_inputs"].items() if n in keep}
+    picked = section.model_copy(update={"elements": {n: e for n, e in section.elements.items() if n in keep}})
+    return picked, out, " " + " ".join(names) if len(names) <= 3 else f" {len(names)} elements"
+
+
+def _file_name(*parts: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", " ".join(parts)).strip("_") or "project"
+
+
 @app.get(SECTION + "/design/cages.json")
-def pile_cage_export(project_id: str, section_id: str) -> JSONResponse:
+def pile_cage_export(project_id: str, section_id: str, elements: str | None = None) -> JSONResponse:
     """Bar runs of every designed pile and combi wall infill of a section, for a Revit / Dynamo script."""
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name}").strip("_") or "project"
+    _, results, suffix = _picked(section, results, elements)
+    name = _file_name(project.info.name, section.name + suffix)
     return JSONResponse(
         pile_cages(project.info.name, results, section=section.name),
         headers={"Content-Disposition": f'attachment; filename="{name}-cages.json"'},
     )
 
 
-def _drawings(project_id: str, section_id: str, element: str | None) -> tuple[str, dict]:
+def _drawings(
+    project_id: str, section_id: str, element: str | None, elements: str | None = None
+) -> tuple[str, dict]:
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
+    _, results, suffix = _picked(section, results, elements)
     data = drawings.drawings(project.info.name, results, project.drawings, section.name, element or None)
     if not data["views"]:
         raise HTTPException(
             404,
             "Nothing to draw: no designed pile, combi wall, beam or slab"
-            + (f" named {element}." if element else "."),
+            + (f" named {element}." if element else " among the picked elements." if suffix else "."),
         )
-    name = drawings.safe_name(" ".join(x for x in (project.info.name, section.name, element) if x)).replace(
-        " ", "_"
-    )
+    name = drawings.safe_name(
+        " ".join(x for x in (project.info.name, section.name + suffix, element) if x)
+    ).replace(" ", "_")
     return name, data
 
 
 @app.get(SECTION + "/design/drawings.json")
-def drawings_for_revit(project_id: str, section_id: str, element: str | None = None) -> JSONResponse:
+def drawings_for_revit(
+    project_id: str, section_id: str, element: str | None = None, elements: str | None = None
+) -> JSONResponse:
     """Reinforcement drawings as 2D lines (format triton.drawings/1), for the Revit script."""
-    name, data = _drawings(project_id, section_id, element)
+    name, data = _drawings(project_id, section_id, element, elements)
     return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}-drawings.json"'})
 
 
 @app.get(SECTION + "/design/drawings.dxf")
-def drawings_for_autocad(project_id: str, section_id: str, element: str | None = None) -> Response:
+def drawings_for_autocad(
+    project_id: str, section_id: str, element: str | None = None, elements: str | None = None
+) -> Response:
     """The same drawings as an AutoCAD DXF, one layer per bar size."""
-    name, data = _drawings(project_id, section_id, element)
+    name, data = _drawings(project_id, section_id, element, elements)
     return Response(
         dxf.to_dxf(data),
         media_type="application/dxf",
@@ -1128,14 +1161,15 @@ def revit_script() -> Response:
 
 
 @app.get(SECTION + "/design/governing.xlsx")
-def governing_sets_export(project_id: str, section_id: str) -> Response:
+def governing_sets_export(project_id: str, section_id: str, elements: str | None = None) -> Response:
     """Governing sets for AdSec: 7 QP + 7 ULS per concrete station, 10 ULS rows per steel element."""
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name}").strip("_") or "project"
+    _, results, suffix = _picked(section, results, elements)
+    name = _file_name(project.info.name, section.name + suffix)
     return Response(
         governing_workbook(project.info.name, section.name, results),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1144,13 +1178,14 @@ def governing_sets_export(project_id: str, section_id: str) -> Response:
 
 
 @app.get(SECTION + "/design/adsec.zip")
-def adsec_export(project_id: str, section_id: str) -> Response:
+def adsec_export(project_id: str, section_id: str, elements: str | None = None) -> Response:
     """AdSec 8.3 files (.ads): pile and combi infill parts, beams and slab strips, with QP and ULS loads."""
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
+    section, results, suffix = _picked(section, results, elements)
     d = project.design
     info = {}
     for name, e in section.elements.items():
@@ -1166,8 +1201,13 @@ def adsec_export(project_id: str, section_id: str) -> Response:
             }
     files = adsec.section_files(project.info.name, section.name, results, info, d.reinforcement.grade)
     if not files:
-        raise HTTPException(404, "Nothing designed in this section has AdSec files.")
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name}").strip("_") or "project"
+        raise HTTPException(
+            404,
+            "Nothing designed "
+            + ("among the picked elements" if suffix else "in this section")
+            + " has AdSec files.",
+        )
+    name = _file_name(project.info.name, section.name + suffix)
     return Response(
         adsec.zip_files(files),
         media_type="application/zip",
@@ -1363,18 +1403,18 @@ def run_value_engineering(project_id: str, section_id: str, body: ScenarioReques
 
 
 @app.get(SECTION + "/design/report.{fmt}")
-def design_report(project_id: str, section_id: str, fmt: str, detail: str = "summary") -> Response:
+def design_report(
+    project_id: str, section_id: str, fmt: str, detail: str = "summary", elements: str | None = None
+) -> Response:
     """The calculation report of a designed section: summary or detailed, as Word, PDF or Excel."""
     if fmt not in RENDERERS:
         raise HTTPException(404, "Reports are Word (.docx), PDF (.pdf) or Excel (.xlsx).")
     if detail not in ("summary", "detailed"):
         raise HTTPException(422, "detail is 'summary' or 'detailed'.")
     project, section, results = _results(project_id, section_id)
+    section, results, suffix = _picked(section, results, elements)
     rep = build_report(project, section, results, detail)
-    name = (
-        re.sub(r"[^A-Za-z0-9._-]+", "_", f"{project.info.name} {section.name} {detail}").strip("_")
-        or "report"
-    )
+    name = _file_name(project.info.name, section.name + suffix, detail)
     render, media = RENDERERS[fmt]
     return Response(
         render(rep),
