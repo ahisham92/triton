@@ -348,3 +348,28 @@ def test_bars_set_by_the_user_are_checked_as_they_are():
     tight = BeamCage(**{**light.model_dump(), "bottom": {"count": 60, "diameter": 32}})
     t = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None, tight)
     assert not t["passed"] and any("clear spacing" in n for n in t["notes"])
+
+
+def test_beam_top_and_bottom_crack_limits():
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=150.0, m11=300.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=100.0, m11=200.0)),
+        "Pile(1)-PT-B-Apron": pile_line([0.0, 6.0, 12.0]),
+        "Pile(1)-QP": pile_line([0.0, 6.0, 12.0]),
+    }
+    wb = import_sheets(raw)
+    truss = {"crane_load": 0, "bollard_slab_thickness": None}
+    beam = BeamInput(depth=1500, truss=truss, crack_width_limit=0.3, crack_width_limit_bottom=0.1)
+    els = {"Front Beam": beam, "Pile(1)": PileInput(head_level=2.7)}
+    d = design_beam(
+        "Front Beam",
+        beam,
+        DesignSettings(),
+        wb.elements()["Front Beam"],
+        section_geometry(wb),
+        els,
+        {"1": "X", "2": "Y"},
+    )
+    limits = {f: c["limit"] for f, c in d["cracks"].items()}
+    assert limits.get("bottom", 0.1) == 0.1 and limits.get("top", 0.3) == 0.3
+    assert all(c["wk"] <= c["limit"] + 1e-9 for c in d["cracks"].values())
