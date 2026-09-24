@@ -113,3 +113,39 @@ def test_sections_side_by_side():
     assert [s["section"] for s in out["sections"]] == ["Section 1", "Section 2"]
     assert out["sections"][1]["notes"] == ["Not designed yet."]
     assert out["total"]["cost"] == out["sections"][0]["totals"]["cost"]
+
+
+def test_costs_default_to_usd():
+    from triton.project import Prices
+
+    assert Prices().currency == "USD"
+    assert Prices.model_validate({"currency": "EGP"}).currency == "USD"  # the old default, never chosen
+    chosen = Prices().model_dump()
+    chosen["currency"] = "EGP"  # picked on the Project tab and saved
+    assert Prices.model_validate(chosen).currency == "EGP"
+    assert Prices.model_validate({"currency": "EUR"}).currency == "EUR"
+
+
+def test_other_items_follow_the_berth():
+    from triton.project import OtherItem
+
+    p = project()
+    s = p.sections[0]
+    s.costing.berth_length = 100.0
+    names = [i.name for i in s.costing.items]
+    assert names == ["Fenders", "Bollards", "Crane rails"]
+    out = cost_section(p, s, results())
+    rows = {r["element"]: r for r in out["rows"]}
+    assert rows["Fenders"]["count"] == 6 and rows["Bollards"]["count"] == 4  # 100 m: every 20 m, every 30 m
+    assert out["totals"]["complete"] and any("No price yet" in n for n in out["notes"])
+    before = out["totals"]["cost"]
+    s.costing.items[0].price = 1000.0
+    s.costing.items[1].count = 10
+    s.costing.items[1].price = 500.0
+    s.costing.items[2].price = 20.0
+    s.costing.items.append(OtherItem(name="Ladders", unit="lump", price=7000.0))
+    out = cost_section(p, s, results())
+    rows = {r["element"]: r for r in out["rows"]}
+    assert rows["Bollards"]["count"] == 10 and rows["Bollards"]["count_auto"] == 4
+    assert rows["Crane rails"]["cost"] == 2 * 100 * 20
+    assert out["totals"]["cost"] == before + 6000 + 5000 + 4000 + 7000

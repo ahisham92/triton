@@ -1290,7 +1290,18 @@ def _office_steel_prices() -> list[SteelPrice]:
 class Prices(_Model):
     """Unit prices for the Costing tab. They do not change any design."""
 
-    currency: str = Field("EGP", title="Currency")
+    @model_validator(mode="before")
+    @classmethod
+    def _usd_default(cls, data: Any) -> Any:
+        # Saved before USD became the default (2026-09-24): "EGP" was the old default, not a choice.
+        if isinstance(data, dict) and "currency_default" not in data and data.get("currency") == "EGP":
+            data = {**data, "currency": "USD"}
+        return data
+
+    currency: str = Field("USD", title="Currency")
+    currency_default: int = Field(
+        2, json_schema_extra=_HIDDEN, description="Set by Triton: which default the currency was saved with."
+    )
     concrete_slab: float | None = Field(
         None, title="Concrete, slab", ge=0, json_schema_extra={"unit": "per m³"}
     )
@@ -1349,6 +1360,44 @@ class ElementCosting(_Model):
     intermediate_length: float | None = _m("Intermediate sheet length", None, gt=0)
 
 
+class OtherItem(_Model):
+    """Something the berth needs besides the designed elements: fenders, bollards, crane rails, ..."""
+
+    name: str = Field("", title="Item")
+    unit: Literal["each", "m", "lump"] = Field(
+        "each", title="Priced", description="each: per item at a spacing; m: per metre of berth; lump: once."
+    )
+    price: float | None = Field(None, title="Unit price", ge=0)
+    spacing: float | None = _m(
+        "Spacing along the berth",
+        None,
+        gt=0,
+        description="For items priced each: one at each end and at this spacing.",
+    )
+    count: int | None = Field(None, title="Number", ge=0, description="Overrides the spacing.")
+    runs: float = Field(
+        1.0,
+        title="Lines",
+        gt=0,
+        description="For items priced per metre: how many run along the berth (2 rails).",
+    )
+    length: float | None = _m(
+        "Length",
+        None,
+        gt=0,
+        description="For items priced per metre: the length of each line. Empty: the berth.",
+    )
+
+
+def _other_items() -> list[OtherItem]:
+    # Spacings are common for a container berth, not from a drawing: change them to the project's.
+    return [
+        OtherItem(name="Fenders", unit="each", spacing=20.0),
+        OtherItem(name="Bollards", unit="each", spacing=30.0),
+        OtherItem(name="Crane rails", unit="m", runs=2.0),
+    ]
+
+
 class SectionCosting(_Model):
     berth_length: float | None = _m(
         "Berth length of this section",
@@ -1363,6 +1412,9 @@ class SectionCosting(_Model):
         description="Empty: the front or rear beam's length, else the slab's extent along the berth.",
     )
     elements: dict[str, ElementCosting] = Field(default_factory=dict)
+    items: list[OtherItem] = Field(
+        default_factory=_other_items, title="Other items", description="Fenders, bollards, crane rails, ..."
+    )
 
 
 class LoadFactor(_Model):
