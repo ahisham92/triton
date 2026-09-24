@@ -119,6 +119,39 @@ class RectSection:
         self._cache[key] = c
         return c
 
+    def ductility(self, axis: str, sign: int, n: float) -> dict:
+        """Neutral axis at the moment capacity under ``n`` (kN, compression +), bending about ``axis`` in
+        the sense ``sign``: its depth x, the depth d of the furthest tension bar, x/d and that bar's strain.
+
+        EN 1992-1-1 5.5(4) with no redistribution keeps x/d within (1 − k1)/k2 = 0.448 (fck <= 50 MPa);
+        beyond εcu2·(d − x)/x < fyd/Es the tension bars do not yield (an over-reinforced section).
+        """
+        H = self.h if axis == "v" else self.b
+        ecu = self.concrete.eps_cu2
+        _, _, yb = self._frame(axis, sign)
+        d = float(yb.max())
+
+        def n_at(x: float) -> float:
+            return float(self._resultants(axis, sign, np.array([ecu]), np.array([ecu / x]))[0][0]) / 1e3
+
+        lo, hi = 1e-3 * H, H
+        if n >= n_at(hi):
+            x = H
+        elif n <= n_at(lo):
+            x = lo
+        else:
+            for _ in range(60):
+                mid = 0.5 * (lo + hi)
+                lo, hi = (mid, hi) if n_at(mid) < n else (lo, mid)
+            x = 0.5 * (lo + hi)
+        return {
+            "x_mm": round(x),
+            "d_mm": round(d),
+            "x_d": round(x / d, 3) if d > 0 else None,
+            "eps_s": round(ecu * (d - x) / x, 5),
+            "eps_yd": round(self.steel.fyd / self.steel.es, 5),
+        }
+
     def n_rd(self) -> tuple[float, float]:
         """Axial capacities (kN): compression (+) and tension (-)."""
         c = self.curve("v", 1)

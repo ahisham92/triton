@@ -22,6 +22,7 @@ from .design import (
     combi,
     crack,
     curtailment,
+    ductility,
     governing,
     peaks,
     pile_cracks,
@@ -84,6 +85,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
 GENERAL = [
     ("Corner berths: a quay that turns", alignment),
     ("Comparisons (trial sizes)", trials),
+    ("Over-reinforced sections (slabs and beams)", ductility),
     ("AdSec load sets and signs", governing),
 ]
 
