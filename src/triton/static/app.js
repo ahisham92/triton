@@ -1310,8 +1310,8 @@ async function renderCostingTab(host) {
 
   const input = (obj, key, placeholder, attrs = "") =>
     `<input type="number" step="any" min="0" ${attrs} data-obj="${esc(obj)}" data-key="${esc(key)}" placeholder="${esc(placeholder ?? "")}">`;
-  const pick = (obj, key, value) =>
-    `<select data-obj="${esc(obj)}" data-key="${esc(key)}"><option value="">${key === "steel_element" ? "Structural steel price" : "None"}</option>${steelNames
+  const pick = (obj, key, value, none) =>
+    `<select data-obj="${esc(obj)}" data-key="${esc(key)}"><option value="">${esc(none)}</option>${steelNames
       .map((n) => `<option ${n === value ? "selected" : ""}>${esc(n)}</option>`)
       .join("")}</select>`;
 
@@ -1336,7 +1336,7 @@ async function renderCostingTab(host) {
               <td>${spaced ? input(key, "spacing", r.spacing_m != null ? fmt(r.spacing_m, 2) : "") : "–"}</td>
               <td>${spaced ? input(key, "count", r.count ?? "", 'step="1"') : "–"}</td>
               <td>${input(key, "length", r.length_m != null ? fmt(r.length_m, 1) : "")}</td>
-              <td>${steel ? pick(key, "steel_element", e.steel_element) : "–"}${r.kind === "combi_wall" ? `<div class="hint">Intermediate sheets</div>${pick(key, "intermediate_element", e.intermediate_element)}` : ""}</td>
+              <td>${steel ? pick(key, "steel_element", e.steel_element, r.kind === "sheet_pile_wall" ? "Its section, else the first AZ" : "Structural steel price") : "–"}${r.kind === "combi_wall" ? `<div class="hint">Intermediate sheets</div>${pick(key, "intermediate_element", e.intermediate_element, "None")}` : ""}</td>
               <td class="basis">${esc(r.basis)}${r.flags.map((f) => `<div class="${/above/.test(f) ? "flag-bad" : "flag-ok"}">${esc(f)}</div>`).join("")}${r.missing.length ? `<div class="flag-bad">Missing: ${esc(r.missing.join(", "))}</div>` : ""}</td>
               <td>${fmt(r.concrete_m3, 1)}</td><td>${fmt(r.rebar_t, 1)}</td><td>${fmt(r.steel_t, 1)}</td>
               <td>${money(r.cost)}</td><td>${money(r.cost_per_m)}</td></tr>`;
