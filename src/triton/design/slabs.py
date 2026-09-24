@@ -7,7 +7,8 @@ along X the slab takes Mx = M11 (or M22), Nx = N1 (or N2) and Vx = Q13 (or Q23).
 Moments. Wood–Armer design moments from Mx, My and the twisting moment Mxy, bottom
 (sagging +) and top (hogging -), at every node. Nodes inside a pile are FE peaks in
 the connection and are left out (bending at the pile face); for shear, nodes within d
-(or 2d) of a pile face are left out too.
+(or 2d) of a pile face are left out too. The moments just outside each pile are then used as
+they are or averaged, by the slab's "Moments at the pile faces" method (Method tab).
 
 Bars per metre, EN 1992-1-1, for each face and direction:
 
@@ -634,6 +635,66 @@ def average_peaks(f: pd.DataFrame, piles: list[tuple]) -> pd.DataFrame:
             sub.groupby("combination")[["Mx", "My", "Mxy"]].transform("mean").to_numpy()
         )
     return f
+
+
+def face_average(f: pd.DataFrame, piles: list[tuple], h: float, envelope: bool = False) -> pd.DataFrame:
+    """Moments at each pile face averaged over that face alone, per combination.
+
+    At every pile and each of its four faces: the nodes from the face out to one slab thickness ``h``
+    (m) in front of it, over the pile diameter plus ``h`` each side, take the band's mean of the moment
+    that face's bars carry (Mx at the ±X faces, My at the ±Y faces) and of the twisting moment Mxy.
+    Opposite faces and the two directions are never mixed. With ``envelope`` the band takes the mean of
+    each node's worst value over all combinations instead (the most hogging for combinations that hog
+    the face on average, the most sagging for the others). Where two bands meet, Mxy keeps the larger.
+    """
+    out = f.copy()
+    x, y = f["X"].to_numpy(), f["Y"].to_numpy()
+    twist = np.full(len(f), np.nan)
+    for px, py, r in piles:
+        for along, across, col in ((x - px, y - py, "Mx"), (y - py, x - px, "My")):
+            for side in (1, -1):
+                a = side * along
+                band = (a >= r - 1e-6) & (a <= r + h + 1e-6) & (np.abs(across) <= r + h + 1e-6)
+                if not band.any():
+                    continue
+                sub = f.loc[band]
+                mean = sub.groupby("combination")[[col, "Mxy"]].transform("mean")
+                if envelope and sub["combination"].nunique() > 1:
+                    node = sub["Node"] if "Node" in sub else sub[["X", "Y"]].round(3).astype(str).sum(axis=1)
+                    hi = sub.groupby(node)[col].max().mean()
+                    lo = sub.groupby(node)[col].min().mean()
+                    out.loc[band, col] = np.where(mean[col].to_numpy() >= 0, hi, lo)
+                else:
+                    out.loc[band, col] = mean[col].to_numpy()
+                idx = np.flatnonzero(band)
+                v = mean["Mxy"].to_numpy()
+                keep = np.isnan(twist[idx]) | (np.abs(v) > np.abs(twist[idx]))
+                twist[idx[keep]] = v[keep]
+    done = ~np.isnan(twist)
+    out.loc[done, "Mxy"] = twist[done]
+    return out
+
+
+PEAK_METHODS = {
+    "peak": "Moments at the pile faces used as they are (no averaging at the piles; the strips still "
+    "average across their width).",
+    "face_mean": "Moments at the pile faces averaged face by face: from each face out to one slab "
+    "thickness, over the pile diameter plus the slab thickness each side, only the moment that face's "
+    "bars carry, for each combination; the worst combination is designed.",
+    "ring_mean": "Moments round each pile averaged over a ring one pile diameter wide, all round the pile "
+    "and for each combination (this mixes opposite faces).",
+    "envelope_face_mean": "Moments at the pile faces averaged face by face as for the face mean, but from "
+    "each node's worst value over all combinations (mixes combinations; more conservative).",
+}
+
+
+def treat_pile_faces(f: pd.DataFrame, piles: list[tuple], method: str, h: float) -> pd.DataFrame:
+    """The slab's moments at the pile faces under the chosen method (see ``PEAK_METHODS``)."""
+    if not piles or not len(f) or method == "peak":
+        return f
+    if method == "ring_mean":
+        return average_peaks(f, piles)
+    return face_average(f, piles, h, envelope=method == "envelope_face_mean")
 
 
 def fits_between(phi_a: float, mesh_phi: float, mesh_spacing: float, settings: DesignSettings) -> bool:
@@ -1514,13 +1575,10 @@ def design_slab(
     if uls_m.empty:
         notes.append("No ULS results outside the pile heads.")
         return {**base, "utilisation": None, "passed": False}
-    if slab.peaks == "average" and piles:
-        uls_m = average_peaks(uls_m, piles)
-        qp_m = average_peaks(qp_m, piles) if len(qp_m) else qp_m
-        notes.append(
-            "Moments at the pile faces averaged over a ring one pile diameter wide round each pile "
-            "(slab setting)."
-        )
+    if piles:
+        uls_m = treat_pile_faces(uls_m, piles, slab.peaks, h / 1000)
+        qp_m = treat_pile_faces(qp_m, piles, slab.peaks, h / 1000)
+        notes.append(PEAK_METHODS[slab.peaks] + " (slab setting)")
 
     covers = {"bottom": slab.cover_bottom, "top": slab.cover_top}
     limits = {"bottom": slab.crack_width_limit_bottom, "top": slab.crack_width_limit}

@@ -921,12 +921,21 @@ class SlabInput(_ConcreteSection):
         le=5,
         description="Cells of this size carry either the basic mesh or heavier bars in a zone.",
     )
-    peaks: Literal["design", "average"] = Field(
-        "average",
+    peaks: Literal["peak", "face_mean", "ring_mean", "envelope_face_mean"] = Field(
+        "face_mean",
         title="Moments at the pile faces",
-        description="Design the peaks at the pile faces as they are, or average them over a ring one "
-        "pile diameter wide round each pile.",
+        description="Peak: as they are. Face mean: each face on its own, from the face out to one slab "
+        "thickness over the pile diameter plus the slab thickness each side, per combination. Ring mean: "
+        "all round the pile over one diameter (mixes opposite faces). Envelope then face mean: each node's "
+        "worst value over the combinations, then the face mean. The Method tab explains each.",
     )
+
+    @field_validator("peaks", mode="before")
+    @classmethod
+    def _old_peaks(cls, v: object) -> object:
+        # Saved before the methods were named: "design" was the peak, "average" the default averaging.
+        return {"design": "peak", "average": "face_mean"}.get(v, v) if isinstance(v, str) else v
+
     min_zone_length: float = _m(
         "Shortest additional bars", 2.5, gt=0, description="Shortest length of a zone of additional bars."
     )
