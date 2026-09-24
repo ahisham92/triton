@@ -35,6 +35,7 @@ from .design import (
     pile_cracks,
     pile_shear,
     piles,
+    protrusion,
     rect,
     rooms,
     sheet_piles,
@@ -108,6 +109,7 @@ GENERAL = [
     ("Quay furniture: design of each item", furniture),
     ("Anchor bolts cast into the beams (EN 1992-4)", anchors),
     ("Estimated displacements from the straining actions", deflection),
+    ("Fender protrusion on the front beam, and the STS crane's stand-off", protrusion),
 ]
 
 # Methods of the slab's moments at the pile faces, in the order the options are offered.

@@ -24,6 +24,7 @@ from statistics import median
 from typing import Any
 
 from .design import furniture as fd
+from .design import protrusion
 from .furniture_inputs import QuayFurniture, SectionFurniture
 from .project import BeamInput, CombiWallInput, PileInput, Project, Section, with_project_grades
 
@@ -38,6 +39,7 @@ LABEL = {
     "crane_stoppers": "Crane stopper",
     "tie_rods": "Tie rod",
     "crane_rails": "Crane rail",
+    "fender_blocks": "Fender protrusion",
 }
 PLURAL = {
     "fenders": "Fenders",
@@ -47,6 +49,7 @@ PLURAL = {
     "crane_stoppers": "Crane stoppers",
     "tie_rods": "Tie rods",
     "crane_rails": "Crane rails",
+    "fender_blocks": "Fender protrusions",
 }
 
 
@@ -155,6 +158,7 @@ def berth_frame(project: Project, section: Section, geometry: list[dict[str, Any
             "width_mm": fwidth,
             "depth_mm": fdepth,
             "concrete": concrete_grade,
+            "cover_mm": (fb_el.cover if fb_el and fb_el.cover else project.design.durability.covers.beams),
             "joint_spacing_m": fb_el.joint_spacing if fb_el else 58.0,
         },
         "rear_beam": rear,
@@ -375,6 +379,8 @@ def arrange(
         fe = f.fenders
         a = fe.anchors
         half = max(fe.flange / 2000, a.circle_diameter / 2000 + (a.head_diameter or 3 * a.diameter) / 2000)
+        if f.protrusion:
+            half = max(half, f.protrusion.length / 2000)  # the whole block stays clear of the joints
         items = []
         for s in evenly(length, fe.end_distance, fe.spacing):
             items.append(
@@ -543,6 +549,22 @@ def assumptions(f: QuayFurniture) -> list[str]:
         )
     if f.ladders:
         out.append(f"Ladders every {f.ladders.spacing:g} m at most, down to {f.ladders.bottom_level:g} m.")
+    if f.protrusion:
+        p = f.protrusion
+        out.append(
+            f"Fender protrusion {p.projection:g} × {p.depth:g} × {p.length:g} mm at every fender, joined to the beam by a "
+            f"{p.joint} joint{' (cast after the beam)' if p.joint != 'monolithic' else ''}; the fender reaction does not "
+            "act on the front beam in the Plaxis model, so the block's torque and shear are extra to the beam's design."
+        )
+    if f.sts_crane:
+        c = f.sts_crane
+        out.append(
+            f"STS crane: outreach {c.outreach:g} m from the seaside rail for a {c.ship_beam:g} m wide ship, far row "
+            f"{c.far_row_inside:g} m inside its side; legs {c.leg_seaward_of_rail:g} m seaward of the rail; ship's flare "
+            f"{c.flare_overhang:g} m and {c.min_clearance:g} m clearance kept; fender panel {c.panel_thickness:g} m, "
+            f"deflection {c.rated_deflection:g} at the rated reaction. No code gives these: they come from the crane "
+            "specification and the design ship."
+        )
     if f.tie_rods:
         out.append(
             f"Tie rods: {f.tie_rods.force:g} kN/m design force at {f.tie_rods.spacing:g} m, anchored in the front beam."
@@ -580,9 +602,38 @@ def design(
                 f"{length:g} m."
             )
     lay = arrange(f, sf, frame, length, placed, placed_from)
+    if f.protrusion and lay["counts"].get("fenders"):
+        lay["counts"]["fender_blocks"] = lay["counts"]["fenders"]  # one block at every fender
     items: list[dict[str, Any]] = []
     if f.fenders:
-        items.append(fd.fender(f.fenders, front))
+        if f.protrusion:
+            # The fender is bolted to the block's face: its depth, the fender centre on it.
+            p = f.protrusion
+            centre = p.fender_centre_below_cope or p.depth / 2000
+            on_block = fd.Beam(front.width + p.projection, p.depth, p.concrete or front.concrete, front.name)
+            items.append(fd.fender(f.fenders.model_copy(update={"centre_below_cope": centre}), on_block))
+            items[-1]["title"] += f" on the protrusion ({p.depth:.0f} mm deep face, centre {centre:g} m below the cope)"
+        else:
+            items.append(fd.fender(f.fenders, front))
+    if f.protrusion:
+        items.append(
+            protrusion.block(
+                f.protrusion,
+                f.fenders,
+                front.width,
+                front.depth,
+                front.concrete,
+                fb["cover_mm"],
+                project.design.partial_factors.gamma_c,
+                project.design.partial_factors.gamma_s,
+                project.design.partial_factors.alpha_cc,
+            )
+        )
+    if f.sts_crane:
+        rail = lay["rail_front_m"] if lay["rail_front_m"] is not None else front.width / 2000
+        items.append(protrusion.clearance(f.sts_crane, f.fenders, f.protrusion, rail))
+        if lay["rail_front_m"] is None:
+            items[-1]["notes"].append("No crane rails in the items: the front rail is taken over the beam's centre.")
     if f.bollards:
         items.append(fd.bollard(f.bollards, front))
         own = next(
@@ -622,6 +673,7 @@ def design(
         "layout": lay,
         "items": items,
         "unsafe": [i["title"] for i in items if not i["passed"]],
+        "protrusion": f.protrusion.model_dump(mode="json") if f.protrusion else None,
         "assumptions": assumptions(f),
         "notes": notes,
     }
