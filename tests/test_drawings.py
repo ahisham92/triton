@@ -216,3 +216,16 @@ def test_drawing_endpoints(tmp_path, monkeypatch):
     assert g.status_code == 200 and json.loads(g.text)["Name"] == "Triton drawings"
     assert client.get("/api/revit/triton-drawings.dyn", params={"engine": "x"}).status_code == 400
     assert "NewDetailCurve" in client.get("/api/revit/triton_revit.py").text
+    z = client.get("/api/revit/triton-addin.zip")
+    assert z.status_code == 200 and z.content[:2] == b"PK"
+
+
+def test_revit_addin_source_zip():
+    import io
+    import zipfile
+
+    names = zipfile.ZipFile(io.BytesIO(revit.addin_zip())).namelist()
+    for f in ("TritonDrawings.csproj", "TritonDrawings.addin", "DrawCommand.cs", "Drawer.cs", "README.txt"):
+        assert f"TritonDrawings/{f}" in names
+    cs = (revit.ADDIN / "TritonFile.cs").read_text("utf-8")
+    assert f'Format = "{FORMAT}"' in cs  # the add-in reads the format Triton writes

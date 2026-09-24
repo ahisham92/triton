@@ -1109,6 +1109,16 @@ def revit_dynamo_graph(engine: str = "CPython3") -> Response:
     )
 
 
+@app.get("/api/revit/triton-addin.zip")
+def revit_addin() -> Response:
+    """The Revit add-in (C# source, build once in Visual Studio): a Triton button that draws the file."""
+    return Response(
+        revit.addin_zip(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="TritonDrawings-addin.zip"'},
+    )
+
+
 @app.get("/api/revit/triton_revit.py")
 def revit_script() -> Response:
     """The same script as a plain Python file, for pyRevit or RevitPythonShell."""

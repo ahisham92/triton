@@ -2388,17 +2388,17 @@ function drawingHelp() {
     <p>Download <em>AutoCAD (DXF)</em> and open it (File › Open, file type DXF). The views sit side by side in model space, 1 unit = 1 mm.</p>
     <h3>Revit</h3>
     <ol>
-      <li>Once: download the Dynamo graph <a class="quiet-link" href="${ROOT}/api/revit/triton-drawings.dyn">Triton-drawings.dyn</a>
-        (Revit 2022 and later; for Revit 2021 or older use <a class="quiet-link" href="${ROOT}/api/revit/triton-drawings.dyn?engine=IronPython2">this one</a>).</li>
+      <li>Once: download the <a class="quiet-link" href="${ROOT}/api/revit/triton-addin.zip">Triton add-in for Revit</a> (C# source),
+        open TritonDrawings.csproj in Visual Studio, set your Revit version in it and Build. The build installs it; restart Revit
+        and press Always Load. Its README has the steps.</li>
       <li>Download <em>Revit (drawings file)</em> for the section or element.</li>
-      <li>In Revit: Manage › Dynamo, open Triton-drawings.dyn, press Browse on the first node and pick the drawings file, then Run.</li>
-      <li>Each Triton view becomes a drafting view named "Triton - section - view". Running it again with a new file redraws the same
-        views, so views already on sheets stay there.</li>
+      <li>In Revit: Add-Ins › Triton › Draw bars, pick the file, tick the views and choose where: a drafting view for each, or the
+        view that is open, at a point you click.</li>
+      <li>Drafting views are named "Triton - section - view". Drawing a new file redraws the same views, so views already on
+        sheets stay there.</li>
     </ol>
-    <p class="status">Line styles your template lacks are made by the script and listed in its result. Where a Revit family type is set
-      for a bar size, cut bars are placed as that detail component and bars along the view as the line-based one. With pyRevit or
-      RevitPythonShell, <a class="quiet-link" href="${ROOT}/api/revit/triton_revit.py">the same script as a .py file</a> asks for the file itself.
-      Without either: Insert › Import CAD the DXF into a drafting view, then Explode.</p>`;
+    <p class="status">Line styles your project lacks are made by the add-in, and it lists them when it finishes. Where a Revit family type is set
+      for a bar size, cut bars are placed as that detail component and bars along the view as the line-based one.</p>`;
   document.getElementById("drawings").closest(".panel").after(box);
 }
 
