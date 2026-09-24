@@ -3591,24 +3591,56 @@ function showTip(c, evt, html) {
   c.tip.style.top = `${evt.clientY - r.top + 12}px`;
 }
 
-function nmChart(el, p) {
-  // x: M (kNm), y: N (kN, compression up). Capacity curve for persistent factors.
+function nmChart(el, p, whole = false) {
+  // x: M (kNm), y: N (kN, compression up). Capacity curve for persistent factors. The curve runs from
+  // the full tension to the full squash load, tens of MN, while pile loads are a few MN at most, so by
+  // default the view is zoomed round the loads; "Whole capacity curve" shows all of it.
   const curve = p.curve;
   const pts = p.points;
-  const maxM = Math.max(...curve.map((c) => c[1]), ...pts.map((q) => q[2])) * 1.05;
-  const nVals = curve.map((c) => c[0]).concat(pts.map((q) => q[1]));
+  const loadN = pts.map((q) => q[1]).concat(p.governing?.N_kN ?? []);
+  const curveN = curve.map((q) => q[0]);
+  let nLo = Math.min(...curveN), nHi = Math.max(...curveN);
+  let yDomain = [nLo * 1.05, nHi * 1.05];
+  if (!whole && loadN.length) {
+    const lo = Math.min(...loadN), hi = Math.max(...loadN);
+    const pad = Math.max(0.3 * (hi - lo), 0.04 * (nHi - nLo), 200);
+    nLo = Math.max(lo - pad, nLo);
+    nHi = Math.min(hi + pad, nHi);
+    yDomain = [nLo, nHi];
+  }
+  // The capacity at the edges of the view, so the curve's widest part in view sets the M axis.
+  const inView = curve.filter((q) => q[0] >= yDomain[0] && q[0] <= yDomain[1]).map((q) => q[1]);
+  const edgeM = (n) => {
+    let best = 0;
+    for (let i = 1; i < curve.length; i++) {
+      const [a, b] = [curve[i - 1], curve[i]];
+      if ((a[0] - n) * (b[0] - n) <= 0 && a[0] !== b[0]) best = Math.max(best, a[1] + ((n - a[0]) / (b[0] - a[0])) * (b[1] - a[1]));
+    }
+    return best;
+  };
+  const maxM = Math.max(...inView, edgeM(yDomain[0]), edgeM(yDomain[1]), ...pts.map((q) => q[2]), 1) * 1.05;
   const c = frame(el, {
-    xDomain: [0, maxM], yDomain: [Math.min(...nVals) * 1.05, Math.max(...nVals) * 1.05],
-    xLabel: "M (kNm)", yLabel: "N (kN, compression +)", title: "N–M interaction, all ULS results",
+    xDomain: [0, maxM], yDomain,
+    xLabel: "M (kNm)", yLabel: "N (kN, compression +)",
+    title: whole ? "N–M interaction, all ULS results (whole capacity curve)" : "N–M interaction, all ULS results (zoomed to the loads)",
   });
+  const clip = `nmclip${Math.random().toString(36).slice(2, 8)}`;
   const path = curve.map((q, i) => `${i ? "L" : "M"}${c.x(q[1]).toFixed(1)},${c.y(q[0]).toFixed(1)}`).join("");
   const g = p.governing;
-  c.g.innerHTML = `<line class="zero" x1="${c.x(0)}" x2="${c.x(maxM)}" y1="${c.y(0)}" y2="${c.y(0)}"/>
+  const label = curve.find((q) => q[0] >= yDomain[0] && q[0] <= yDomain[1] && q[1] > 0) || curve[Math.floor(curve.length / 3)];
+  c.g.innerHTML = `<defs><clipPath id="${clip}"><rect x="${c.m.l}" y="${c.m.t}" width="${c.w - c.m.l - c.m.r}" height="${c.h - c.m.t - c.m.b}"/></clipPath></defs>
+    <g clip-path="url(#${clip})">
+    ${yDomain[0] < 0 && yDomain[1] > 0 ? `<line class="zero" x1="${c.x(0)}" x2="${c.x(maxM)}" y1="${c.y(0)}" y2="${c.y(0)}"/>` : ""}
     ${pts.map((q) => `<circle class="pt" cx="${c.x(q[2]).toFixed(1)}" cy="${c.y(q[1]).toFixed(1)}" r="3"/>`).join("")}
     <path class="cap" d="${path}"/>
     ${g.combination ? `<circle class="gov" cx="${c.x(g.M_kNm)}" cy="${c.y(g.N_kN)}" r="5"/>
       <text class="label" x="${c.x(g.M_kNm) - 8}" y="${c.y(g.N_kN) - 8}" text-anchor="end">governing, ${fmt(p.utilisation, 2)}</text>` : ""}
-    <text class="label" x="${c.x(curve[Math.floor(curve.length / 3)][1]) + 6}" y="${c.y(curve[Math.floor(curve.length / 3)][0])}">capacity</text>`;
+    <text class="label" x="${c.x(label[1]) - 6}" y="${c.y(label[0]) - 6}" text-anchor="end">capacity</text></g>`;
+  const pick = document.createElement("div");
+  pick.className = "row nm-view";
+  pick.innerHTML = `<button class="quiet${whole ? "" : " on"}" data-nm="zoom">Around the loads</button><button class="quiet${whole ? " on" : ""}" data-nm="whole">Whole capacity curve</button>`;
+  el.append(pick);
+  pick.querySelectorAll("[data-nm]").forEach((b) => (b.onclick = () => nmChart(el, p, b.dataset.nm === "whole")));
   const xs = pts.map((q) => c.x(q[2]));
   const ys = pts.map((q) => c.y(q[1]));
   c.svg.onmousemove = (evt) => {

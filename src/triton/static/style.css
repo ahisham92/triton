@@ -322,3 +322,4 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .crack-svg .lbl { font: 10px system-ui, sans-serif; fill: var(--muted); }
 .crack-mark path { fill: none; stroke: var(--text); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .crack-svg .halo { paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
+.nm-view { gap: 6px; margin-top: 4px; }
