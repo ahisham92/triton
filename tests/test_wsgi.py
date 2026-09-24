@@ -38,7 +38,7 @@ def data_dir(tmp_path, monkeypatch):
 
 def test_mounted_under_a_prefix():
     status, _, page = call(application, "/", root="/triton")
-    assert status == 200 and b'src="static/app.js"' in page  # relative, so it works under /triton/
+    assert status == 200 and b'src="static/app.js?v=' in page  # relative, so it works under /triton/
     status, _, _ = call(application, "/static/app.js", root="/triton")
     assert status == 200
     body = json.dumps({"info": {"name": "Online"}}).encode()

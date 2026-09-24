@@ -54,6 +54,9 @@ def store() -> ProjectStore:
 @app.get("/")
 def index() -> HTMLResponse:
     page = (STATIC / "index.html").read_text(encoding="utf-8")
+    # A new version of a file gets a new address, so no browser keeps running an old one.
+    for name in ("app.js", "style.css"):
+        page = page.replace(f"static/{name}", f"static/{name}?v={int((STATIC / name).stat().st_mtime)}")
     home = os.environ.get("TRITON_HOME_URL")
     if home:
         # Hosted inside another site (e.g. Project Control): a way back to it in the header.
