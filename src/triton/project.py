@@ -1411,6 +1411,13 @@ class SlabStrips(_Model):
         title="Bars set by the user",
         description="Additional bars per 'layer|from|to|strip', by label ('mesh only' for none).",
     )
+    spacing: float | None = Field(
+        None,
+        title="Mesh spacing picked",
+        description="The slab is designed with each mesh spacing in Design settings; this one drives the "
+        "results, drawings, AdSec files and report. Empty: the lighter one.",
+        json_schema_extra={"unit": "mm"},
+    )
 
 
 def _short_id() -> str:

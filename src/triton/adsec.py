@@ -431,7 +431,7 @@ def beam_files(job: str, section_name: str, beam: dict[str, Any], rebar: str) ->
     return {_safe(name) + ".ads": data}
 
 
-_ADD = re.compile(r"Ø(\d+) @ ([\d.]+)( in 2 layers)?( \+ Ø\d+ under the mesh)?$")
+_ADD = re.compile(r"Ø(\d+) @ ([\d.]+)( in 2 layers)?( \+ Ø\d+ (?:under the mesh|behind the mesh bars))?$")
 
 
 def slab_bars(
@@ -440,7 +440,7 @@ def slab_bars(
     """Bars of one face of a slab strip ``width_mm`` wide, as lines (Ø, count, y from, y to, depth
     from the face to the bar centres), all in mm. The strip repeats the slab's bar pattern: the mesh
     at its spacing, additional bars in the gaps between (every gap or every second one), in a second
-    layer, and under the mesh bars, at the layer pitch Triton designs with (Ø + 25 mm)."""
+    layer, and behind the mesh bars (inside the mesh), at the layer pitch Triton designs with (Ø + 25 mm)."""
     phi_b, s_b, lay_b = mesh["phi"], mesh["spacing_mm"], mesh.get("layers") or 1
     m = _ADD.match(additional or "")
     n = max(1, round(width_mm / s_b))

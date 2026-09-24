@@ -138,6 +138,16 @@ def _beam(b: dict[str, Any]) -> dict[str, Any]:
 
 
 def _slab(d: dict[str, Any]) -> dict[str, Any]:
+    h = d.get("thickness_mm") or 0
+
+    def placed(face: str, rows: list[dict]) -> list[dict]:
+        # Height of each layer above the soffit: the layers go inward from their mesh.
+        return [
+            {**r, "above_soffit_mm": r["from_face_mm"] if face == "bottom" else round(h - r["from_face_mm"])}
+            for r in rows
+            if "from_face_mm" in r
+        ]
+
     faces = []
     for key, lay in (d.get("layers") or {}).items():
         face, direction = key.split("_")
@@ -149,14 +159,14 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
                 "mesh": {
                     "diameter_mm": (lay.get("basic") or {}).get("phi"),
                     "spacing_mm": (lay.get("basic") or {}).get("spacing_mm"),
-                    "layers": lay.get("mesh_bar_layers") or [],
+                    "layers": placed(face, lay.get("mesh_bar_layers") or []),
                 },
                 "zones": [
                     {
                         "x_m": z["x"],
                         "y_m": z["y"],
                         "label": z.get("label"),
-                        "layers": z.get("bar_layers") or [],
+                        "layers": placed(face, z.get("bar_layers") or []),
                     }
                     for z in lay.get("zones") or []
                 ],

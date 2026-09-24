@@ -357,3 +357,11 @@ table.office-sheet tr.sheet-group th { text-align: left; background: var(--panel
 table.office-sheet td.sheet-ok { background: rgba(46, 160, 67, .18); }
 table.office-sheet td.sheet-bad { background: rgba(218, 54, 51, .22); }
 table.office-sheet td.sheet-note { font-size: 12px; color: var(--muted, #777); }
+.mesh-choice { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 4px 0 12px; }
+.mesh-choice > .status { flex-basis: 100%; }
+.mesh-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 12px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; text-align: left; }
+.mesh-pick span { font-size: 12px; color: var(--muted); }
+.mesh-pick span.bad { color: var(--err); }
+.mesh-pick em { font-size: 11px; font-style: normal; color: var(--accent); }
+.mesh-pick.on { border-color: var(--accent); background: var(--accent-bg); }

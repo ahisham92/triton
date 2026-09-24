@@ -452,10 +452,18 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   and along Y), with the in-plane N of each direction. Where K exceeds K' = 0.167 the opposite
   face's bars are designed as compression steel. Each bar option is taken at its own depth, so a
   second layer or a bigger bar counts for less.
+- **Mesh spacing:** every slab is designed once with each spacing in Design settings (150 and 200 mm
+  by default), all four meshes at that spacing. The top of the slab card shows each one's kg/m³,
+  overall ratio and utilisation; the one picked (the lighter whose bars are enough until you pick,
+  or the spacing of bars you set) drives the results, drawings, AdSec files, the force-set Excel and
+  the report. The pick is kept with the section.
+- **Moment diagrams:** the slab station diagrams are drawn as structural moment diagrams, hogging
+  (top steel) up and sagging (bottom steel) down; the values keep their sign (sagging +).
 - **Mesh and additional bars:** four meshes, bottom and top, along X and along Y, each laid over
   the whole slab. The slab is split into a grid of cells (1 m by default) only to find where a mesh
   is not enough: there, additional bars go between the mesh bars (at the mesh spacing or every
-  second gap, in a second layer, or under the mesh bars), sized for strength and the QP crack width
+  second gap, in a second layer, or behind the mesh bars; every added layer sits inside its mesh, above the bottom mesh and below
+  the top mesh), sized for strength and the QP crack width
   at that face (Ø and spacing of the mix, 7.12). A basic mesh is one layer giving at least the
   minimum steel; Triton takes the lightest one within 5% of the least steel overall (a light mesh
   with additional bars where needed, as the office's slabs), or the mesh you enter. Cells no mesh

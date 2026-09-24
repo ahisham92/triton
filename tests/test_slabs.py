@@ -411,3 +411,38 @@ def test_failing_punching_says_what_would_fix_it():
     assert 500 < fix["thickness_mm_with_links"] <= fix["thickness_mm_without_links"]
     if fix.get("rho_l_with_links"):
         assert fix["rho_l_with_links"] > p["rho_l"]
+
+
+def test_slab_is_designed_with_each_mesh_spacing_and_the_pick_drives_it():
+    from triton.project import SlabStrips
+
+    els = {
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3, peaks="design"),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
+    d = run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
+    mc = d["mesh_choice"]
+    assert [o["spacing_mm"] for o in mc["options"]] == [150, 200] and not mc["picked"]
+    assert all(o["kg_per_m3"] > 0 and o["ratio_pct"] > 0 for o in mc["options"])
+    assert {lay["basic"]["spacing_mm"] for lay in d["layers"].values()} == {mc["chosen_mm"]}
+    other = 350 - mc["chosen_mm"]
+    sec = Section(elements=els, slab_strips={"Deck": SlabStrips(spacing=other)})
+    d2 = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
+    assert d2["mesh_choice"]["chosen_mm"] == other and d2["mesh_choice"]["picked"]
+    assert {lay["basic"]["spacing_mm"] for lay in d2["layers"].values()} == {other}
+    assert "as you picked" in d2["notes"][0]
+
+
+def test_added_layers_sit_inside_their_mesh():
+    from triton.design.export import _slab
+    from triton.design.slabs import bar_layers
+
+    rows = bar_layers((0, 20, 150, 1), [(25, 150), (25, 150)], 50)
+    assert [r["from_face_mm"] for r in rows] == sorted(r["from_face_mm"] for r in rows)
+    d = {"element": "Deck", "thickness_mm": 800, "layers": {}}
+    for face in ("bottom", "top"):
+        d["layers"][f"{face}_x"] = {"basic": {}, "mesh_bar_layers": rows, "zones": []}
+    faces = {f["face"]: f["mesh"]["layers"] for f in _slab(d)["faces"]}
+    up = [r["above_soffit_mm"] for r in faces["bottom"]]
+    down = [r["above_soffit_mm"] for r in faces["top"]]
+    assert up == sorted(up) and down == sorted(down, reverse=True)  # bottom layers go up, top layers down

@@ -29,7 +29,7 @@ from .combi import design_combi_wall
 from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
 from .piles import design_pile
-from .slabs import design_slab
+from .slabs import design_slab_meshes
 from .spw_design import design_spw
 
 
@@ -285,7 +285,7 @@ def run_section(
             geometry = section_geometry(workbook)
         own = {c: s for c, s in sheets[name].items() if not s.frame.empty}
         tick(name)
-        d = design_slab(
+        d = design_slab_meshes(
             name,
             element,
             settings,

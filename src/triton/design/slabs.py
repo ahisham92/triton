@@ -642,7 +642,8 @@ def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, lis
     """The mesh alone, then the mesh with additional bars, least steel first.
 
     Additional bars go between the mesh bars: in every second gap, in every gap, in every gap in two
-    layers, or also under the mesh bars (three per gap, two layers). For crack widths the mix has
+    layers, or also behind the mesh bars (three per gap, two layers; layer 2 is inside layer 1: above the
+    bottom mesh, below the top mesh). For crack widths the mix has
     the equivalent Ø of 7.12 and the largest gap between tension bars. Returns (options as
     (mm²/m, Ø, spacing, layers), Ø setting the depth, labels, bar layers): the bar layers are the
     additional bars as [(Ø, spacing)] per layer, the first between the mesh bars.
@@ -667,7 +668,7 @@ def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, lis
                 3000 / s_b,
                 s_b / 2,
                 max(layers_b, 2),
-                f"Ø{phi_a} @ {s_b:g} in 2 layers + Ø{phi_a} under the mesh",
+                f"Ø{phi_a} @ {s_b:g} in 2 layers + Ø{phi_a} behind the mesh bars",
                 [(phi_a, s_b), (phi_a, s_b / 2)],
             ),
         ):
@@ -680,7 +681,8 @@ def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, lis
 
 def parse_layers(text: str) -> list[tuple[float, float] | None] | None:
     """Bar layers set by the user: 'layers: Ø32@150 | Ø25@75', the first between the mesh bars ('–' for
-    none), the next ones in layers 2, 3, ... under the mesh. None when the text is not in this form."""
+    none), the next ones in layers 2, 3, ... inside the mesh (above the bottom mesh, below the top
+    one). None when the text is not in this form."""
     if not text.startswith("layers:"):
         return None
     out: list[tuple[float, float] | None] = []
@@ -709,8 +711,9 @@ def layers_text(spec: list) -> str:
 
 def bar_layers(mesh: tuple, spec: list, cover: float, shift: float = 0.0) -> list[dict]:
     """Every layer of bars of one face and direction, outermost first: its bars, how far its centre is
-    from the face (mm), and its steel. The mesh is layer 1 (and 2 for a mesh in two layers); ``shift``
-    is how much deeper these bars sit because the other direction's bars are outside them."""
+    from the face (mm; the layers go inward, above the bottom mesh and below the top mesh), and its
+    steel. The mesh is layer 1 (and 2 for a mesh in two layers); ``shift`` is how much deeper these bars
+    sit because the other direction's bars are outside them."""
     _, phi_m, s_m, layers_m = mesh
     rows: list[dict] = []
     n = max(layers_m, len(spec))
@@ -1319,6 +1322,96 @@ def restraint_floor(options, face, direction, covers, limits, h, slab, settings,
 # --- Slab design ----------------------------------------------------------------------------------
 
 
+def design_slab_meshes(
+    name: str,
+    slab: SlabInput,
+    settings: DesignSettings,
+    sheets: dict[str, SheetData],
+    geometry: list[dict],
+    elements: dict[str, Any],
+    axes: dict[str, str] | None,
+    pile_sheets: dict[str, dict[str, SheetData]],
+    choices: SlabStrips | None = None,
+    sign: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The slab designed with each mesh spacing of Design settings on its own (150 and 200 mm by
+    default): the one picked (``choices.spacing``, else the lighter whose bars are enough) is the slab's
+    result,
+    and ``mesh_choice`` gives every spacing's steel so the user can switch."""
+    r = settings.reinforcement
+    spacings = sorted({float(v) for v in r.slab_spacings})
+    args = (sheets, geometry, elements, axes, pile_sheets, choices, sign)
+    if len(spacings) < 2:
+        return design_slab(name, slab, settings, *args)
+    runs = {}
+    for sp in spacings:
+        one = settings.model_copy(update={"reinforcement": r.model_copy(update={"slab_spacings": [sp]})})
+        runs[sp] = design_slab(name, slab, one, *args)
+    options = []
+    for sp, d in runs.items():
+        kg = (d.get("steel") or {}).get("kg_per_m3")
+        options.append(
+            {
+                "spacing_mm": sp,
+                "kg_per_m3": kg,
+                "ratio_pct": None if kg is None else round(100 * kg / STEEL_DENSITY, 2),
+                "utilisation": d.get("utilisation"),
+                "passed": d.get("passed"),
+            }
+        )
+    # The lighter of those whose bars carry the loads (punching fails or passes with either mesh).
+    lighter = min(options, key=lambda o: ((o["utilisation"] or 0) > 1 + 1e-6, o["kg_per_m3"] or math.inf))[
+        "spacing_mm"
+    ]
+    want = choices.spacing if choices is not None else None
+    if want is None and choices is not None and choices.bars:
+        want = _spacing_of_bars(choices.bars.values(), spacings)
+    picked = next((sp for sp in spacings if want is not None and abs(sp - want) < 1e-6), None)
+    chosen = picked if picked is not None else lighter
+    d = runs[chosen]
+    d["mesh_choice"] = {
+        "options": options,
+        "chosen_mm": chosen,
+        "picked": picked is not None,
+        "lighter_mm": lighter,
+        "from_bars": picked is not None and choices.spacing is None,
+    }
+
+    def text(o: dict) -> str:
+        short = (o["utilisation"] or 0) > 1 + 1e-6
+        kg = "no bars" if o["kg_per_m3"] is None else f"{o['kg_per_m3']:g} kg/m³"
+        return f"{kg} at {o['spacing_mm']:g} mm" + (
+            f", where the heaviest bars are not enough ({o['utilisation']:.2f})" if short else ""
+        )
+
+    others = "; ".join(text(o) for o in options if o["spacing_mm"] != chosen)
+    how = (
+        "as you picked"
+        if picked is not None and choices.spacing is not None
+        else "the spacing of the bars you set"
+        if picked is not None
+        else "the lighter whose bars are enough"
+    )
+    d["notes"].insert(0, f"Meshes at {chosen:g} mm ({how}; {others}). Everything below is for {chosen:g} mm.")
+    if want is not None and picked is None:
+        d["notes"].insert(
+            1, f"The spacing picked ({want:g} mm) is not in Design settings: the lighter is used."
+        )
+    return d
+
+
+def _spacing_of_bars(labels, spacings: list[float]) -> float | None:
+    """The mesh spacing bars set by the user were chosen on (saved before the spacing was picked): the one
+    all their spacings fit (s/2, s or 2s), when only one does."""
+    import re
+
+    got = [float(v) for text in labels for v in re.findall(r"@\s*([\d.]+)", text)]
+    if not got:
+        return None
+    fits = [sp for sp in spacings if all(any(abs(g - k * sp) < 1e-6 for k in (0.5, 1, 2)) for g in got)]
+    return fits[0] if len(fits) == 1 else None
+
+
 def design_slab(
     name: str,
     slab: SlabInput,
@@ -1333,6 +1426,10 @@ def design_slab(
 ) -> dict[str, Any]:
     slab = with_project_grades(slab, settings.materials, settings.durability)
     choices = choices or SlabStrips()
+    # Labels saved before "under the mesh" was renamed "behind the mesh bars" (it is inside the mesh).
+    old = {k: v.replace(" under the mesh", " behind the mesh bars") for k, v in choices.bars.items()}
+    if old != choices.bars:
+        choices = choices.model_copy(update={"bars": old})
     conc = concrete(slab.concrete)
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     fyd = fyk / settings.partial_factors.gamma_s

@@ -1165,6 +1165,18 @@ def _beam(r: Report, b: dict) -> None:
 LAYER = {"bottom_x": "bottom X", "bottom_y": "bottom Y", "top_x": "top X", "top_y": "top Y"}
 
 
+def _mesh_choice(s: dict) -> list[tuple[str, str]]:
+    mc = s.get("mesh_choice")
+    if not mc:
+        return []
+    others = ", ".join(
+        f"{o['spacing_mm']:g} mm gives {o['kg_per_m3']:g} kg/m³"
+        for o in mc["options"]
+        if o["spacing_mm"] != mc["chosen_mm"]
+    )
+    return [("Mesh spacing", f"{mc['chosen_mm']:g} mm ({others})")]
+
+
 def _slab(r: Report, s: dict) -> None:
     r.h(1, f"{s['element']}: slab")
     st = s.get("steel") or {}
@@ -1173,6 +1185,7 @@ def _slab(r: Report, s: dict) -> None:
             ("Thickness", f"{s.get('thickness_mm', 0):g} mm, {s.get('concrete')}"),
             ("Covers top / bottom", f"{s.get('cover_top_mm', 0):g} / {s.get('cover_bottom_mm', 0):g} mm"),
             ("Layout", "column and field strips" if s.get("strips") == "column_and_field" else "uniform"),
+            *_mesh_choice(s),
             (
                 "Steel",
                 f"{st.get('kg_per_m3', 0):.0f} kg/m³, {st.get('kg_per_m2', 0):.1f} kg/m², {st.get('total_t', 0):.1f} t (links not included)",

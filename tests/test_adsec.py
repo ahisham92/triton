@@ -133,9 +133,13 @@ def test_slab_strip_bars():
     assert adsec.slab_bars({"phi": 25, "spacing_mm": 150, "layers": 1}, None, 0, 75, 1050) == [
         (25, 7, -450.0, 450.0, 87.5)
     ]
-    # Additional bars in every gap in two layers and under the mesh: 4 bars per mesh spacing.
+    # Additional bars in every gap in two layers and behind the mesh bars: 4 bars per mesh spacing.
     bars = adsec.slab_bars(
-        {"phi": 32, "spacing_mm": 200, "layers": 1}, "Ø32 @ 200 in 2 layers + Ø32 under the mesh", 0, 50, 1000
+        {"phi": 32, "spacing_mm": 200, "layers": 1},
+        "Ø32 @ 200 in 2 layers + Ø32 behind the mesh bars",
+        0,
+        50,
+        1000,
     )
     assert sum(b[1] for b in bars) == 20
     assert {b[4] for b in bars} == {66.0, 123.0}
