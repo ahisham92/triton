@@ -273,3 +273,5 @@ button.small { padding: 3px 10px; font-size: 13px; }
 .wb-brief { margin-bottom: 14px; }
 .wb-brief p.status { margin: 6px 0 12px; }
 .wb-brief [data-slot]:not(:empty) { margin-top: 12px; }
+.decided summary { cursor: pointer; font-weight: 600; }
+.decided table { width: 100%; margin-top: 8px; }

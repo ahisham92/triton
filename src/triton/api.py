@@ -614,13 +614,16 @@ def _view_key(summary: dict, section: Section) -> str:
 
 
 @app.get(SECTION + "/workbook")
-def section_workbook(project_id: str, section_id: str, progress: str | None = None) -> dict:
+def section_workbook(
+    project_id: str, section_id: str, progress: str | None = None, fresh: bool = False
+) -> dict:
+    """The section's workbook as it reads it; ``fresh`` checks it again even if nothing changed."""
     section = _section(_get(project_id), section_id)
     summary = store().workbook_summary(project_id, section_id)
     if summary is None:
         raise HTTPException(404, "No workbook uploaded for this section yet.")
     key = _view_key(summary, section)
-    kept = store().load_view(project_id, section_id, key)
+    kept = None if fresh else store().load_view(project_id, section_id, key)
     if kept is not None:
         return kept
     with _Progress(progress) if progress else contextlib.nullcontext(lambda *_: None) as tell:

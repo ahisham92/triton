@@ -17,7 +17,7 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter, quote_sheetname
 
-from .review import choices
+from .review import choices, label
 
 LIST_SHEET = "Triton checker"
 FILLS = {
@@ -26,6 +26,12 @@ FILLS = {
     "info": PatternFill("solid", fgColor="DCE8F4"),
 }
 _RANK = {"error": 0, "warning": 1, "info": 2}
+
+
+def _choices(c: dict) -> str:
+    if c["before"] == "auto":
+        return c["accept"]
+    return f"{c['yes']}: {c['accept']}" + (f" · {c['no']}: {c['reject']}" if c["reject"] else "")
 
 
 def build(
@@ -43,7 +49,7 @@ def build(
         "Combination",
         "Rows",
         "Warning",
-        "Accept does",
+        "Choices",
         "Decision",
         "Go to",
     ]
@@ -72,8 +78,9 @@ def build(
                 i.get("combination") or "",
                 _ranges(rows),
                 i["message"],
-                c["accept"] if c else "Fix in the workbook, sheet mapping or load combinations",
-                decisions.get(i["id"], "to review" if c and c["before"] != "auto" else ""),
+                _choices(c) if c else "Fix in the workbook, sheet mapping or load combinations",
+                label(i["code"], decisions.get(i["id"]))
+                or ("to review" if c and c["before"] != "auto" else ""),
                 "",
             ]
         )

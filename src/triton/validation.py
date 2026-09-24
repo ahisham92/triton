@@ -17,7 +17,7 @@ from .elements import EMBEDDED_BEAM_EXTRAS, CombinationType, ResultKind, combina
 from .importer import SheetData, clean_sheet
 from .issues import Issue, Severity
 from .reader import Row, read_workbook
-from .review import choices
+from .review import choices, label
 from .suggest import combination_key, split_name, squash, suggest
 
 
@@ -334,7 +334,7 @@ def _rejected(sheet: str, i: Issue) -> Issue:
     return Issue(
         Severity.ERROR,
         "rejected",
-        f"Left out of the design: you rejected “{i.message}”",
+        f"Left out of the design: you chose {label(i.code, 'reject')} for “{i.message}”",
         sheet=sheet,
         element=i.element,
         combination=i.combination,
@@ -346,9 +346,9 @@ def _as_decided(i: Issue, decision: str | None) -> str:
     if i.code != "duplicate_rows_removed":
         return i.message
     state = {
-        "accept": " Removed, as you accepted.",
+        "accept": " Removed, as you chose.",
         "reject": " Kept, as you chose.",
-    }.get(decision or "", " Kept until you accept removing them.")
+    }.get(decision or "", " Kept until you choose Remove duplicates.")
     return i.message + state
 
 

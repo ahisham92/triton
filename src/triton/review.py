@@ -1,4 +1,5 @@
-"""What accepting or rejecting each kind of warning does.
+"""What each choice on each kind of warning does (stored as "accept" and "reject"; the buttons are
+named for what they keep or remove, see ``LABELS``).
 
 Nothing that changes the numbers happens before the user accepts it: repeated rows are kept, and
 a sheet with rows Triton cannot read is not used, until the user accepts leaving those rows out.
@@ -37,6 +38,32 @@ RULES: dict[str, tuple[str, str | None, str]] = {
 }
 
 
+# The buttons, named for what they keep or remove: (the "accept" choice, the "reject" choice). The
+# decisions are stored as "accept" and "reject".
+_SHEET = ("Keep sheet", "Remove sheet")
+LABELS: dict[str, tuple[str, str | None]] = {
+    "duplicate_rows_removed": ("Remove duplicates", "Keep duplicates"),
+    "non_numeric": ("Remove these rows", "Remove sheet"),
+    "missing_values": ("Remove these rows", "Remove sheet"),
+    "node_coordinates_differ": ("Remove these nodes", "Remove sheet"),
+    "content_above_header": _SHEET,
+    "node_values_differ": _SHEET,
+    "outside_envelope": _SHEET,
+    "unexpected_units": _SHEET,
+    "identical_combinations": _SHEET,
+    "node_set_differs": _SHEET,
+    "point_count_differs": ("Keep element", "Remove element"),
+    "missing_combination": ("Go on without it", None),
+    "missing_qp": ("Go on without it", None),
+}
+
+
+def label(code: str, decision: str | None) -> str:
+    """The name of the button behind a stored decision."""
+    yes, no = LABELS.get(code, ("Accept", "Reject"))
+    return {"accept": yes, "reject": no}.get(decision or "", "") or ""
+
+
 def choices(code: str) -> dict[str, Any] | None:
     """What the review offers for an issue, or None when it is fixed elsewhere (the workbook, the
     sheet mapping or the load combinations)."""
@@ -44,4 +71,5 @@ def choices(code: str) -> dict[str, Any] | None:
     if rule is None:
         return None
     accept, reject, before = rule
-    return {"accept": accept, "reject": reject, "before": before}
+    yes, no = LABELS.get(code, ("Accept", "Reject" if reject else None))
+    return {"accept": accept, "reject": reject, "before": before, "yes": yes, "no": no if reject else None}

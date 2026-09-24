@@ -35,10 +35,10 @@ def test_repeated_rows_are_kept_until_the_removal_is_accepted():
     (issue,) = [i for s in kept.sheets for i in s.issues if i.code == "duplicate_rows_removed"]
     assert issue.rows == [7] and issue.notes == {7: "Repeats row 2."}
     assert "row 7 repeats row 2" in issue.message and issue.message.endswith(
-        "Kept until you accept removing them."
+        "Kept until you choose Remove duplicates."
     )
     (issue,) = [i for s in removed.sheets for i in s.issues if i.code == "duplicate_rows_removed"]
-    assert issue.message.endswith("Removed, as you accepted.")
+    assert issue.message.endswith("Removed, as you chose.")
 
 
 def test_a_sheet_with_unreadable_rows_is_used_once_leaving_them_out_is_accepted():
@@ -192,3 +192,23 @@ def test_the_workbook_tab_starts_from_a_brief_and_keeps_the_check(client, monkey
     assert calls == [1]
     client.get(f"{url}/workbook")
     assert calls == [1]
+
+
+def test_choices_are_named_keep_or_remove():
+    from triton.review import choices, label
+
+    assert (choices("duplicate_rows_removed")["yes"], choices("duplicate_rows_removed")["no"]) == (
+        "Remove duplicates",
+        "Keep duplicates",
+    )
+    assert (choices("identical_combinations")["yes"], choices("identical_combinations")["no"]) == (
+        "Keep sheet",
+        "Remove sheet",
+    )
+    assert choices("missing_qp")["no"] is None
+    assert label("outside_envelope", "reject") == "Remove sheet" and label("outside_envelope", None) == ""
+    raw = import_sheets({"Pile(1)-QP": pile_sheet(), "Pile(1)-PT-B-Apron": pile_sheet()})
+    (same,) = ids(raw, "identical_combinations")
+    view = apply_section(raw, decisions={same: "reject"})
+    (left,) = [i for s in view.sheets for i in s.issues if i.code == "rejected"]
+    assert left.message.startswith("Left out of the design: you chose Remove sheet for")

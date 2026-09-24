@@ -1007,8 +1007,8 @@ async function renderWorkbookTab(host) {
     document.getElementById("upload-mode").hidden = false;
     wireDeleteTabs(data, url);
     renderFactors(data);
-    const refresh = async () => {
-      const fresh = await api(`${url}/workbook`);
+    const refresh = async (given) => {
+      const fresh = given ?? (await api(`${url}/workbook`));
       renderReport(fresh);
       onReport(fresh);
     };
@@ -1070,18 +1070,14 @@ async function renderWorkbookTab(host) {
 
 // Reads and checks a section's stored workbook as a job with a percentage: how far the server has
 // got (it says so under a progress key), then the download of the answer. A check already worked
-// out comes back at once.
-async function openWorkbook(url, file, slot, shown) {
-  if (busyWith(slot)) return;
-  document.getElementById("wb-open-row")?.setAttribute("hidden", "");
-  const key = `open-${Math.random().toString(36).slice(2)}`;
-  const home = location.hash;
-  const sid = sec().id;
+// out comes back at once; ``fresh`` checks it again anyway.
+async function fetchWorkbook(url, { title, slot, fresh = false, doneText }) {
+  const key = `wb-${Math.random().toString(36).slice(2)}`;
   const job = newJob({
     kind: "open",
-    title: `Opening ${file}`,
+    title,
     slot,
-    home,
+    home: location.hash,
     steps: [
       { label: "Read and check", weight: 4, state: "running", fraction: 0, detail: "Loading the workbook" },
       { label: "Download", weight: 1, state: "waiting" },
@@ -1105,7 +1101,7 @@ async function openWorkbook(url, file, slot, shown) {
     }
   }, 700);
   try {
-    const res = await fetch(`${url}/workbook?progress=${key}`, { signal: ctrl.signal });
+    const res = await fetch(`${url}/workbook?progress=${key}${fresh ? "&fresh=true" : ""}`, { signal: ctrl.signal });
     clearInterval(poll);
     if (!res.ok) {
       const d = await res.json().catch(() => ({}));
@@ -1130,12 +1126,26 @@ async function openWorkbook(url, file, slot, shown) {
       }
     }
     const data = JSON.parse(await new Blob(parts).text());
-    OPENED.add(sid);
-    jobDone(job, "done", `Opened ${file}.`);
-    if (location.hash === home && shown(data)) dismissJob(job);
+    jobDone(job, "done", doneText);
+    job.data = data;
+    return job;
   } catch (e) {
     clearInterval(poll);
-    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped. Open it again when you need it." : `Failed: ${e.message}`);
+    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped." : `Failed: ${e.message}`);
+    throw Object.assign(e, { job });
+  }
+}
+
+async function openWorkbook(url, file, slot, shown) {
+  if (busyWith(slot)) return;
+  document.getElementById("wb-open-row")?.setAttribute("hidden", "");
+  const home = location.hash;
+  const sid = sec().id;
+  try {
+    const job = await fetchWorkbook(url, { title: `Opening ${file}`, slot, doneText: `Opened ${file}.` });
+    OPENED.add(sid);
+    if (location.hash === home && shown(job.data)) dismissJob(job);
+  } catch {
     document.getElementById("wb-open-row")?.removeAttribute("hidden");
   }
 }
@@ -1495,7 +1505,7 @@ function renderFactors(data) {
 const LABEL = { ok: "OK", warning: "Check", error: "Error", missing: "—" };
 // Readable names for the kinds of findings.
 const ISSUE_TITLE = {
-  duplicate_rows_removed: "Repeated rows",
+  duplicate_rows_removed: "Duplicate rows",
   blank_rows_removed: "Blank rows",
   repeated_header_removed: "Stacked tables",
   unnamed_columns: "Columns without a header",
@@ -1507,7 +1517,8 @@ const ISSUE_TITLE = {
   content_above_header: "Rows above the header",
   outside_envelope: "Values outside their min and max",
   unexpected_units: "Unexpected units",
-  identical_combinations: "Identical combinations",
+  identical_combinations: "Duplicate sheets (identical combinations)",
+  rejected: "Removed from the design",
   node_set_differs: "Different nodes between combinations",
   point_count_differs: "Unusual number of points",
   missing_combination: "Missing combinations",
@@ -1548,8 +1559,9 @@ function renderReport(d) {
 }
 
 // ---------------------------------------------------------------- warnings review
-// Every warning with what accepting and rejecting it does. Nothing that changes the numbers happens
-// before it is accepted; a rejected warning leaves its sheet (or element) out of the design.
+// Every warning with its two choices, named for what they keep or remove (stored as "accept" and
+// "reject"). Nothing that changes the numbers happens before it is chosen; removing a sheet (or
+// element) leaves it out of the design.
 const rowRanges = (rows, most = 12) => {
   const out = [];
   let a = null, b = null;
@@ -1562,66 +1574,111 @@ const rowRanges = (rows, most = 12) => {
   return out.length > most ? `${out.slice(0, most).join(", ")} and ${out.length - most} more` : out.join(", ");
 };
 
+// What Apply did, said once in the review bar drawn after it.
+let REVIEW_NOTE = null;
+
+function appliedText(changes) {
+  const groups = new Map();
+  for (const i of changes) {
+    const d = sec().review[i.id];
+    const k = `${i.code}|${d || ""}`;
+    if (!groups.has(k)) groups.set(k, { code: i.code, d, items: [] });
+    groups.get(k).items.push(i);
+  }
+  const parts = [...groups.values()].map(({ code, d, items }) => {
+    const what = d ? (d === "accept" ? items[0].choices.yes : items[0].choices.no) : "back to review";
+    const rows = code === "duplicate_rows_removed" && d === "accept" ? `, ${items.reduce((a, i) => a + i.rows.length, 0)} rows` : "";
+    return `${issueTitle(code)}: ${what} (${items.length}${rows})`;
+  });
+  return `Applied: ${parts.join("; ")}.`;
+}
+
 function renderReview(data, refresh, url) {
   const table = document.getElementById("problems");
   const bar = document.getElementById("review-bar");
   if (!table || !bar) return;
   const p = sec();
+  const sid = p.id;
   p.review ??= {};
   const reviewable = (i) => i.choices && i.choices.before !== "auto";
-  const list = data.issues.filter((i) => reviewable(i) || (i.severity !== "info" && !i.choices));
+  // A removed sheet shows as its warning under Decided, not as a new error.
+  const list = data.issues.filter((i) => i.code !== "rejected" && (reviewable(i) || (i.severity !== "info" && !i.choices)));
   const kinds = [...new Set(list.map((i) => i.code))];
   const expanded = new Set(); // kinds shown in full; long ones show their first few
-  const draw = () => {
-    const decided = (i) => p.review[i.id];
-    const open = list.filter((i) => reviewable(i) && !decided(i)).length;
+  const chosen = (i) => p.review[i.id] || null;
+  // Decided and applied (the last check read the workbook with this decision): out of the list.
+  const resolved = (i) => reviewable(i) && chosen(i) && chosen(i) === (i.decision || null);
+  const changes = () => list.filter((i) => reviewable(i) && chosen(i) !== (i.decision || null));
+  const choiceName = (i, d) => (d === "accept" ? i.choices.yes : i.choices.no);
+  const note = REVIEW_NOTE?.sid === sid ? REVIEW_NOTE.text : "";
+  REVIEW_NOTE = null;
+  const draw = (message = note) => {
+    const open = list.filter((i) => reviewable(i) && !resolved(i) && !chosen(i)).length;
+    const done = list.filter(resolved);
+    const n = changes().length;
     bar.hidden = false;
-    bar.innerHTML = `<div class="panel row">
-        <span><b>${open}</b> to review · ${list.filter((i) => decided(i) === "accept").length} accepted · ${list.filter((i) => decided(i) === "reject").length} rejected</span>
-        <button id="review-apply">Apply decisions</button><span class="status" id="review-status"></span>
+    bar.innerHTML = `<div class="panel">
+      <div class="row">
+        <span><b>${open}</b> to review · ${done.length} decided${n ? ` · <b>${n}</b> not applied yet` : ""}</span>
+        <button id="review-apply" ${n ? "" : "disabled"}>${n ? `Apply ${n} decision${n === 1 ? "" : "s"}` : "Apply decisions"}</button>
+        <button class="quiet" id="review-recheck">Check again</button>
         <span style="flex:1"></span>
         <a class="quiet-link" href="${url}/workbook/checker.xlsx">Download the Checker (Excel)</a></div>
+      <p class="status" id="review-status">${esc(message || (n ? "Press Apply to use your choices; until then the section reads the workbook as before." : "Choose Keep or Remove on each warning, then press Apply."))}</p>
+      <div data-slot="review-${esc(sid)}"></div></div>
       <p class="status">Click a sheet name to open it at the flagged rows: fix cells there, or in the Checker in Excel and upload it again with “Replace matching tabs”.</p>`;
+    const row = (i) => {
+      const d = chosen(i);
+      const where = i.sheet
+        ? `<a href="#" data-open="${esc(i.sheet)}">${esc(i.sheet)}</a>`
+        : esc([i.element, i.combination].filter(Boolean).join(" "));
+      const show3d = !i.sheet && i.element ? ` <a href="#" data-3d="${esc(i.element)}">3D view</a>` : "";
+      const buttons = reviewable(i)
+        ? `<button class="quiet ${d === "accept" ? "on" : ""}" data-id="${i.id}" data-d="accept" title="${esc(i.choices.accept)}">${esc(i.choices.yes)}</button>
+          ${i.choices.reject ? `<button class="quiet ${d === "reject" ? "on" : ""}" data-id="${i.id}" data-d="reject" title="${esc(i.choices.reject)}">${esc(i.choices.no)}</button>` : ""}`
+        : "";
+      return `<tr class="${d ? `decided-${d}` : ""}"><td><span class="sev ${i.severity}">${i.severity}</span></td>
+        <td>${where}${show3d}${i.rows.length ? `<div class="rows">rows ${esc(rowRanges(i.rows))}</div>` : ""}</td>
+        <td>${esc(i.message)}</td><td class="nowrap">${buttons}</td></tr>`;
+    };
     const rows = kinds
       .map((code) => {
-        const items = list.filter((i) => i.code === code);
+        const items = list.filter((i) => i.code === code && !resolved(i));
+        if (!items.length) return "";
         const c = items[0].choices;
         const head = `<tr class="kind"><th colspan="3">${esc(issueTitle(code))} (${items.length})
-          ${c ? `<span class="status">Accept: ${esc(c.accept)}${c.reject ? ` · Reject: ${esc(c.reject)}` : ""}</span>` : '<span class="status">Fix it in the workbook, the sheet mapping or the load combinations.</span>'}</th>
-          <th>${c ? `<button class="quiet" data-all="${esc(code)}" data-d="accept">Accept all</button>${c.reject ? ` <button class="quiet" data-all="${esc(code)}" data-d="reject">Reject all</button>` : ""}` : ""}</th></tr>`;
+          ${c ? `<span class="status">${c.yes === c.accept ? "" : `${esc(c.yes)}: `}${esc(c.accept)}${c.reject ? ` · ${esc(c.no)}: ${esc(c.reject)}` : ""}</span>` : '<span class="status">Fix it in the workbook, the sheet mapping or the load combinations.</span>'}</th>
+          <th class="nowrap">${c ? `<button class="quiet" data-all="${esc(code)}" data-d="accept">${esc(c.yes)} (all)</button>${c.reject ? ` <button class="quiet" data-all="${esc(code)}" data-d="reject">${esc(c.no)} (all)</button>` : ""}` : ""}</th></tr>`;
         const shown = items.length > 5 && !expanded.has(code) ? items.slice(0, 3) : items;
         const more = shown.length < items.length ? `<tr><td></td><td colspan="3"><a href="#" data-more="${esc(code)}">Show all ${items.length}</a></td></tr>` : "";
-        return head + shown
-          .map((i) => {
-            const d = decided(i);
-            const where = i.sheet
-              ? `<a href="#" data-open="${esc(i.sheet)}">${esc(i.sheet)}</a>`
-              : esc([i.element, i.combination].filter(Boolean).join(" "));
-            const show3d = !i.sheet && i.element ? ` <a href="#" data-3d="${esc(i.element)}">3D view</a>` : "";
-            return `<tr class="${d ? `decided-${d}` : ""}"><td><span class="sev ${i.severity}">${i.severity}</span></td>
-              <td>${where}${show3d}${i.rows.length ? `<div class="rows">rows ${esc(rowRanges(i.rows))}</div>` : ""}</td>
-              <td>${esc(i.message)}</td>
-              <td class="nowrap">${reviewable(i) ? `<button class="quiet ${d === "accept" ? "on" : ""}" data-id="${i.id}" data-d="accept" title="${esc(i.choices.accept)}">Accept</button>
-                ${i.choices.reject ? `<button class="quiet ${d === "reject" ? "on" : ""}" data-id="${i.id}" data-d="reject" title="${esc(i.choices.reject)}">Reject</button>` : ""}` : ""}</td></tr>`;
-          })
-          .join("") + more;
+        return head + shown.map(row).join("") + more;
       })
       .join("");
-    table.innerHTML = list.length ? `<tr><th></th><th>Sheet</th><th>What was found</th><th></th></tr>${rows}` : "<tr><td>No problems found.</td></tr>";
-    const status = () => (bar.querySelector("#review-status").textContent = "Changed: press Apply decisions.");
+    const decidedRows = done
+      .map((i) => `<tr><td>${esc(issueTitle(i.code))}</td><td>${i.sheet ? `<a href="#" data-open="${esc(i.sheet)}">${esc(i.sheet)}</a>` : esc([i.element, i.combination].filter(Boolean).join(" "))}</td>
+        <td>${esc(i.message)}</td><td class="nowrap"><b>${esc(choiceName(i, chosen(i)))}</b> <button class="quiet small" data-undo="${i.id}" title="Put it back to review">Undo</button></td></tr>`)
+      .join("");
+    table.innerHTML =
+      (rows ? `<tr><th></th><th>Sheet</th><th>What was found</th><th></th></tr>${rows}` : `<tr><td>${list.length ? "Nothing left to review." : "No problems found."}</td></tr>`) +
+      (done.length ? `<tr><td colspan="4"><details class="decided"><summary>Decided and applied (${done.length})</summary>
+        <table>${decidedRows}</table></details></td></tr>` : "");
+    const changed = () => {
+      markDirty();
+      draw("Changed: press Apply to use it.");
+    };
     table.querySelectorAll("[data-id]").forEach((b) => (b.onclick = () => {
       const id = b.dataset.id;
       if (p.review[id] === b.dataset.d) delete p.review[id];
       else p.review[id] = b.dataset.d;
-      markDirty();
-      draw();
-      status();
+      changed();
     }));
     table.querySelectorAll("[data-all]").forEach((b) => (b.onclick = () => {
-      for (const i of list) if (i.code === b.dataset.all && reviewable(i)) p.review[i.id] = b.dataset.d;
-      markDirty();
-      draw();
-      status();
+      for (const i of list) if (i.code === b.dataset.all && reviewable(i) && !resolved(i)) p.review[i.id] = b.dataset.d;
+      changed();
+    }));
+    table.querySelectorAll("[data-undo]").forEach((b) => (b.onclick = () => {
+      delete p.review[b.dataset.undo];
+      changed();
     }));
     table.querySelectorAll("[data-more]").forEach((a) => (a.onclick = (e) => {
       e.preventDefault();
@@ -1637,14 +1694,43 @@ function renderReview(data, refresh, url) {
       state.pick3d = a.dataset["3d"];
       location.hash = tabHash("view3d");
     }));
-    bar.querySelector("#review-apply").onclick = async () => {
+    const slot = `review-${sid}`;
+    const run = async (button, fresh) => {
       const st = bar.querySelector("#review-status");
-      st.textContent = "Saving…";
+      const pending = changes();
+      bar.querySelectorAll("#review-apply, #review-recheck").forEach((b) => (b.disabled = true));
+      button.textContent = fresh ? "Checking…" : "Applying…";
+      st.textContent = "Saving your choices…";
       await save();
-      if (state.errors?.length) return (st.textContent = state.errors.map((e) => e.msg).join(" "));
-      st.textContent = "Checking the workbook again…";
-      await refresh();
+      if (state.errors?.length) {
+        st.textContent = `Could not save: ${state.errors.map((e) => e.msg).join(" ")}`;
+        return draw(st.textContent);
+      }
+      st.textContent = fresh ? "Checking the workbook again…" : "Checking the workbook with your choices…";
+      try {
+        const job = await fetchWorkbook(url, {
+          title: fresh ? "Checking the workbook again" : "Applying your decisions",
+          slot,
+          fresh,
+          doneText: "Done.",
+        });
+        dismissJob(job);
+        const d = job.data;
+        const left = d.issues.filter((i) => reviewable(i) && i.code !== "rejected" && !sec().review[i.id]);
+        REVIEW_NOTE = {
+          sid,
+          text: fresh
+            ? `Checked again: ${left.length} warning(s) to review.`
+            : pending.length ? appliedText(pending) : "Your choices are applied.",
+        };
+        if (sec()?.id === sid && document.body.contains(bar)) await refresh(d);
+      } catch (e) {
+        draw(`Could not ${fresh ? "check" : "apply"}: ${e.message}`);
+      }
     };
+    bar.querySelector("#review-apply").onclick = (e) => run(e.target, false);
+    bar.querySelector("#review-recheck").onclick = (e) => run(e.target, true);
+    drawJobs();
   };
   draw();
 }
