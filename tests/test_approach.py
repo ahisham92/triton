@@ -188,7 +188,9 @@ def test_costed_and_in_value_engineering(tmp_path, monkeypatch):
         trials.clean_variant({"approach": {"thickness": 5}}, s)
     calls = []
 
-    def fake(settings, section, workbook, progress=None, only=None, deadline=None, approach=None, furniture_at=None):
+    def fake(
+        settings, section, workbook, progress=None, only=None, deadline=None, approach=None, furniture_at=None
+    ):
         (name,) = only
         calls.append((name, approach.thickness if approach else None))
         if name == fresh.APPROACH:

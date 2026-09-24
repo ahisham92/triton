@@ -47,12 +47,15 @@ def plan_png(
     k = 22.0  # px per m
     w = int(per_row * k) + 80
     row_h = int(depth * k) + 70
+    pro = res.get("protrusion")
+    out_m = pro["projection"] / 1000 if pro else 0.0  # the fender blocks stand out from the face
+    row_h += int(out_m * k)
     img = Image.new("RGB", (w, rows * row_h + 40), "white")
     d = ImageDraw.Draw(img)
     f = _font(13)
     for r in range(rows):
         s0 = start + r * per_row
-        top = 20 + r * row_h
+        top = 20 + r * row_h + out_m * k
 
         def P(s: float, dd: float, s0: float = s0, top: float = top) -> tuple[float, float]:
             return 40 + (s - s0) * k, top + dd * k
@@ -77,6 +80,13 @@ def plan_png(
         for j in lay["joints_m"]:
             if s0 <= j <= e:
                 d.line([P(j, -0.3), P(j, depth + 0.3)], fill=RED, width=1)
+        if pro:
+            for it in lay["items"].get("fenders", []):
+                if s0 - 2 <= it["s_m"] <= e + 2:
+                    half = pro["length"] / 2000
+                    d.rectangle(
+                        [P(it["s_m"] - half, -out_m), P(it["s_m"] + half, 0)], fill=BEAM, outline=MUTED, width=1
+                    )
         for kind, items in lay["items"].items():
             c = COL.get(kind, INK)
             for it in items:
@@ -285,6 +295,25 @@ def build_calc(project: Project, section: Section, res: dict[str, Any]) -> Repor
                     ),
                 ]
             )
+        for key, title in (
+            ("section", "Section at the joint to the beam"),
+            ("shear", "Short cantilever shear"),
+            ("joint", "Joint to the beam (EN 1992-1-1 6.2.5)"),
+            ("downstand", "Downstand below the beam's soffit"),
+            ("beam", "Into the front beam: torsion and shear (extra to its own design)"),
+            ("bars", "Bars"),
+            ("quantities", "Quantities per block"),
+            ("standoff", "Stand-off of the ship's side from the quay face"),
+            ("reach", "Crane outreach"),
+            ("legs", "Ship's flare and the crane's legs"),
+        ):
+            block = i.get(key)
+            if isinstance(block, dict) and block:
+                r.h(3, title)
+                r.kv([(k.replace("_", " "), v) for k, v in block.items() if v not in (None, "")])
+        for t in i.get("details") or []:
+            r.h(3, t["title"])
+            r.table(t["headers"], t["rows"])
         if i.get("anchors"):
             r.h(
                 3,
@@ -330,6 +359,11 @@ def views(res: dict[str, Any]) -> list[dict[str, Any]]:
         plan.line("furniture", (0, -rl["across_m"] * 1000), (L, -rl["across_m"] * 1000))
     for j in lay["joints_m"]:
         plan.line("zones", (j * 1000, 1000), (j * 1000, -fw - 1000))
+    pro = res.get("protrusion")
+    if pro:
+        for it in lay["items"].get("fenders", []):
+            s0 = it["s_m"] * 1000
+            plan.rect("concrete", (s0 - pro["length"] / 2, pro["projection"]), (s0 + pro["length"] / 2, 0))
     for items in lay["items"].values():
         for it in items:
             a0, a1 = it["across_m"]
@@ -341,6 +375,21 @@ def views(res: dict[str, Any]) -> list[dict[str, Any]]:
                 it["label"],
             )
     out = [plan.as_dict()]
+    blk = next((i for i in res["items"] if i["item"] == "fender_blocks"), None)
+    if blk:
+        g = blk["geometry"]
+        v = View("Fender protrusion", "Fender protrusion: cross-section through the front beam", 50, "Furniture")
+        # Across the quay (sea to the left, x from the block's sea face), up from the cope (y = 0 at the cope).
+        a, B = g["projection_mm"], g["beam_width_mm"]
+        v.rect("concrete", (a, 0), (a + B, -g["beam_depth_mm"]))
+        v.rect("concrete", (0, 0), (a, -g["depth_mm"]))
+        c = g["cover_mm"] + 16
+        v.line("furniture", (c, -c), (a + 1000, -c))  # the U-bars' top leg, on into the beam
+        v.line("furniture", (c, -g["joined_depth_mm"] + c), (a + 1000, -g["joined_depth_mm"] + c))
+        v.text((0, 400), f"Top ties: {blk['bars']['top_ties']}")
+        v.text((0, 250), f"Links: {blk['bars']['links']}")
+        v.text((0, -g["depth_mm"] - 300), f"Faces: {blk['bars']['face_mesh']}")
+        out.append(v.as_dict())
     for i in res["items"]:
         a = i.get("anchors")
         pts = a.get("positions") if a else None

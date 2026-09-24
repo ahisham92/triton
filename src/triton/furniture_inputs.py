@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .protrusion_inputs import FenderProtrusion, StsCrane
+
 BOLT_SIZES = [16, 20, 24, 30, 36, 42, 48, 56, 64, 72, 80, 90, 100]
 BoltSize = Literal[tuple(BOLT_SIZES)]  # type: ignore[valid-type]
 BoltGrade = Literal["4.6", "5.6", "8.8", "10.9", "A4-70", "A4-80"]
@@ -299,6 +301,17 @@ class QuayFurniture(_Model):
         description="Untick where the section has no tie rods.",
     )
     rules: FurnitureRules = Field(default_factory=FurnitureRules, title="Arrangement rules")
+    protrusion: FenderProtrusion | None = Field(
+        None,
+        title="Front beam protrusion at each fender",
+        description="A block on the beam's sea face at every fender, flush with the cope. Tick to add it.",
+    )
+    sts_crane: StsCrane | None = Field(
+        default_factory=StsCrane,
+        title="STS cranes on this quay",
+        description="Checks the ship's stand-off from the quay face against the crane's outreach and legs. "
+        "Untick where there is no ship-to-shore crane.",
+    )
 
 
 class SectionFurniture(_Model):

@@ -30,6 +30,7 @@ from .design import (
     governing,
     openings,
     peaks,
+    protrusion,
     pile_cracks,
     pile_shear,
     piles,
@@ -104,6 +105,7 @@ GENERAL = [
     ("Quay furniture: arrangement along the berth", furniture_layout),
     ("Quay furniture: design of each item", furniture),
     ("Anchor bolts cast into the beams (EN 1992-4)", anchors),
+    ("Fender protrusion on the front beam, and the STS crane's stand-off", protrusion),
 ]
 
 # Methods of the slab's moments at the pile faces, in the order the options are offered.

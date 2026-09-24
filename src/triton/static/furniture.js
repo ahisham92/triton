@@ -5,7 +5,7 @@
 // app.js passes its helpers in: api, again, esc, fmt, secUrl, forms() -> [project form, section form], save().
 
 const COL = { fenders: "#2a5fae", bollards: "#c87814", ladders: "#2e8b4a", storm_pins: "#7a4696", crane_stoppers: "#c62828" };
-const NAMES = { fenders: "Fenders", bollards: "Bollards", ladders: "Ladders", storm_pins: "Storm pins", crane_stoppers: "Crane stoppers", crane_rails: "Crane rails", tie_rods: "Tie rods" };
+const NAMES = { fenders: "Fenders", bollards: "Bollards", ladders: "Ladders", storm_pins: "Storm pins", crane_stoppers: "Crane stoppers", crane_rails: "Crane rails", tie_rods: "Tie rods", fender_blocks: "Fender protrusions" };
 
 export async function renderFurniture(host, h) {
   const { api, again, esc, fmt, secUrl } = h;
@@ -30,12 +30,13 @@ export async function renderFurniture(host, h) {
     const L = r.berth_length_m;
     const fr = r.frame;
     const k = 10; // px per m
+    const out0 = r.protrusion ? r.protrusion.projection / 1000 : 0; // the fender blocks stand out from the face
     const deep = Math.max(fr.rear_beam ? fr.rear_beam.centre_m + fr.rear_beam.width_mm / 2000 : 0, fr.front_beam.width_mm / 1000) + 1;
     const W = L * k + 40;
     const ky = k;
-    const H = deep * ky + 50;
+    const H = (deep + out0) * ky + 50;
     const X = (s) => 20 + s * k;
-    const Y = (d) => 20 + d * ky;
+    const Y = (d) => 20 + (d + out0) * ky;
     const parts = [];
     parts.push(`<rect x="${X(0)}" y="${Y(0)}" width="${L * k}" height="${(fr.front_beam.width_mm / 1000) * ky}" fill="var(--panel2, #eeeee8)" stroke="#9aa0aa"/>`);
     if (fr.rear_beam) {
@@ -43,6 +44,11 @@ export async function renderFurniture(host, h) {
       parts.push(`<rect x="${X(0)}" y="${Y(rb.centre_m - rb.width_mm / 2000)}" width="${L * k}" height="${(rb.width_mm / 1000) * ky}" fill="var(--panel2, #eeeee8)" stroke="#9aa0aa"/>`);
     }
     parts.push(`<line x1="${X(0)}" y1="${Y(0)}" x2="${X(L)}" y2="${Y(0)}" stroke="currentColor" stroke-width="2"/>`);
+    if (r.protrusion)
+      for (const it of lay.items.fenders || []) {
+        const half = r.protrusion.length / 2000;
+        parts.push(`<rect x="${X(it.s_m - half)}" y="${Y(-out0)}" width="${2 * half * k}" height="${out0 * ky}" fill="var(--panel2, #eeeee8)" stroke="#9aa0aa"><title>Fender protrusion at ${f2(it.s_m)} m</title></rect>`);
+      }
     for (const p of lay.pile_heads) parts.push(`<ellipse cx="${X(p.s)}" cy="${Y(p.d)}" rx="${p.r * k}" ry="${p.r * ky}" fill="none" stroke="#b8bcc4"><title>${esc(p.element)} at ${f2(p.s)} m</title></ellipse>`);
     for (const rl of lay.rails) parts.push(`<line x1="${X(0)}" y1="${Y(rl.across_m)}" x2="${X(L)}" y2="${Y(rl.across_m)}" stroke="#5a5a5a" stroke-width="3"><title>${esc(rl.tag)}</title></line>`);
     for (const j of lay.joints_m) parts.push(`<line x1="${X(j)}" y1="${Y(-1)}" x2="${X(j)}" y2="${Y(deep - 1)}" stroke="#c62828" stroke-dasharray="4 3"><title>Expansion joint at ${f2(j)} m</title></line>`);
@@ -71,12 +77,31 @@ export async function renderFurniture(host, h) {
       ${extra.length ? `Local bars: ${esc(extra.join("; "))}.` : ""}</p>`;
   };
 
+  // The fender protrusion's and the STS crane's own figures: small key-value blocks and tables.
+  const BLOCKS = { section: "Section at the joint", joint: "Joint to the beam (6.2.5)", downstand: "Downstand below the beam", beam: "Into the front beam (extra to its own design)", bars: "Bars", quantities: "Quantities per block", standoff: "Stand-off from the quay face", reach: "Crane outreach", legs: "Flare and the crane's legs" };
+  const cell = (v) => (typeof v === "number" ? fmt(v, Math.abs(v) < 10 ? 3 : 1) : esc(String(v)));
+  const detailsHtml = (i) => {
+    const kv = Object.entries(BLOCKS)
+      .filter(([k]) => i[k] && typeof i[k] === "object")
+      .map(([k, t]) => `<tr><th colspan="2" style="text-align:left">${esc(t)}</th></tr>${Object.entries(i[k])
+        .filter(([, v]) => v !== null && v !== "")
+        .map(([kk, v]) => `<tr><td class="hint">${esc(kk.replace(/_/g, " "))}</td><td>${Array.isArray(v) ? v.map(cell).join(" × ") : typeof v === "boolean" ? (v ? "yes" : "no") : cell(v)}</td></tr>`)
+        .join("")}`)
+      .join("");
+    const tables = (i.details || [])
+      .map((t) => `<p><strong>${esc(t.title)}</strong></p><div class="scroll"><table class="cost"><tr>${t.headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr>
+        ${t.rows.map((row) => `<tr>${row.map((v) => `<td${typeof v === "number" ? ' class="num"' : ""}>${cell(v)}</td>`).join("")}</tr>`).join("")}</table></div>`)
+      .join("");
+    return (kv ? `<div class="scroll"><table class="cost">${kv}</table></div>` : "") + tables;
+  };
+
   const draw = (r) => {
     const lay = r.layout;
     const counts = Object.entries(lay.counts).map(([k, n]) => `<td><strong>${n}</strong><div class="hint">${NAMES[k] || k}</div></td>`).join("");
     const itemsRows = r.items
       .map((i) => `<details class="panel" style="margin-top:8px"><summary><strong>${esc(i.title)}</strong> · utilisation ${util(i.utilisation, i.passed)}${i.governing_case ? ` <span class="status">(${esc(i.governing_case)})</span>` : ""}</summary>
         <table class="cost">${i.parts.map((p) => `<tr><td>${esc(p.part)}</td><td class="num">${util(p.utilisation, p.passed)}</td></tr>`).join("")}</table>
+        ${detailsHtml(i)}
         ${anchorsHtml(i.anchors)}
         ${(i.notes || []).map((n) => `<p class="flag-bad">${esc(n)}</p>`).join("")}</details>`)
       .join("");

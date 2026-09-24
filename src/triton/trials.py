@@ -292,7 +292,11 @@ def run(
         if tell:
             tell(i / max(len(sizes), 1), f"Designing {name} at {size_label(size)}")
         res = run_section(
-            project.design, trial, workbook, only=[name], furniture_at=positions_for(project, trial),
+            project.design,
+            trial,
+            workbook,
+            only=[name],
+            furniture_at=positions_for(project, trial),
             approach=project.approach,
         )
         # A corner berth's parts as one design: the worst utilisation, the steel over all of them.
@@ -674,7 +678,11 @@ def run_scenarios(
         if tell:
             tell(i / max(len(todo), 1), f"Designing {name} ({variant_label(variant, section)})")
         res = run_section(
-            vp.design, vs, workbook, only=[name], furniture_at=positions_for(vp, vs),
+            vp.design,
+            vs,
+            workbook,
+            only=[name],
+            furniture_at=positions_for(vp, vs),
             approach=vp.approach,
         )
         design = next((e for k in DESIGN_KINDS for e in res.get(k) or [] if e["element"] == name), None)
