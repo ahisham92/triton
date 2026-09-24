@@ -797,6 +797,70 @@ class CraneArea(_Model):
         return data
 
 
+class SlabVoids(_Model):
+    """Circular voids cast in the slab (e.g. PVC pipes), running across the quay between the beams."""
+
+    diameter: float = _mm("Void diameter", 500.0, gt=0)
+    spacing: float = _mm(
+        "Spacing",
+        700.0,
+        gt=0,
+        description="Centre to centre, across the voids (along the berth when they run across the quay).",
+    )
+    centre_depth: float | None = _mm(
+        "Centre below the top",
+        None,
+        gt=0,
+        description="Depth of the voids' centre below the top of the slab. Empty: mid-depth.",
+    )
+    direction: Literal["X", "Y"] = Field(
+        "X", title="Voids run along", description="The global axis the voids run along (X: across the quay)."
+    )
+    start_offset: float = _m(
+        "Start from the front beam face",
+        1.0,
+        ge=0,
+        description="Solid slab between the front beam and the voids.",
+    )
+    end_offset: float = _m(
+        "End before the rear beam face",
+        1.0,
+        ge=0,
+        description="Solid slab between the voids and the rear beam.",
+    )
+    first_at: float | None = _m(
+        "First void at",
+        None,
+        description="Global coordinate across the voids (Y when they run along X) of one void's centre; "
+        "the others "
+        "follow at the spacing. Empty: half a spacing in from the slab's edge.",
+    )
+    positions: list[float] = Field(
+        default_factory=list,
+        title="Void positions",
+        description="Global coordinates across the voids of every void's centre, when they are not at a "
+        "regular "
+        "spacing. Empty: from the spacing.",
+        json_schema_extra={"unit": "m"},
+    )
+    clear_to_piles: float = _mm(
+        "Clear to the pile faces",
+        150.0,
+        ge=0,
+        description="A void that would come closer than this to a pile is left out (the slab stays solid "
+        "along that line of piles).",
+    )
+    solid_round_piles: float | None = _m(
+        "Solid round each pile",
+        None,
+        ge=0,
+        description="The voids stop this far from each pile's face and start again beyond it (a solid zone "
+        "round the pile head, e.g. 2d to keep them out of the punching perimeter u1); no void is then left "
+        "out along the lines of piles. Empty: the voids run through, and those that would hit a pile are "
+        "left out.",
+    )
+
+
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
     thickness: float = _mm("Slab thickness", 700.0, gt=0)
@@ -952,6 +1016,13 @@ class SlabInput(_ConcreteSection):
         title="Concrete shear resistance in tension",
         description="None: where the slab is in tension in the direction of the shear, the links carry it "
         "all, as the office's slab sheets. EC2 6.2.2(1): VRd,c reduced by 0.15·σcp for the tension.",
+    )
+    voids: SlabVoids | None = Field(
+        None,
+        title="Circular voids (PVC pipes)",
+        description="Voids cast in the slab between the beams: bending on the voided section, shear on the "
+        "webs between the voids with links in the webs only, punching with the control perimeter over "
+        "the voids left out.",
     )
 
 

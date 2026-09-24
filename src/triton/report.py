@@ -1189,6 +1189,27 @@ def _mesh_choice(s: dict) -> list[tuple[str, str]]:
     return [("Mesh spacing", f"{mc['chosen_mm']:g} mm ({others})")]
 
 
+def _voids_kv(s: dict) -> list[tuple[str, str]]:
+    v = s.get("voids")
+    if not v or not v.get("positions"):
+        return []
+    return [
+        (
+            "Voids",
+            f"{len(v['positions'])} × Ø{v['diameter_mm']:g} @ {v['spacing_mm']:g} mm along {v['along']}, "
+            f"{v['run'][0]:g} to {v['run'][1]:g} m ({v['run_from']}), centre {v['centre_depth_mm']:g} mm below the "
+            f"top; solid {v['flange_top_mm']:g} mm above / {v['flange_bottom_mm']:g} mm below, webs {v['web_mm']:g} mm; "
+            f"{v['void_share_pct']:g}% of the concrete",
+        ),
+        (
+            "Voided section",
+            "bending with the compression block on the concrete left at each depth; crack widths with the voided "
+            "compression zone; shear on the webs, links in the webs only; punching without the control "
+            "perimeter over a void (EN 1992-1-1 6.4.2(3))",
+        ),
+    ]
+
+
 def _slab(r: Report, s: dict) -> None:
     r.h(1, f"{s['element']}: slab")
     st = s.get("steel") or {}
@@ -1197,6 +1218,7 @@ def _slab(r: Report, s: dict) -> None:
             ("Thickness", f"{s.get('thickness_mm', 0):g} mm, {s.get('concrete')}"),
             ("Covers top / bottom", f"{s.get('cover_top_mm', 0):g} / {s.get('cover_bottom_mm', 0):g} mm"),
             ("Layout", "column and field strips" if s.get("strips") == "column_and_field" else "uniform"),
+            *_voids_kv(s),
             *_mesh_choice(s),
             (
                 "Steel",

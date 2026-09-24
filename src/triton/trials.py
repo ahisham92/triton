@@ -194,7 +194,8 @@ def _summary(kind: str, design: dict[str, Any]) -> dict[str, Any]:
         with_links = (
             (st.get("kg_per_m2") or 0) + (links["shear_kg"] + links["punching_kg"]) / area if area else None
         )
-        h = (design.get("thickness_mm") or 0) / 1000
+        # Per m³ of concrete actually cast: voids take their share out, as in the slab design.
+        h = (design.get("thickness_mm") or 0) / 1000 * (st.get("concrete_share") or 1.0)
         if with_links is not None and h:
             out["kg_per_m3_with_links"] = round(with_links / h)
             out["ratio_pct_with_links"] = round(100 * with_links / h / STEEL_DENSITY, 2)
