@@ -1,6 +1,7 @@
 // Triton front end: projects, schema-driven setup forms and the workbook check.
 import { View3D, directionArrows, heat } from "./view3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
+import { spwCard } from "./spw.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -371,7 +372,7 @@ function renderObject(schema, obj, path, title) {
   fs.append(grid);
   const conditional = [];
   for (const [k, prop] of Object.entries(schema.properties || {})) {
-    if (HIDDEN.has(k)) continue;
+    if (HIDDEN.has(k) || prop.hidden) continue;
     const p = path ? `${path}.${k}` : k;
     const nullable = Boolean(prop.anyOf && prop.anyOf.some((a) => a.type === "null"));
     const inner = nullable ? resolve(prop.anyOf.find((a) => a.type !== "null")) : resolve(prop);
@@ -2307,7 +2308,8 @@ function drawResults(res, full = res) {
         <td class="cell ${b.passed ? "ok" : "error"}">${fmt(b.utilisation, 2)}</td><td>${fmt(overallRatio(b.steel), 2)}%</td><td>${fmt(b.steel?.kg_per_m3)}</td></tr>`).join("")}</table></div>` : ""}
     <div id="beam-cards"></div>
     ${slabs.length ? "<h2>Slab</h2>" : ""}<div id="slab-cards"></div>
-    ${spws.length ? `<h2>Sheet pile wall</h2>${spws.map((w) => `<div class="panel"><h3>${esc(w.element)}</h3><p class="status">Designed in the sheet pile program; these are its straining actions.</p>${steelSetsBlock(w.governing_sets, "kN/m, kNm/m", true)}</div>`).join("")}` : ""}`;
+    ${spws.length ? `<h2>Sheet pile wall</h2><div id="spw-cards"></div>` : ""}`;
+  for (const w of spws) document.getElementById("spw-cards").append(spwWithSets(w));
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
   const combi = document.getElementById("combi-cards");
@@ -2412,6 +2414,17 @@ function alerts(res) {
     const t = w.tube?.utilisation;
     if (t > 1) add("unsafe", w.element, `steel tube utilisation ${fmt(t, 2)} (${esc(w.tube.governing?.check || "")})`);
     else if (t >= 0.95) add("limit", w.element, `steel tube utilisation ${fmt(t, 2)}: close to the limit`);
+  }
+  for (const w of res.sheet_pile_walls || []) {
+    const d = w.design;
+    if (!d) continue;
+    if (d.error) { add("unsafe", w.element, d.error); continue; }
+    const g = d.designed.governing;
+    const why = `${d.check_titles[g.governs].toLowerCase()} Uf ${fmt(d.uf, 2)}${at(g)}`;
+    if (d.uf > 1) add("unsafe", w.element, `${d.section}: ${why}`);
+    else if (d.uf >= 0.95) add("limit", w.element, `${d.section}: ${why}, close to the limit`);
+    else if (d.uf < 0.5) add("safe", w.element, `${d.section}: Uf ${fmt(d.uf, 2)}, very safe, a lighter section may do`);
+    if (d.adjusted && !d.as_plaxis.ok) add("limit", w.element, `safe only with N or Q left out: with every Plaxis action Uf is ${fmt(d.as_plaxis.uf, 2)}`);
   }
   for (const b of res.beams || []) {
     const at2 = (g) => (g?.combination ? ` (${g.combination}, at ${fmt(g.s, 1)} m)` : "");
@@ -3006,6 +3019,24 @@ function slabPlan(el, d, key) {
 
 // ---------------------------------------------------------------- Beams
 const BEAM_KIND = { front_beam: "Front beam", rear_beam: "Rear beam", transverse_beam: "Transverse beam" };
+
+// The sheet pile wall card (spw.js), with its straining actions for Durability underneath.
+function spwWithSets(w) {
+  const card = spwCard(w, { fmt, esc, frame, showTip, v3dSlot, onIgnore: saveSpwIgnore });
+  card.insertAdjacentHTML("beforeend", `<details style="margin-top:12px"><summary>Governing straining actions (Plaxis sign, for Durability)</summary>${steelSetsBlock(w.governing_sets, "kN/m, kNm/m", true)}</details>`);
+  return card;
+}
+
+async function saveSpwIgnore(name, rules) {
+  const el = sec().elements[name];
+  if (!el) return "This wall is not on the Elements tab.";
+  el.ignore = rules;
+  markDirty();
+  await save();
+  if (state.errors?.length) return state.errors.map((e) => e.msg).join(" ");
+  state.runDesign?.([name]);
+  return null;
+}
 
 function beamCard(b) {
   const card = document.createElement("div");

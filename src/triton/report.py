@@ -152,7 +152,13 @@ def _elements(res: dict) -> list[str]:
     out += [f"{b['element']} ({KIND.get(b.get('kind'), 'beam').lower()})" for b in res.get("beams", [])]
     out += [f"{s['element']} (deck slab)" for s in res.get("slabs", [])]
     out += [
-        f"{w['element']} (sheet pile wall, straining actions only)" for w in res.get("sheet_pile_walls", [])
+        f"{w['element']} (steel sheet pile wall"
+        + (
+            f", {w['design']['section']})"
+            if (w.get("design") or {}).get("section")
+            else ", straining actions only)"
+        )
+        for w in res.get("sheet_pile_walls", [])
     ]
     return out
 
@@ -428,10 +434,7 @@ def _sections(r: Report, section: Section, res: dict) -> None:
     for s in res.get("slabs", []):
         _slab_summary(r, s)
     for w in res.get("sheet_pile_walls", []):
-        r.p(
-            f"{w['element']}: the sheet pile wall is designed with the sheet pile program; its governing straining "
-            "actions are exported (Plaxis sign, multipliers applied)."
-        )
+        _spw_summary(r, w)
     _shear_summary(r, res)
     _punching_summary(r, res)
     _steel_summary(r, res)
@@ -1280,9 +1283,93 @@ def _slab(r: Report, s: dict) -> None:
         r.note(n)
 
 
+def _spw_summary(r: Report, w: dict) -> None:
+    d = w.get("design")
+    if not d or d.get("error"):
+        r.p(f"{w['element']}: {d['error'] if d else 'no sheet pile design (no results)'}")
+        return
+    t = d["check_titles"]
+    g = d["designed"]["governing"]
+    r.p(
+        f"{w['element']}: {d['section']}, fy {d['steel']['fy']:g} MPa, checked to EN 1993-5 as ArcelorMittal "
+        f"Durability 4.2.1 at every Plaxis result: Uf = {d['uf']:.2f} ({t[g['governs']].lower()}, "
+        f"{g['combination']}, z {g['z']:.2f} m), {'passes' if d['ok'] else 'FAILS'}."
+    )
+    if d["adjusted"]:
+        p = d["as_plaxis"]
+        left = "; ".join(
+            f"{' and '.join(x for x, on in (('N', i['ignore_n']), ('Q', i['ignore_q'])) if on)} left out in "
+            f"{i['combination'].lower() if i['combination'] == 'All combinations' else i['combination']}"
+            for i in d["ignored"]
+        )
+        r.note(
+            f"{w['element']}: {left}, as the Plaxis values there are not taken as sheet pile actions. With every "
+            f"Plaxis action Uf = {p['uf']:.2f} ({t[p['governing']['governs']].lower()})."
+        )
+
+
 def _spw(r: Report, w: dict) -> None:
     r.h(1, f"{w['element']}: sheet pile wall")
-    r.p("Not designed in Triton; the governing straining actions (Plaxis sign, multipliers applied) are:")
+    d = w.get("design")
+    if d and not d.get("error"):
+        t = d["check_titles"]
+        pr, st = d["properties"], d["settings"]
+        r.p(
+            f"{d['section']} ({pr['h']:g} mm high, tf {pr['tf']:g} mm, tw {pr['tw']:g} mm; A {pr['area']:g} cm²/m, "
+            f"I {pr['inertia']:g} cm⁴/m, Wel {pr['wel']:g} cm³/m, Wpl {pr['wpl']:g} cm³/m), fy {d['steel']['fy']:g} "
+            f"MPa, γM0 {st['gamma_m0']:g}, γM1 {st['gamma_m1']:g}, buckling length {st['buckling_length']:g} m"
+            f"{'' if st['buckling_length_given'] else ' (assumed)'}. Flange b {pr['flange']:g} mm"
+            f"{'' if pr['flange_given'] else ' (estimated)'}, web angle {pr['angle']:g}°"
+            f"{'' if pr['angle_given'] else ' (estimated)'}. Checked at {d['points']} Plaxis points with M = |M_11| "
+            f"+ |N| e, V = |{st['shear']}|, N = −N_1 (compression +); corrosion (front + back) taken off every plate."
+        )
+        r.table(
+            ["Zone", "Down to m", "Front mm", "Back mm", "Total mm"],
+            [[z["zone"], z["bottom"], z["front"], z["back"], z["total"]] for z in d["zones"]],
+        )
+        for key, title in (("designed", "Results by zone" + (" (as designed)" if d["adjusted"] else "")),) + (
+            (("as_plaxis", "Results by zone with every Plaxis action"),) if d["adjusted"] else ()
+        ):
+            res = d[key]
+            r.h(2, title)
+            r.table(
+                ["Zone", "z m", "Combination", "M kNm/m", "V kN/m", "N kN/m", "Loss mm", "Class"]
+                + [t[c] for c in t]
+                + ["Uf"],
+                [
+                    [
+                        z["zone"],
+                        z["z"],
+                        z["combination"],
+                        z["M"],
+                        z["V"],
+                        z["N"],
+                        z["loss"],
+                        z["values"]["class"],
+                    ]
+                    + [("–" if z["checks"][c] is None else z["checks"][c]) for c in t]
+                    + [z["uf"]]
+                    for z in res["zones"]
+                ],
+            )
+        g = d["designed"]["governing"]
+        v = g["values"]
+        r.h(2, "Governing point")
+        r.bullets(
+            [
+                f"{g['combination']}, z {g['z']:.2f} m, corrosion {g['loss']:g} mm: tf {v['tf']:.2f} mm, tw "
+                f"{v['tw']:.2f} mm, A {v['area']:.1f} cm²/m, I {v['inertia']:.0f} cm⁴/m, Wel {v['wel']:.0f}, Wpl "
+                f"{v['wpl']:.0f} cm³/m; (b / tf) / ε = {v['slender']:.1f}, class {v['class']:g}"
+                + (f" taken as 3 with fy,red {v['fy_used']:.1f} MPa" if v["class"] == 4 else ""),
+                f"MEd {g['M']:.1f} kNm/m, Mc,Rd {v['Mc']:.1f} kNm/m; VEd {g['V']:.1f} kN/m, Vpl,Rd {v['Vpl']:.1f} kN/m"
+                + (f", Vb,Rd {v['Vb']:.1f} kN/m" if v.get("Vb") is not None else "")
+                + f"; NEd {g['N']:.1f} kN/m, Npl,Rd {v['Npl']:.0f} kN/m, Ncr {v['Ncr']:.0f} kN/m, χ {v['chi']:.3f}",
+                f"Uf = {g['uf']:.3f} ({t[g['governs']].lower()})",
+            ]
+        )
+        for n in [*(w.get("notes") or []), *d["notes"]]:
+            r.note(n)
+    r.p("Governing straining actions (Plaxis sign, multipliers applied), for Durability:")
     gs = w.get("governing_sets") or {}
     cols = list((gs.get("columns") or {}).keys())
     r.table(
