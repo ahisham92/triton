@@ -20,6 +20,7 @@ from .design import (
     bollard,
     circular,
     combi,
+    construction_joints,
     crack,
     curtailment,
     ductility,
@@ -85,6 +86,7 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
 GENERAL = [
     ("Corner berths: a quay that turns", alignment),
     ("Expansion joints along the berth", joints),
+    ("Construction joints (piles, beams, slabs)", construction_joints),
     ("Comparisons (trial sizes)", trials),
     ("Over-reinforced sections (slabs and beams)", ductility),
     ("Reinforcement clashes at the pile heads", clashes),
