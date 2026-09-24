@@ -454,3 +454,13 @@ def test_slab_station_diagrams_have_the_qp_envelope_too():
     # QP moments are smaller than ULS ones in this workbook.
     top = max(abs(q["column_max"]) for q in sd["profile"]["M11"])
     assert max(abs(q["column_max"]) for q in sd["profile_qp"]["M11"]) < top
+
+
+def test_top_and_bottom_crack_limits_are_used_face_by_face():
+    d = design_deck(crack_width_limit=0.3, crack_width_limit_bottom=0.15)
+    rows = d["strip_design"]["rows"]
+    assert {r["face"]: r["wk_limit_mm"] for r in rows} == {"top": 0.3, "bottom": 0.15}
+    assert all(r["wk_mm"] is None or r["wk_mm"] <= r["wk_limit_mm"] + 1e-9 for r in rows)
+    for r in rows:
+        for q in r["sets"]["qp"]:
+            assert q["crack"]["limit_mm"] == r["wk_limit_mm"]

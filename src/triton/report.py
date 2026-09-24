@@ -219,12 +219,20 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
     )
     r.h(2, "2.3 Durability")
     r.h(3, "Crack width limits")
-    limits = sorted({_limit(x) for x in section.elements.values() if _limit(x) is not None})
+    limits = sorted(set().union(*(_limits(x) for x in section.elements.values())))
     r.p(
         "Crack widths are checked under the quasi-permanent (QP) combinations (BS EN 1990 6.5.3), limit "
         + (" / ".join(f"{v:g}" for v in limits) or "0.2")
-        + " mm. No crack width check applies inside a steel casing or tube."
+        + " mm. No crack width check applies inside a steel casing or tube. Slabs and beams take their own "
+        "limit on each face:"
     )
+    rows = [
+        [name, f"{e.crack_width_limit:g}", f"{getattr(e, 'crack_width_limit_bottom', e.crack_width_limit):g}"]
+        for name, e in section.elements.items()
+        if _limit(e) is not None
+    ]
+    if rows:
+        r.table(["Element", "Top face / pile (mm)", "Bottom face (mm)"], rows)
     r.h(3, "Concrete cover")
     cv = d.covers
     r.kv(
@@ -338,6 +346,10 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
 
 def _limit(element: Any) -> float | None:
     return getattr(element, "crack_width_limit", None)
+
+
+def _limits(element: Any) -> set[float]:
+    return {v for v in (_limit(element), getattr(element, "crack_width_limit_bottom", None)) if v is not None}
 
 
 def _combinations(res: dict) -> set[str]:
