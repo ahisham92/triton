@@ -1278,6 +1278,37 @@ def _beam(r: Report, b: dict) -> None:
                 ("Result", _ok(bo.get("passed"))),
             ]
         )
+        bb = bo.get("beam_bars")
+        if bb:
+            r.h(3, "Extra bars in the front beam for the bollard")
+            r.table(
+                ["For", "Needs", "Bars"],
+                [[x["what"], x["need"], x["bars"]] for x in bb["rows"]]
+                + [["Top, in all", f"{bb['top_total_mm2']} mm²", bb["top_bars"]]],
+            )
+            r.kv(
+                [
+                    ("Torsion", f"T = {_fmt(bb['T_kNm'])} kNm, {_fmt(bb['T_Ed_kNm'])} kNm each side"),
+                    ("Thin-walled section", f"tef {bb['tef_mm']} mm, Ak {bb['Ak_m2']} m², uk {bb['uk_m']} m"),
+                    ("Struts", f"TRd,max {_fmt(bb['T_Rd_max_kNm'])} kNm, utilisation {bb['utilisation']}"),
+                    ("Uplift", f"P {_fmt(bb['uplift_kN'])} kN over {bb['span_m']:g} m: M {_fmt(bb['M_uplift_kNm'])} kNm"),
+                ]
+            )
+            r.note(bb["note"])
+        th = bo.get("thickening")
+        if th:
+            r.h(3, "Thickened slab at the bollard to the slab")
+            r.kv(
+                [
+                    ("Step", f"{th['thickening_mm']:g} mm to {th['slab_mm']:g} mm, {th['width_m']:g} m wide, {th['length_m']:g} m from the beam"),
+                    ("Tension at the step", f"N {_fmt(th['N_kN'])} kN at e {th['e_mm']} mm: M {_fmt(th['M_kNm'])} kNm, z {th['z_mm']} mm"),
+                    ("Bottom", f"needs {th['bottom']['need_mm2']} mm², ties give {th['bottom']['ties_mm2']} mm² (utilisation {th['bottom']['utilisation']})"),
+                    ("Top", f"needs {th['top']['need_mm2']} mm², mesh {th['top']['mesh_mm2']} mm²"),
+                    ("Shear", f"V {_fmt(th['V_kN'])} kN: {th['links_note']}"),
+                    ("Bars past the step", f"{th['lap_past_step_mm']} mm (lap, EN 1992-1-1 8.7.3)"),
+                    ("Result", _ok(th["passed"])),
+                ]
+            )
     tr = b.get("truss")
     if tr and tr.get("cases"):
         r.h(3, "Truss model between king piles")

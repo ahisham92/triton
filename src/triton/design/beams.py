@@ -1265,7 +1265,17 @@ def design_beam(
     checks += [c["wk"] / c["limit"] for c in crack_out.values()]
     checks += [c["wk"] / c["limit"] for c in (trans.get("cracks") or {}).values() if c.get("limit")]
     checks += [c["wk"] / c["limit"] for c in restr["faces"].values() if math.isfinite(c["wk"])]
-    bollard = check_bollard(beam.bollard, beam.concrete, settings) if beam.bollard is not None else None
+    bollard = (
+        check_bollard(
+            beam.bollard,
+            beam.concrete,
+            settings,
+            (g.b, g.h, g.cover, g.link),
+            beam.truss.pile_spacing if beam.truss is not None else None,
+        )
+        if beam.bollard is not None
+        else None
+    )
     if bollard is not None:
         checks.append(bollard["utilisation"])
     truss = truss_for(cage)

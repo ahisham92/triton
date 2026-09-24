@@ -301,3 +301,26 @@ def test_the_joints_keep_clear_of_the_furniture_and_the_furniture_of_the_joints(
         if any("expansion joint" in c for c in it["clashes"])
     ]
     assert len(near) <= 1
+
+
+def test_bollard_extra_beam_bars_and_the_thickening_step():
+    from triton.design.bollard import check_bollard
+    from triton.furniture_report import bollard_views
+    from triton.project import Bollard, DesignSettings
+
+    b = Bollard()
+    r = check_bollard(b, "C40/50", DesignSettings(), (2000.0, 1600.0, 50.0, 16.0), 3.2)
+    f = 0.75 * 150 * 9.81
+    bb = r["beam_bars"]
+    assert bb["T_kNm"] == pytest.approx(f * (0.35 + 0.8), abs=0.1)
+    # Pull along the quay: F / fyd.
+    assert bb["rows"][2]["need"] == f"{f * 1e3 / (500 / 1.15):.0f} mm²"
+    th = r["thickening"]
+    assert th["N_kN"] == pytest.approx(f, abs=0.1) and th["passed"]
+    assert th["bottom"]["ties_mm2"] == round(math.pi * 32**2 / 4 * (2 + 6 * math.cos(math.radians(45))))
+    no = check_bollard(Bollard(thickening=None), "C40/50", DesignSettings())
+    assert no["thickening"] is None and no["beam_bars"] is None
+    views = bollard_views(
+        {"beams": [{"element": "Front Beam", "width_mm": 2000, "depth_mm": 1600, "bollard": r}]}
+    )
+    assert views and any(it["type"] == "bar" for it in views[0]["items"])
