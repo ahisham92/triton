@@ -347,3 +347,28 @@ def test_design_endpoints(client):
     assert client.get(f"{url}/design").json()["changed"] == ["workbook", "Pile(1)"]
     client.post(f"{url}/design")
     assert client.get(f"{url}/design").json()["changed"] == []
+
+
+def test_a_second_upload_replaces_or_adds_tabs(client):
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)", "Pile(2)"]}).json()
+    url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
+    first = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet(scale=0.5)})
+    assert client.post(f"{url}/workbook", files={"file": ("a.xlsx", first)}).status_code == 200
+
+    # Add: only tabs the section does not have yet.
+    more = xlsx_bytes({"Pile(2)-QP": pile_sheet(scale=0.5), "Pile(1)-QP": pile_sheet(scale=0.7)})
+    r = client.post(f"{url}/workbook?mode=add", files={"file": ("b.xlsx", more)}).json()
+    assert r["merged"] == {"mode": "add", "replaced": [], "added": ["Pile(2)-QP"], "skipped": ["Pile(1)-QP"]}
+    assert [s["name"] for s in r["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile(1)-QP", "Pile(2)-QP"]
+    assert r["file"] == "a.xlsx + b.xlsx"
+
+    # Update: a tab holding the same element and combination replaces the old one, whatever its name.
+    fix = xlsx_bytes({"Pile 1 - QP": pile_sheet(scale=0.9)})
+    r = client.post(f"{url}/workbook?mode=update", files={"file": ("c.xlsx", fix)}).json()
+    assert r["merged"]["replaced"] == ["Pile(1)-QP → Pile 1 - QP"] and not r["merged"]["added"]
+    assert [s["name"] for s in r["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile 1 - QP", "Pile(2)-QP"]
+
+    # Replace: the new file is the whole workbook.
+    r = client.post(f"{url}/workbook?mode=replace", files={"file": ("d.xlsx", first)}).json()
+    assert "merged" not in r and [s["name"] for s in r["sheets"]] == ["Pile(1)-PT-B-Apron", "Pile(1)-QP"]
+    assert client.post(f"{url}/workbook?mode=bad", files={"file": ("d.xlsx", first)}).status_code == 422

@@ -17,7 +17,7 @@ from .elements import CombinationType, combination_type, mapped_sheet_name
 from .importer import SheetData, clean_sheet
 from .issues import Issue, Severity
 from .reader import Row, read_workbook
-from .suggest import suggest
+from .suggest import combination_key, split_name, squash, suggest
 
 
 @dataclass
@@ -144,6 +144,63 @@ def apply_mapping(result: ImportResult, mapping: dict[str, Any]) -> ImportResult
         parsed = mapped_sheet_name(s.name, get("element", ""), get("combination", ""))
         sheets.append(replace(s, parsed=parsed) if parsed else s)
     return _checked(ImportResult(sheets), ignored)
+
+
+# Issues the workbook checks add to single sheets; a sheet moved into another workbook drops them
+# and is checked again there.
+_SHEET_CHECKS = {"duplicate_sheet_name", "identical_combinations", "node_set_differs"}
+
+MERGE_MODES = ("replace", "update", "add")
+
+
+def merge_workbooks(
+    old: ImportResult, new: ImportResult, mode: str, mapping: dict[str, Any] | None = None
+) -> tuple[ImportResult, dict[str, Any]]:
+    """A section's workbook with a second upload brought in.
+
+    ``replace``: the new workbook replaces the old one. ``update``: each new sheet replaces the old
+    sheet of the same name, or else the old sheet holding the same element and combination (as
+    mapped); the rest are added. ``add``: only sheets whose names are not there yet are added.
+    Returns the combined (unmapped) workbook and what was replaced, added and left out.
+    """
+    if mode not in MERGE_MODES:
+        raise ValueError(f"mode is one of {', '.join(MERGE_MODES)}")
+    if mode == "replace":
+        return new, {"mode": mode, "replaced": [], "added": [s.name for s in new.sheets], "skipped": []}
+    mapped = apply_mapping(old, mapping or {}) if mapping else old
+
+    def key(s: SheetData):
+        """What a sheet holds, whatever its spelling: from its name or mapping, else as suggested."""
+        if s.empty:
+            return None
+        if s.parsed:
+            return (squash(s.parsed.element), combination_key(s.parsed.combination) or s.parsed.combination)
+        found = split_name(s.name)
+        return (squash(found[0]), found[2]) if found else None
+
+    old_keys = {key(s): s.name for s in mapped.sheets if key(s)}
+    sheets = {s.name: s for s in old.sheets}
+    replaced, added, skipped = [], [], []
+    for s in new.sheets:
+        if s.empty:
+            continue
+        if s.name in sheets:
+            if mode == "add":
+                skipped.append(s.name)
+                continue
+            replaced.append(s.name)
+            sheets[s.name] = s
+            continue
+        twin = old_keys.get(key(s)) if mode == "update" and key(s) else None
+        if twin and twin in sheets:
+            replaced.append(f"{twin} → {s.name}")
+            sheets = {(s.name if n == twin else n): (s if n == twin else v) for n, v in sheets.items()}
+            continue
+        added.append(s.name)
+        sheets[s.name] = s
+    fresh = [replace(s, issues=[i for i in s.issues if i.code not in _SHEET_CHECKS]) for s in sheets.values()]
+    merged = _checked(ImportResult(fresh))
+    return merged, {"mode": mode, "replaced": replaced, "added": added, "skipped": skipped}
 
 
 def _checked(result: ImportResult, ignored: set[str] | frozenset = frozenset()) -> ImportResult:

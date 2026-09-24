@@ -535,6 +535,11 @@ async function addElements(names) {
 function checkerHtml() {
   return `<div class="panel row">
       <input type="file" id="file" accept=".xlsb,.xlsx,.xlsm">
+      <select id="upload-mode" hidden title="What to do with the workbook this section already has">
+        <option value="replace">Replace the whole workbook</option>
+        <option value="update">Replace matching tabs, add new ones</option>
+        <option value="add">Add new tabs only</option>
+      </select>
       <button id="run" disabled>Check workbook</button>
       <span class="status" id="status"></span>
       <button class="quiet" id="stop" hidden>Stop</button></div>
@@ -672,14 +677,16 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
       const stop = watchProgress(id, (text) => (job.stopped ? null : (status.textContent = text)));
       let data;
       try {
-        data = await api(`${url}/${id}`, { method: "POST" });
+        const mode = document.getElementById("upload-mode");
+        const how = mode && !mode.hidden ? `?mode=${mode.value}` : "";
+        data = await api(`${url}/${id}${how}`, { method: "POST" });
       } finally {
         stop();
         hideStop();
       }
       renderReport(data);
       onReport?.(data);
-      document.getElementById("status").textContent = `Checked ${data.file}`;
+      document.getElementById("status").textContent = data.merged ? mergedText(data.merged) : `Checked ${data.file}`;
     } catch (e) {
       hideStop();
       status.textContent = job.stopped ? "Stopped. Nothing was kept from this upload." : `Failed: ${e.message}`;
@@ -687,6 +694,17 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check") {
       run.disabled = false;
     }
   };
+}
+
+// What a second upload into a section did to its workbook.
+function mergedText(m) {
+  const list = (xs) => (xs.length > 4 ? `${xs.slice(0, 4).join(", ")} and ${xs.length - 4} more` : xs.join(", "));
+  const parts = [];
+  if (m.replaced.length) parts.push(`replaced ${m.replaced.length} tab(s): ${list(m.replaced)}`);
+  if (m.added.length) parts.push(`added ${m.added.length} tab(s): ${list(m.added)}`);
+  if (m.skipped.length) parts.push(`left out ${m.skipped.length} tab(s) already in the section: ${list(m.skipped)}`);
+  const text = parts.join("; ") || "nothing new in that file";
+  return text[0].toUpperCase() + text.slice(1) + ". Map any new tabs below if they are not recognised.";
 }
 
 function checkPage() {
@@ -701,7 +719,8 @@ async function renderWorkbookTab(host) {
     the section so its elements can be designed without uploading it again.</p>` + checkerHtml();
   const onReport = (data) => {
     document.getElementById("wb-note").textContent =
-      `Workbook in use: ${data.file}, uploaded ${when(data.uploaded_at)} (Cairo time). Upload again to replace it.`;
+      `Workbook in use: ${data.file}, uploaded ${when(data.uploaded_at)} (Cairo time). Upload another file to replace it, replace some of its tabs or add tabs to it.`;
+    document.getElementById("upload-mode").hidden = false;
     renderFactors(data);
     renderMapping(data, async () => {
       const fresh = await api(`${url}/workbook`);

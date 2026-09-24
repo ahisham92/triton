@@ -44,7 +44,7 @@ def _flat(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[_\-.,;:/\\]+", " ", text.lower())).strip()
 
 
-def _squash(text: str) -> str:
+def squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
@@ -61,7 +61,7 @@ def element_of(text: str) -> tuple[str, bool] | None:
             if "{n}" in name:
                 return (name.format(n=number) if number else name.replace("({n})", "")), True
             return name, True
-    squashed = _squash(flat)
+    squashed = squash(flat)
     number = re.search(r"(\d+)\s*\)?$", flat)
     letters = re.sub(r"\d+", "", squashed)
     close = get_close_matches(letters, _FUZZY, n=1, cutoff=0.75)
@@ -79,7 +79,7 @@ def combination_key(text: str) -> tuple[str, ...] | None:
     """What a combination is, whatever its spelling: ("ULS", "B", "Apron"), ("QP",), ...;
     None when it is not recognisable."""
     flat = _flat(text)
-    squashed = _squash(text)
+    squashed = squash(text)
     if not flat:
         return None
     words = flat.split()
@@ -113,7 +113,7 @@ def _spell(key: tuple[str, ...]) -> str:
     return "-".join([key[0].capitalize(), *key[1:]])
 
 
-def _best_split(name: str) -> tuple[str, bool, tuple[str, ...], str] | None:
+def split_name(name: str) -> tuple[str, bool, tuple[str, ...], str] | None:
     """Try every place the name could split into element and combination."""
     cleaned = name.strip()
     cuts = [m.start() for m in re.finditer(r"[\s_\-]", cleaned)]
@@ -147,7 +147,7 @@ def suggest(sheets: list[dict[str, Any]], section_elements: list[str] = ()) -> d
 
     def element_spelling(canonical: str) -> str:
         for e in known_elements:
-            if _squash(e) == _squash(canonical):
+            if squash(e) == squash(canonical):
                 return e
         return canonical
 
@@ -168,7 +168,7 @@ def suggest(sheets: list[dict[str, Any]], section_elements: list[str] = ()) -> d
                     "why": f"“{s['combination']}” is spelled “{want}” on the other sheets",
                 }
             continue
-        found = _best_split(name)
+        found = split_name(name)
         if not found:
             continue
         element, exact, key, typed = found
@@ -176,7 +176,7 @@ def suggest(sheets: list[dict[str, Any]], section_elements: list[str] = ()) -> d
         why = []
         if not exact:
             why.append("element name read as a close spelling")
-        if _squash(typed) != _squash(combination):
+        if squash(typed) != squash(combination):
             why.append(f"“{typed}” read as {combination}")
         out[name] = {
             "element": element_spelling(element),

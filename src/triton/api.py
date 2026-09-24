@@ -39,7 +39,7 @@ from .project import (
 from .reader import UnsupportedWorkbook
 from .report import RENDERERS, build_report
 from .store import ProjectNotFound, ProjectStore
-from .validation import ImportResult, apply_mapping, import_workbook
+from .validation import MERGE_MODES, ImportResult, apply_mapping, import_workbook, merge_workbooks
 
 STATIC = Path(__file__).parent / "static"
 ALLOWED = {".xlsb", ".xlsx", ".xlsm"}
@@ -422,19 +422,38 @@ def check_uploaded_workbook(upload_id: str) -> dict:
 SECTION = "/api/projects/{project_id}/sections/{section_id}"
 
 
+def _keeper(project_id: str, section_id: str, mode: str) -> Callable[[str, ImportResult], dict]:
+    """Saves an uploaded workbook into a section: replacing its workbook, or (``update``, ``add``)
+    brought into the one it has; see ``merge_workbooks``."""
+    section = _section(_get(project_id), section_id)
+    if mode not in MERGE_MODES:
+        raise HTTPException(422, "mode is replace, update or add.")
+
+    def keep(filename: str, result: ImportResult) -> dict:
+        old = store().load_workbook(project_id, section_id) if mode != "replace" else None
+        if old is None:
+            store().save_workbook(project_id, section_id, filename, result)
+            return section_workbook(project_id, section_id)
+        mapping = {k: v.model_dump() for k, v in section.sheet_map.items()}
+        merged, what = merge_workbooks(old, result, mode, mapping)
+        before = (store().workbook_summary(project_id, section_id) or {}).get("file") or "workbook"
+        store().save_workbook(project_id, section_id, f"{before} + {filename}", merged)
+        return {**section_workbook(project_id, section_id), "merged": what}
+
+    return keep
+
+
 @app.post(SECTION + "/workbook")
-def upload_section_workbook(project_id: str, section_id: str, file: UploadFile) -> dict:
-    _section(_get(project_id), section_id)
-    result = _import_upload(file)
-    return store().save_workbook(project_id, section_id, file.filename or "workbook", result)
+def upload_section_workbook(
+    project_id: str, section_id: str, file: UploadFile, mode: str = "replace"
+) -> dict:
+    keep = _keeper(project_id, section_id, mode)
+    return keep(file.filename or "workbook", _import_upload(file))
 
 
 @app.post(SECTION + "/workbook/{upload_id}")
-def keep_uploaded_workbook(project_id: str, section_id: str, upload_id: str) -> dict:
-    _section(_get(project_id), section_id)
-    return _take_upload(
-        upload_id, lambda filename, result: store().save_workbook(project_id, section_id, filename, result)
-    )
+def keep_uploaded_workbook(project_id: str, section_id: str, upload_id: str, mode: str = "replace") -> dict:
+    return _take_upload(upload_id, _keeper(project_id, section_id, mode))
 
 
 def _workbook(project_id: str, section: Section) -> ImportResult | None:
