@@ -19,6 +19,7 @@ from .design.sheet_piles import SECTION_NAMES as SHEET_PILE_SECTIONS
 from .design.sheet_piles import normalise as _normalise_sheet_pile
 from .durability import bs6349_corrosion, bs6349_covers
 from .elements import ElementType, parse_sheet_name
+from .furniture_inputs import QuayFurniture, SectionFurniture
 from .materials import (
     BAR_DIAMETERS,
     CONCRETE_GRADES,
@@ -64,8 +65,8 @@ class ProjectInfo(_Model):
     document_number: str = Field("", title="Calculation document number")
     revision: str = Field(
         "P01",
-        title="Revision in work",
-        description="Printed on the reports. Issue revision on the Project tab keeps a copy of it, dated.",
+        title="Revision",
+        description="Printed on the reports' cover.",
     )
 
 
@@ -516,6 +517,64 @@ class Casing(_Model):
         return self
 
 
+Surface = Literal["very smooth", "smooth", "rough", "indented"]
+_SURFACE = (
+    "EN 1992-1-1 6.2.5(2): very smooth (cast against steel or timber), smooth (slipformed, or left without "
+    "treatment after vibration), rough (at least 3 mm roughness at about 40 mm spacing, e.g. raked or "
+    "exposed aggregate) or indented (shear keys)."
+)
+
+
+class PileJoint(_Model):
+    """A construction joint across the pile at a level: the pile top under the slab or beam, or a pour
+    break."""
+
+    level: float = _m(
+        "Joint level Z", 0.0, description="e.g. the pile top level for the joint into the slab."
+    )
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Pile to slab, pour break.")
+
+
+class BeamJoint(_Model):
+    """A construction joint in a beam: a horizontal joint at a level (the beam cast in lifts, or up to the
+    slab soffit), or a vertical stop end at a position along the beam."""
+
+    kind: Literal["level", "along"] = Field(
+        "level",
+        title="Joint",
+        description="level: horizontal, at level Z. along: vertical, at a position along the beam (X or Y "
+        "along it).",
+    )
+    at: float = _m("Level Z, or position along the beam", 0.0)
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Slab soffit, first lift.")
+
+
+class SlabJoint(_Model):
+    """A construction joint through the slab along a line: at an X or a Y, or at a beam's face (the slab cast
+    against a beam)."""
+
+    line: Literal["at X", "at Y", "beam face"] = Field(
+        "at X",
+        title="Joint line",
+        description="at X: the joint runs along Y at that X (bars along X cross it). at Y: along X at that "
+        "Y. beam face: the slab's joint with the beam named, at the beam's face.",
+    )
+    at: float | None = _m("X or Y of the line", None, description="Not used at a beam face.")
+    beam: str = Field("", title="Beam (beam face)", description="e.g. Front Beam.")
+    start: float | None = _m("From (along the line)", None, description="Empty: the whole slab.")
+    end: float | None = _m("To (along the line)", None)
+    surface: Surface = Field("rough", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Pour 1 / pour 2.")
+
+
+_JOINTS = (
+    "Each joint is checked in the design (EN 1992-1-1 6.2.5 shear across it, and the bars crossing it carry "
+    "the tension there); where the bars are not enough, the additional bars at that joint are given."
+)
+
+
 class PileInput(_ConcreteSection):
     kind: Literal["pile"] = "pile"
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
@@ -550,6 +609,9 @@ class PileInput(_ConcreteSection):
         title="This pile has a permanent steel casing",
         description="Tick it and give the casing's top and bottom levels: there is no crack width check "
         "between them. Leave it unticked for a plain concrete pile.",
+    )
+    construction_joints: list[PileJoint] = Field(
+        default_factory=list, title="Construction joints", description=_JOINTS
     )
 
 
@@ -1144,6 +1206,9 @@ class SlabInput(_ConcreteSection):
         "webs between the voids with links in the webs only; the voids stop short of the piles, so the slab "
         "is solid over them.",
     )
+    construction_joints: list[SlabJoint] = Field(
+        default_factory=list, title="Construction joints", description=_JOINTS
+    )
 
 
 class TieBars(_Model):
@@ -1330,6 +1395,11 @@ class BeamInput(_ConcreteSection):
         title="Rooms in the beam",
         description="Rooms cut into the beam from the top, e.g. for electrical work. Each is checked on the "
         "section left (floor and walls) for the Plaxis actions over its length.",
+    )
+    construction_joints: list[BeamJoint] = Field(
+        default_factory=list,
+        title="Construction joints",
+        description=_JOINTS + " The slab's joint at the beam face is set on the slab.",
     )
 
 
@@ -1610,6 +1680,9 @@ def _other_items() -> list[OtherItem]:
         OtherItem(name="Fenders", unit="each", spacing=20.0),
         OtherItem(name="Bollards", unit="each", spacing=30.0),
         OtherItem(name="Crane rails", unit="m", runs=2.0),
+        OtherItem(name="Ladders", unit="each", spacing=30.0),
+        OtherItem(name="Storm pins", unit="each"),
+        OtherItem(name="Crane stoppers", unit="each"),
     ]
 
 
@@ -2042,6 +2115,11 @@ class Section(_Model):
     )
     costing: SectionCosting = Field(default_factory=SectionCosting, title="Costing")
     alignment: Alignment = Field(default_factory=Alignment, title="Berth alignment")
+    furniture: SectionFurniture = Field(
+        default_factory=SectionFurniture,
+        title="Quay furniture on this berth",
+        description="The items are the project's (Furniture tab); this is only where this berth differs.",
+    )
     joints: SectionJoints = Field(default_factory=SectionJoints, title="Expansion joints")
     user_cages: dict[str, UserCage] = Field(
         default_factory=dict,
@@ -2293,18 +2371,6 @@ class ApproachSlabInput(_Model):
     ledge: Ledge = Field(default_factory=Ledge, title="Ledge on the rear beam")
 
 
-class Revision(_Model):
-    """An issued revision of the calculations, with a copy of the project as it was issued."""
-
-    rev: str = Field(title="Revision")
-    description: str = Field("", title="Description")
-    issued_at: str = Field(default_factory=_now, title="Issued")
-    prepared: str = Field("", title="Prepared by")
-    checked: str = Field("", title="Checked by")
-    approved: str = Field("", title="Approved by")
-    snapshot: str | None = Field(None, description="The copy's file name in the project's revisions folder.")
-
-
 class Project(_Model):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: str = Field(default_factory=_now)
@@ -2313,8 +2379,13 @@ class Project(_Model):
     design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
     prices: Prices = Field(default_factory=Prices, title="Prices")
     drawings: DrawingSettings = Field(default_factory=DrawingSettings, title="Drawings (AutoCAD and Revit)")
+    furniture: QuayFurniture = Field(
+        default_factory=QuayFurniture,
+        title="Quay furniture",
+        description="Fenders, bollards, ladders, storm pins, crane rails and stoppers, tie rods: the same "
+        "on every section's berth.",
+    )
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
-    revisions: list[Revision] = Field(default_factory=list, title="Issued revisions")
     approach: ApproachSlabInput | None = Field(
         None,
         title="Approach slab and rear beam ledge",
@@ -2350,6 +2421,8 @@ class Project(_Model):
         elif isinstance(data, dict) and isinstance(data.get("info"), dict) and "section" in data["info"]:
             data = dict(data)
             data["info"] = {k: v for k, v in data["info"].items() if k != "section"}
+        if isinstance(data, dict) and "revisions" in data:  # issued revisions were dropped
+            data = {k: v for k, v in data.items() if k != "revisions"}
         return data
 
     @field_validator("id")

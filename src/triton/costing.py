@@ -162,9 +162,12 @@ def cost_section(
     results: dict[str, Any],
     length: float | None = None,
     berth: float | None = None,
+    furniture: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """``length``: the length of berth the model covers, when ``results`` do not hold the beams it is
-    taken from; ``berth``: a berth length to use when the section has none (a trial costed per metre)."""
+    taken from; ``berth``: a berth length to use when the section has none (a trial costed per metre);
+    ``furniture``: the numbers of fenders, bollards, ... from the section's furniture arrangement, by
+    item name, used for items priced each with no number given."""
     results = combine_parts(results)  # a corner berth's parts: one row per element
     prices = project.prices
     L = length or model_length(section, results)
@@ -403,7 +406,16 @@ def cost_section(
         row = _Row(item.name.strip() or f"Item {i + 1}", "item")
         row.item = i
         if item.unit == "each":
-            auto = (math.floor(berth / item.spacing + 1e-6) + 1) if item.spacing else None
+            laid = next(
+                (n for k, n in (furniture or {}).items() if k.lower() == item.name.strip().lower()), None
+            )
+            auto = (
+                laid
+                if laid is not None
+                else (math.floor(berth / item.spacing + 1e-6) + 1)
+                if item.spacing
+                else None
+            )
             row.count_auto = auto
             row.count = item.count if item.count is not None else auto
             row.spacing = item.spacing
@@ -414,6 +426,8 @@ def cost_section(
                 how = (
                     "number given"
                     if item.count is not None
+                    else "as arranged on the Furniture tab"
+                    if laid is not None
                     else f"one at each end and every {item.spacing:g} m"
                 )
                 row.basis.append(f"{row.count} ({how})")
@@ -474,8 +488,12 @@ def cost_section(
     }
 
 
-def cost_project(project: Project, results_by_section: dict[str, dict[str, Any] | None]) -> dict[str, Any]:
-    """Every section's costing, and the project's total."""
+def cost_project(
+    project: Project,
+    results_by_section: dict[str, dict[str, Any] | None],
+    furniture: dict[str, dict[str, int]] | None = None,
+) -> dict[str, Any]:
+    """Every section's costing, and the project's total (``furniture``: counts by section id)."""
     sections = []
     for s in project.sections:
         res = results_by_section.get(s.id)
@@ -484,7 +502,7 @@ def cost_project(project: Project, results_by_section: dict[str, dict[str, Any] 
                 {"section": s.name, "section_id": s.id, "rows": [], "notes": ["Not designed yet."]}
             )
             continue
-        sections.append(cost_section(project, s, res))
+        sections.append(cost_section(project, s, res, furniture=(furniture or {}).get(s.id)))
     costed = [s for s in sections if s.get("totals")]
     total = {
         "berth_length_m": round(sum(s["berth_length_m"] for s in costed), 2),

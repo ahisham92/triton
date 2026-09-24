@@ -514,3 +514,16 @@ def test_export_takes_the_strip_design_bars():
             sum(q["as_mm2_per_m"] for q in z["layers"]) == sum(q["as_mm2_per_m"] for q in r["bar_layers"])
             for z in mine
         )
+
+
+def test_squares_without_results_borrow_from_their_neighbours():
+    from triton.design.slabs import gap_cells
+
+    box = {"X": [0.0, 5.0], "Y": [0.0, 5.0]}
+    have = {(i, j) for i in range(6) for j in range(6)} - {(2, 2), (4, 4), (0, 5)}
+    # A pile head at (4.5, 4.5); (2, 2) is a hole in the Plaxis mesh.
+    gaps = gap_cells(have, 6, 6, 0.0, 0.0, 1.0, box, [(4.5, 4.5, 0.6)])
+    assert gaps[(2, 2)][1] == "no node" and len(gaps[(2, 2)][0]) == 8
+    assert gaps[(4, 4)][1] == "pile"
+    # A corner square with results on two sides only lies beyond the slab's outline: left out.
+    assert (0, 5) not in gaps

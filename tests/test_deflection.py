@@ -138,7 +138,7 @@ def test_settings_are_not_a_design_input(client):
     assert held["head_mm"] != gross["head_mm"]
     wb = load_workbook(io.BytesIO(client.get(f"{url}/design/report.xlsx").content))
     text = " ".join(str(c.value) for ws in wb for row in ws.iter_rows() for c in row if c.value is not None)
-    assert "3.7 Estimated displacements from the straining actions" in text and "ESTIMATE" in text
+    assert "3.8 Estimated displacements from the straining actions" in text and "ESTIMATE" in text
 
 
 # --- Fingerprint --------------------------------------------------------------------------------------

@@ -161,17 +161,12 @@ On the Design tab, the **Export** row picks the elements that the downloads belo
 or the ticked ones): AdSec files and Excel, reports, Revit bars and drawings each take
 `?elements=A,B`.
 
-### Revisions, checking and the bar bending schedule
+### Title block and checking
 
-The Project tab holds the calculation document number, the revision in work and who prepared,
-checked and approved it; the reports print them on the cover with the table of issued revisions.
-**Issue revision** keeps a copy of the project as it is (a .trt in `projects/{id}/revisions/`), adds
-the revision to the table and moves the revision in work on (P01 to P02). Each issued revision can
-be downloaded, and **What changed since** lists the inputs that differ and each element whose bars,
-utilisation or steel changed. On the Design tab, **Checking** keeps each element's status
-(designed, returned with comments, checked, approved) with who and when; a status given on an
-earlier design is marked so. **Download bar bending schedule** gives BS 8666 bar marks, shape codes,
-cut lengths and weights for all or the ticked elements (`bbs.py` says how lengths are taken).
+The Project tab holds the calculation document number, the revision and who prepared, checked and
+approved it; the reports print them on the cover. On the Design tab, **Checking** keeps each
+element's status (designed, returned with comments, checked, approved) with who and when; a status
+given on an earlier design is marked so.
 
 ### Working zone and isolated peaks
 
@@ -370,7 +365,7 @@ displacements** works out the deflected shape of each element from the straining
 (`GET …/deflections`): the curvature M / EI from the workbook moments is integrated twice along the
 member (exact for moments that are straight lines between the nodes, so a tip load on a cantilever
 gives P L³ / 3EI). It shows each element's head (top) displacement, the largest and where it is, and a
-deflected-shape diagram, labelled as an estimate; the report adds it as 3.7 with its assumptions.
+deflected-shape diagram, labelled as an estimate; the report adds it as 3.8 with its assumptions.
 
 * Piles and the combi wall: both ways down the member (M3 across the quay, M2 along), the pile or
   king pile that moves most. Sheet pile wall: M11 in 1 m strips with the AZ section's EI. Slabs and

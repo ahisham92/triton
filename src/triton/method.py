@@ -15,16 +15,20 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from . import alignment, clashes, joints, trials
+from . import furniture as furniture_layout
 from .design import (
+    anchors,
     approach,
     beams,
     bollard,
     circular,
     combi,
+    construction_joints,
     crack,
     curtailment,
     deflection,
     ductility,
+    furniture,
     governing,
     openings,
     peaks,
@@ -95,10 +99,14 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
 GENERAL = [
     ("Corner berths: a quay that turns", alignment),
     ("Expansion joints along the berth", joints),
+    ("Construction joints (piles, beams, slabs)", construction_joints),
     ("Comparisons (trial sizes)", trials),
     ("Over-reinforced sections (slabs and beams)", ductility),
     ("Reinforcement clashes at the pile heads", clashes),
     ("AdSec load sets and signs", governing),
+    ("Quay furniture: arrangement along the berth", furniture_layout),
+    ("Quay furniture: design of each item", furniture),
+    ("Anchor bolts cast into the beams (EN 1992-4)", anchors),
     ("Estimated displacements from the straining actions", deflection),
 ]
 

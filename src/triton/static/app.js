@@ -1,11 +1,12 @@
 // Triton front end: projects, schema-driven setup forms and the workbook check.
-import { View3D, directionArrows, heat } from "./view3d.js";
+import { GAP_WHY, View3D, directionArrows, heat } from "./view3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 import { spwCard } from "./spw.js";
 import { renderTrials } from "./trials.js";
 import { renderValueEngineering } from "./ve.js";
 import { renderClashes } from "./clashes.js";
 import { APPROACH, approachCard, approachPanel } from "./approach.js";
+import { renderFurniture } from "./furniture.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -169,88 +170,6 @@ function wireOpenProject() {
       btn.disabled = false;
     }
   };
-}
-
-// Issued revisions: each keeps a copy of the project as issued; "What changed" compares it with now.
-function revisionsPanel(box) {
-  const p = state.project;
-  const info = p.info;
-  const list = p.revisions || [];
-  box.innerHTML = `<h2>Revisions</h2>
-    <p class="status">Revision in work: <strong>${esc(info.revision || "P01")}</strong>${info.document_number ? ` of ${esc(info.document_number)}` : ""}.
-      Reports print it with the names above. Issuing keeps a copy of the project as it is now and moves the revision on.</p>
-    ${
-      list.length
-        ? `<table class="rev-table"><tr><th>Rev</th><th>Issued (Cairo)</th><th>Description</th><th>Prepared</th><th>Checked</th><th>Approved</th><th></th></tr>
-        ${list
-          .map(
-            (v) => `<tr><td>${esc(v.rev)}</td><td>${esc(when(v.issued_at))}</td><td>${esc(v.description)}</td><td>${esc(v.prepared)}</td>
-            <td>${esc(v.checked)}</td><td>${esc(v.approved)}</td>
-            <td><a class="quiet-link" href="${ROOT}/api/projects/${esc(p.id)}/revisions/${encodeURIComponent(v.rev)}/project.trt">Copy (.trt)</a>
-              <a class="quiet-link" href="#" data-changes="${esc(v.rev)}">What changed since</a></td></tr>`
-          )
-          .join("")}</table>`
-        : `<p class="status">No revision issued yet.</p>`
-    }
-    <div class="row"><input id="rev-desc" placeholder="Description, e.g. Issued for approval" style="flex:1;max-width:360px">
-      <button id="issue-rev">Issue revision ${esc(info.revision || "P01")}</button><span class="status" id="rev-status"></span></div>
-    <div id="rev-changes"></div>`;
-  box.querySelector("#issue-rev").onclick = async () => {
-    const status = box.querySelector("#rev-status");
-    try {
-      if (state.dirty) await save();
-      status.textContent = "Keeping a copy…";
-      const saved = await api(`${ROOT}/api/projects/${p.id}/revisions`, {
-        method: "POST",
-        body: JSON.stringify({ description: box.querySelector("#rev-desc").value }),
-      });
-      mergeInto(state.project, saved);
-      route(); // the Project tab again, with the next revision in work
-    } catch (e) {
-      status.textContent = e.message;
-    }
-  };
-  box.querySelectorAll("[data-changes]").forEach(
-    (a) =>
-      (a.onclick = async (e) => {
-        e.preventDefault();
-        const out = box.querySelector("#rev-changes");
-        out.innerHTML = `<p class="status">Comparing…</p>`;
-        try {
-          if (state.dirty) await save();
-          const d = await api(`${ROOT}/api/projects/${p.id}/revisions/${encodeURIComponent(a.dataset.changes)}/changes`);
-          out.innerHTML = revisionChanges(d);
-        } catch (err) {
-          out.innerHTML = `<p class="status">${esc(err.message)}</p>`;
-        }
-      })
-  );
-}
-
-function revisionChanges(d) {
-  const val = (v) => (v == null || v === "" ? "–" : typeof v === "object" ? esc(JSON.stringify(v)) : esc(String(v)));
-  const res = (x) =>
-    x ? `${esc(x.bars || "–")} · u ${x.utilisation ?? "–"}${x.passed === false ? " ✗" : ""}${x.kg_per_m3 != null ? ` · ${x.kg_per_m3} kg/m³` : ""}` : "not designed";
-  const els = d.sections.filter((s) => s.elements.length);
-  return `<h3>Changed since ${esc(d.rev)}</h3>
-    ${
-      els.length
-        ? els
-            .map(
-              (s) => `<p><strong>${esc(s.section)}</strong></p><table><tr><th>Element</th><th>At ${esc(d.rev)}</th><th>Now</th></tr>
-            ${s.elements.map((r) => `<tr><td>${esc(r.element)}</td><td>${res(r.was)}</td><td>${res(r.now)}</td></tr>`).join("")}</table>`
-            )
-            .join("")
-        : `<p class="status">No element's bars or results changed.</p>`
-    }
-    ${
-      d.inputs.length
-        ? `<details><summary>${d.inputs.length + d.more_inputs} input${d.inputs.length + d.more_inputs === 1 ? "" : "s"} changed</summary>
-          <table><tr><th>Input</th><th>Was</th><th>Now</th></tr>${d.inputs
-            .map((r) => `<tr><td>${esc(r.what)}</td><td>${val(r.was)}</td><td>${val(r.now)}</td></tr>`)
-            .join("")}</table>${d.more_inputs ? `<p class="status">and ${d.more_inputs} more.</p>` : ""}</details>`
-        : `<p class="status">No input changed.</p>`
-    }`;
 }
 
 // The checker's status per designed element: designed, returned with comments, checked, approved.
@@ -478,7 +397,7 @@ function deflectionChart(el, e) {
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design", "openings", "view3d", "clashes", "compare", "ve"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "openings", "view3d", "clashes", "furniture", "compare", "ve"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -507,6 +426,7 @@ async function projectPage(id, tab, sectionId) {
     ["openings", "Openings"],
     ["view3d", "3D view"],
     ["clashes", "Clashes"],
+    ["furniture", "Furniture"],
     ["costing", "Costing"],
     ["compare", "Comparisons"],
     ["ve", "Value engineering"],
@@ -528,6 +448,7 @@ async function projectPage(id, tab, sectionId) {
       <span style="flex:1"></span>
       <a class="quiet-link" id="download-project" href="${ROOT}/api/projects/${esc(p.id)}/project.trt"
         title="Settings, sections, workbooks, results and trials in one file, to send to someone or keep">Download project (.trt)</a>
+      <button class="quiet" id="duplicate" title="A new project with all of this one's settings, sections, workbooks, results and trials">Duplicate project</button>
       <button class="danger" id="delete">Delete project</button></div>
     <ul class="errors" id="errors"></ul>`;
   $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab))));
@@ -543,6 +464,14 @@ async function projectPage(id, tab, sectionId) {
     state = null;
     location.hash = "#/";
   };
+  document.getElementById("duplicate").onclick = async () => {
+    const name = prompt("Name of the copy", `${p.info.name} copy`);
+    if (name === null) return;
+    if (state.dirty) await save(); // what was just typed goes into the copy too
+    const copy = await api(`${ROOT}/api/projects/${id}/duplicate`, { method: "POST", body: JSON.stringify({ name }) });
+    state = null;
+    location.hash = `#/project/${copy.id}/info`;
+  };
   document.getElementById("download-project").onclick = async (e) => {
     if (!state.dirty) return;
     e.preventDefault(); // what was just typed goes into the file too
@@ -551,7 +480,9 @@ async function projectPage(id, tab, sectionId) {
   };
   const host = document.getElementById("tab");
   if (tab === "info") {
-    host.append(renderObject(SCHEMA.properties.info, p.info, "info", "Project"));
+    const info = renderObject(SCHEMA.properties.info, p.info, "info", "Project");
+    info.dataset.free = ""; // names and numbers, not design inputs: open to edit at any time
+    host.append(info);
     const prices = renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)");
     prices.dataset.free = ""; // not a design input: open while the model is locked
     host.append(prices);
@@ -562,11 +493,6 @@ async function projectPage(id, tab, sectionId) {
     used.className = "panel";
     used.dataset.free = "";
     used.innerHTML = '<h2>Storage</h2><p class="status">Working out…</p>';
-    const revs = document.createElement("div");
-    revs.className = "panel";
-    revs.dataset.free = ""; // issuing is open while the model is locked
-    host.append(revs);
-    revisionsPanel(revs);
     host.append(used);
     storagePanel(used, id);
   }
@@ -587,6 +513,14 @@ async function projectPage(id, tab, sectionId) {
       costingHash: tabHash("costing"),
     });
   else if (tab === "clashes") renderClashes(host, { api, again, esc, fmt, secUrl });
+  else if (tab === "furniture")
+    renderFurniture(host, {
+      api, again, esc, fmt, secUrl, save,
+      forms: () => [
+        renderObject(SCHEMA.properties.furniture, p.furniture, "furniture", ""),
+        renderObject(SCHEMA.$defs.Section.properties.furniture, sec().furniture, `sections.${secIndex()}.furniture`, ""),
+      ],
+    });
   else if (tab === "compare")
     renderTrials(host, {
       api, again, esc, fmt, secUrl, ROOT,
@@ -2622,7 +2556,6 @@ async function renderDesignTab(host) {
       <div class="row export-links">
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download bars for Revit (JSON: pile and infill cages, beams, slab)</a>
       <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
-      <a class="quiet-link" id="bbs" href="${url}/design/bar-schedule.xlsx" hidden>Download bar bending schedule (Excel)</a>
       <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
       <span class="reports" id="drawings" hidden>Drawings:
         <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
@@ -2935,7 +2868,6 @@ function wireExportPick(names, steelOnly, anyCages) {
       a.hidden = !bars;
     };
     setHref("cages", "cages.json");
-    setHref("bbs", "bar-schedule.xlsx");
     setHref("ads", "adsec.zip");
     const sets = document.getElementById("sets");
     if (sets) sets.href = link("governing.xlsx");
@@ -4034,7 +3966,7 @@ function momentPlan(card, d) {
     const cells = mc.cells.map((v) => {
       const cx = mc.x0 + (v[0] + 0.5) * mc.size, cy = mc.y0 + (v[1] + 0.5) * mc.size;
       const raw = v[col];
-      return { s: ((alongX ? cx : cy) - sd.origin) * sd.sign, t: alongX ? cy : cx, raw, v: hog ? Math.max(-raw, 0) : Math.max(raw, 0) };
+      return { s: ((alongX ? cx : cy) - sd.origin) * sd.sign, t: alongX ? cy : cx, raw, v: hog ? Math.max(-raw, 0) : Math.max(raw, 0), why: v[6] };
     });
     const vmax = Math.max(1, ...cells.map((q) => q.v));
     const t0 = Math.min(...cells.map((q) => q.t)) - mc.size / 2, t1 = Math.max(...cells.map((q) => q.t)) + mc.size / 2;
@@ -4043,12 +3975,17 @@ function momentPlan(card, d) {
     const W = (s1 - s0) * sc + 2 * pad, H = (t1 - t0) * sc + 2 * pad;
     const X = (s) => pad + (s - s0) * sc, Y = (t) => H - pad - (t - t0) * sc;
     const hue = hog ? "31,95,160" : "200,52,40";
-    const rects = cells.map((q) => `<rect x="${X(q.s - mc.size / 2).toFixed(1)}" y="${Y(q.t + mc.size / 2).toFixed(1)}" width="${(mc.size * sc).toFixed(1)}" height="${(mc.size * sc).toFixed(1)}" fill="rgba(${hue},${(0.06 + 0.88 * q.v / vmax).toFixed(2)})"><title>${esc(mc.names[k])} ${hog ? "smallest" : "largest"} ${fmt(q.raw)} kNm/m at station ${fmt(q.s, 1)} m, ${alongX ? "Y" : "X"} ${fmt(q.t, 1)}</title></rect>`).join("");
+    const rects = cells.map((q) => `<rect x="${X(q.s - mc.size / 2).toFixed(1)}" y="${Y(q.t + mc.size / 2).toFixed(1)}" width="${(mc.size * sc).toFixed(1)}" height="${(mc.size * sc).toFixed(1)}" fill="rgba(${hue},${(0.06 + 0.88 * q.v / vmax).toFixed(2)})"><title>${esc(mc.names[k])} ${hog ? "smallest" : "largest"} ${fmt(q.raw)} kNm/m at station ${fmt(q.s, 1)} m, ${alongX ? "Y" : "X"} ${fmt(q.t, 1)}${q.why ? `. ${GAP_WHY[q.why] || ""}` : ""}</title></rect>`).join("");
+    // Pile heads under the deck (those not under a beam), so a square over a pile reads as one.
+    const heads = (d.punching || []).map((p) => {
+      const ps = ((alongX ? p.x : p.y) - sd.origin) * sd.sign, pt = alongX ? p.y : p.x;
+      return `<circle cx="${X(ps).toFixed(1)}" cy="${Y(pt).toFixed(1)}" r="${((p.D_mm / 2000) * sc).toFixed(1)}" fill="none" stroke="var(--text)" stroke-width="1.2"><title>${esc(p.pile)}: ${GAP_WHY.pile}</title></circle>`;
+    }).join("");
     const strips = sd.lines.map((L) => `<rect x="${X(s0)}" y="${Y(L + sd.column_width_m / 2)}" width="${(s1 - s0) * sc}" height="${sd.column_width_m * sc}" fill="none" stroke="var(--text)" stroke-dasharray="6 4" stroke-width="1"><title>Column strip on the pile line at ${fmt(L, 1)}</title></rect>`).join("");
     const stations = sd.stations.map((s) => `<line x1="${X(s)}" x2="${X(s)}" y1="${pad - 6}" y2="${H - pad}" stroke="var(--text)" stroke-width="1.2"/><text class="tick" x="${X(s)}" y="${pad - 10}" text-anchor="middle">${fmt(s, 2)}</text>`).join("");
     el.innerHTML = `<div class="chart-title">${esc(mc.names[k])}, ULS ${hog ? "hogging (top face in tension)" : "sagging (bottom face in tension)"}: largest ${fmt(vmax)} kNm/m. Sea side on the left.</div>
-      <div class="legend"><span>0</span><i class="ramp" style="background:linear-gradient(90deg,rgba(${hue},.06),rgba(${hue},.94))"></i><span>${fmt(vmax)} kNm/m</span><span>dashed: column strips</span><span>lines: stations (m from the sea side)</span></div>
-      <svg viewBox="0 0 ${W} ${H}" style="max-width:${Math.round(W)}px" role="img" aria-label="Moment plan"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${rects}${strips}${stations}
+      <div class="legend"><span>0</span><i class="ramp" style="background:linear-gradient(90deg,rgba(${hue},.06),rgba(${hue},.94))"></i><span>${fmt(vmax)} kNm/m</span><span>dashed: column strips</span><span>lines: stations (m from the sea side)</span>${(d.punching || []).length ? "<span>circles: pile heads (the squares over them show the pile faces)</span>" : ""}</div>
+      <svg viewBox="0 0 ${W} ${H}" style="max-width:${Math.round(W)}px" role="img" aria-label="Moment plan"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${rects}${heads}${strips}${stations}
       <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text></svg>`;
   };
   pick.querySelectorAll("[data-mp]").forEach((b) => (b.onclick = () => {
@@ -4116,6 +4053,7 @@ function slabCard(d) {
     ${d.frame_note ? `<p class="status">${esc(d.frame_note)}</p>` : ""}
     ${(d.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${voidsBlock(d)}
+    ${jointsBlock(d.construction_joints)}
     ${v3dSlot(d.element)}
     ${d.strip_design ? `<h3 style="margin-top:18px">Moments across the deck and the stations</h3>
       <div class="chart wide" data-kind="stations"></div><div data-kind="station-ctl"></div>
@@ -4373,6 +4311,7 @@ function beamCard(b) {
     </table></div></div>
     ${beamCageHtml(b)}
     ${faceNeeds(b)}
+    ${jointsBlock(b.construction_joints)}
     ${g.combination ? `<p>Governing bending: ${esc(g.combination)} at ${fmt(g.s, 2)} m along the beam. N = ${fmt(g.N_kN)} kN, M<sub>v</sub> = ${fmt(g.Mv_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_v_kNm)}), M<sub>h</sub> = ${fmt(g.Mh_kNm)} kNm (M<sub>Rd</sub> ${fmt(g.MRd_h_kNm)}), exponent a = ${fmt(g.a, 2)}. ${esc(bend.method || "")}.</p>` : ""}
     <div class="row" data-kind="limit-switch">${limitSwitch(b.profile_qp?.length, "Moment and utilisation diagrams:")}</div>
     <div class="charts"><div class="chart" data-kind="moments"></div><div class="chart" data-kind="profile"></div></div>` : ""}
@@ -5004,6 +4943,7 @@ function pileCard(p) {
       <p class="status">Clear gap between rows: ${lim.row_gap_mm == null ? "EN 1992-1-1 8.2 minimum" : `${fmt(lim.row_gap_mm)} mm`}.</p></div></div>` : ""}
     ${p.curtailment?.runs?.length ? curtailmentBlock(p.curtailment) : ""}
     ${p.shear ? shearBlock(p.shear, p.head_name || "the slab") : ""}
+    ${jointsBlock(p.construction_joints)}
     ${casingBlock(p.casing)}
     ${connectionBlock(p.connection)}
     ${levelSketch(p)}
@@ -5277,6 +5217,30 @@ function shearBlock(sh, above = "the slab") {
     </table></div>
     <p class="status">${esc(sh.method)}. Largest spacing ${fmt(sh.max_spacing_mm)} mm, smallest link Ø${fmt(sh.min_link_diameter_mm)} (9.5.3). ${fmt(sh.links_kg)} kg of links per pile${sh.inner_rings ? `, of which ${fmt(sh.inner_links_kg)} kg in ${sh.inner_rings} inner ring${sh.inner_rings > 1 ? "s" : ""} around the inner row${sh.inner_rings > 1 ? "s" : ""}` : ""}.</p>
     ${sh.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
+}
+
+// Construction joints set on the element: the check at each and the bars it needs there.
+function jointsBlock(list) {
+  if (!list?.length) return "";
+  const pm = (j) => (j.provided_mm2_per_m != null ? "mm²/m" : "mm²");
+  const val = (j, k) => j[`${k}_mm2_per_m`] ?? j[`${k}_mm2`];
+  const extra = (j) => {
+    const parts = (j.stretches?.length ? j.stretches : j.additional ? [{ bars: j.additional }] : [])
+      .map((s) => (s.bars ? esc(s.bars.label) : `${fmt(s.additional_mm2_per_m)} mm²/m more from ${fmt(s.from_m, 2)} to ${fmt(s.to_m, 2)} m: no allowed bar fits`));
+    return parts.length ? parts.map((t) => `<b>${t}</b>`).join("<br>") : "";
+  };
+  return `<h3 style="margin-top:18px">Construction joints</h3>
+    <div class="scroll"><table><tr><th>Joint</th><th>Surface</th><th>Bars crossing</th><th>v<sub>Edi</sub> / v<sub>Rdi</sub></th><th>Needed (tension + shear)</th><th>Utilisation</th><th>Additional bars at this joint</th><th></th></tr>
+    ${list.map((j) => `<tr><td>${esc(j.where)}${j.note ? `<br><span class="status">${esc(j.note)}</span>` : ""}</td>
+      <td>${esc(j.surface)} (c ${fmt(j.c, 3)}, μ ${fmt(j.mu, 2)})</td>
+      <td>${j.crossing ? `${esc(j.crossing.label)}<br>${fmt(val(j, "provided"))} ${pm(j)}` : "–"}</td>
+      <td>${j.v_Edi_MPa != null ? `${fmt(j.v_Edi_MPa, 2)} / ${fmt(j.v_Rdi_MPa, 2)} MPa (max ${fmt(j.v_Rdi_max_MPa, 2)})` : "–"}</td>
+      <td>${val(j, "needed") != null ? `${fmt(val(j, "tension"))} + ${fmt(val(j, "shear"))} = ${fmt(val(j, "needed"))} ${pm(j)}` : "–"}</td>
+      <td>${j.utilisation != null ? `<b class="${j.utilisation > 1 ? "bad" : ""}">${fmt(j.utilisation, 2)}</b>` : "–"}</td>
+      <td>${extra(j) || esc(j.status || "")}${(j.laps || []).map((w) => `<br><span class="status">${esc(w)}</span>`).join("")}</td>
+      <td>${j.passed == null ? "" : j.passed ? '<span class="sev ok">OK</span>' : '<span class="sev error">more bars</span>'}</td></tr>`).join("")}
+    </table></div>
+    <p class="status">EN 1992-1-1 6.2.5 at each joint with the Plaxis actions there (ULS): the bars crossing it carry the tension of N with M, and the shear friction steel on top of it. Details of each check in the report.</p>`;
 }
 
 function curtailmentBlock(c) {

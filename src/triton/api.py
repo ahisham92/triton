@@ -23,19 +23,19 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import (
     adsec,
-    bbs,
     checker,
     clash_report,
     drawings,
     durability,
     dxf,
     fresh,
+    furniture_report,
     method,
     package,
-    revisions,
     revit,
     trials,
 )
+from . import furniture as furniture_mod
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
@@ -273,43 +273,6 @@ def open_project(upload_id: str, body: OpenProject) -> dict:
     return {"id": project.id, "name": project.info.name, "notes": notes, "replaced": old is not None}
 
 
-class IssueRevision(BaseModel):
-    description: str = ""
-
-
-@app.post("/api/projects/{project_id}/revisions")
-def issue_revision(project_id: str, body: IssueRevision) -> Project:
-    """Issue the revision in work: keep a copy of the project as it is, then move the revision on."""
-    try:
-        return revisions.issue(store(), _get(project_id), body.description.strip())
-    except ValueError as e:
-        raise HTTPException(409, str(e)) from e
-
-
-@app.get("/api/projects/{project_id}/revisions/{rev}/project.trt")
-def revision_copy(project_id: str, rev: str) -> Response:
-    """The project as it was issued under ``rev``, as a project file."""
-    project = _get(project_id)
-    path = revisions.snapshot_path(store(), project, rev)
-    if path is None:
-        raise HTTPException(404, f"The copy of revision {rev} is not on this server.")
-    name = package.file_name(project)[: -len(package.SUFFIX)]
-    return Response(
-        path.read_bytes(),
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{name} rev {revisions.safe(rev)}.trt"'},
-    )
-
-
-@app.get("/api/projects/{project_id}/revisions/{rev}/changes")
-def revision_changes(project_id: str, rev: str) -> dict:
-    """What changed since revision ``rev`` was issued: inputs, and each element's bars and results."""
-    try:
-        return revisions.changes(store(), _get(project_id), rev)
-    except FileNotFoundError as e:
-        raise HTTPException(404, str(e)) from e
-
-
 @app.get("/api/projects/{project_id}/method")
 def project_method(project_id: str) -> dict:
     """The Method tab: how each kind of element in the project is designed, and the options in use."""
@@ -322,9 +285,9 @@ LOCKED = "The model is locked since it was designed. Press Unlock to edit first.
 def _model(p: Project) -> dict:
     """What the lock protects: everything the design depends on (not prices, costing or drawing names)."""
     d = p.model_dump(
-        mode="json", exclude={"locked", "created_at", "updated_at", "prices", "drawings", "revisions"}
+        mode="json", exclude={"locked", "created_at", "updated_at", "prices", "drawings", "furniture"}
     )
-    d["info"] = {k: v for k, v in d["info"].items() if k in ("name", "number", "client", "location")}
+    d.pop("info")  # names, numbers and who designed it: open to edit at any time
     for s in d["sections"]:
         s.pop("costing", None)
         s.pop("checks", None)  # the checker's status is not a design input
@@ -334,6 +297,7 @@ def _model(p: Project) -> dict:
         s.pop("beam_cages", None)
         s.pop("slab_strips", None)
         s.pop("clashes", None)  # the Clashes tab never changes the design
+        s.pop("furniture", None)  # designed on its own tab, from the element design
         for el in s.get("elements", {}).values():  # a sheet pile wall's "ignore N or Q", ticked on its card
             if el.get("kind") == "sheet_pile_wall":
                 el.pop("ignore", None)
@@ -360,7 +324,6 @@ def update_project(project_id: str, body: Project) -> Project:
     for s in body.sections:
         if s.id in clash:
             s.clashes, s.checks = clash[s.id]
-    body.revisions = existing.revisions  # issued on their own (Issue revision), never by a page
     saved = store().save(body)
     kept = {s.id for s in saved.sections}
     for s in existing.sections:
@@ -418,6 +381,18 @@ def project_storage(project_id: str) -> dict:
         "total": sum(x["total"] for x in sections),
         "results": sum(x["results"] for x in sections),
     }
+
+
+class DuplicateProject(BaseModel):
+    name: str | None = None
+
+
+@app.post("/api/projects/{project_id}/duplicate")
+def duplicate_project(project_id: str, body: DuplicateProject) -> Project:
+    """A copy of the whole project (sections, workbooks, results, trials), named ``name`` or "… copy"."""
+    project = _get(project_id)
+    name = (body.name or "").strip() or f"{project.info.name} copy"
+    return store().duplicate(project.id, package.unique_name(store(), name))
 
 
 @app.delete("/api/projects/{project_id}", status_code=204)
@@ -1160,7 +1135,14 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
     deadline = time.monotonic() + body.budget_s if body.budget_s else None
     with _Progress(f"design-{project_id}-{section_id}") as tell:
         new = run_section(
-            project.design, section, workbook, tell, only=only, deadline=deadline, approach=project.approach
+            project.design,
+            section,
+            workbook,
+            tell,
+            only=only,
+            deadline=deadline,
+            approach=project.approach,
+            furniture_at=furniture_mod.positions_for(project, section),
         )
         every = fresh.names(project, section)
         summary = store().workbook_summary(project_id, section_id)
@@ -1262,6 +1244,10 @@ def _drawings(
     picked = ",".join([e for e in element or [] if e] + ([elements] if elements else []))
     _, results, suffix = _picked(section, results, picked)
     data = drawings.drawings(project.info.name, results, project.drawings, section.name, None)
+    furn = _furniture_saved(project_id, section_id) if not suffix else None
+    if furn and furn.get("use", True):
+        data["views"] += furniture_report.views(furn)
+        data["layers"] = {**furniture_report.LAYERS, **data["layers"]}
     if not data["views"]:
         raise HTTPException(
             404,
@@ -1346,26 +1332,6 @@ def revit_script() -> Response:
     )
 
 
-@app.get(SECTION + "/design/bar-schedule.xlsx")
-def bar_schedule(project_id: str, section_id: str, elements: str | None = None) -> Response:
-    """Bar bending schedule (BS 8666 shape codes, bar marks, cut lengths, weights) of the designed bars."""
-    project = _get(project_id)
-    section = _section(project, section_id)
-    results = store().load_results(project_id, section_id)
-    if results is None:
-        raise HTTPException(404, "This section has not been designed yet.")
-    _, results, suffix = _picked(section, results, elements)
-    rows = bbs.schedule(project, results, section.name)
-    if not rows:
-        raise HTTPException(404, "No designed pile, combi wall infill, beam or slab bars to schedule.")
-    name = _file_name(project.info.name, section.name + suffix)
-    return Response(
-        bbs.workbook(project, section.name, rows),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{name}-bar-schedule.xlsx"'},
-    )
-
-
 @app.get(SECTION + "/design/governing.xlsx")
 def governing_sets_export(project_id: str, section_id: str, elements: str | None = None) -> Response:
     """Governing sets for AdSec: 7 QP + 7 ULS per concrete station, 10 ULS rows per steel element."""
@@ -1431,7 +1397,10 @@ def project_costing(project_id: str) -> dict:
         if res is not None:
             res = fresh.with_status(project, s, res, store().workbook_summary(project_id, s.id))
         results[s.id] = res
-    return cost_project(project, results)
+    counts = {
+        s.id: furniture_mod.counts_for_costing(_furniture_saved(project_id, s.id)) for s in project.sections
+    }
+    return cost_project(project, results, counts)
 
 
 class TrialRequest(BaseModel):
@@ -1791,7 +1760,14 @@ def expansion_joints(project_id: str, section_id: str) -> dict:
         sheets = factored_elements(section, wb)
         parts, _ = section_alignment(section, sheets)
         raw = wb.elements()
-    return section_joints(project.design, section, raw, parts, along_axis(section))
+    return section_joints(
+        project.design,
+        section,
+        raw,
+        parts,
+        along_axis(section),
+        furniture_mod.positions_for(project, section),
+    )
 
 
 @app.get(SECTION + "/joints.dxf")
@@ -1850,3 +1826,134 @@ def spw_export(project_id: str, section_id: str) -> Response:
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{name}-straining-actions.xlsx"'},
     )
+
+
+# --- Quay furniture ------------------------------------------------------------------------------------
+
+
+def _furniture_saved(project_id: str, section_id: str) -> dict | None:
+    """The section's furniture as last worked out (for Costing and the drawings)."""
+    path = store()._dir(project_id, section_id) / "furniture.json"
+    try:
+        return json.loads(path.read_text("utf-8")) if path.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _berth_geometry(project_id: str, section: Section) -> list[dict]:
+    """Element positions from the workbook, kept beside it until the next upload (reading the
+    workbook takes a few seconds)."""
+    summary = store().workbook_summary(project_id, section.id) or {}
+    key = [summary.get("version"), summary.get("uploaded_at")]
+    path = store()._dir(project_id, section.id) / "furniture_geometry.json"
+    try:
+        kept = json.loads(path.read_text("utf-8"))
+        if kept.get("key") == key:
+            return kept["geometry"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    wb = _workbook(project_id, section)
+    if wb is None:
+        raise HTTPException(
+            409,
+            "Upload this section's workbook on the Workbook tab first: "
+            "the furniture is laid out on its beams and piles.",
+        )
+    geometry = section_geometry(wb)
+    store()._write_json(path, {"key": key, "geometry": geometry})
+    return geometry
+
+
+def _joints_for_furniture(project_id: str, project: Project, section: Section) -> dict | None:
+    """The section's expansion joint layout, kept until its inputs change (it reads the workbook)."""
+    summary = store().workbook_summary(project_id, section.id) or {}
+    key = hashlib.sha1(
+        json.dumps(
+            [
+                summary.get("version"),
+                summary.get("uploaded_at"),
+                project.design.joints.model_dump(mode="json"),
+                section.joints.model_dump(mode="json"),
+                section.costing.model_dump(mode="json"),
+                section.alignment.model_dump(mode="json"),
+                project.furniture.model_dump(mode="json"),
+                section.furniture.model_dump(mode="json"),
+            ],
+            sort_keys=True,
+            default=str,
+        ).encode()
+    ).hexdigest()
+    path = store()._dir(project_id, section.id) / "furniture_joints.json"
+    try:
+        kept = json.loads(path.read_text("utf-8"))
+        if kept.get("key") == key:
+            return kept["layout"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        layout = expansion_joints(project_id, section.id)
+    except HTTPException:
+        return None
+    store()._write_json(path, {"key": key, "layout": layout})
+    return layout
+
+
+def _furniture(project_id: str, section_id: str) -> tuple[Project, Section, dict]:
+    project = _get(project_id)
+    section = _section(project, section_id)
+    geometry = _berth_geometry(project_id, section)
+    joints = _joints_for_furniture(project_id, project, section)
+    try:
+        res = furniture_mod.design(project, section, geometry, joints)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from None
+    store()._write_json(store()._dir(project_id, section_id) / "furniture.json", res)
+    return project, section, res
+
+
+@app.get(SECTION + "/furniture")
+def section_furniture(project_id: str, section_id: str) -> dict:
+    """The Furniture tab: the project's furniture arranged along this section's berth, and designed."""
+    return _furniture(project_id, section_id)[2]
+
+
+@app.get(SECTION + "/furniture/calc.{fmt}")
+def furniture_calc(project_id: str, section_id: str, fmt: str) -> Response:
+    """The furniture calculation as Word, PDF or Excel."""
+    if fmt not in RENDERERS:
+        raise HTTPException(404, "Calculations are Word (.docx), PDF (.pdf) or Excel (.xlsx).")
+    project, section, res = _furniture(project_id, section_id)
+    render, media = RENDERERS[fmt]
+    name = drawings.safe_name(f"{project.info.name} {section.name} quay furniture").replace(" ", "_")
+    return Response(
+        render(furniture_report.build_calc(project, section, res)),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'},
+    )
+
+
+@app.get(SECTION + "/furniture/plan.{fmt}")
+def furniture_plan(project_id: str, section_id: str, fmt: str) -> Response:
+    """The berth's furniture plan and bolt patterns as an AutoCAD DXF, a drawings file (.crm) or a PNG."""
+    project, section, res = _furniture(project_id, section_id)
+    name = drawings.safe_name(f"{project.info.name} {section.name} furniture").replace(" ", "_")
+    if fmt == "png":
+        return Response(furniture_report.plan_png(res), media_type="image/png")
+    data = {
+        "format": drawings.FORMAT,
+        "project": project.info.name,
+        "section": section.name,
+        "units": "mm",
+        "view_prefix": project.drawings.revit_view_prefix,
+        "layers": furniture_report.LAYERS,
+        "views": furniture_report.views(res),
+    }
+    if fmt == "dxf":
+        return Response(
+            dxf.to_dxf(data),
+            media_type="application/dxf",
+            headers={"Content-Disposition": f'attachment; filename="{name}.dxf"'},
+        )
+    if fmt == "crm":
+        return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="{name}.crm"'})
+    raise HTTPException(404, "The plan is .dxf, .crm or .png.")

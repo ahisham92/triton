@@ -124,14 +124,6 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
         ]
     )
-    if project.revisions:
-        r.table(
-            ["Rev", "Date", "Description", "Prepared", "Checked", "Approved"],
-            [
-                [v.rev, clock.show(v.issued_at)[:10], v.description, v.prepared, v.checked, v.approved]
-                for v in project.revisions
-            ],
-        )
     checks = _check_rows(section, results)
     if checks:
         r.p("Checking of each element:")
@@ -148,17 +140,21 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     _displacements(r, section)
     for a in results.get("approach_slabs", []):
         _approach_summary(r, a)
+    _construction_joints(r, results)
     _deflections(r, results.get("deflections"))
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
         for p in results.get("piles", []):
             _pile(r, p)
+            _joint_calcs(r, p)
         for w in results.get("combi_walls", []):
             _combi(r, w)
         for b in results.get("beams", []):
             _beam(r, b)
+            _joint_calcs(r, b)
         for s in results.get("slabs", []):
             _slab(r, s)
+            _joint_calcs(r, s)
         for w in results.get("sheet_pile_walls", []):
             _spw(r, w)
         for a in results.get("approach_slabs", []):
@@ -1001,6 +997,111 @@ def _displacements(r: Report, section: Section) -> None:
     r.table(["What", "Combination or phase", "Displacement (mm)", "Limit (mm)", "Check", "Source"], rows)
 
 
+def _joint_extra(j: dict) -> str:
+    stretches = j.get("stretches") or []
+    if stretches:
+        return "; ".join(
+            (s["bars"] or {}).get("label")
+            or f"{s['additional_mm2_per_m']} mm²/m more from {s['from_m']:g} to {s['to_m']:g} m: no allowed bar fits"
+            for s in stretches
+        )
+    if j.get("additional"):
+        return j["additional"]["label"]
+    return "None" if j.get("passed") else j.get("status") or "–"
+
+
+def _construction_joints(r: Report, res: dict) -> None:
+    """Every construction joint set on the elements: its check and the bars it needs there."""
+    from .design.construction_joints import summary
+
+    joints = summary(res)
+    if not joints:
+        return
+    r.h(2, "3.7 Construction joints")
+    r.p(
+        "Each construction joint set on an element is checked with the Plaxis actions at it (ULS): shear "
+        "across the joint to EN 1992-1-1 6.2.5 (vRdi = c fctd + μ σn + ρ fyd μ ≤ 0.5 ν fcd, β = 1, z = 0.9 d), "
+        "and the bars crossing it carry the tension of N with M there, with the shear friction steel on top. "
+        "Where they are not enough, the additional bars at that joint are given."
+    )
+    r.caption("Table 3-8: Construction joints")
+    rows = []
+    for j in joints:
+        unit = "mm²/m" if j.get("provided_mm2_per_m") is not None else "mm²"
+        get = lambda k, j=j: j.get(f"{k}_mm2_per_m", j.get(f"{k}_mm2"))  # noqa: E731
+        rows.append(
+            [
+                j["element"],
+                j["where"] + (f" ({j['note']})" if j.get("note") else ""),
+                j["surface"],
+                (j.get("crossing") or {}).get("label", "–"),
+                "–" if get("needed") is None else f"{get('needed')} / {get('provided')} {unit}",
+                "–" if j.get("v_Edi_MPa") is None else f"{j['v_Edi_MPa']:.2f} / {j['v_Rdi_MPa']:.2f}",
+                _fmt(j.get("utilisation")),
+                _joint_extra(j),
+                " ".join(j.get("laps") or []) or ("OK" if j.get("passed") else j.get("status", "")),
+            ]
+        )
+    r.table(
+        [
+            "Element",
+            "Joint",
+            "Surface",
+            "Bars crossing",
+            "Needed / provided",
+            "vEdi / vRdi (MPa)",
+            "Utilisation",
+            "Additional bars",
+            "Check",
+        ],
+        rows,
+    )
+
+
+def _joint_calcs(r: Report, d: dict) -> None:
+    """The calculation of each construction joint of one element (detailed report)."""
+    joints = d.get("construction_joints") or []
+    if not joints:
+        return
+    r.h(2, f"{d.get('key') or d['element']}: construction joints")
+    for j in joints:
+        r.h(3, j["where"] + (f" ({j['note']})" if j.get("note") else ""))
+        if j.get("v_Edi_MPa") is None:
+            r.p(j.get("status", "Not checked."))
+            continue
+        f = j.get("forces") or {}
+        per_m = j.get("provided_mm2_per_m") is not None
+        unit = "mm²/m" if per_m else "mm²"
+        get = lambda k, j=j: j.get(f"{k}_mm2_per_m", j.get(f"{k}_mm2"))  # noqa: E731
+        pairs = [
+            ("Surface", f"{j['surface']}: c = {j['c']}, μ = {j['mu']} (EN 1992-1-1 6.2.5(2))"),
+            ("Governing actions", ", ".join(f"{k} {v}" for k, v in f.items() if v is not None)),
+            ("Bars crossing", f"{(j.get('crossing') or {}).get('label', '–')}: {get('provided')} {unit}"),
+            ("vEdi = V / (z bi)", f"{j['v_Edi_MPa']} MPa"),
+            ("σn (compression +)", f"{j.get('sigma_n_MPa')} MPa"),
+            ("fctd, fyd", f"{j.get('fctd_MPa')} MPa, {j.get('fyd_MPa')} MPa"),
+            ("ρ of the bars left after the tension", f"{j.get('rho_pct')}%"),
+            ("vRdi (≤ 0.5 ν fcd)", f"{j['v_Rdi_MPa']} MPa (max {j['v_Rdi_max_MPa']} MPa)"),
+            ("Steel for tension (N with M)", f"{get('tension')} {unit}"),
+            ("Steel for shear friction", f"{get('shear')} {unit}"),
+            (
+                "Needed / provided",
+                f"{get('needed')} / {get('provided')} {unit}: utilisation {_fmt(j.get('utilisation'))}",
+            ),
+            ("Additional bars at this joint", _joint_extra(j)),
+            ("Result", j.get("status", "")),
+        ]
+        if j.get("method_note"):
+            pairs.insert(1, ("Method", j["method_note"]))
+        if j.get("averaged_over_m"):
+            pairs.insert(
+                1, ("Actions", f"mean over {j['averaged_over_m']:g} m along the joint, pile heads left out")
+            )
+        r.kv(pairs)
+        for w in j.get("laps") or []:
+            r.note(w)
+
+
 TOE_WORDS = {
     "fixed": "fixed at the toe (no displacement and no rotation), the member being deeply embedded",
     "firm_soil": "held at the toe and at the firm soil level (no displacement at either), the toe rotating",
@@ -1008,7 +1109,7 @@ TOE_WORDS = {
 
 
 def _deflections(r: Report, est: dict | None) -> None:
-    """3.7: the displacements estimated from the straining actions (not a Plaxis displacement run)."""
+    """3.8: the displacements estimated from the straining actions (not a Plaxis displacement run)."""
     if not est or not (est.get("elements") or est.get("skipped")):
         return
     ds = est.get("settings") or {}
@@ -1018,7 +1119,7 @@ def _deflections(r: Report, est: dict | None) -> None:
         if ds.get("stiffness") == "cracked"
         else "gross (uncracked)"
     )
-    r.h(2, "3.7 Estimated displacements from the straining actions")
+    r.h(2, "3.8 Estimated displacements from the straining actions")
     r.p(
         "ESTIMATE, not a Plaxis displacement result. Each member's curvature M / EI, from the moments in the "
         f"workbook, is integrated twice along it; piles and walls are {TOE_WORDS.get(ds.get('toe'), '')}, with "

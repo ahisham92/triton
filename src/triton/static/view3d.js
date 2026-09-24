@@ -100,6 +100,12 @@ const PRESETS = {
   "Along the quay": { yaw: Math.PI / 2, pitch: 0.12 },
 };
 
+// Why a slab square shows the squares round it (triton/design/slabs.py GAP_WHY).
+export const GAP_WHY = {
+  pile: "Over a pile head: the results inside the pile are FE peaks in the connection and are left out, so this square shows the worst of the squares round it (the pile faces, where the bars are designed)",
+  "no node": "No Plaxis node falls in this square (the Plaxis mesh is coarser than the 1 m grid here), so it shows the worst of the squares round it",
+};
+
 export class View3D {
   constructor(host, { height = 460, compact = false, legend = true } = {}) {
     this.host = host;
@@ -200,7 +206,7 @@ export class View3D {
     const codes = t.codes?.[combo] ?? null;
     const bands = t.points.map((p, i) => {
       const ch = codes ? codes[i] : " ";
-      return [p[0], p[1], p[2], ch && ch !== " " ? ch.charCodeAt(0) - 48 : null, p[3]];
+      return [p[0], p[1], p[2], ch && ch !== " " ? ch.charCodeAt(0) - 48 : null, p[3], p[4]];
     });
     const state = (v) => tensionState(t.kind, v, dir);
     return {
@@ -279,11 +285,13 @@ export class View3D {
               continue;
             }
             if (size) {
-              // Slabs: square cells of the zone grid.
+              // Slabs: square cells of the zone grid. A square with no result of its own (over a pile head,
+              // or no Plaxis node in it) shows the worst of the squares round it; those over a pile are outlined.
               const h = size / 2 + 0.01;
+              const what = src.words ? src.words(u) : `bending needs ${Math.round(u * 100)}% of the bars`;
               items.push({ kind: "quad", pts: [[x - h, y - h, z], [x + h, y - h, z], [x + h, y + h, z], [x - h, y + h, z]],
-                faded, element: e.element, fill: src.color(u), stroke: false,
-                tip: `${e.element} at X ${x}, Y ${y}: ${src.words ? src.words(u) : `bending needs ${Math.round(u * 100)}% of the bars`}` });
+                faded, element: e.element, fill: src.color(u), stroke: why === "pile",
+                tip: `${e.element} at X ${x}, Y ${y}: ${what}${why ? `. ${GAP_WHY[why] || ""}` : ""}` });
               continue;
             }
             const s0 = (along === "Y" ? y : x) - 0.27;

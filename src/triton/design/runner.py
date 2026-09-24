@@ -31,6 +31,7 @@ from .approach import ELEMENT as APPROACH
 from .approach import design_approach
 from .beams import design_beam
 from .combi import design_combi_wall
+from .construction_joints import add_weights, beam_lines, beam_top, for_beam, for_pile, for_slab
 from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
 from .piles import design_pile
@@ -139,6 +140,7 @@ def run_section(
     only: Collection[str] | None = None,
     deadline: float | None = None,
     approach: ApproachSlabInput | None = None,
+    furniture_at: Callable[[float], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Design the piles, combi walls and beams of one section; pick the sheet pile wall's governing sets.
     ``progress(fraction, step)`` is told as each element is started. ``only``: design just these
@@ -218,6 +220,7 @@ def run_section(
         out["peaks"] = peaks
         out["positions"] = positions
         out["count"] = count
+        out["construction_joints"] = add_weights(for_pile(name, element, settings, own, out), count)
         steel = out.get("steel") or {}
         if steel.get("total_kg") is not None:
             out["steel"]["element_total_t"] = round(steel["total_kg"] * count / 1000, 2)
@@ -268,7 +271,9 @@ def run_section(
     axes = {a["element"]: a.get("local") for a in found}
     signs = {a["element"]: a for a in found if a["kind"] == "plate"}
     parts, alignment = section_alignment(section, sheets) if plates else ([], {"parts": [], "points": []})
-    joints = section_joints(settings, section, raw, parts, along_axis(section)) if plates else None
+    joints = (
+        section_joints(settings, section, raw, parts, along_axis(section), furniture_at) if plates else None
+    )
     use_joints = bool(joints and joints.get("segments") and settings.joints.use_in_restraint)
 
     def with_joints(element: Any, part: Any) -> tuple[Any, list[float]]:
@@ -344,6 +349,22 @@ def run_section(
                 b["notes"].append(joint_note(element, placed.joint_spacing))
             if lengths:
                 b["restraint"]["length_from"] = "expansion joints"
+            if element.construction_joints:
+                top = beam_top(section.clashes, name, b.get("level_m") or 0.0, float(b.get("depth_mm") or 0))
+                b["construction_joints"] = add_weights(
+                    for_beam(
+                        name,
+                        element,
+                        settings,
+                        own,
+                        geo,
+                        section.elements,
+                        axes.get(name),
+                        signs.get(name),
+                        b,
+                        top,
+                    )
+                )
             beams.append(b if part is None else tag_part(b, part, parts))
     slabs = []
     for name, element in section.elements.items():
@@ -373,6 +394,11 @@ def run_section(
                 signs.get(name),
             )
             d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+            if element.construction_joints:
+                lines = beam_lines(around, section.elements, axes)
+                d["construction_joints"] = add_weights(
+                    for_slab(name, element, settings, own, axes.get(name), signs.get(name), d, lines)
+                )
             if lengths:
                 if element.restraint_check != "off" and element.restraint_factor is None:
                     d["notes"].append(joint_note(element, placed.joint_spacing))
