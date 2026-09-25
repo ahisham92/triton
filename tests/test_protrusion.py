@@ -105,7 +105,7 @@ def test_the_furniture_designs_the_blocks_and_checks_the_crane():
     lay = res["layout"]
     assert lay["counts"]["fender_blocks"] == lay["counts"]["fenders"]
     for it in lay["items"]["fenders"]:
-        assert it["to_m"] - it["from_m"] == pytest.approx(3.0)
+        assert it["status"] != "clash"  # the bolts clear the king piles; the block only keeps off the joints
         assert all(abs(it["s_m"] - j) >= 1.5 + 1.0 - 0.01 for j in lay["joints_m"])
     # The front rail from the arrangement (over the 2 m beam's centre).
     sts = next(i for i in res["items"] if i["item"] == "sts_clearance")
@@ -121,7 +121,7 @@ def test_the_furniture_designs_the_blocks_and_checks_the_crane():
 def test_the_calculation_carries_the_block(api):  # noqa: F811
     client, pid, base = api
     page = client.get(f"/api/projects/{pid}").json()
-    assert page["furniture"]["protrusion"] is None and page["furniture"]["sts_crane"]["outreach"] == 70
+    assert page["furniture"]["sts_crane"]["outreach"] == 70
     page["furniture"]["protrusion"] = FenderProtrusion().model_dump(mode="json")
     assert client.put(f"/api/projects/{pid}", json=page).status_code == 200
     out = client.get(base + "/furniture").json()
@@ -178,3 +178,11 @@ def test_a_bollard_on_the_block_pulls_the_joint_open():
 def test_the_block_follows_drawing_sc502():
     p = FenderProtrusion()
     assert (p.projection, p.depth, p.length, p.bollard_on_block) == (1500, 2500, 3000, True)
+
+
+def test_a_new_project_has_the_block_and_says_so_when_it_is_removed():
+    from triton.project import Project
+
+    assert Project().furniture.protrusion is not None
+    c = P.clearance(StsCrane(), Fenders(), None, 2.25)
+    assert not c["passed"] and "tick" in c["notes"][0]
