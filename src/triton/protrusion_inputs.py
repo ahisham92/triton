@@ -3,17 +3,18 @@ the STS crane that the berth must still serve. Both are the project's (QuayFurni
 every section's berth.
 
 The block's sizes are Ahmed's (1.5 m out from a 4.5 m beam, 2.5 m deep to suit the fender, 2.5 m
-long). The STS crane and ship values are common ones for a large container berth, not from this
-project's crane specification: replace them.
+long). The ship and fender panel values are the design report's (N25185-...-RPT-ST-01 Rev 2); the
+crane's outreach and legs, the ship's flare and the clearance are not in it and stay assumed.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ASSUMED = "Assumed (common value), replace with the project's."
+REPORT = "Design report N25185-0100D-FD-TIN-00-RPT-ST-01 Rev 2"
 
 
 class _Model(BaseModel):
@@ -67,49 +68,67 @@ class StsCrane(_Model):
     """Ship-to-shore cranes on this quay. The ship must stay close enough for the crane's outreach to
     reach its far row, and far enough that the ship's flare clears the crane's seaside legs."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _report_values(cls, data: Any) -> Any:
+        """Projects saved with the first defaults (61.5 m ship, 0.3 m panel, assumed) take the design
+        report's (43.2 m, 0.25 m); a value the user changed is kept."""
+        if isinstance(data, dict) and data.get("ship_beam") == 61.5 and data.get("panel_thickness") == 0.3:
+            data = {**data, "ship_beam": 43.2, "panel_thickness": 0.25}
+        return data
+
     outreach: float = _m(
         "Outreach from the seaside rail",
         70.0,
         gt=0,
-        description="To the centre of the outermost row the crane serves. " + ASSUMED,
+        description="To the centre of the outermost row the crane serves. Not in the design report (it gives "
+        "only the wheel loads and the 30.48 m gauge). " + ASSUMED,
     )
     ship_beam: float = _m(
         "Design ship beam",
-        61.5,
+        43.2,
         gt=0,
-        description="The widest ship the crane must serve (24,000 TEU class). " + ASSUMED,
+        description="The widest ship the crane must serve. "
+        + REPORT
+        + ", 7 Input Data: Post-Panamax container ship, LOA 340 m, breadth 43.2 m (110,000 DWT).",
     )
     far_row_inside: float = _m(
         "Outermost row centre inside the ship's far side",
         1.5,
         ge=0,
-        description="Half a container plus the hull. " + ASSUMED,
+        description="Half a container plus the hull. Not in the design report. " + ASSUMED,
     )
     leg_seaward_of_rail: float = _m(
         "Crane's seaside legs and sill beam, seaward of the rail",
         1.0,
         ge=0,
-        description="Their furthest part towards the sea. " + ASSUMED,
+        description="Their furthest part towards the sea. Not in the design report. " + ASSUMED,
     )
     flare_overhang: float = _m(
         "Ship's flare and list beyond the fender contact line",
         2.0,
         ge=0,
-        description="How far the hull leans towards the quay at the height of the crane's legs. " + ASSUMED,
+        description="How far the hull leans towards the quay at the height of the crane's legs. "
+        "Not in the design report. " + ASSUMED,
     )
     min_clearance: float = _m(
         "Clearance kept between the ship and the crane's legs",
         1.0,
         ge=0,
-        description="No code value; a common specification value. " + ASSUMED,
+        description="No code value and not in the design report (its BS 6349-4 250 mm is the hull to cope, "
+        "not to the crane); a common specification value. " + ASSUMED,
     )
     panel_thickness: float = _m(
-        "Fender panel and pads thickness", 0.3, ge=0, description="Added to the fender height. " + ASSUMED
+        "Fender panel and pads thickness",
+        0.25,
+        ge=0,
+        description="Added to the fender height. " + REPORT + ", hull-cope clearance: frontal panel 250 mm "
+        "(indicative, to be confirmed by the fender supplier).",
     )
     rated_deflection: float = Field(
         0.72,
         title="Fender deflection at the rated reaction",
         gt=0,
         lt=1,
-        description="Share of the fender height (cone fenders about 0.72). " + ASSUMED,
+        description="Share of the fender height. " + REPORT + ", hull-cope clearance: SCN 1600 at 72%.",
     )
