@@ -62,6 +62,7 @@ def project() -> Project:
     s = p.sections[0]
     s.add_elements(["Front Beam", "Rear Beam", "Deck", "Combi Wall", "Pile(1)", "Pile(4)"])
     s.costing.berth_length = 300.0
+    p.furniture.protrusion = None  # the bare beam face; tests of the block tick it themselves
     return p
 
 
