@@ -133,7 +133,15 @@ def test_other_items_follow_the_berth():
     s = p.sections[0]
     s.costing.berth_length = 100.0
     names = [i.name for i in s.costing.items]
-    assert names == ["Fenders", "Bollards", "Crane rails", "Ladders", "Storm pins", "Crane stoppers"]
+    assert names == [
+        "Fenders",
+        "Bollards",
+        "Crane rails",
+        "Ladders",
+        "Storm pins",
+        "Crane stoppers",
+        "Crane tie-downs",
+    ]
     out = cost_section(p, s, results())
     rows = {r["element"]: r for r in out["rows"]}
     assert rows["Fenders"]["count"] == 6 and rows["Bollards"]["count"] == 4  # 100 m: every 20 m, every 30 m

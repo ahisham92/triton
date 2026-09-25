@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .protrusion_inputs import FenderProtrusion, StsCrane
 
-BOLT_SIZES = [16, 20, 24, 30, 36, 42, 48, 56, 64, 72, 80, 90, 100]
+BOLT_SIZES = [16, 20, 24, 27, 30, 36, 42, 48, 56, 64, 72, 80, 90, 100]
 BoltSize = Literal[tuple(BOLT_SIZES)]  # type: ignore[valid-type]
 BoltGrade = Literal["4.6", "5.6", "8.8", "10.9", "A4-70", "A4-80"]
 RailType = Literal["A100", "A120", "A150", "MRS 87A", "MRS 125", "175 lb CR"]
@@ -38,8 +38,9 @@ def _kn(title: str, default: float, **kw) -> Field:
 
 
 ASSUMED = "Assumed (common value), replace with the supplier's."
-CATALOGUE = "Super Cone SCN 1300 catalogue value at grade E1.0 (rated performance): the grade is assumed."
-REPORT = "From the design report's steel appendix (service load, ×9.81 kN/t)."
+DOC = "design report N25185-0100D-FD-TIN-00-RPT-ST-01 Rev 2"
+CATALOGUE = f"SCN 1600 F1.8 as in the {DOC} (Trelleborg brochure, rated performance)."
+REPORT = f"From the {DOC}, Appendix 2 (steel calculation note): service load at 10 kN/t, as there."
 
 
 CIRCLE = {"show_when": {"pattern": ["circle"]}}
@@ -73,16 +74,16 @@ class Anchors(_Model):
 class Fenders(_Model):
     """Fender units on the front face of the front beam."""
 
-    name: str = Field("Shibata SCN 1300 super cone, grade E1.0 (grade assumed)", title="Fender")
-    reaction: float = _kn("Rated reaction R", 1064.0, gt=0, description=CATALOGUE)
+    name: str = Field("SCN 1600 F1.8 super cone with frontal panel", title="Fender")
+    reaction: float = _kn("Rated reaction R", 2012.0, gt=0, description=CATALOGUE)
     energy: float | None = Field(
-        825.0, title="Rated energy E", gt=0, json_schema_extra={"unit": "kNm"}, description=CATALOGUE
+        1867.0, title="Rated energy E", gt=0, json_schema_extra={"unit": "kNm"}, description=CATALOGUE
     )
     friction: float = Field(
         0.3, title="Friction on the panel μ", ge=0, le=1, description="UHMW-PE pads 0.2 to 0.3."
     )
     panel_weight: float = _kn("Panel weight on the flange", 0.0, ge=0, description="0 where chains carry it.")
-    height: float = _m("Fender height (face to panel)", 1.3, gt=0)
+    height: float = _m("Fender height (face to panel)", 1.6, gt=0)
     load_factor: float = Field(
         1.5,
         title="Load factor",
@@ -90,19 +91,19 @@ class Fenders(_Model):
         description="On the rated reaction: 1.5 with berthing as the leading action; 1.0 where the "
         "reaction already includes the abnormal berthing factor (accidental).",
     )
-    flange: float = _mm("Base flange diameter", 1275.0, gt=0)
+    flange: float = _mm("Base flange diameter", 1570.0, gt=0)
     centre_below_cope: float = _m("Centre below the cope", 0.8, gt=0)
     anchors: Anchors = Field(
         default_factory=lambda: Anchors(
-            pattern="circle", count=8, circle_diameter=1100, diameter=36, embedment=500
+            pattern="circle", count=8, circle_diameter=1365, diameter=42, embedment=600
         ),
         title="Anchor bolts",
     )
     spacing: float = _m(
         "Spacing along the berth",
-        20.0,
+        18.0,
         gt=0,
-        description="Common value; BS 6349-4: ≤ 0.15 × the smallest ship's length.",
+        description="As in the design report (7); BS 6349-4: ≤ 0.15 × the smallest ship's length.",
     )
     end_distance: float = _m("First fender from the berth end", 5.0, ge=0)
     smallest_ship: float | None = _m(
@@ -134,7 +135,7 @@ class Bollards(_Model):
         title="Anchor bolts",
     )
     spacing: float = _m(
-        "Spacing along the berth", 30.0, gt=0, description="Common value for container ships."
+        "Spacing along the berth", 18.0, gt=0, description="As in the design report's mooring analysis."
     )
     end_distance: float = _m("First bollard from the berth end", 10.0, ge=0)
 
@@ -173,8 +174,10 @@ class Ladders(_Model):
 class StormPins(_Model):
     """Storm (stowage) pins: a crane's sill beam pin dropped into a socket in the rail beam."""
 
-    force: float = _kn("Horizontal force per pin", 1765.8, gt=0, description=REPORT + " 180 t.")
-    load_factor: float = Field(1.5, title="Load factor", gt=0)
+    force: float = _kn("Horizontal force per pin", 1800.0, gt=0, description=REPORT + " 180 t.")
+    load_factor: float = Field(
+        1.35, title="Load factor", gt=0, description="1.35, as the report's stow pin check."
+    )
     socket_width: float = _mm("Socket width (loaded face)", 300.0, gt=0)
     socket_length: float = _mm("Socket length", 400.0, gt=0)
     socket_depth: float = _mm("Socket depth", 500.0, gt=0)
@@ -227,24 +230,65 @@ class CraneRails(_Model):
 class CraneStoppers(_Model):
     """End stops at both ends of each rail, bolted to the beam top."""
 
-    force: float = _kn("Buffer force per stop", 1471.5, gt=0, description=REPORT + " 150 t.")
+    force: float = _kn("Buffer force per stop", 1500.0, gt=0, description=REPORT + " 150 t.")
     load_factor: float = Field(1.5, title="Load factor", gt=0)
-    buffer_height: float = _m("Buffer centre above the beam top", 1.2, gt=0)
-    base_length: float = _mm("Base plate along the rail", 2400.0, gt=0)
-    base_width: float = _mm("Base plate across", 1000.0, gt=0)
+    buffer_height: float = _m(
+        "Buffer centre above the beam top", 1.08, gt=0, description="1.08 m in the report's stopper model."
+    )
+    base_length: float = _mm(
+        "Base plate along the rail", 2500.0, gt=0, description="The report: 2500 × 1246 × 50."
+    )
+    base_width: float = _mm("Base plate across", 1246.0, gt=0)
     end_distance: float = _m("From the berth end", 1.0, ge=0)
     anchors: Anchors = Field(
         default_factory=lambda: Anchors(
             pattern="grid",
             rows=2,
-            columns=6,
-            spacing_along=420,
-            spacing_across=700,
-            diameter=48,
+            columns=8,
+            spacing_along=314,
+            spacing_across=946,
+            diameter=36,
             grade="10.9",
-            embedment=800,
+            embedment=900,
+            head_diameter=169,
         ),
         title="Anchor bolts",
+    )
+
+
+class TieDowns(_Model):
+    """Crane tie-downs: the stowed crane's legs held down against uplift by link plates on plates
+    bolted into the rail beam, one set at each leg (a plate each side of the rail)."""
+
+    force: float = _kn("Uplift per set", 1650.0, gt=0, description=REPORT + " 165 t per set.")
+    load_factor: float = Field(1.5, title="Load factor", gt=0)
+    plates: int = Field(2, title="Plates per set", ge=1, le=4, description="Each takes an equal share.")
+    eccentricity: float = _mm(
+        "Link pin off the plate's centre (along the rail)", 225.0, ge=0, description="225 mm in the report."
+    )
+    plate_length: float = _mm(
+        "Plate along the rail", 1050.0, gt=0, description="The report: 1050 × 290 × 30."
+    )
+    plate_width: float = _mm("Plate across", 290.0, gt=0)
+    offset_from_rail: float = _m("Plate centre each side of the rail", 0.6, gt=0, description=ASSUMED)
+    leg_spacing: float = _m(
+        "Crane leg spacing along the rail", 18.0, gt=0, description="Assumed; from the crane supplier."
+    )
+    anchors: Anchors = Field(
+        default_factory=lambda: Anchors(
+            pattern="grid",
+            rows=2,
+            columns=3,
+            spacing_along=425,
+            spacing_across=190,
+            diameter=30,
+            grade="10.9",
+            embedment=650,
+            head_diameter=113,
+        ),
+        title="Anchor bolts (each plate)",
+        description="The report has 6 × M27 10.9 (its FE plate puts 254 kN on the worst bolt); the rigid "
+        "plate of EN 1992-4 puts 370 kN on it, so M30 here.",
     )
 
 
@@ -304,6 +348,7 @@ class QuayFurniture(_Model):
     storm_pins: StormPins | None = Field(default_factory=StormPins, title="Storm pins")
     crane_rails: CraneRails | None = Field(default_factory=CraneRails, title="Crane rails")
     crane_stoppers: CraneStoppers | None = Field(default_factory=CraneStoppers, title="Crane stoppers")
+    tie_downs: TieDowns | None = Field(default_factory=TieDowns, title="Crane tie-downs")
     tie_rods: TieRods | None = Field(
         default_factory=TieRods,
         title="Tie rods",

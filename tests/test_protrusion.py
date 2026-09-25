@@ -15,7 +15,12 @@ from triton.furniture_inputs import Fenders
 from triton.protrusion_inputs import FenderProtrusion, StsCrane
 
 # The hand checks below were worked for a 1000 mm fender of 1100 kN (the old defaults).
-HAND = Fenders(reaction=1100.0, height=1.0)
+HAND = Fenders(
+    reaction=1100.0,
+    height=1.0,
+    flange=1400.0,
+    anchors=dict(pattern="circle", count=6, circle_diameter=1100, diameter=36, embedment=500),
+)
 
 
 def block(**kw):

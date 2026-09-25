@@ -279,7 +279,11 @@ def _furniture(
                 "line": [at(s, -proj - 0.05, cope), at(s, -proj - 0.05, min(water - 1.0, cope - 1.0))],
             }
         )
-    for row in lay["items"].get("crane_stoppers", []) + lay["items"].get("storm_pins", []):
+    for row in (
+        lay["items"].get("crane_stoppers", [])
+        + lay["items"].get("storm_pins", [])
+        + lay["items"].get("tie_downs", [])
+    ):
         s = row["s_m"]
         if not inside(s):
             continue
