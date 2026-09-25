@@ -93,6 +93,62 @@ export function tensionLegendHtml() {
     Beams show vertical bending; slabs one bar direction at a time.</p></div>`;
 }
 
+// Displacement: pale to dark blue, apart from the utilisation colours.
+const DEFORM = [
+  [0, [158, 202, 225]],
+  [0.5, [49, 130, 189]],
+  [1, [8, 48, 107]],
+];
+
+function ramp(stops, u) {
+  const t = Math.max(0, Math.min(1, u || 0));
+  for (let i = 1; i < stops.length; i++) {
+    const [u1, c1] = stops[i];
+    const [u0, c0] = stops[i - 1];
+    if (t <= u1) {
+      const f = (t - u0) / (u1 - u0);
+      return `rgb(${c0.map((c, k) => Math.round(c + f * (c1[k] - c))).join(",")})`;
+    }
+  }
+  return `rgb(${stops[stops.length - 1][1]})`;
+}
+
+const fmt1 = (v) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1));
+
+// A box as six shaded faces, drawn among the lines (fenders, bollards, blocks).
+function solid(items, box, color, tip) {
+  const [x0, x1] = box.X;
+  const [y0, y1] = box.Y;
+  const [z0, z1] = box.Z;
+  const shade = (f) => {
+    const c = color.match(/\w\w/g).map((h) => Math.round(parseInt(h, 16) * f));
+    return `rgb(${c.join(",")})`;
+  };
+  const faces = [
+    [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], 1.0],
+    [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], 0.8],
+    [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], 0.8],
+    [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1], 0.68],
+    [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1], 0.68],
+    [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], 0.55],
+  ];
+  for (const [a, b, c, d, f] of faces) items.push({ kind: "quad", pts: [a, b, c, d], fill: shade(f), base: 0, stroke: false, site: true, tip });
+}
+
+export function deformedLegendHtml(d) {
+  const stops = DEFORM.map(([u, c]) => `rgb(${c}) ${u * 100}%`).join(", ");
+  const max = fmt1(d.max_mm);
+  const extra = [...(d.notes || []), ...(d.missing?.length ? [`No results for ${d.combination}: ${d.missing.join(", ")}.`] : [])];
+  return `<div class="heat-legend"><span>Displacement, ${d.combination.replace(/</g, "&lt;")} (estimate)</span>
+    <div class="bar" style="background:linear-gradient(90deg, ${stops})"></div>
+    <div class="ticks"><span>0</span><span style="left:45%">${fmt1(d.max_mm / 2)}</span><span style="left:90%">${max} mm</span></div>
+    <p>The whole structure moved by the Design tab's estimate (curvature M / EI integrated twice down each pile and wall,
+    and between the supports of each 1 m deck strip), enlarged by the scale shown. The deck moves sideways with the mean
+    of the pile heads (${fmt1(d.deck_shift_mm[0])} mm in X, ${fmt1(d.deck_shift_mm[1])} mm in Y). The soil's face against the
+    wall follows the wall; the soil's own movement is not in the estimate. Not a Plaxis displacement result.
+    Faint: the structure as built.</p>${extra.map((t) => `<p class="grey">${t.replace(/</g, "&lt;")}</p>`).join("")}</div>`;
+}
+
 const PRESETS = {
   "3D": { yaw: 0.7, pitch: 0.42 },
   Plan: { yaw: 0, pitch: Math.PI / 2 - 1e-4 },
@@ -107,9 +163,13 @@ export const GAP_WHY = {
 };
 
 export class View3D {
-  constructor(host, { height = 460, compact = false, legend = true } = {}) {
+  constructor(host, { height = 460, compact = false, legend = true, onSite = null, deformed = null } = {}) {
     this.host = host;
     this.legend = legend;
+    this.onSite = onSite; // (changes) => saved to the section's site settings
+    this.loadDeformed = deformed; // async (combination) => the section's deformed shape
+    this.def = null;
+    this.phase = 0;
     this.labels = !compact;
     host.classList.add("view3d");
     host.innerHTML = `<div class="v3d-bar">${Object.keys(PRESETS)
@@ -121,6 +181,15 @@ export class View3D {
       <select data-combo aria-label="Combination" hidden></select>
       <select data-dir aria-label="Slab bar direction" hidden><option value="x">Slabs: bars along X (M11)</option>
       <option value="y">Slabs: bars along Y (M22)</option></select></span></div>
+      <div class="v3d-bar v3d-site" hidden><label class="toggle">Soil <select data-soil aria-label="Soil">
+      <option value="hidden">Hidden</option><option value="half">50%</option><option value="full">Full</option></select></label>
+      <label class="toggle"><input type="checkbox" data-show="water"> Water</label>
+      <label class="toggle"><input type="checkbox" data-show="furniture"> Fenders and bollards</label>
+      <label class="toggle"><input type="checkbox" data-show="crane"> STS crane</label>
+      <span class="v3d-def" ${deformed ? "" : "hidden"}><select data-def aria-label="Deformed shape"><option value="">Deformed shape: off</option></select>
+      <select data-scale aria-label="Displacement scale" hidden><option value="auto">Scale: auto</option>
+      ${[1, 10, 50, 100, 200, 500, 1000, 2000].map((k) => `<option value="${k}">× ${k}</option>`).join("")}</select>
+      <button class="quiet" data-anim hidden>Animate</button><span class="status" data-defstat></span></span></div>
       <canvas style="height:${height}px"></canvas><div class="v3d-tip" hidden></div><div class="v3d-legend"></div>`;
     this.canvas = host.querySelector("canvas");
     this.tip = host.querySelector(".v3d-tip");
@@ -144,8 +213,93 @@ export class View3D {
         this.draw();
       };
     }
+    host.querySelector("[data-soil]").onchange = (e) => this._site({ soil: e.target.value });
+    host.querySelectorAll("[data-show]").forEach((b) => (b.onchange = () => this._site({ [b.dataset.show]: b.checked })));
+    host.querySelector("[data-def]").onchange = (e) => this._deform(e.target.value);
+    host.querySelector("[data-scale]").onchange = (e) => {
+      View3D.prefs.defScale = e.target.value;
+      this.draw();
+    };
+    host.querySelector("[data-anim]").onclick = () => this._animate(!this.anim);
     this._wire();
     new ResizeObserver(() => this.draw()).observe(this.canvas);
+  }
+
+  // Site switches: drawn at once, and kept on the section (never a design input).
+  _site(change) {
+    Object.assign(this.siteView, change);
+    this.onSite?.(change);
+    this._build();
+    this.draw();
+  }
+
+  _siteControls() {
+    const site = this.scene?.site;
+    const bar = this.host.querySelector(".v3d-site");
+    bar.hidden = !site?.soil && !this.loadDeformed;
+    if (!site?.soil) {
+      bar.querySelectorAll("label").forEach((l) => (l.hidden = true));
+      return;
+    }
+    this.host.querySelector("[data-soil]").value = this.siteView.soil;
+    this.host.querySelectorAll("[data-show]").forEach((b) => {
+      b.checked = !!this.siteView[b.dataset.show];
+      b.closest("label").hidden = (b.dataset.show === "crane" && !site.crane) || (b.dataset.show === "furniture" && !site.furniture?.length);
+    });
+  }
+
+  // The deformed shape for a combination ("" for none), loaded once per combination.
+  async _deform(combo) {
+    View3D.prefs.defCombo = combo;
+    const stat = this.host.querySelector("[data-defstat]");
+    this.def = null;
+    if (combo && this.loadDeformed) {
+      stat.textContent = "Working out…";
+      try {
+        this.def = await this.loadDeformed(combo);
+        stat.textContent = "";
+      } catch (e) {
+        stat.textContent = e.message;
+      }
+    } else stat.textContent = "";
+    this._defControls();
+    this._controls();
+    this._build();
+    this.draw();
+  }
+
+  _defControls() {
+    const sel = this.host.querySelector("[data-def]");
+    const combos = this.def?.combinations || this.combos || [];
+    if (combos.length) this.combos = combos;
+    sel.innerHTML = `<option value="">Deformed shape: off</option>${(this.combos || [View3D.prefs.defCombo].filter(Boolean))
+      .map((c) => `<option value="${c.replace(/"/g, "&quot;")}">Deformed: ${c.replace(/</g, "&lt;")}</option>`).join("")}`;
+    sel.value = this.def ? this.def.combination : "";
+    const on = !!this.def;
+    this.host.querySelector("[data-scale]").hidden = !on;
+    this.host.querySelector("[data-scale]").value = View3D.prefs.defScale;
+    this.host.querySelector("[data-anim]").hidden = !on;
+    if (!on) this._animate(false);
+  }
+
+  _animate(on) {
+    this.anim = on;
+    const b = this.host.querySelector("[data-anim]");
+    b.textContent = on ? "Stop" : "Animate";
+    if (!on) {
+      this.phase = 0;
+      this.draw();
+      return;
+    }
+    let last = performance.now();
+    const step = (t) => {
+      if (!this.anim || !document.body.contains(this.canvas)) return (this.anim = false);
+      this.phase += ((t - last) / 2000) * 2 * Math.PI; // one cycle in 2 s
+      last = t;
+      this.draw();
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
   }
 
   // scene: { elements: [{element, type, kind, lines?, box?}], bands: {element: [[x,y,z,u]]},
@@ -154,6 +308,20 @@ export class View3D {
   //          crack: {element: [[x,y,z,wk/limit,size?]]} for the "Crack width" mode
   setScene(scene) {
     this.scene = scene;
+    this.siteView = { ...(scene.site?.site || {}) };
+    this._siteControls();
+    if (this.loadDeformed && !this.combos) {
+      // The combinations to pick from, and the shape picked before on this page.
+      this.combos = [];
+      if (View3D.prefs.defCombo) this._deform(View3D.prefs.defCombo);
+      else
+        this.loadDeformed("")
+          .then((d) => {
+            this.combos = d?.combinations || [];
+            this._defControls();
+          })
+          .catch(() => {});
+    }
     this._controls();
     this._build();
     this.fit();
@@ -182,7 +350,9 @@ export class View3D {
     const dir = this.host.querySelector("[data-dir]");
     dir.value = prefs.dir;
     dir.hidden = !on || !tz.some((t) => t.kind === "slab");
-    this.host.querySelector(".v3d-legend").innerHTML = on
+    this.host.querySelector(".v3d-legend").innerHTML = this.def
+      ? deformedLegendHtml(this.def)
+      : on
       ? tensionLegendHtml()
       : this.view === "crack"
         ? crackLegendHtml()
@@ -218,7 +388,7 @@ export class View3D {
 
   _build() {
     const { elements, selected } = this.scene;
-    const items = [];
+    let items = [];
     for (const e of elements) {
       const faded = selected && e.element !== selected;
       const src = this._source(e);
@@ -340,20 +510,218 @@ export class View3D {
       }
     }
     for (const a of this.scene.arrows || []) items.push({ kind: "arrow", ...a });
+    if (this.def) {
+      // The structure as it stands stays faint behind its deformed shape.
+      for (const it of items) if (it.element && it.kind !== "label") it.ghost = true;
+      this._deformedItems(items);
+    }
+    if (this.scene.site?.soil) {
+      this._siteItems(items);
+      if (this.siteView.soil === "full") items = this._bury(items);
+    }
     this.items = items;
     const pts = [];
     const focus = this.scene.focus;
     for (const it of items) {
-      if (focus && it.element && it.element !== focus) continue;
+      if (it.site || (focus && it.element && it.element !== focus)) continue;
       if (it.kind === "line") pts.push(it.a, it.b);
       if (it.kind === "quad") pts.push(...it.pts);
     }
-    if (!pts.length) for (const it of items) if (it.kind === "line") pts.push(it.a, it.b);
+    if (!pts.length) for (const it of items) if (it.kind === "line" && !it.site) pts.push(it.a, it.b);
     const lo = [0, 1, 2].map((k) => Math.min(...pts.map((p) => p[k])));
     const hi = [0, 1, 2].map((k) => Math.max(...pts.map((p) => p[k])));
     this.center = lo.map((l, k) => (l + hi[k]) / 2);
     this.bounds = { lo, hi };
     this.size = Math.max(...hi.map((h, k) => h - lo[k]), 1);
+  }
+
+  // The deformed shape (triton/deformed.py): each pile and king pile, the sheet pile wall's strips and
+  // the deck's strips, drawn at their displaced positions (m; scaled when drawn).
+  _deformedItems(items) {
+    const d = this.def;
+    const max = Math.max(d.max_mm, 1e-6);
+    const col = (mm) => ramp(DEFORM, Math.abs(mm) / max);
+    const m = (v) => v / 1000;
+    const f1 = (v) => fmt1(v);
+    for (const mb of d.members || []) {
+      const pts = mb.points;
+      const top = pts[pts.length - 1];
+      const head = `head ${f1(top[1])} mm in X, ${f1(top[2])} mm in Y`;
+      for (let i = 1; i < pts.length; i++) {
+        const [z0, x0, y0] = pts[i - 1];
+        const [z1, x1, y1] = pts[i];
+        items.push({ kind: "line", a: [mb.x, mb.y, z0], b: [mb.x, mb.y, z1], da: [m(x0), m(y0), 0], db: [m(x1), m(y1), 0],
+          color: col(Math.hypot(x1, y1)), width: mb.kind === "combi_wall" ? 5 : 3.5, deformed: true,
+          tip: `${mb.element} at X ${mb.x}, Y ${mb.y}, z ${z1.toFixed(1)} m: ${f1(x1)} mm in X, ${f1(y1)} mm in Y (${head}; ${d.combination}, estimate)` });
+      }
+    }
+    for (const w of d.walls || []) {
+      for (const st of w.strips) {
+        const at = (z) => (w.across === "X" ? [w.position, st.at, z] : [st.at, w.position, z]);
+        const du = (u) => (w.across === "X" ? [m(u), 0, 0] : [0, m(u), 0]);
+        for (let i = 1; i < st.points.length; i++) {
+          const [z0, u0] = st.points[i - 1];
+          const [z1, u1] = st.points[i];
+          items.push({ kind: "line", a: at(z0), b: at(z1), da: du(u0), db: du(u1), color: col(u1), width: 1.5, deformed: true,
+            tip: `${w.element}, 1 m strip at ${w.along} ${st.at} m, z ${z1.toFixed(1)} m: ${f1(u1)} mm across the wall (${d.combination}, estimate)` });
+        }
+      }
+    }
+    const [sx, sy] = (d.deck_shift_mm || [0, 0]).map(m);
+    for (const p of d.plates || []) {
+      for (const st of p.strips) {
+        const at = (s) => (p.along === "X" ? [s, st.at, p.z] : [st.at, s, p.z]);
+        for (let i = 1; i < st.points.length; i++) {
+          const [s0, w0] = st.points[i - 1];
+          const [s1, w1] = st.points[i];
+          const size = Math.hypot(d.deck_shift_mm[0], d.deck_shift_mm[1], w1);
+          items.push({ kind: "line", a: at(s0), b: at(s1), da: [sx, sy, m(w0)], db: [sx, sy, m(w1)], color: col(size), width: 1.5,
+            deformed: true, tip: `${p.element} at ${p.along} ${s1.toFixed(1)} m, ${p.across} ${st.at} m: ${f1(w1)} mm up, moved ${f1(d.deck_shift_mm[0])} mm in X and ${f1(d.deck_shift_mm[1])} mm in Y with the pile heads (${d.combination}, estimate)` });
+        }
+      }
+    }
+  }
+
+  // How far the front wall moves at a level (m in X and Y), from the king piles, else the sheet pile
+  // wall: the soil against the wall follows it.
+  _wallMove() {
+    const d = this.def;
+    if (!d) return null;
+    const bins = new Map();
+    const add = (z, ux, uy) => {
+      const k = Math.round(z * 2) / 2;
+      const b = bins.get(k) || [0, 0, 0];
+      bins.set(k, [b[0] + ux, b[1] + uy, b[2] + 1]);
+    };
+    for (const mb of d.members || []) if (mb.kind === "combi_wall") for (const [z, ux, uy] of mb.points) add(z, ux, uy);
+    if (!bins.size)
+      for (const w of d.walls || [])
+        for (const st of w.strips) for (const [z, u] of st.points) add(z, w.across === "X" ? u : 0, w.across === "Y" ? u : 0);
+    if (!bins.size) return null;
+    const lv = [...bins.entries()].sort((a, b) => a[0] - b[0]).map(([z, [x, y, n]]) => [z, x / n / 1000, y / n / 1000]);
+    return (z) => {
+      if (z <= lv[0][0] || z >= lv[lv.length - 1][0]) {
+        const e = z <= lv[0][0] ? lv[0] : lv[lv.length - 1];
+        return [e[1], e[2], 0];
+      }
+      const i = lv.findIndex((p) => p[0] >= z);
+      const [za, xa, ya] = lv[i - 1];
+      const [zb, xb, yb] = lv[i];
+      const t = (z - za) / (zb - za);
+      return [xa + t * (xb - xa), ya + t * (yb - ya), 0];
+    };
+  }
+
+  // Seabed, soil, water, furniture and the STS crane (triton/site3d.py), as the section's switches say.
+  _siteItems(items) {
+    const S = this.scene.site;
+    const v = this.siteView;
+    const L = S.levels;
+    const move = this._wallMove();
+    const still = [0, 0, 0];
+    const alpha = v.soil === "full" ? 0.92 : v.soil === "half" ? 0.22 : 0;
+    const quad = (pts, fill, base, dpts, tip) =>
+      items.push({ kind: "quad", pts, fill, base, dpts, stroke: false, site: true, tip });
+    const up = (c, z) => [c[0], c[1], z];
+    if (alpha) {
+      const top = `rgba(181,150,105,${alpha})`;
+      const side = `rgba(146,116,78,${alpha})`;
+      for (const b of S.soil) {
+        const [c0, c1, c2, c3] = b.corners; // c0, c1 on the sea side; c2, c3 inland
+        const wall = b.part === "sea" ? [c2, c3] : [c0, c1];
+        const dz = (c, z) => (move && wall.includes(c) ? move(z) : still);
+        const face = (p, q, z0, z1) =>
+          quad([up(p, z0), up(q, z0), up(q, z1), up(p, z1)], side, -4e6, [dz(p, z0), dz(q, z0), dz(q, z1), dz(p, z1)]);
+        quad([c0, c1, c2, c3].map((c) => up(c, b.top)), top, -4e6, [c0, c1, c2, c3].map((c) => dz(c, b.top)),
+          b.part === "sea" ? `Seabed at ${L.seabed} m` : `Soil behind the wall at ${L.ground} m (${L.ground_from})`);
+        face(c3, c0, b.bottom, b.top);
+        face(c1, c2, b.bottom, b.top);
+        if (b.part === "sea") face(c0, c1, b.bottom, b.top);
+        else {
+          face(c2, c3, b.bottom, b.top);
+          // The soil's face against the wall, in bands so it can follow the wall's deformed shape.
+          const n = Math.max(1, Math.ceil((b.top - L.seabed) / 1.0));
+          for (let i = 0; i < n; i++) {
+            const z0 = L.seabed + ((b.top - L.seabed) * i) / n;
+            face(c0, c1, z0, L.seabed + ((b.top - L.seabed) * (i + 1)) / n);
+          }
+        }
+      }
+    }
+    if (v.water && S.water) {
+      const [c0, c1, c2, c3] = S.water.corners;
+      const w = S.water.level;
+      const dz = (c) => (move && (c === c2 || c === c3) ? move(w) : still);
+      quad([c0, c1, c2, c3].map((c) => up(c, w)), "rgba(56,132,200,0.30)", -3e6, [c0, c1, c2, c3].map(dz), `Water at ${w} m`);
+      const bed = L.seabed;
+      for (const [p, q] of [[c0, c1], [c3, c0], [c1, c2]])
+        quad([up(p, bed), up(q, bed), up(q, w), up(p, w)], "rgba(56,132,200,0.14)", -3e6);
+    }
+    if (v.furniture) {
+      for (const f of S.furniture || []) {
+        if (f.line) {
+          items.push({ kind: "line", a: f.line[0], b: f.line[1], color: "#b45309", width: 2, site: true, tip: f.label });
+          continue;
+        }
+        const color = f.kind === "fenders" ? (/panel/.test(f.label) ? "#d4a017" : "#2f3337")
+          : f.kind === "fender_blocks" ? "#aab0b8" : f.kind === "bollards" ? "#4b5563"
+          : f.kind === "crane_stoppers" ? "#b91c1c" : "#6b7280";
+        solid(items, f.box, color, f.label);
+      }
+      for (const r of S.rails || [])
+        items.push({ kind: "line", a: r.line[0], b: r.line[1], color: "#374151", width: 2.5, site: true, tip: r.label });
+    }
+    if (v.crane && S.crane) {
+      for (const [a, b] of S.crane.lines)
+        items.push({ kind: "line", a, b, color: "#1d4ed8", width: 2.5, site: true, tip: S.crane.label });
+    }
+  }
+
+  // Full soil: the parts of the piles and walls in the ground are drawn faint.
+  _bury(items) {
+    const S = this.scene.site;
+    const fr = S.frame;
+    const L = S.levels;
+    const ground = (p) => {
+      const d = ((fr.across === "X" ? p[0] : p[1]) - fr.face) * fr.inland;
+      return d < S.wall.d + 0.5 ? L.seabed : L.ground;
+    };
+    const out = [];
+    const focus = this.scene.focus; // an element's own view: the element itself stays clear
+    for (const it of items) {
+      if (it.site || (it.kind !== "line" && it.kind !== "quad") || (focus && it.element === focus)) {
+        out.push(it);
+        continue;
+      }
+      if (it.kind === "quad") {
+        const g = ground(it.pts[0]);
+        out.push(it.pts.every((p) => p[2] <= g + 1e-6) ? { ...it, buried: true } : it);
+        continue;
+      }
+      const g = ground(it.a);
+      const [za, zb] = [it.a[2], it.b[2]];
+      if (Math.min(za, zb) >= g - 1e-6) out.push(it);
+      else if (Math.max(za, zb) <= g + 1e-6) out.push({ ...it, buried: true });
+      else {
+        const t = (g - za) / (zb - za);
+        const at = (p, q) => p.map((x, k) => x + t * (q[k] - x));
+        const mid = at(it.a, it.b);
+        const dmid = it.da ? at(it.da, it.db) : undefined;
+        out.push({ ...it, b: mid, db: dmid, buried: za < g }, { ...it, a: mid, da: dmid, buried: zb < g });
+      }
+    }
+    return out;
+  }
+
+  // How much the displacements are enlarged: auto draws the largest as 6% of the model's size.
+  _defScale() {
+    if (!this.def) return 0;
+    const pick = View3D.prefs.defScale;
+    if (pick !== "auto") return Number(pick) || 1;
+    const big = Math.max(this.def.max_mm / 1000, 1e-9);
+    const raw = (0.06 * this.size) / big;
+    const p = 10 ** Math.floor(Math.log10(raw));
+    return [1, 2, 5, 10].map((k) => k * p).filter((k) => k <= raw).pop() || p;
   }
 
   _basis() {
@@ -408,20 +776,29 @@ export class View3D {
     const ink = css.getPropertyValue("--text").trim() || "#1d1d1b";
     const muted = css.getPropertyValue("--muted").trim() || "#6b6b66";
     const drawn = [];
+    const k = this._defScale() * (this.anim ? Math.sin(this.phase) : 1);
+    const P = (p, d) => this._project(d && k ? [p[0] + d[0] * k, p[1] + d[1] * k, p[2] + d[2] * k] : p);
     for (const it of this.items) {
       if (it.kind === "line") {
-        const a = this._project(it.a);
-        const b = this._project(it.b);
+        const a = P(it.a, it.da);
+        const b = P(it.b, it.db);
         drawn.push({ it, depth: (a[2] + b[2]) / 2, a, b });
       } else if (it.kind === "quad") {
-        const ps = it.pts.map((p) => this._project(p));
-        drawn.push({ it, depth: ps.reduce((s, p) => s + p[2], 0) / 4 - (it.under ? 2e6 : 1e6), ps }); // panels behind lines
+        const ps = it.pts.map((p, i) => P(p, it.dpts?.[i]));
+        // Panels behind lines; the soil and the water behind every panel; solids among the lines.
+        const base = it.base ?? (it.under ? -2e6 : -1e6);
+        drawn.push({ it, depth: ps.reduce((s, p) => s + p[2], 0) / ps.length + base, ps });
       }
+    }
+    if (this.def) {
+      const stat = this.host.querySelector("[data-defstat]");
+      const text = `× ${Math.round(this._defScale()).toLocaleString()} · largest ${fmt1(this.def.max_mm)} mm`;
+      if (stat.textContent !== text && !stat.textContent.startsWith("Working")) stat.textContent = text;
     }
     drawn.sort((p, q) => p.depth - q.depth);
     this.hits = [];
     for (const d of drawn) {
-      ctx.globalAlpha = d.it.faded ? 0.18 : 1;
+      ctx.globalAlpha = d.it.faded ? 0.18 : d.it.buried ? 0.12 : d.it.ghost ? 0.22 : 1;
       if (d.it.kind === "quad") {
         ctx.beginPath();
         d.ps.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
@@ -433,16 +810,17 @@ export class View3D {
           ctx.lineWidth = 1;
           ctx.stroke();
         }
-        if (d.it.tip && !d.it.faded) this.hits.push(d);
+        if (d.it.tip && !d.it.faded && !d.it.ghost) this.hits.push(d);
       } else {
         ctx.beginPath();
         ctx.moveTo(d.a[0], d.a[1]);
         ctx.lineTo(d.b[0], d.b[1]);
         ctx.strokeStyle = d.it.color;
         ctx.lineWidth = d.it.width;
-        ctx.lineCap = d.it.cap || "round";
+        // Faint lines in pieces would show their round ends overlapping as dots.
+        ctx.lineCap = d.it.buried || d.it.ghost ? "butt" : d.it.cap || "round";
         ctx.stroke();
-        if (d.it.tip && !d.it.faded) this.hits.push(d);
+        if (d.it.tip && !d.it.faded && !d.it.ghost) this.hits.push(d);
       }
     }
     // Crack marks on top: a small zigzag where wk is over half the limit.
@@ -647,4 +1025,4 @@ function _directionArrows(el, finding) {
 }
 
 // Shared by every view on the page, so a choice made in one view carries to the next.
-View3D.prefs = { mode: "util", combo: "", dir: "x" };
+View3D.prefs = { mode: "util", combo: "", dir: "x", defCombo: "", defScale: "auto" };

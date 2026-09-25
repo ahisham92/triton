@@ -25,6 +25,7 @@ from . import (
     adsec,
     checker,
     clash_report,
+    deformed,
     drawings,
     durability,
     dxf,
@@ -34,6 +35,7 @@ from . import (
     method,
     package,
     revit,
+    site3d,
     trials,
 )
 from . import furniture as furniture_mod
@@ -48,7 +50,7 @@ from .design.governing import workbook as governing_workbook
 from .design.runner import along_axis, factored_elements, run_section, section_alignment
 from .design.spw import workbook as spw_workbook
 from .design.stop import Stopped
-from .elements import ElementType
+from .elements import CombinationType, ElementType, combination_type
 from .geometry import section_geometry
 from .importer import is_header
 from .joints import joints_drawing, section_joints
@@ -302,6 +304,7 @@ def _model(p: Project) -> dict:
         s.pop("slab_strips", None)
         s.pop("clashes", None)  # the Clashes tab never changes the design
         s.pop("furniture", None)  # designed on its own tab, from the element design
+        s.pop("site", None)  # seabed, water and soil as drawn in 3D
         for el in s.get("elements", {}).values():  # a sheet pile wall's "ignore N or Q", ticked on its card
             if el.get("kind") == "sheet_pile_wall":
                 el.pop("ignore", None)
@@ -1794,6 +1797,27 @@ def section_deflections(project_id: str, section_id: str) -> dict:
     return estimate_deflections(project.design, section, wb, store().load_results(project_id, section_id))
 
 
+@app.get(SECTION + "/deformed")
+def section_deformed(project_id: str, section_id: str, combination: str = "") -> dict:
+    """The whole structure's deformed shape for one combination (triton/deformed.py): the Design tab's
+    displacement estimate for every pile, king pile, wall strip and deck strip. Never a design input."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    wb = _workbook(project_id, section)
+    if wb is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    combos = deformed.combinations(section, wb)
+    if not combos:
+        raise HTTPException(409, "The workbook has no moments to work the displacements out from.")
+    pick = next((c for c in combos if c.lower() == combination.strip().lower()), None)
+    if pick is None:
+        wanted = section.deflection.combination.strip().lower()
+        qp = [c for c in combos if combination_type(c) is CombinationType.SLS_QP]
+        pick = next((c for c in combos if c.lower() == wanted), None) or (qp[0] if qp else combos[0])
+    out = deformed.shapes(project.design, section, wb, pick, store().load_results(project_id, section_id))
+    return {**out, "combinations": combos}
+
+
 # --- Clashes -------------------------------------------------------------------------------------------
 
 _CLASHES: dict[tuple, Clashes] = {}
@@ -2089,6 +2113,27 @@ def _furniture(project_id: str, section_id: str) -> tuple[Project, Section, dict
         raise HTTPException(409, str(e)) from None
     store()._write_json(store()._dir(project_id, section_id) / "furniture.json", res)
     return project, section, res
+
+
+@app.get(SECTION + "/site")
+def section_site(project_id: str, section_id: str) -> dict:
+    """The site round the structure for the 3D views: seabed, water, soil, the furniture along the
+    berth and the STS crane (triton/site3d.py). Never a design input."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    geometry = _berth_geometry(project_id, section)
+    try:
+        frame = furniture_mod.berth_frame(project, section, geometry)
+    except ValueError:
+        frame = None
+    furn = None
+    if frame is not None and section.furniture.use:
+        try:
+            joints = _joints_for_furniture(project_id, project, section)
+            furn = furniture_mod.design(project, section, geometry, joints)
+        except (ValueError, HTTPException):
+            furn = None
+    return site3d.scene(project, section, geometry, frame, furn)
 
 
 @app.get(SECTION + "/furniture")
