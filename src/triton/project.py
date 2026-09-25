@@ -2160,19 +2160,27 @@ class ElementCheck(_Model):
     )
 
 
+class WaterLevel(_Model):
+    """A named water level drawn in the 3D views (HAT, MHWS, MSL, LAT...)."""
+
+    name: str = Field("Water level", title="Name", min_length=1)
+    level: float = _m("Level", 0.0)
+
+
 class SiteView(_Model):
     """The site round the structure in the 3D views: seabed, water, soil, quay furniture and the STS
     crane. Only what is drawn: it never changes the design, so it is open while the model is locked."""
 
     seabed_level: float = _m(
         "Seabed level in front of the wall",
-        -16.0,
-        description="The dredged level at the quay face. Assumed -16.0 m until set.",
+        -16.12,
+        description="The dredged level at the quay face.",
     )
-    water_level: float = _m(
-        "Water level",
-        0.0,
-        description="Drawn as a see-through surface on the sea side. Assumed 0.0 m until set.",
+    water_levels: list[WaterLevel] = Field(
+        default_factory=lambda: [WaterLevel()],
+        title="Water levels",
+        description="Each drawn as its own see-through plane on the sea side, switched on and off in the 3D "
+        "view. Assumed one level at 0.0 m until the levels are set.",
     )
     soil_level: float | None = _m(
         "Soil level behind the front wall",
@@ -2186,10 +2194,28 @@ class SiteView(_Model):
         "then drawn faint).",
     )
     water: bool = Field(True, title="Show the water")
+    water_hidden: list[str] = Field(
+        default_factory=list, title="Water levels switched off", json_schema_extra=_HIDDEN
+    )
     furniture: bool = Field(True, title="Show the fenders, bollards and crane rails")
     crane: bool = Field(
         True, title="Show the STS crane", description="Where the project has STS cranes (Furniture tab)."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_water_level(cls, data: Any) -> Any:
+        """Saved with one water level (the first version): it becomes the list. The seabed's first
+        assumed default (-16.0) becomes this project's dredge level, -16.12 m."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "water_level" in data:
+            level = data.pop("water_level")
+            data.setdefault("water_levels", [{"name": "Water level", "level": level}])
+        if data.get("seabed_level") == -16.0:
+            data["seabed_level"] = -16.12
+        return data
 
 
 class Section(_Model):
