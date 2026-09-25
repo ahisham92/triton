@@ -9,7 +9,14 @@ have to repeat any design logic:
 * each bar run: its cage, row by row, with the radius of the bar circle (mm),
   the angle of the first bar (degrees, anticlockwise from the model X axis;
   the other bars follow at equal steps) and the top and bottom level of the
-  bars, including the lap below the run.
+  bars, including the lap below the run. The top run's ``bar_top_m`` is where
+  the anchorage the design asks would reach;
+* how the top bars really end at each position (``positions[i].connection``):
+  the slab or beam over the head in the model, "L" or "straight", and per row
+  the real ``bar_top_m``, the L leg (``leg_m``, outwards under the top bars),
+  what a straight bar into a beam lacks of the anchorage (``short_m``) and the
+  real top-run bar length (``bar_length_m``, the "L="). ``connections`` groups
+  the positions that share one.
 
 Beams (``beams``): the straight cage between the beam's ends along global X or
 Y, each longitudinal bar at its place in the section (y across from the
@@ -39,6 +46,7 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
     piles = []
     cages = [(p, "pile") for p in results.get("piles", [])]
     cages += [(w["infill"], "infill") for w in results.get("combi_walls", [])]
+    stored = {(p["element"], part): p.get("connections") for p, part in cages}
     for p, part in cages:
         c = p.get("curtailment") or {}
         link = (p.get("shear") or {}).get("link_diameter_mm") or p["section"]["link_diameter_mm"]
@@ -103,7 +111,7 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
                 ],
             }
         )
-    return {
+    out = {
         "format": FORMAT,
         "project": project_name,
         "section": section,
@@ -113,6 +121,27 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
         "slabs": [_slab(d) for d in results.get("slabs", []) if d.get("layers")],
         "approach": [_approach(a) for a in results.get("approach_slabs", []) if a.get("bending")],
     }
+    _connections(out, results, stored)
+    return out
+
+
+def _connections(out: dict[str, Any], results: dict[str, Any], stored: dict[tuple, list]) -> None:
+    """Each pile position's connection (``positions[i].connection``) and the positions grouped by it
+    (``connections``): the slab or beam over the head, L or straight, and per row of the top run the
+    real bar top, L leg and bar length ("L="). Kept with the design; worked out here (default Clashes
+    settings) for a design made before it was."""
+    from ..clashes import connection_groups, pile_connections  # imports this module
+    from ..project import ClashSettings
+
+    if not all(stored.get((p["element"], p["part"])) for p in out["piles"]):
+        found = pile_connections(ClashSettings(), out, results)
+        stored = {k: stored.get(k) or v for k, v in found.items()}
+    for p in out["piles"]:
+        conns = stored.get((p["element"], p["part"])) or []
+        for pos, c in zip(p["positions"], conns, strict=False):
+            if c is not None:  # nothing over the head: no key
+                pos["connection"] = c
+        p["connections"] = connection_groups(conns)
 
 
 def _approach(a: dict[str, Any]) -> dict[str, Any]:

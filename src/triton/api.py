@@ -41,7 +41,7 @@ from . import (
 from . import furniture as furniture_mod
 from . import moved as moved_piles
 from .alignment import plan_geometry
-from .clashes import Clashes, _clean, assumptions, find_clashes
+from .clashes import Clashes, _clean, apply_connections, assumptions, find_clashes
 from .costing import cost_project
 from .design import standard as standard_mod
 from .design import stop as stop_mod
@@ -57,6 +57,7 @@ from .importer import is_header
 from .joints import joints_drawing, section_joints
 from .materials import catalogue
 from .project import (
+    ClashSettings,
     CombiWallInput,
     DesignSettings,
     ElementCheck,
@@ -1192,6 +1193,8 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
         if only is None and not new["left"] and not new.get("stopped"):
             old = None  # everything designed again: nothing earlier stays
         results = _merge(old, new, handled, section, every)
+        # Slab or beam over each pile, L or straight bars, and the real top bar lengths and weights.
+        apply_connections(results, section.clashes)
         spws = {e["element"] for e in results["sheet_pile_walls"]}
         earlier = (fresh._by_element(old, every) or {}) if old else {}
         results["element_inputs"] = {
@@ -1980,10 +1983,20 @@ def save_clash_settings(project_id: str, section_id: str, body: ClashSettingsIn)
     change the design."""
     project = _get(project_id)
     section = _section(project, section_id)
+    before = _ends_from(section.clashes)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(section.clashes, k, v)
     store().save(project)
+    results = store().load_results(project_id, section_id)
+    if results is not None and _ends_from(section.clashes) != before:
+        # Where the pile bars end follows these settings: the real bar lengths and weights again.
+        store().save_results(project_id, section_id, apply_connections(results, section.clashes))
     return section.clashes.model_dump(mode="json")
+
+
+def _ends_from(rule: ClashSettings) -> tuple:
+    """The Clashes settings that move where the pile bars end in the element over them."""
+    return rule.beam_bars, rule.plate_level, tuple(sorted(rule.top_levels.items()))
 
 
 @app.post(SECTION + "/clashes/whatif")
