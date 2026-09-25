@@ -185,7 +185,7 @@ class Item:
     nominal: float = 0.0
     tag: str = ""
     clashes: list[str] = field(default_factory=list)
-    joint_half: float = 0.0  # half the length kept clear of joints, when more than ``half`` (the fender block)
+    joint_half: float = 0.0  # half the length kept clear of joints if over ``half`` (fender block)
 
     def to_dict(self, n: int) -> dict[str, Any]:
         moved = round(self.s - self.nominal, 2)
@@ -406,7 +406,14 @@ def arrange(
             items.append(
                 _place(
                     Item(
-                        "fenders", s, half, 0.0, a.embedment / 1000 + 0.05, "face", in_beam, joint_half=block_half
+                        "fenders",
+                        s,
+                        half,
+                        0.0,
+                        a.embedment / 1000 + 0.05,
+                        "face",
+                        in_beam,
+                        joint_half=block_half,
                     ),
                     placed,
                     joints,
