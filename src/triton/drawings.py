@@ -16,7 +16,7 @@ Triton works out every line here, so the AutoCAD file and the Revit code only co
   family placed at ``at`` with its ``params`` set). ``dim`` and ``family`` carry ``fallback``: the
   same thing as plain items, drawn by AutoCAD, and by Revit when the family or dimension cannot be made.
 
-Slab plans are one per face (bottom, top), as the office draws them: the mesh is in the caption only
+Slab plans are one per face and direction (bottom and top, M11 bars along X and M22 along Y): the mesh is in the caption only
 (drawn by hand to suit the plan), the additional bars of each zone are the office's RFT_ADD family (bars
 along X and along Y) with L, spacing, diameter and distribution length set.
 """
@@ -925,13 +925,15 @@ def _slab_views(
         "the model origin (X 0, Y 0)" if inside else f"the slab corner X {X0 / 1000:g}, Y {Y0 / 1000:g}"
     )
     views = []
-    for face in ("bottom", "top"):
-        faces = [f for f in d["faces"] if f["face"] == face]
+    # One plan per face and moment direction, as Ahmed reads them: M11 bars run along X, M22 along Y.
+    for face, bars_along in (("bottom", "X"), ("bottom", "Y"), ("top", "X"), ("top", "Y")):
+        faces = [f for f in d["faces"] if f["face"] == face and f["bars_along"] == bars_along]
         if not faces:
             continue
+        m = "M11" if bars_along == "X" else "M22"
         v = View(
-            f"{d['element']} - {face} plan",
-            f"{d['element']}: {face} reinforcement plan",
+            f"{d['element']} - {face} plan {m}",
+            f"{d['element']}: {face} reinforcement plan - {m} bars (along {bars_along})",
             100,
             d["element"],
             base,

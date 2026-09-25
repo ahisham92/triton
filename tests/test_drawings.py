@@ -42,8 +42,10 @@ def test_views_of_every_element():
     names = [v["name"] for v in d["views"]]
     assert names[0] == "Pile(1) - pile sheet" and "Front Beam - section" in names
     assert {
-        "Deck - bottom plan",
-        "Deck - top plan",
+        "Deck - bottom plan M11",
+        "Deck - bottom plan M22",
+        "Deck - top plan M11",
+        "Deck - top plan M22",
         "Deck - mesh cut across X",
         "Deck - mesh cut across Y",
         "Deck - section at Pile(1)",
@@ -133,7 +135,7 @@ def test_grid_positions():
 def test_slab_plans_bottom_and_top_with_the_additional_bar_family():
     d = SAMPLE["slabs"][0]
     face = d["faces"][0]  # bottom, bars along X
-    v = view(sample(), "Deck - bottom plan")
+    v = view(sample(), "Deck - bottom plan M11")
     fams = [i for i in v["items"] if i["type"] == "family"]
     assert {f["family"] for f in fams} <= {
         "RFT_ADD_MODIFIED: RFT_ADD_TOP HL",
@@ -164,6 +166,8 @@ def test_slab_plans_bottom_and_top_with_the_additional_bar_family():
     ]
     texts = [i["text"] for i in v["items"] if i["type"] == "text"]
     assert any(t.startswith("Mesh along X") for t in texts)
+    assert not any(t.startswith("Mesh along Y") for t in texts)  # M22 bars: their own plan
+    assert all("VL" not in f["family"] for f in fams)
 
 
 def test_slab_section_at_a_pile_cranks_the_bottom_bars():
