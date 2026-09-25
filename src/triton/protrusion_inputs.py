@@ -3,8 +3,9 @@ the STS crane that the berth must still serve. Both are the project's (QuayFurni
 every section's berth.
 
 The block's sizes are Ahmed's and drawing SC-502-1's (1.5 m out from a 4.5 m beam, 2.5 m deep to
-suit the fender, 3.0 m long, a bollard on top). The ship and fender panel values are the design report's (N25185-...-RPT-ST-01 Rev 2); the
-crane's outreach and legs, the ship's flare and the clearance are not in it and stay assumed.
+suit the fender, 3.0 m long, a bollard on top). The ship and fender panel values are the design
+report's (N25185-...-RPT-ST-01 Rev 2); the crane's outreach and legs, the ship's flare and the
+clearance are not in it and stay assumed.
 """
 
 from __future__ import annotations

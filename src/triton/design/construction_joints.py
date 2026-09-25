@@ -434,7 +434,8 @@ def _beam_stop(e, j: BeamJoint, settings, laws: Laws, design, uls, bars, b, h) -
     top = (design.get("cage") or {}).get("top") or {}
     rules = settings.construction_joints
     cover = float(design.get("cover_mm") or 50)
-    d = h - cover if rules.effective_depth == "cover" else h - cover - 16 - float(top.get("phi") or 25) / 2
+    link = float(((design.get("shear") or {}).get("link") or {}).get("phi") or 16)
+    d = h - cover if rules.effective_depth == "cover" else h - cover - link - float(top.get("phi") or 25) / 2
     v, vh = near["V"].abs().to_numpy(float), near["Vh"].abs().to_numpy(float)
     za = rules.lever_arm
     v_edi = np.hypot(v * 1e3 / (za * d * b), vh * 1e3 / (za * (b - (h - d)) * h))
