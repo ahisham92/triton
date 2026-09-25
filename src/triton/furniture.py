@@ -562,8 +562,9 @@ def assumptions(f: QuayFurniture) -> list[str]:
             f"STS crane: outreach {c.outreach:g} m from the seaside rail for a {c.ship_beam:g} m wide ship, far row "
             f"{c.far_row_inside:g} m inside its side; legs {c.leg_seaward_of_rail:g} m seaward of the rail; ship's flare "
             f"{c.flare_overhang:g} m and {c.min_clearance:g} m clearance kept; fender panel {c.panel_thickness:g} m, "
-            f"deflection {c.rated_deflection:g} at the rated reaction. No code gives these: they come from the crane "
-            "specification and the design ship."
+            f"deflection {c.rated_deflection:g} at the rated reaction. No code gives these. The ship's beam, the panel and "
+            "the deflection defaults are the design report's (RPT-ST-01, section 7); the outreach, legs, far row, flare "
+            "and clearance are assumed until the crane specification gives them."
         )
     if f.tie_rods:
         out.append(
