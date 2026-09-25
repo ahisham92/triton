@@ -2433,7 +2433,7 @@ class ExistingStructure(_Model):
         75.0, title="Tie rod diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
     )
     tie_rod_level: float | None = _m(
-        "Tie rod level", None, extra=_COMBI_ONLY, description="Empty: the existing cope less 1.5 m."
+        "Tie rod level", None, extra=_COMBI_ONLY, description="Empty: the existing cope less 0.5 m."
     )
     tie_rod_fy: float = Field(
         355.0, title="Tie rod yield strength", gt=0, json_schema_extra={"unit": "MPa", **_COMBI_ONLY}
@@ -2449,7 +2449,7 @@ class ExistingStructure(_Model):
     )
     piles: bool = Field(True, title="Existing piles (slab on piles)", json_schema_extra=_COMBI_ONLY)
     pile_diameter: float = Field(
-        800.0, title="Existing pile diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+        600.0, title="Existing pile diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
     )
     pile_toe: float = _m("Existing pile toe", -25.0, extra=_COMBI_ONLY)
     pile_spacing: float = _m("Existing piles along a row, every", 6.0, gt=0, extra=_COMBI_ONLY)
@@ -2459,12 +2459,15 @@ class ExistingStructure(_Model):
         3.0,
         extra=_COMBI_ONLY,
     )
-    last_row: float | None = _m(
-        "Last existing pile row, inland of the existing edge",
-        None,
-        extra=_COMBI_ONLY,
-        description="Empty: at the tie rods' anchor (the tie rod length). Rows run from it towards the sea, "
-        "every row spacing, up to the capping beam.",
+    first_row: float = _m(
+        "First existing pile row, inland of the existing edge", 5.0, ge=0, extra=_COMBI_ONLY
+    )
+    rows: int = Field(3, title="Existing pile rows under the slab", ge=0, json_schema_extra=_COMBI_ONLY)
+    anchor_row: bool = Field(
+        True,
+        title="Anchor pile row at the tie rods' end",
+        json_schema_extra=_COMBI_ONLY,
+        description="The row the tie rods are anchored to, the tie rod length from the existing wall.",
     )
     slab_thickness: float = Field(
         500.0, title="Existing slab thickness", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
@@ -2494,6 +2497,17 @@ class ExistingStructure(_Model):
         ge=0,
         description="New elements closer than this to a warehouse are flagged for the piling rig.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _first_version(cls, data: Any) -> Any:
+        """Saved by the first version (rows back from the anchor, assumed Ø800 piles): Ahmed's values
+        (2026-09-25) replace the assumed ones."""
+        if isinstance(data, dict) and "last_row" in data:
+            data = {k: v for k, v in data.items() if k != "last_row"}
+            if data.get("pile_diameter") == 800.0:
+                data.pop("pile_diameter")
+        return data
 
 
 SEQUENCE_WORKS = (

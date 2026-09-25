@@ -48,7 +48,9 @@ export async function renderSequence(host, h) {
       <input type="range" data-stage min="1" max="1" value="1" style="flex:1" aria-label="Stage">
       <button class="quiet" data-next aria-label="Next stage">▶</button><button class="quiet" data-play>Play</button></div>
       <div class="row seq-bar"><label class="toggle" style="flex:1">Through the stage <input type="range" data-t min="0" max="100" value="100" style="flex:1" aria-label="Progress through the stage"></label>
-      <label class="toggle"><input type="checkbox" data-crew checked> Plant and workers</label></div>
+      <label class="toggle"><input type="checkbox" data-crew checked> Plant and workers</label>
+      <button class="quiet" data-record title="Plays the whole sequence from the start and saves it as a video">Export video (MP4)</button>
+      <span class="status" data-recstat></span></div>
       <h3 data-title style="margin:6px 0 2px"></h3><p class="status" data-what></p><div id="seq-view"></div></div>
       <div class="panel" style="margin-top:10px" id="seq-clashes"></div>
       <div class="panel" style="margin-top:10px" id="seq-ties"></div></div>
@@ -214,6 +216,7 @@ export async function renderSequence(host, h) {
     // The stage's elements (some split, some growing) stand in for the section's own list.
     const stageNames = Object.fromEntries(f.elements.map((e) => [e.element, true]));
     const scene = { ...f.scene, elements: f.elements, stage: { ...f.scene.stage, elements: stageNames } };
+    scene.caption = [`Stage ${n} of ${stages.length}: ${st.steps.map((x) => x.name).join(" + ")}`, `${h.section().name || ""}`];
     if (fresh) view.setScene(scene);
     else view.update(scene);
     $("[data-title]").textContent = `Stage ${n} of ${stages.length}: ${st.steps.map((s) => s.name).join(" + ")}`;
@@ -241,44 +244,91 @@ export async function renderSequence(host, h) {
   };
   $("[data-prev]").onclick = () => ((n = Math.max(1, n - 1)), (t = 1), show(false));
   $("[data-next]").onclick = () => ((n = Math.min(stages.length, n + 1)), (t = 1), show(false));
-  // Play: each stage built over a few seconds, the plant moving from pile to pile.
+  // Play: every stage takes the same time, whatever its real duration (the animation is not a
+  // programme: the model is only the length analysed), the plant moving from pile to pile.
   let playing = false;
   const SECONDS = 6;
-  $("[data-play]").onclick = (e) => {
-    const btn = e.target;
-    if (playing) {
-      playing = false;
-      btn.textContent = "Play";
-      return;
-    }
+  const playBtn = $("[data-play]");
+  const stop = () => {
+    playing = false;
+    playBtn.textContent = "Play";
+  };
+  const play = (onEnd) => {
     playing = true;
-    btn.textContent = "Stop";
-    if (n >= stages.length && t >= 1) n = 1;
-    if (t >= 1) t = 0;
+    playBtn.textContent = "Stop";
     let last = performance.now();
     let drawn = 0;
     const step = (now) => {
-      if (!playing || !host.isConnected) return;
+      if (!playing || !host.isConnected) return onEnd?.(false);
       t += (now - last) / 1000 / SECONDS;
       last = now;
       if (t >= 1) {
         if (n >= stages.length) {
           t = 1;
           show(false);
-          playing = false;
-          btn.textContent = "Play";
-          return;
+          stop();
+          return onEnd?.(true);
         }
         n += 1;
         t = 0;
       }
-      if (now - drawn > 70) {
+      if (now - drawn > 50) {
         drawn = now;
         show(false);
       }
       requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
+  };
+  playBtn.onclick = () => {
+    if (playing) return stop();
+    if (n >= stages.length && t >= 1) n = 1;
+    if (t >= 1) t = 0;
+    play();
+  };
+
+  // Video: the whole sequence played from the start and recorded from the view (MP4 where the
+  // browser records MP4: Safari, and Chrome or Edge from 2024; else WebM).
+  const recBtn = $("[data-record]");
+  const recStat = $("[data-recstat]");
+  const kind = ["video/mp4;codecs=avc1.42E01E", "video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"]
+    .find((k) => window.MediaRecorder?.isTypeSupported?.(k));
+  if (!kind || !view.canvas.captureStream) {
+    recBtn.disabled = true;
+    recBtn.title = "This browser cannot record the view";
+  }
+  recBtn.onclick = () => {
+    if (playing) stop();
+    view.pixelRatio = Math.max(2, window.devicePixelRatio || 1); // about 1400 px wide
+    show(false);
+    const stream = view.canvas.captureStream(30);
+    const rec = new MediaRecorder(stream, { mimeType: kind, videoBitsPerSecond: 12e6 });
+    const parts = [];
+    rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
+    rec.onstop = () => {
+      const type = kind.split(";")[0];
+      const blob = new Blob(parts, { type });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(h.section().name || "section").replace(/[^\w.-]+/g, "_")}-construction-sequence.${type === "video/mp4" ? "mp4" : "webm"}`;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      recStat.textContent = type === "video/mp4" ? "Saved as MP4." : "Saved as WebM: this browser does not record MP4 (Safari and recent Chrome do).";
+      recBtn.disabled = false;
+      view.pixelRatio = null;
+      view.draw();
+    };
+    n = 1;
+    t = 0;
+    show(false);
+    recBtn.disabled = true;
+    recStat.textContent = `Recording… ${stages.length} stages, about ${stages.length * SECONDS} s. Keep this tab open.`;
+    rec.start(1000);
+    play((whole) => {
+      setTimeout(() => rec.stop(), whole ? 1500 : 0); // the last frame held a moment
+    });
   };
 
   // Steps: edited on the section; empty means the default order.

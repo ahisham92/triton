@@ -859,7 +859,7 @@ export class View3D {
   // The existing structure (triton/existing.py): solid or see-through; what the demolition takes away
   // is gone from that stage of the construction sequence on.
   _existingItems(items, ex, alpha, stage) {
-    const COLOR = { capping_beam: "#a8a29e", slab: "#b8b2aa", combi_wall: "#6b7280", piles: "#8d99a6", tie_rods: "#c2410c",
+    const COLOR = { capping_beam: "#a8a29e", slab: "#b8b2aa", anchor: "#a8a29e", combi_wall: "#6b7280", piles: "#8d99a6", tie_rods: "#c2410c",
       blocks: "#9ca3af", quarry_run: "#a3824f", warehouse: "#94a3b8" };
     for (let o of ex.objects || []) {
       if (stage?.demolished && o.removed_by === "demolition") continue;
@@ -971,7 +971,7 @@ export class View3D {
 
   _size() {
     const r = this.canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = this.pixelRatio || window.devicePixelRatio || 1; // pixelRatio: sharper for a recording
     this.w = r.width || 600;
     this.h = r.height || 400;
     if (this.canvas.width !== Math.round(this.w * dpr)) {
@@ -988,6 +988,10 @@ export class View3D {
     ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     ctx.clearRect(0, 0, this.w, this.h);
     const css = getComputedStyle(this.host);
+    // A solid background, so a recorded video is not black behind the model.
+    const bg = getComputedStyle(this.canvas).backgroundColor;
+    ctx.fillStyle = bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent" ? bg : css.getPropertyValue("--panel").trim() || "#fff";
+    ctx.fillRect(0, 0, this.w, this.h);
     const ink = css.getPropertyValue("--text").trim() || "#1d1d1b";
     const muted = css.getPropertyValue("--muted").trim() || "#6b6b66";
     const drawn = [];
@@ -1105,6 +1109,21 @@ export class View3D {
       }
     }
     for (const it of this.items) if (it.kind === "arrow") this._arrow(ctx, it, ink);
+    // A caption on the picture itself (a recorded video carries it).
+    const cap = this.scene.caption;
+    if (cap?.length) {
+      ctx.font = "600 15px system-ui, sans-serif";
+      const w = Math.max(...cap.map((c, i) => (ctx.font = i ? "12px system-ui, sans-serif" : "600 15px system-ui, sans-serif", ctx.measureText(c).width)));
+      ctx.globalAlpha = 0.88;
+      ctx.fillStyle = getComputedStyle(this.host).getPropertyValue("--panel").trim() || "#fff";
+      ctx.fillRect(10, 10, w + 20, 18 + cap.length * 18);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = ink;
+      cap.forEach((c, i) => {
+        ctx.font = i ? "12px system-ui, sans-serif" : "600 15px system-ui, sans-serif";
+        ctx.fillText(c, 20, 32 + i * 18);
+      });
+    }
   }
 
   _arrow(ctx, a, ink) {

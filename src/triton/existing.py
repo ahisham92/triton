@@ -26,7 +26,8 @@ from .design import sheet_piles
 from .project import CombiWallInput, PileInput, Project, Section, SheetPileInput
 
 KING_SPACING = 2.8  # m, existing king piles along the wall (every second tie rod): assumed
-TIE_BELOW_COPE = 1.5  # m, tie rods below the existing cope when no level is given
+TIE_BELOW_COPE = 0.5  # m, tie rods below the existing cope when no level is given (Ahmed)
+ANCHOR_BEAM = 1.5  # m, width and depth of the anchor beam over the anchor piles: assumed
 E_STEEL = 205e6  # kPa
 YEARS = 10  # the existing structure's remaining life (Ahmed, 2026-09-25)
 
@@ -220,18 +221,23 @@ def layout(project: Project, section: Section, geometry: list[dict[str, Any]], f
         )
         tie = ex.tie_rod_level if ex.tie_rod_level is not None else cope - TIE_BELOW_COPE
         out["tie_level"] = tie
-        last = ex.last_row if ex.last_row is not None else ex.tie_rod_length
-        rows = []
-        r = last
-        while r > ex.capping_width + 1e-6:
-            rows.append(edge + r)
-            r -= ex.row_spacing
-        rows.sort()
+        rows = [edge + ex.first_row + i * ex.row_spacing for i in range(ex.rows)] if ex.piles else []
+        anchor = wd + ex.tie_rod_length if ex.anchor_row else None
         out["rows_d"] = [round(v, 3) for v in rows]
+        out["anchor_d"] = round(anchor, 3) if anchor is not None else None
         piles = []
-        if ex.piles and rows:
-            slab_top = cope
-            slab_bottom = cope - ex.slab_thickness / 1000
+        if anchor is not None:
+            box(
+                "anchor",
+                f"Existing anchor beam at the tie rods' end, {ex.tie_rod_length:g} m from the wall",
+                (s0, s1),
+                (anchor - ANCHOR_BEAM / 2, anchor + ANCHOR_BEAM / 2),
+                (tie - ANCHOR_BEAM / 2, tie + ANCHOR_BEAM / 2),
+            )
+        rows_all = rows + ([anchor] if anchor is not None else [])
+        slab_top = cope
+        slab_bottom = cope - ex.slab_thickness / 1000
+        if rows:
             box(
                 "slab",
                 f"Existing slab {ex.slab_thickness:g} mm on piles (demolished)",
@@ -240,20 +246,19 @@ def layout(project: Project, section: Section, geometry: list[dict[str, Any]], f
                 (slab_bottom, slab_top),
                 "demolition",
             )
-            for d in rows:
-                s = s0 + ex.pile_offset
-                while s <= s1 + 1e-6:
-                    piles.append((s, d))
-                    line(
-                        "piles",
-                        f"Existing pile Ø{ex.pile_diameter:g} mm, row {d - edge:.1f} m from the "
-                        "existing edge, "
-                        f"at {s:.1f} m along",
-                        fr.at(s, d, slab_bottom),
-                        fr.at(s, d, ex.pile_toe),
-                        ex.pile_diameter / 1000,
-                    )
-                    s += ex.pile_spacing
+        for d in rows_all:
+            s = s0 + ex.pile_offset
+            while s <= s1 + 1e-6:
+                piles.append((s, d))
+                line(
+                    "piles",
+                    f"Existing {'anchor ' if d == anchor else ''}pile Ø{ex.pile_diameter:g} mm, row "
+                    f"{d - edge:.1f} m from the existing edge, at {s:.1f} m along",
+                    fr.at(s, d, slab_bottom if d != anchor else tie - ANCHOR_BEAM / 2),
+                    fr.at(s, d, ex.pile_toe),
+                    ex.pile_diameter / 1000,
+                )
+                s += ex.pile_spacing
         out["piles"] = [[round(s, 3), round(d, 3)] for s, d in piles]
         rods = []
         if ex.tie_rods:
@@ -269,11 +274,6 @@ def layout(project: Project, section: Section, geometry: list[dict[str, Any]], f
                     ex.tie_rod_diameter / 1000,
                 )
                 s += ex.tie_rod_spacing
-            if ex.last_row is not None and abs(ex.last_row - ex.tie_rod_length) > 0.5:
-                notes.append(
-                    f"The tie rods ({ex.tie_rod_length:g} m) do not reach the last pile row "
-                    f"({ex.last_row:g} m from the edge): check the anchor."
-                )
         out["tie_rods_s"] = [round(v, 3) for v in rods]
     else:
         top = cap_bottom
@@ -589,8 +589,8 @@ def tie_rods(
                 continue
             pts = sorted(mb["points"])
             zs = [p[0] for p in pts]
-            if not zs[0] <= tie <= zs[-1]:
-                continue
+            if tie < zs[0]:
+                continue  # above the top the wall head's movement is taken
             heads.append(float(np.interp(tie, zs, [p[axis] for p in pts])))
         if heads:
             u = float(np.mean(np.abs(heads)))

@@ -46,12 +46,20 @@ def test_combi_existing_layout_and_clashes():
     lay = existing.layout(p, s, g, fr)
     # The existing edge is the land side of the new Ø1626 pipes at X 0 (face at X 1, inland -X).
     assert lay["edge_d"] == pytest.approx(1.0 + 0.813)
-    assert lay["tie_level"] == pytest.approx(3.5 - 1.5)
-    assert lay["rows_d"][-1] == pytest.approx(lay["edge_d"] + 36.0)
+    # Ahmed's existing quay: tie rods 0.5 m below the cope, three rows of Ø600 piles from 5 m behind
+    # the edge every 4.2 m, and the anchor row at the tie rods' end.
+    assert lay["tie_level"] == pytest.approx(3.5 - 0.5)
+    assert lay["rows_d"] == pytest.approx([lay["edge_d"] + 5.0 + 4.2 * i for i in range(3)], abs=1e-3)
+    assert lay["anchor_d"] == pytest.approx(lay["wall_d"] + 36.0)
+    assert s.existing.pile_diameter == 600
     assert lay["tie_rods_s"][1] - lay["tie_rods_s"][0] == pytest.approx(1.4)
     out = existing.clashes(p, s, g, fr)
     whats = [f["what"] for f in out["found"]]
-    assert any("tie rod" in w for w in whats) and any("existing pile" in w for w in whats)
+    assert any("tie rod" in w for w in whats)
+    # An existing row on the new Pile(1) row (8.5 m in from the face): clashes with its piles.
+    s.existing.first_row = 8.5 - lay["edge_d"]
+    s.existing.pile_offset = 0.8  # the first new pile is at 0.8 m along
+    assert any("existing pile" in f["what"] for f in existing.clashes(p, s, g, fr)["found"])
     assert any("warehouse" in w for w in whats)
     assert any(f["element"] == "Tie rods" and "only piles up to" in f["what"] for f in out["found"])
     # Rods far apart and no piles or warehouse: nothing.
