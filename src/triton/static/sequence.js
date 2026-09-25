@@ -3,6 +3,7 @@
 // with the new piles and walls) and what its tie rods do to the new wall's movement. Never a design input.
 // app.js passes its helpers in: api, esc, fmt, tabData, sectionGeometry, sectionSite, saveSite, View3D,
 // section() -> the section object (edited in place), markDirty(), save(), existingForm() -> a form element.
+import { LABEL as PLANT, frameOf, plant } from "./equipment.js";
 
 const STATE_WORDS = {
   pipe: "steel pipe driven, empty",
@@ -10,6 +11,7 @@ const STATE_WORDS = {
   cast_high: "cast above the cut-off level",
   done: "built",
 };
+
 const TINT = { pipe: "#64748b", cage: "#b45309", active: "#0f766e" };
 
 export async function renderSequence(host, h) {
@@ -45,6 +47,8 @@ export async function renderSequence(host, h) {
     <div class="v3d-layout"><div><div class="panel"><div class="row seq-bar"><button class="quiet" data-prev aria-label="Previous stage">◀</button>
       <input type="range" data-stage min="1" max="1" value="1" style="flex:1" aria-label="Stage">
       <button class="quiet" data-next aria-label="Next stage">▶</button><button class="quiet" data-play>Play</button></div>
+      <div class="row seq-bar"><label class="toggle" style="flex:1">Through the stage <input type="range" data-t min="0" max="100" value="100" style="flex:1" aria-label="Progress through the stage"></label>
+      <label class="toggle"><input type="checkbox" data-crew checked> Plant and workers</label></div>
       <h3 data-title style="margin:6px 0 2px"></h3><p class="status" data-what></p><div id="seq-view"></div></div>
       <div class="panel" style="margin-top:10px" id="seq-clashes"></div>
       <div class="panel" style="margin-top:10px" id="seq-ties"></div></div>
@@ -77,74 +81,204 @@ export async function renderSequence(host, h) {
   const pins = (st) =>
     (data.existing?.found || []).filter((f) => f.at && f.level !== "note" && st.elements[f.element]).map((f) => ({ at: f.at, level: f.level, tip: `${f.element}: ${f.what}` }));
 
-  const show = () => {
+  const F = site?.frame ? frameOf(site) : null;
+  const WORK_KIND = { steel_pipes: "combi_wall", combi_cages: "combi_wall", combi_infill: "combi_wall", sheet_piles: "sheet_pile_wall",
+    pile_cages: "pile", pile_concrete: "pile", pile_heads: "pile", front_beam: "front_beam", rear_beam: "rear_beam",
+    transverse_beam: "transverse_beam", slab: "slab" };
+  const kindOf = (e) => e.type;
+  const sdOf = (x, y) => (F ? F.sd(x, y) : [y, x]);
+  let t = 1; // how far through the stage shown
+  let crewOn = true;
+
+  // One frame: stage n, t of the way through it. The active elements are built one pile (or one
+  // stretch of pour) after another, the plant and crew at the one being built.
+  const frame = () => {
+    const st = stages[n - 1];
+    if (!st) return null;
+    const prev = n > 1 ? stages[n - 2].elements : {};
+    const active = new Set(st.active);
+    const elements = [];
+    const extras = [];
+    const solids = [];
+    const spots = {};
+    const breaking = st.steps.some((s) => s.work === "pile_heads");
+    const along = F?.along || "Y";
+    // Each work's piles in one order along the berth (one rig or crane goes from one to the next).
+    const queue = {};
+    if (t < 1)
+      for (const e of geo.elements) {
+        if (!active.has(e.element) || !e.lines) continue;
+        const work = st.steps.map((s) => s.work).find((w) => WORK_KIND[w] === kindOf(e));
+        for (const ln of e.lines) (queue[work] ||= []).push({ e, ln, sd: sdOf(ln[0], ln[1]) });
+      }
+    const place = {};
+    for (const [work, q] of Object.entries(queue)) {
+      q.sort((a, b) => a.sd[0] - b.sd[0] || a.sd[1] - b.sd[1]);
+      const k = t * q.length;
+      const i = Math.min(Math.floor(k), q.length - 1);
+      q.forEach((o, j) => (o.done = j < Math.floor(k)));
+      place[work] = { cur: q[i], frac: k - Math.floor(k) };
+    }
+    for (const e of geo.elements) {
+      const state = st.elements[e.element];
+      if (!state) continue;
+      const now = active.has(e.element);
+      // A combi wall's cage sits in its pipe: the pipe stays drawn, with the bars standing out of it.
+      const combi = kindOf(e) === "combi_wall";
+      const style = (s, on) => ({
+        tint: s === "pipe" || (s === "cage" && combi) ? TINT.pipe : s === "cage" ? TINT.cage : on ? TINT.active : null,
+        thin: s === "cage" && !combi,
+        tip: `${e.element}: ${STATE_WORDS[s]}${on ? " (this stage)" : ""}` });
+      const size = site?.sizes?.[e.element]?.round || null;
+      const head = (x, y, top, s) => {
+        if (s === "cage" && combi)
+          extras.push({ a: [x, y, top], b: [x, y, top + 1.5], color: TINT.cage, width: 2.5, element: e.element,
+            tip: `${e.element}: cage in the pipe, its bars standing out to go into the front beam` });
+        if (s === "cast_high")
+          extras.push({ a: [x, y, top], b: [x, y, top + data.cast_above], color: "#ea580c", size, element: e.element,
+            tip: `${e.element}: cast ${fmt(data.cast_above, 1)} m above its cut-off level (${fmt(top, 2)} m)` });
+      };
+      if (!now || t >= 1) {
+        elements.push({ ...e, ...style(state, now) });
+        if (e.lines) for (const [x, y, top] of e.lines) head(x, y, top, state);
+        continue;
+      }
+      const work = st.steps.map((s) => s.work).find((w) => WORK_KIND[w] === kindOf(e));
+      if (e.lines) {
+        const mine = (queue[work] || []).filter((o) => o.e === e);
+        const done = mine.filter((o) => o.done).map((o) => o.ln);
+        const rest = mine.filter((o) => !o.done).map((o) => o.ln);
+        const was = prev[e.element];
+        if (done.length) elements.push({ ...e, lines: done, ...style(state, true) });
+        if (rest.length && was) elements.push({ ...e, lines: rest, ...style(was, false), nolabel: done.length > 0 });
+        for (const [x, y, top] of done) head(x, y, top, state);
+        for (const [x, y, top] of rest) {
+          head(x, y, top, was);
+          if (breaking && state === "done")
+            extras.push({ a: [x, y, top], b: [x, y, top + data.cast_above], color: "#dc2626", size, alpha: 0.7, element: e.element,
+              tip: `${e.element}: head to be broken down to ${fmt(top, 2)} m` });
+        }
+        const { cur, frac } = place[work];
+        if (cur.e !== e) continue;
+        const dia = size || 1.0;
+        spots[work] = { s: cur.sd[0], d: cur.sd[1], top: cur.ln[2], bottom: cur.ln[3], dia, progress: work !== "pile_cages" ? frac : frac > 0.6 ? (frac - 0.6) / 0.4 : frac / 0.6,
+          phase: work === "pile_cages" && frac > 0.6 ? "cage" : "bore" };
+        // The pile being bored or the pipe being driven: part of its length.
+        if (!was && work !== "pile_cages")
+          elements.push({ ...e, lines: [[cur.ln[0], cur.ln[1], cur.ln[2], cur.ln[2] - (cur.ln[2] - cur.ln[3]) * frac]], ...style(state, true) });
+      } else if (e.box) {
+        const [lo, hi] = e.box[along];
+        const cut = lo + (hi - lo) * t;
+        elements.push({ ...e, box: { ...e.box, [along]: [lo, Math.max(cut, lo + 0.05)] }, ...style(state, true) });
+        const b = e.box;
+        const across = along === "X" ? "Y" : "X";
+        const mid = { [along]: cut, [across]: (b[across][0] + b[across][1]) / 2 };
+        const [s0, d0] = sdOf(mid.X, mid.Y);
+        const ends = [b[across][0], b[across][1]].map((v) => sdOf(along === "X" ? cut : v, along === "X" ? v : cut)[1]);
+        spots[work] = { s: s0, d: d0, top: b.Z[1], rear: Math.max(...ends) };
+      }
+    }
+    const L = site?.levels || {};
+    const ex = site?.existing;
+    const demolishing = st.steps.some((s) => s.work === "demolition") && t < 1;
+    const stage = { ...st, demolished: demolishing ? false : st.demolished, demolish_t: demolishing ? t : null };
+    const dredging = st.steps.some((s) => s.work === "dredging");
+    const before = n > 1 ? stages[n - 2].seabed : st.seabed;
+    if (dredging) stage.seabed = before + (st.seabed - before) * t;
+    if (crewOn && F && site?.frame) {
+      const deck = prev[Object.keys(prev).find((k) => /slab/i.test(geo.elements.find((g) => g.element === k)?.type || ""))] === "done";
+      const platform = ex && !stage.demolished ? ex.cope : deck ? L.cope : L.ground;
+      const ctx = { F, platform, cope: L.cope, water: Math.max(...(L.water || [0])), before, after: st.seabed,
+        extent: site.frame.s, existing: ex };
+      for (const s of st.steps) {
+        const sp = spots[s.work];
+        const K = plant(s.work, sp ? { ...sp } : null, t, { ...ctx, rear: sp?.rear });
+        solids.push(...K.solids);
+        extras.push(...K.lines.map((l) => ({ ...l, site: true })));
+      }
+    }
+    return { st, scene: { elements: geo.elements.filter((e) => false), site, stage, extras, solids, pins: t >= 1 ? pins(st) : [] }, elements };
+  };
+
+  const show = (fresh = true) => {
     const st = stages[n - 1];
     slider.value = n;
     h.lastStage = n;
+    $("[data-t]").value = Math.round(t * 100);
     if (!st) {
       view.setScene({ elements: geo.elements, site });
       $("[data-title]").textContent = "No steps";
       return;
     }
+    const f = frame();
+    // The stage's elements (some split, some growing) stand in for the section's own list.
+    const stageNames = Object.fromEntries(f.elements.map((e) => [e.element, true]));
+    const scene = { ...f.scene, elements: f.elements, stage: { ...f.scene.stage, elements: stageNames } };
+    if (fresh) view.setScene(scene);
+    else view.update(scene);
     $("[data-title]").textContent = `Stage ${n} of ${stages.length}: ${st.steps.map((s) => s.name).join(" + ")}`;
-    const active = new Set(st.active);
-    const elements = geo.elements.map((e) => {
-      const state = st.elements[e.element];
-      if (!state) return e;
-      const now = active.has(e.element);
-      const tint = state === "pipe" || state === "cage" ? TINT[state] : now ? TINT.active : null;
-      return { ...e, tint, thin: state === "cage", tip: `${e.element}: ${STATE_WORDS[state]}${now ? " (this stage)" : ""}` };
-    });
-    // Piles cast above their cut-off level; the heads broken down in their own stage.
-    const extras = [];
-    const breaking = st.steps.some((s) => s.work === "pile_heads");
-    for (const e of geo.elements) {
-      const state = st.elements[e.element];
-      if (!e.lines || (state !== "cast_high" && !(breaking && active.has(e.element) && state === "done"))) continue;
-      const size = site?.sizes?.[e.element]?.round;
-      for (const [x, y, top] of e.lines)
-        extras.push({ a: [x, y, top], b: [x, y, top + data.cast_above], color: state === "cast_high" ? "#ea580c" : "#dc2626",
-          size: size || null, alpha: state === "cast_high" ? 1 : 0.55, element: e.element,
-          tip: state === "cast_high" ? `${e.element}: cast ${fmt(data.cast_above, 1)} m above its cut-off level (${fmt(top, 2)} m)`
-            : `${e.element}: head broken down to the cut-off level (${fmt(top, 2)} m)` });
-    }
-    view.setScene({ elements, site, stage: st, extras, pins: pins(st) });
     const built = Object.entries(st.elements).map(([k, v]) => `${esc(k)}: ${STATE_WORDS[v]}`);
     $("[data-what]").innerHTML = [
       built.length ? built.join(" · ") : "Nothing built yet.",
       st.demolished ? "Existing front beam and slab demolished." : "",
-      `Seabed ${fmt(st.seabed, 2)} m.`,
+      `Seabed ${fmt(f.scene.stage.seabed, 2)} m.`,
+      crewOn ? `<span class="hint">Plant: ${esc(st.steps.map((s) => PLANT[s.work]).filter(Boolean).join("; "))}.</span>` : "",
     ].filter(Boolean).join(" ");
     host.querySelectorAll("[data-row]").forEach((r) => r.classList.toggle("on", st.steps.some((s) => String(s.index) === r.dataset.row)));
   };
   slider.oninput = () => {
     n = Number(slider.value);
-    show();
+    t = 1;
+    show(false);
   };
-  $("[data-prev]").onclick = () => ((n = Math.max(1, n - 1)), show());
-  $("[data-next]").onclick = () => ((n = Math.min(stages.length, n + 1)), show());
-  let timer = null;
+  $("[data-t]").oninput = (e) => {
+    t = Number(e.target.value) / 100;
+    show(false);
+  };
+  $("[data-crew]").onchange = (e) => {
+    crewOn = e.target.checked;
+    show(false);
+  };
+  $("[data-prev]").onclick = () => ((n = Math.max(1, n - 1)), (t = 1), show(false));
+  $("[data-next]").onclick = () => ((n = Math.min(stages.length, n + 1)), (t = 1), show(false));
+  // Play: each stage built over a few seconds, the plant moving from pile to pile.
+  let playing = false;
+  const SECONDS = 6;
   $("[data-play]").onclick = (e) => {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-      e.target.textContent = "Play";
+    const btn = e.target;
+    if (playing) {
+      playing = false;
+      btn.textContent = "Play";
       return;
     }
-    e.target.textContent = "Stop";
-    if (n >= stages.length) n = 0;
-    const tick = () => {
-      if (!host.isConnected || n >= stages.length) {
-        clearInterval(timer);
-        timer = null;
-        e.target.textContent = "Play";
-        return;
+    playing = true;
+    btn.textContent = "Stop";
+    if (n >= stages.length && t >= 1) n = 1;
+    if (t >= 1) t = 0;
+    let last = performance.now();
+    let drawn = 0;
+    const step = (now) => {
+      if (!playing || !host.isConnected) return;
+      t += (now - last) / 1000 / SECONDS;
+      last = now;
+      if (t >= 1) {
+        if (n >= stages.length) {
+          t = 1;
+          show(false);
+          playing = false;
+          btn.textContent = "Play";
+          return;
+        }
+        n += 1;
+        t = 0;
       }
-      n += 1;
-      show();
+      if (now - drawn > 70) {
+        drawn = now;
+        show(false);
+      }
+      requestAnimationFrame(step);
     };
-    tick();
-    timer = setInterval(tick, 1500);
+    requestAnimationFrame(step);
   };
 
   // Steps: edited on the section; empty means the default order.
@@ -193,7 +327,7 @@ export async function renderSequence(host, h) {
   box.querySelectorAll("[data-row]").forEach((r) => (r.onclick = (e) => {
     if (e.target.closest("select,input,button")) return;
     const k = stages.findIndex((st) => st.steps.some((s) => String(s.index) === r.dataset.row));
-    if (k >= 0) ((n = k + 1), show());
+    if (k >= 0) ((n = k + 1), (t = 1), show(false));
   }));
 
   // Clashes with the existing structure.

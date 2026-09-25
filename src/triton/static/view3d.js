@@ -399,6 +399,15 @@ export class View3D {
     this.fit();
   }
 
+  // A new scene drawn from the same camera and centre (an animation's next frame).
+  update(scene) {
+    const keep = this.center && { center: this.center, bounds: this.bounds, size: this.size };
+    this.scene = scene;
+    this._build();
+    if (keep) Object.assign(this, keep);
+    this.draw();
+  }
+
   _controls() {
     const prefs = View3D.prefs;
     const tz = Object.values(this.scene?.tension || {});
@@ -500,7 +509,7 @@ export class View3D {
             const last = segs[segs.length - 1][0] - 0.25;
             if (last > bottom + 0.01) items.push({ kind: "line", a: [x, y, last], b: [x, y, bottom], color: `rgb(${GREY})`, width, faded, element: e.element });
           }
-          if (i === 0) items.push({ kind: "label", at: [x, y, top], text: e.element, faded, element: e.element });
+          if (i === 0 && !e.nolabel) items.push({ kind: "label", at: [x, y, top], text: e.element, faded, element: e.element });
         });
       } else if (e.box) {
         const { X, Y, Z } = e.box;
@@ -594,6 +603,8 @@ export class View3D {
     // Extra lines a tab adds (a pile cast above its cut-off, its head broken down) and pins (clashes).
     for (const x of this.scene.extras || []) items.push({ kind: "line", width: 4, cap: "butt", ...x });
     for (const p of this.scene.pins || []) items.push({ kind: "pin", ...p });
+    // Solids a tab adds (the construction sequence's equipment and workers).
+    for (const b of this.scene.solids || []) solid(items, b.box, b.color, b.tip);
     if (this.def) {
       // The structure as it stands stays faint behind its deformed shape.
       for (const it of items) if (it.element && it.kind !== "label") it.ghost = true;
@@ -848,10 +859,18 @@ export class View3D {
   // The existing structure (triton/existing.py): solid or see-through; what the demolition takes away
   // is gone from that stage of the construction sequence on.
   _existingItems(items, ex, alpha, stage) {
-    const COLOR = { capping_beam: "#a8a29e", slab: "#b8b2aa", combi_wall: "#6b7280", piles: "#8b7355", tie_rods: "#c2410c",
+    const COLOR = { capping_beam: "#a8a29e", slab: "#b8b2aa", combi_wall: "#6b7280", piles: "#8d99a6", tie_rods: "#c2410c",
       blocks: "#9ca3af", quarry_run: "#a3824f", warehouse: "#94a3b8" };
-    for (const o of ex.objects || []) {
+    for (let o of ex.objects || []) {
       if (stage?.demolished && o.removed_by === "demolition") continue;
+      if (stage?.demolish_t != null && o.removed_by === "demolition" && o.shape === "box") {
+        // Being demolished: what is left, from the breaker along the berth.
+        const a = this.scene.site.frame.along;
+        const [lo, hi] = o.box[a];
+        const cut = lo + stage.demolish_t * (hi - lo);
+        if (cut >= hi - 1e-6) continue;
+        o = { ...o, box: { ...o.box, [a]: [cut, hi] } };
+      }
       const color = COLOR[o.part] || "#9ca3af";
       const tip = `${o.label} (existing)`;
       const first = items.length;
