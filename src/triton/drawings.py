@@ -667,7 +667,7 @@ def _slab_views(d: dict[str, Any], piles: list[dict[str, Any]], st: DrawingSetti
                 v.rect("zones", (zx0, zy0), (zx1, zy1))
                 span = (zx0, zx1) if along == "X" else (zy0, zy1)
                 across = (zy0, zy1) if along == "X" else (zx0, zx1)
-                parts = []
+                k = 0
                 for lay in z["layers"]:
                     for b in lay["bars"]:
                         if lay["layer"] == 1 and b["kind"] == "mesh":
@@ -676,11 +676,20 @@ def _slab_views(d: dict[str, Any], piles: list[dict[str, Any]], st: DrawingSetti
                         if lay["layer"] > 1:
                             off += 2 * b["diameter_mm"]  # beside the layer under it, to be seen
                         phi, sp = b["diameter_mm"], b["spacing_mm"]
-                        fb = v.sub()
-                        draw(fb, phi, sp, off, span, across)
                         count = len(_grid(across[0], across[1], sp, lo + off))
                         length = _add_length(span[1] - span[0], phi, st)
                         name = layer_name(lay["layer"])
+                        fb = v.sub()
+                        draw(fb, phi, sp, off, span, across)
+                        # The family shows its own label; drawn with lines, the text says it.
+                        label = f"{count}T{phi}@{_mm(sp)} L={_mm(length)}" + (
+                            "" if lay["layer"] == 1 else f" {name}"
+                        )
+                        at = (zx0 + v.scale, zy0 + (1 + 3 * k) * v.scale)
+                        if along == "Y":
+                            at = (zx0 + (1 + 3 * k) * v.scale, zy0 + v.scale)
+                        fb.text(at, label, 0.6)
+                        k += 1
                         params = [
                             P("L", mm=length),
                             P("Spacing", mm=sp),
@@ -690,9 +699,6 @@ def _slab_views(d: dict[str, Any], piles: list[dict[str, Any]], st: DrawingSetti
                             P("Layer|Comments", text=name),
                         ]
                         v.family(fam, ((zx0 + zx1) / 2, (zy0 + zy1) / 2), params, fb, align="center")
-                        parts.append(f"{along} {name} {count}Ø{phi} @ {_mm(sp)} L={_mm(length)}")
-                if parts:
-                    v.text((zx0 + 2 * v.scale, zy0 + 2 * v.scale), " + ".join(parts), 0.8)
             for j in d.get("construction_joints") or []:
                 ln = j.get("line") or {}
                 if ln.get("along") != along or ln.get("at_m") is None or not ln.get("range_m"):
@@ -824,15 +830,15 @@ def _slab_pile_section(d: dict[str, Any], piles: list[dict[str, Any]], st: Drawi
                         v.bar(phi, (c, z + (lift if abs(c) <= x_crank + lift else 0.0)))
     links = d.get("links") or []
     if links and bottom and top:
-        z0 = min(z for _, _, z in bottom) + shift
+        z0 = min(z for _, _, z in bottom)
         z1 = max(z for _, _, z in top)
         lk = links[0]
         phi, sx = lk.get("diameter_mm") or 12, lk.get("sx_mm") or 300.0
         hook = 6 * phi
         for sgn in (-1, 1):
             k = 1
-            while D / 2 + k * sx / 2 < half - 100 and k <= 6:
-                x = sgn * (D / 2 + k * sx / 2)
+            while x_crank + shift + (k - 0.5) * sx < half - 100 and k <= 6:
+                x = sgn * (x_crank + shift + (k - 0.5) * sx)  # past the crank, round the bottom bars
                 k += 1
                 v.line(bar_key(phi), (x, z0), (x, z1))
                 v.line(bar_key(phi), (x, z1), (x + sgn * hook, z1))
