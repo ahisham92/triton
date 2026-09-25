@@ -10,9 +10,11 @@ Geometry
 * A Plaxis plate sits at the element's mid-depth, unless the clash settings say it is its top, or give
   an element its own top level. Slabs are ``thickness`` deep, beams ``depth``.
 * The pile bars come up through the soffit and run on for the anchorage the pile design gave them
-  (``head_anchorage_factor`` × Ø above the pile's top level). Into a beam deep enough they stay
-  straight; where they would run past the top bars (a slab) they turn horizontal, outwards, just under
-  the top bars: an L bar. The legs are checked against the punching links.
+  (``head_anchorage_factor`` × Ø above the pile's top level). Into a beam they run straight and stop
+  under its top bars, as the office details the combi wall into the front beam (drawing SC-401); the
+  anchorage they lack there is reported (the clash settings can turn them into L bars instead). Into a
+  slab, where they would run past the top bars, they turn horizontal, outwards, just under the top bars:
+  an L bar. The legs are checked against the punching links.
 * A slab's bars along X sit at Y = the slab's edge + cover + Ø/2 + k × spacing (the clash settings can
   move where the mesh starts); added bars "between the mesh bars" sit half a spacing over. A beam's
   links start 75 mm from its end at their spacing, their legs evenly across the width; its transverse
@@ -26,6 +28,14 @@ or, with the EN 1992-1-1 8.2(2) rule, closer than max(Ø, dg + 5, 20 mm).
 
 Solutions for the pile bars, each designed again with the bars as changed:
 
+* ``set_out``: the office's route (its pile drawings: "shop drawings for the pile bars shall consider the
+  reinforcement of the connecting beams and slabs to avoid clashing"): every set of parallel bars that
+  passes the cage (a layer, the links, the transverse bars) is laid again between the pile bars, the cage
+  turned the best way, each set at its designed spacing or closer and no closer than 8.2 allows, bars
+  paired (8.9) where no single gap is left. Links and transverse bars keep their number per metre over
+  the cage and no gap beyond the pile's face over their limit (9.2.2(6) for links); gaps wholly over the
+  pile head bear on the pile. A beam's bars that find no gap stop at the cage, at least 25% of the
+  face's steel running on (9.2.1.4(1)); each strip or beam is designed again.
 * ``rotate``: turn the pile cage about its axis so its bars fall between the bars above. The pile's
   N–M check is the same whichever way the cage faces (it is checked all round), so it needs no new
   design.
@@ -140,6 +150,7 @@ class Head:
     top_zone: float = 0.0  # mm from the top to the underside of the top bars
     z1: list[float] = field(default_factory=list)  # m, top of the straight bars, per row
     legs_m: list[float] = field(default_factory=list)  # m, horizontal L leg per row (0: straight)
+    short_m: list[float] = field(default_factory=list)  # m, anchorage a straight bar lacks under the top bars
     hbars: list[HBar] = field(default_factory=list)
     legs: list[Leg] = field(default_factory=list)  # beam link legs
     punch: list[Leg] = field(default_factory=list)  # punching link legs
@@ -657,7 +668,10 @@ def heads(
                 bend = host.top - (h.top_zone + r["diameter_mm"] / 2) / 1e3
                 top = r["bar_top_m"] if r["bar_top_m"] is not None else bend
                 h.z1.append(round(min(top, bend), 3))
-                h.legs_m.append(round(max(top - bend, 0.0), 3))
+                over = round(max(top - bend, 0.0), 3)
+                straight = host.kind == "beam" and rule.beam_bars == "straight"
+                h.legs_m.append(0.0 if straight else over)
+                h.short_m.append(over if straight else 0.0)
             if host.kind == "slab":
                 h.punch, h.punch_info = _punching(settings, h)
             out.append(h)
@@ -676,6 +690,7 @@ def connection(head: Head) -> dict:
                 "bars": f"{r['count']}Ø{r['diameter_mm']:g}",
                 "up_m": round(up, 3),
                 "leg_m": leg,
+                "short_m": head.short_m[k] if k < len(head.short_m) else 0.0,
                 "shape": "L" if leg > 0 else "straight",
             }
         )
@@ -685,7 +700,12 @@ def connection(head: Head) -> dict:
         + (
             f"up {r['up_m']:.2f} m, then an L leg of {r['leg_m']:.2f} m outwards under the top bars"
             if r["shape"] == "L"
-            else f"straight, {r['up_m']:.2f} m into it"
+            else f"straight, {r['up_m']:.2f} m into it, stopping under the top bars"
+            + (
+                f" ({r['short_m']:.2f} m short of the anchorage the pile design asks)"
+                if r["short_m"] > 0
+                else ""
+            )
         )
         for r in rows
     )
@@ -1428,6 +1448,367 @@ def cut_solution(ctx: Ctx, head: Head, hit: list[Hit], trim: bool) -> dict:
     }
 
 
+# --- Set the bars out through the cage (the office's shop-drawing route) --------------------------------
+
+
+def _forbidden(ctx: Ctx, head: Head, bars: np.ndarray, h: HBar) -> list[tuple[float, float]]:
+    """Where (mm across, from the pile's centre) a bar like ``h`` cannot run: too close to a pile bar it
+    passes. Merged, sorted intervals."""
+    perp = 1 if h.along == "X" else 0
+    out: list[tuple[float, float]] = []
+    for x, y, phi, *_rest, top in bars:
+        # As ``conflicts``: the upright part of the pile bar, from where it enters to its top.
+        if h.z > top + phi / 2e3 or h.z < head.z0 - h.phi / 2e3:
+            continue
+        g = (h.phi + phi) / 2 + float(_limit(ctx.rule, ctx.dg, np.array(h.phi), np.array(phi))) + 0.5
+        c = ((y - head.y) if perp else (x - head.x)) * 1e3
+        out.append((c - g, c + g))
+    out.sort()
+    merged: list[list[float]] = []
+    for a, b in out:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [(a, b) for a, b in merged]
+
+
+def _clear(iv: list[tuple[float, float]], p: float) -> bool:
+    return not any(a < p < b for a, b in iv)
+
+
+def _clear_below(iv: list[tuple[float, float]], lo: float, hi: float) -> float | None:
+    """The highest clear point in [lo, hi]."""
+    c = hi
+    for a, b in reversed(iv):
+        if a < c < b:
+            c = a
+    return c if c >= lo - 1e-9 else None
+
+
+def _clear_near(iv: list[tuple[float, float]], lo: float, hi: float, mid: float) -> float | None:
+    """The clear point in [lo, hi] nearest ``mid``."""
+    down = _clear_below(iv, lo, min(mid, hi))
+    up = mid
+    for a, b in iv:
+        if a < up < b:
+            up = b
+    up = up if lo - 1e-9 <= up <= hi + 1e-9 else None
+    cands = [c for c in (down, up) if c is not None]
+    return min(cands, key=lambda c: abs(c - mid)) if cands else None
+
+
+def _set_out_group(ctx: Ctx, head: Head, bars: np.ndarray, js: list[int]) -> dict | None:
+    """New places for one set of parallel bars (a layer, the links) so that none passes a pile bar: the
+    bars of the set that clash, between the nearest clear ones either side, laid again at no more than
+    the set's spacing and no closer than EN 1992-1-1 8.2 allows. None when there is nothing to do; a
+    dict with ``ok`` False when the set cannot pass."""
+    h0 = head.hbars[js[0]]
+    c_perp = head.y if h0.along == "X" else head.x
+    order = sorted(js, key=lambda j: head.hbars[j].at)
+    pos = [(head.hbars[j].at - c_perp) * 1e3 for j in order]
+    iv = _forbidden(ctx, head, bars, h0)
+    bad = [k for k, p in enumerate(pos) if not _clear(iv, p)]
+    if not bad:
+        return None
+    gaps = [b - a for a, b in zip(pos, pos[1:], strict=False)]
+    s_max = h0.spacing or (max(gaps) if gaps else 200.0)
+    s_min = h0.phi + float(_ec2_gap(ctx.dg, np.array(h0.phi), np.array(h0.phi)))
+    if h0.kind == "link leg":
+        s_min = max(s_min, 75.0)
+    k0, k1 = bad[0], bad[-1]
+    edge = h0.kind == "longitudinal"  # a beam's outer bars stay where they are (cover)
+    a = pos[k0 - 1] if k0 > 0 else (pos[0] - s_min if edge else pos[0] - s_max)
+    b = pos[k1 + 1] if k1 < len(pos) - 1 else (pos[-1] + s_min if edge else pos[-1] + s_max)
+    n_old = k1 - k0 + 1
+    grid = np.arange(a + s_min, b - s_min + 1e-9, 2.5)
+    cand = np.array([c for c in grid if _clear(iv, c)])
+
+    def greedy(g: float) -> list[float] | None:
+        """Fewest bars with no gap over ``g``: each as far on as it can go."""
+        out: list[float] = []
+        cur = a
+        while b - cur > g + 1e-6:
+            i = int(np.searchsorted(cand, min(cur + g, b - s_min) + 1e-9)) - 1
+            if i < 0 or cand[i] < cur + s_min - 1e-9:
+                return None
+            cur = float(cand[i])
+            out.append(cur)
+        return out
+
+    picks = greedy(s_max) if len(cand) or b - a <= s_max else None
+    if picks is None:
+        lo, hi = s_max, b - a
+        best = greedy(hi) if len(cand) else None
+        while best is not None and hi - lo > 1.0:
+            mid = (lo + hi) / 2
+            got = greedy(mid)
+            if got is None:
+                lo = mid
+            else:
+                hi, best = mid, got
+        picks = best
+    ok = picks is not None
+    picks = picks or []
+    bundle = True  # links too: a pair of links side by side
+    while ok and len(picks) < n_old:
+        pts = [a, *picks, b]
+        spans = sorted(range(len(pts) - 1), key=lambda i: pts[i] - pts[i + 1])
+        for i in spans:
+            c = _clear_near(iv, pts[i] + s_min, pts[i + 1] - s_min, (pts[i] + pts[i + 1]) / 2)
+            if c is not None:
+                picks = sorted([*picks, c])
+                break
+        else:
+            # No room left between bars: bundle one against a bar already placed (EN 1992-1-1 8.9).
+            pair = next(
+                (
+                    p + sgn * h0.phi
+                    for p in picks
+                    for sgn in (1, -1)
+                    if bundle
+                    and _clear(iv, p + sgn * h0.phi)
+                    and all(abs(p + sgn * h0.phi - q) >= h0.phi - 1e-6 for q in picks)
+                ),
+                None,
+            )
+            if pair is None:
+                break
+            picks = sorted([*picks, pair])
+    pts = [a, *picks, b]
+    wide = max((q - p for p, q in zip(pts, pts[1:], strict=False)), default=0.0)
+    face = head.diameter / 2
+    # Gaps wholly over the pile's head: the beam or slab bears on the pile there.
+    outside = max(
+        (q - p for p, q in zip(pts, pts[1:], strict=False) if max(abs(p), abs(q)) > face + 1e-6), default=0.0
+    )
+    mean = (b - a) / max(len(picks) + 1, 1)
+    mean_old = (b - a) / (n_old + 1)
+    old = order[k0 : k1 + 1]
+    moved = {j: round(picks[i] - pos[k0 + i], 1) for i, j in enumerate(old) if i < len(picks)}
+    return {
+        "ok": ok,
+        "within_spacing": wide <= s_max + 1e-6,
+        "moved": {j: v for j, v in moved.items() if abs(v) > 0.05},
+        "added": [c for c in picks[len(old) :]],
+        "cut": old[len(picks) :],
+        "widest_mm": round(wide, 1),
+        "mean_mm": round(mean, 1),
+        "widest_outside_mm": round(outside, 1),
+        "mean_before_mm": round(mean_old, 1),
+        "spacing_mm": round(s_max, 1),
+        "c_perp": c_perp,
+        "j": js[0],
+    }
+
+
+def _groups(head: Head) -> dict[tuple, list[int]]:
+    by: dict[tuple, list[int]] = {}
+    for j, h in enumerate(head.hbars):
+        by.setdefault((h.layer, h.along, round(h.z, 3)), []).append(j)
+    return by
+
+
+def set_out(ctx: Ctx, head: Head) -> dict:
+    """Lay the slab or beam bars (and links) that pass the pile cage out through the gaps between the pile
+    bars, the cage turned the best way: what the office's shop drawings do ("the shop drawings for the
+    pile bars shall consider the reinforcement of the connecting beams and slabs to avoid clashes")."""
+    best = None
+    groups = _groups(head)
+    for t in np.arange(0.0, _pitch(head), 0.5):
+        bars = pile_bars(head, float(t))
+        res = [r for js in groups.values() if (r := _set_out_group(ctx, head, bars, js)) is not None]
+        fails = sum(not r["ok"] for r in res)
+        added = sum(len(r["added"]) for r in res) - sum(len(r["cut"]) for r in res)
+        turn = float(t) if t <= _pitch(head) / 2 else float(t - _pitch(head))
+        over = sum(max(0.0, r["widest_mm"] - r["spacing_mm"]) for r in res)
+        score = (fails, round(over, -1), added, sum(len(r["moved"]) for r in res), abs(turn))
+        if best is None or score < best[0]:
+            best = (score, turn, res)
+    _, turn, res = best
+    return {"turn": round(turn, 2), "groups": res}
+
+
+def _added_bar(ctx: Ctx, head: Head, r: dict, c: float, k: int) -> tuple[HBar, list[Leg], float]:
+    """A bar added by a set-out, its link legs and its length (m)."""
+    h = head.hbars[r["j"]]
+    at = r["c_perp"] + c / 1e3
+    new = replace(h, id=f"a|{h.layer}|{k}", at=round(at, 4), link=None if h.link is None else -1 - k)
+    legs: list[Leg] = []
+    if h.kind == "link leg":
+        d = head.host.data
+        for g in (g for g in head.legs if g.link == h.link):
+            px, py = (g.x, at) if h.along == "X" else (at, g.y)
+            legs.append(replace(g, id=f"a|linkleg|{k}|{g.id}", x=px, y=py, link=-1 - k))
+        length = 2 * (d["width_mm"] + d["depth_mm"]) / 1e3 - 8 * d["cover_mm"] / 1e3
+    elif h.kind == "longitudinal" or head.host.kind == "slab":
+        length = 2 * _cage_r(head) / 1e3 + 2 * ctx.lap * h.phi / 1e3
+    else:
+        length = head.host.data["width_mm"] / 1e3
+    return new, legs, length
+
+
+def set_out_solution(ctx: Ctx, head: Head) -> dict:
+    """The set-out as a solution: the bars moved, added or dropped, checked again."""
+    so = set_out(ctx, head)
+    bars = pile_bars(head, so["turn"])
+    moved: dict[int, float] = {}
+    cut: list[int] = []
+    added: list[HBar] = []
+    added_legs: list[Leg] = []
+    trimmers: list[dict] = []
+    kg = 0.0
+    k = 0
+    for r in so["groups"]:
+        moved.update(r["moved"])
+        cut += r["cut"]
+        for c in r["added"]:
+            new, legs, length = _added_bar(ctx, head, r, c, k)
+            k += 1
+            added.append(new)
+            added_legs += legs
+            kg += _weight(new.phi, length)
+            ends = head.x if new.along == "X" else head.y
+            half = length / 2 if new.kind != "link leg" and head.hbars[r["j"]].kind != "transverse" else None
+            trimmers.append(
+                {
+                    "id": new.id,
+                    "along": new.along,
+                    "at": new.at,
+                    "z": new.z,
+                    "phi": new.phi,
+                    "layer": new.layer,
+                    "length_m": round(length, 2),
+                    "lo": round(ends - half, 4) if half else new.lo,
+                    "hi": round(ends + half, 4) if half else new.hi,
+                }
+            )
+    kg -= sum(_weight(head.hbars[j].phi, _cut_len(head, head.hbars[j])) for j in cut)
+    hb, legs = _after_shift(head, moved)
+    keep = [h for j, h in enumerate(hb) if j not in cut]
+    gone_links = {head.hbars[j].link for j in cut if head.hbars[j].link is not None}
+    legs = [g for g in legs if g.link not in gone_links] + added_legs
+    left = pile_hits(conflicts(head, ctx.rule, ctx.dg, bars, keep + added, legs, with_punch=False))
+    checks: list[dict] = []
+    for r in so["groups"]:
+        h = head.hbars[r["j"]]
+        n_add, n_cut = len(r["added"]), len(r["cut"])
+        words = (
+            f"{len(r['moved'])} moved"
+            + (f", {n_add} added" if n_add else "")
+            + (f", {n_cut} left out" if n_cut else "")
+            + f"; widest gap {r['widest_mm']:.0f} mm (spacing {r['spacing_mm']:.0f} mm)"
+        )
+        if head.host.kind == "slab":
+            key = h.layer.split("|")[1]
+            area = math.pi * h.phi**2 / 4 * (n_add - n_cut)
+            c = slab_check(
+                ctx, head, key, area * 1000 / band_width(head), spacing=max(r["widest_mm"], h.spacing or 0)
+            )
+            if c is not None:
+                c["what"] += f"; set out through the pile bars: {words}"
+                c["passes"] = c["passes"] and r["ok"]
+                checks.append(c)
+        elif h.kind in ("link leg", "transverse"):
+            # Over the pile the beam sits on its support: what matters is the links (bars) per metre across
+            # the cage, as designed, and no gap over the EN 1992-1-1 limit (9.2.2(6) sl,max = 0.75d for links).
+            part = "shear" if h.kind == "link leg" else "transverse"
+            u0 = (head.host.result.get(part) or {}).get("utilisation") or 0.0
+            u1 = u0 * r["mean_mm"] / r["mean_before_mm"]
+            dd = head.host.data
+            if part == "shear":
+                lim = (head.host.result.get("shear") or {}).get("max_spacing_mm") or 0.75 * 0.9 * dd[
+                    "depth_mm"
+                ]
+            else:
+                lim = min(3 * dd["depth_mm"], 400.0)
+            checks.append(
+                {
+                    "element": head.host.element,
+                    "what": f"{head.host.element} {'shear links' if part == 'shear' else 'transverse bars'} at the pile set out "
+                    f"through the pile bars: {words}; mean pitch over the cage {r['mean_mm']:.0f} mm "
+                    f"(as designed {r['mean_before_mm']:.0f} mm); widest gap beyond the pile's face {r['widest_outside_mm']:.0f} mm "
+                    f"(limit {lim:.0f} mm; gaps wholly over the pile head bear on the pile)",
+                    "before": {"utilisation": _num(u0), "pitch_mm": r["mean_before_mm"]},
+                    "after": {"utilisation": _num(u1), "pitch_mm": r["mean_mm"]},
+                    "spacing_limit_mm": round(lim),
+                    "passes": r["ok"] and u1 <= 1.0 + 1e-9 and r["widest_outside_mm"] <= lim + 1e-6,
+                }
+            )
+    longs = [r for r in so["groups"] if head.hbars[r["j"]].kind == "longitudinal"]
+    if longs:
+        d = head.host.data
+        mid = head.host.top - d["depth_mm"] / 2e3
+        drop = {int(head.hbars[j].id.split("|")[2]) for r in longs for j in r["cut"]}
+        out = []
+        for n, b in enumerate(d["bars"]):
+            if n in drop:
+                continue
+            b = dict(b)
+            j = next((j for j, h in enumerate(head.hbars) if h.id == f"b|long|{n}"), None)
+            if j is not None and j in moved:
+                b["y_mm"] = round(b["y_mm"] + moved[j], 1)
+            out.append(b)
+        for t in added:
+            if t.kind == "longitudinal":
+                out.append(
+                    {
+                        "y_mm": round((t.at - d["centre_m"]) * 1e3, 1),
+                        "z_mm": round((t.z - mid) * 1e3, 1),
+                        "diameter_mm": t.phi,
+                    }
+                )
+        n_cut = sum(len(r["cut"]) for r in longs)
+        c = beam_check(
+            ctx,
+            head,
+            out,
+            "longitudinal bars set out through the pile bars"
+            + (
+                f"; {n_cut} bar(s) that find no gap stop at the pile cage, anchored beyond it"
+                if n_cut
+                else ""
+            ),
+        )
+        c["passes"] = c["passes"] and all(r["ok"] for r in longs)
+        checks.append(c)
+        for face in ("bottom", "top"):
+            grp = _beam_groups(d)
+            all_f = [n for n, b in enumerate(d["bars"]) if _face_of(grp, b) == face]
+            gone = [n for n in all_f if n in drop]
+            if gone:
+                kept = 1 - sum(d["bars"][n]["diameter_mm"] ** 2 for n in gone) / sum(
+                    d["bars"][n]["diameter_mm"] ** 2 for n in all_f
+                )
+                checks.append(
+                    {
+                        "element": head.host.element,
+                        "what": f"{head.host.element} {face} bars carried across the pile: {kept:.0%} of the face's steel "
+                        "(EN 1992-1-1 9.2.1.4(1): at least 25% of the span's bottom steel runs into the support)",
+                        "before": {"share": 1.0},
+                        "after": {"share": round(kept, 3)},
+                        "passes": kept >= 0.25,
+                    }
+                )
+    turn = so["turn"]
+    return {
+        "left": left,
+        "checks": checks,
+        "delta_kg": kg,
+        "turn": turn,
+        "change": {
+            "rotate_deg": turn,
+            "shift_mm": {str(j): v for j, v in moved.items()},
+            "cut": sorted(cut),
+            "trimmers": trimmers,
+        },
+        "moved": len(moved),
+        "added": len(added),
+        "cut": len(cut),
+        "fails": [head.hbars[r["j"]].group for r in so["groups"] if not r["ok"]],
+    }
+
+
 def _volume(ctx: Ctx, head: Head, where: str) -> float | None:
     if where == "host":
         st = head.host.result.get("steel") or {}
@@ -1540,6 +1921,32 @@ def solutions(ctx: Ctx, head: Head, hit: list[Hit]) -> list[dict]:
                 "pile",
             )
         )
+    so = set_out_solution(ctx, head)
+    if so["moved"] or so["added"] or so["cut"]:
+        how = (
+            f"Set the {head.host.element} bars that pass the pile cage out through the gaps between the pile bars, "
+            + (
+                f"the cage turned {abs(so['turn']):g}° {'anticlockwise' if so['turn'] >= 0 else 'clockwise'}, "
+                if so["turn"]
+                else ""
+            )
+            + f"as the office's shop drawings do: {so['moved']} bar(s) or link(s) moved"
+            + (f", {so['added']} added to keep the spacing" if so["added"] else "")
+            + (f", {so['cut']} left out" if so["cut"] else "")
+            + ". Each set keeps its bars per metre; where no single gap is left two bars (or links) are paired."
+            + (f" Cannot be done for: {', '.join(so['fails'])}." if so["fails"] else "")
+        )
+        out.append(
+            pack(
+                "set_out",
+                "Set the bars out through the pile cage",
+                how,
+                so["left"],
+                so["checks"],
+                so["delta_kg"],
+                so["change"],
+            )
+        )
     for trim in (True, False):
         c = cut_solution(ctx, head, hit, trim)
         n = len(c["cut"])
@@ -1568,7 +1975,7 @@ def solutions(ctx: Ctx, head: Head, hit: list[Hit]) -> list[dict]:
                 },
             )
         )
-    order = ["rotate", "shift", "rotate_shift", "crank", "cut_trim", "cut"]
+    order = ["set_out", "rotate", "shift", "rotate_shift", "crank", "cut_trim", "cut"]
     passing = [s for s in out if s["passes"]]
     rec = (
         min(passing, key=lambda s: (max(s["delta_kg"], 0.0), order.index(s["id"])))
@@ -2111,8 +2518,14 @@ def assumptions(rule: ClashSettings, settings: DesignSettings) -> list[str]:
         "Plaxis plates are taken at the element's "
         + ("top" if rule.plate_level == "top" else "mid-depth")
         + (" (top levels set by element in the settings)." if rule.top_levels else "."),
-        "Pile bars run up by their anchorage from the pile's top level; where that would pass the top bars they turn "
-        "outwards just under them (L bars).",
+        (
+            "Pile bars run straight up into a beam and stop under its top bars (as drawing SC-401). "
+            if rule.beam_bars == "straight"
+            else ""
+        )
+        + "Pile bars run up by their anchorage from the pile's top level; where that would pass "
+        + ("a slab's" if rule.beam_bars == "straight" else "the")
+        + " top bars they turn outwards just under them (L bars).",
         "Slab bars start at the slab's edge + cover + Ø/2 and repeat at their spacing; bars between the mesh bars sit half a "
         "spacing over. Beam links start 75 mm from the beam's end; transverse bars sit just inside the longitudinal bars "
         "of their face, half a link pitch from the links.",
