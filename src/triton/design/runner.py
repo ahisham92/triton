@@ -37,6 +37,8 @@ from .peaks import treat_peaks
 from .piles import design_pile
 from .slabs import design_slab_meshes
 from .spw_design import design_spw
+from .standard import MODES
+from .standard import mark as mark_standard
 from .stop import Stopped
 
 
@@ -142,13 +144,17 @@ def run_section(
     deadline: float | None = None,
     approach: ApproachSlabInput | None = None,
     furniture_at: Callable[[float], list[dict[str, Any]]] | None = None,
+    mode: str = "detailed",
 ) -> dict[str, Any]:
     """Design the piles, combi walls and beams of one section; pick the sheet pile wall's governing sets.
     ``progress(fraction, step)`` is told as each element is started. ``only``: design just these
     elements. ``deadline`` (``time.monotonic()``): start no element after it (at least one is done);
     the rest are listed in ``left``, the ones done in ``designed``. ``approach``: the project's approach
     slab, designed as the element "Approach Slab" with its ledge on the rear beam, whose load and
-    torque the rear beam takes too."""
+    torque the rear beam takes too. ``mode``: "detailed" (the full design) or "standard" (the quick
+    overview, see design/standard.py)."""
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {', '.join(MODES)}")
     started: list[str] = []
     handled: list[str] = []
     left: list[str] = []
@@ -177,7 +183,7 @@ def run_section(
     out |= {"alignment": None, "joints": None}
     stopped = False
     try:
-        _design(settings, section, workbook, approach, furniture_at, tick, take, out)
+        _design(settings, section, workbook, approach, furniture_at, tick, take, out, mode == "standard")
         on.clear()
     except Stopped:
         # Stop pressed: the elements finished so far keep their results; the one under way is dropped.
@@ -189,8 +195,13 @@ def run_section(
         unfinished = [n for n in handled if n in on or not (n in started or n in found or n in said)]
         handled[:] = [n for n in handled if n not in unfinished]
         left[:0] = unfinished
+    if mode == "standard":
+        for kind in RESULT_KINDS:
+            for e in out[kind]:
+                mark_standard(kind, e)
     result = {
         "run_at": _now(),
+        "mode": mode,
         **{k: out[k] for k in RESULT_KINDS},
         "alignment": out["alignment"] or {"parts": [], "points": []},
         "joints": out["joints"],
@@ -220,6 +231,7 @@ def _design(
     tick: Callable[[str], None],
     take: Callable[[str], bool],
     found_so_far: dict[str, Any],
+    standard: bool = False,
 ) -> None:
     """run_section's work, element by element, into ``found_so_far`` as it goes (a Stop keeps it)."""
     raw = workbook.elements()
@@ -245,7 +257,7 @@ def _design(
         positions = _positions(raw.get(name, {}))
         count = element.count or len(positions) or 1
         if isinstance(element, CombiWallInput):
-            wall = design_combi_wall(name, element, settings, own, section.user_cages.get(name))
+            wall = design_combi_wall(name, element, settings, own, section.user_cages.get(name), standard)
             wall["notes"][:0] = notes
             wall["peaks"] = peaks
             share = 1 - wall["steel_share"]  # the infill's moments are its share of the Plaxis ones
@@ -267,13 +279,14 @@ def _design(
                 )
             walls.append(wall)
             continue
-        d = design_pile(name, element, settings, own, section.user_cages.get(name))
+        d = design_pile(name, element, settings, own, section.user_cages.get(name), standard)
         d.notes[:0] = notes
         out = d.to_dict()
         out["peaks"] = peaks
         out["positions"] = positions
         out["count"] = count
-        out["construction_joints"] = add_weights(for_pile(name, element, settings, own, out), count)
+        if not standard:
+            out["construction_joints"] = add_weights(for_pile(name, element, settings, own, out), count)
         steel = out.get("steel") or {}
         if steel.get("total_kg") is not None:
             out["steel"]["element_total_t"] = round(steel["total_kg"] * count / 1000, 2)
@@ -397,13 +410,14 @@ def _design(
                 signs.get(name),
                 joint_lengths=lengths,
                 ledge=(approach_design or {}).get("ledge") if element.kind == "rear_beam" else None,
+                standard=standard,
             )
             b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
             if lengths and element.restraint_factor is None:
                 b["notes"].append(joint_note(element, placed.joint_spacing))
             if lengths:
                 b["restraint"]["length_from"] = "expansion joints"
-            if element.construction_joints:
+            if element.construction_joints and not standard:
                 top = beam_top(section.clashes, name, b.get("level_m") or 0.0, float(b.get("depth_mm") or 0))
                 b["construction_joints"] = add_weights(
                     for_beam(
@@ -446,9 +460,10 @@ def _design(
                 pile_sheets,
                 section.slab_strips.get(key),
                 signs.get(name),
+                standard,
             )
             d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
-            if element.construction_joints:
+            if element.construction_joints and not standard:
                 lines = beam_lines(around, section.elements, axes)
                 d["construction_joints"] = add_weights(
                     for_slab(name, element, settings, own, axes.get(name), signs.get(name), d, lines)

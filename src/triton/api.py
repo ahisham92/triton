@@ -40,6 +40,7 @@ from . import moved as moved_piles
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
+from .design import standard as standard_mod
 from .design import stop as stop_mod
 from .design.deflection import estimate as estimate_deflections
 from .design.export import pile_cages
@@ -1103,6 +1104,11 @@ class DesignRequest(BaseModel):
     budget_s: float | None = Field(
         None, gt=0, description="Start no element after this long; the rest come back in 'left'."
     )
+    mode: Literal["detailed", "standard"] = Field(
+        "detailed",
+        description="Detailed: the full design (bars, cages, drawings, AdSec). Standard: a quicker "
+        "overview, whether each element works, its utilisation and steel ratio.",
+    )
 
 
 def _merge(
@@ -1112,7 +1118,7 @@ def _merge(
     other elements keep theirs."""
     old = old or {}
     done, kept = set(handled), set(section.elements if names is None else names)
-    out = {**old, **{k: v for k, v in new.items() if k not in ("designed", "left", "stopped")}}
+    out = {**old, **{k: v for k, v in new.items() if k not in ("designed", "left", "stopped", "mode")}}
     for kind in fresh.KINDS:
         earlier = [e for e in old.get(kind) or [] if e["element"] not in done]
         # Elements no longer in the section drop out (a sheet pile wall need not be one).
@@ -1148,6 +1154,7 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
                 deadline=deadline,
                 approach=project.approach,
                 furniture_at=furniture_mod.positions_for(project, section),
+                mode=body.mode,
             )
         tell.stoppable = False  # what was designed is kept, even if Stop comes now
         every = fresh.names(project, section)
@@ -1219,6 +1226,23 @@ def _picked(section: Section, results: dict, elements: str | None) -> tuple[Sect
     return picked, out, " " + " ".join(names) if len(names) <= 3 else f" {len(names)} elements"
 
 
+_BARS = ("piles", "combi_walls", "beams", "slabs")
+
+
+def _detailed(results: dict, what: str) -> dict:
+    """The results of the elements designed in Detailed mode only, for what needs their bars
+    (drawings, cages, AdSec, clashes); nothing but Standard designs: a 409 saying so."""
+    out, left = standard_mod.detailed_only(results, _BARS)
+    if left and not any(out.get(k) for k in _BARS):
+        raise HTTPException(
+            409,
+            f"{what} need a Detailed design. {', '.join(left)} "
+            f"{'was' if len(left) == 1 else 'were'} designed in Standard mode (an overview, without the "
+            "bar layout): design them in Detailed mode first.",
+        )
+    return out
+
+
 def _file_name(*parts: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", " ".join(parts)).strip("_") or "project"
 
@@ -1232,6 +1256,7 @@ def pile_cage_export(project_id: str, section_id: str, elements: str | None = No
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
     _, results, suffix = _picked(section, results, elements)
+    results = _detailed(results, "Bars for Revit")
     name = _file_name(project.info.name, section.name + suffix)
     return JSONResponse(
         pile_cages(project.info.name, results, section=section.name),
@@ -1250,6 +1275,7 @@ def _drawings(
     # ?element=A&element=B (the drawings thread's form) and ?elements=A,B (every export) both pick.
     picked = ",".join([e for e in element or [] if e] + ([elements] if elements else []))
     _, results, suffix = _picked(section, results, picked)
+    results = _detailed(results, "Drawings")
     data = drawings.drawings(project.info.name, results, project.drawings, section.name, None)
     furn = _furniture_saved(project_id, section_id) if not suffix else None
     if furn and furn.get("use", True):
@@ -1348,6 +1374,7 @@ def governing_sets_export(project_id: str, section_id: str, elements: str | None
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
     _, results, suffix = _picked(section, results, elements)
+    results = _detailed(results, "Governing sets for AdSec")
     name = _file_name(project.info.name, section.name + suffix)
     return Response(
         governing_workbook(project.info.name, section.name, results),
@@ -1365,6 +1392,7 @@ def adsec_export(project_id: str, section_id: str, elements: str | None = None) 
     if results is None:
         raise HTTPException(404, "This section has not been designed yet.")
     section, results, suffix = _picked(section, results, elements)
+    results = _detailed(results, "AdSec files")
     d = project.design
     info = {}
     for name, e in section.elements.items():
@@ -1712,6 +1740,7 @@ def _clashes(project_id: str, section_id: str) -> tuple[Project, Section, Clashe
     """The section's pile heads and bars round them, kept while the design, the design settings and the
     clash rule stay the same (what-ifs and choices do not count)."""
     project, section, results = _results(project_id, section_id)
+    results = _detailed(results, "Clash checks")
     rule = section.clashes.model_dump(mode="json", exclude={"whatifs", "choices"})
     key = (
         project_id,
@@ -1734,7 +1763,10 @@ def _clashes(project_id: str, section_id: str) -> tuple[Project, Section, Clashe
 def section_clashes(project_id: str, section_id: str) -> dict:
     """The Clashes tab: every pile head's clashes by pile and element, solutions and the what-ifs kept."""
     project, section, c = _clashes(project_id, section_id)
-    return find_clashes(project, section, c.ctx.results, c=c)
+    out = find_clashes(project, section, c.ctx.results, c=c)
+    # Elements designed in Standard mode have no bars to check.
+    _, out["standard"] = standard_mod.detailed_only(_results(project_id, section_id)[2], _BARS)
+    return out
 
 
 @app.get(SECTION + "/clashes/head")

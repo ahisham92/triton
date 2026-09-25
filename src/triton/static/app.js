@@ -2571,6 +2571,12 @@ async function renderDesignTab(host) {
   state.designPick ??= {};
   host.innerHTML = `<div class="panel">
       <div class="row pick-row" id="design-pick"></div>
+      <div class="row pick-row" id="design-mode">
+      <span>Type</span>
+      <label class="chip" title="The full design: bars, cages, drawings, AdSec files, clash checks"><input type="radio" name="design-mode" value="detailed" ${designMode() === "detailed" ? "checked" : ""}> Detailed</label>
+      <label class="chip" title="Quicker: whether each element works, its utilisation and steel ratio, without the bar layout"><input type="radio" name="design-mode" value="standard" ${designMode() === "standard" ? "checked" : ""}> Standard (quick overview)</label>
+      <span class="status" id="design-mode-note"></span>
+      </div>
       <div class="row">
       <button id="run-design" ${units.length ? "" : "disabled"}>Design</button>
       <span class="status" id="design-status">${units.length ? "" : "Add pile, combi wall, beam or slab elements first."}</span>
@@ -2598,7 +2604,25 @@ async function renderDesignTab(host) {
   displacementsPanel(document.getElementById("displacements"));
   deflectionsPanel(document.getElementById("deflections"));
   let stale = [];
+  let quick = []; // designed in Standard mode
   const run = document.getElementById("run-design");
+  const modeNote = () => {
+    const note = document.getElementById("design-mode-note");
+    if (note)
+      note.textContent =
+        designMode() === "standard"
+          ? "Workable or not, utilisation and steel ratio per element. No bars, drawings, AdSec files or clash checks."
+          : "Bars, cages, drawings, AdSec files and clash checks.";
+  };
+  modeNote();
+  document.querySelectorAll('input[name="design-mode"]').forEach(
+    (r) =>
+      (r.onchange = () => {
+        setDesignMode(r.value);
+        modeNote();
+        drawPick();
+      })
+  );
   const drawPick = () => {
     const picked = state.designPick[section.id]?.filter((n) => units.includes(n)) ?? null;
     const box = document.getElementById("design-pick");
@@ -2609,7 +2633,8 @@ async function renderDesignTab(host) {
         .map((n) => `<label class="chip${stale.includes(n) ? " stale-chip" : ""}" title="${stale.includes(n) ? "Out of date" : ""}">
           <input type="checkbox" data-pick="${esc(n)}" ${picked?.includes(n) ? "checked" : ""}> ${esc(n)}</label>`)
         .join("")}
-      ${stale.length ? `<button class="quiet small" id="pick-stale">Only the ${stale.length} out of date</button>` : ""}`;
+      ${stale.length ? `<button class="quiet small" id="pick-stale">Only the ${stale.length} out of date</button>` : ""}
+      ${quick.length && designMode() === "detailed" ? `<button class="quiet small" id="pick-standard">Only the ${quick.length} designed in Standard</button>` : ""}`;
     box.querySelectorAll("[data-pick]").forEach(
       (c) =>
         (c.onchange = () => {
@@ -2622,6 +2647,12 @@ async function renderDesignTab(host) {
           drawPick();
         })
     );
+    const toDetail = box.querySelector("#pick-standard");
+    if (toDetail)
+      toDetail.onclick = () => {
+        state.designPick[section.id] = quick.filter((n) => units.includes(n));
+        drawPick();
+      };
     const only = box.querySelector("#pick-stale");
     if (only)
       only.onclick = () => {
@@ -2629,7 +2660,8 @@ async function renderDesignTab(host) {
         drawPick();
       };
     const n = picked?.length;
-    run.textContent = busyWith(`design-${section.id}`) ? "Designing…" : n ? `Design ${n} element${n === 1 ? "" : "s"}` : "Design all elements";
+    const how = designMode() === "standard" ? " (Standard)" : "";
+    run.textContent = busyWith(`design-${section.id}`) ? "Designing…" : (n ? `Design ${n} element${n === 1 ? "" : "s"}` : "Design all elements") + how;
     run.disabled = !units.length || busyWith(`design-${section.id}`);
   };
   drawPick();
@@ -2649,7 +2681,7 @@ async function renderDesignTab(host) {
       view.changed = [];
       drawResults(view);
       out.insertAdjacentHTML("afterbegin", `<p class="status">New results so far: ${done.size} element${done.size === 1 ? "" : "s"}. Still designing…</p>`);
-    });
+    }, designMode());
     drawPick();
     await job;
     drawPick();
@@ -2675,6 +2707,7 @@ async function renderDesignTab(host) {
   try {
     const res = await api(`${url}/design`);
     stale = res.stale || [];
+    quick = [...new Set(RESULT_KINDS.flatMap((k) => (res[k] || []).filter(isStandard).map((e) => e.element)))];
     drawPick();
     renderResults(res);
   } catch {
@@ -2684,14 +2717,35 @@ async function renderDesignTab(host) {
 
 // Design a section's elements (all, or the ones picked) as a job: a few elements per request, each
 // element with its own bar; the others keep their results.
-async function designJob(section, chosen, onResults) {
+// Detailed or Standard design: the last one picked, kept in this browser.
+function designMode() {
+  if (!state.designMode) {
+    try {
+      state.designMode = localStorage.getItem("triton-design-mode") === "standard" ? "standard" : "detailed";
+    } catch {
+      state.designMode = "detailed";
+    }
+  }
+  return state.designMode;
+}
+
+function setDesignMode(mode) {
+  state.designMode = mode === "standard" ? "standard" : "detailed";
+  try {
+    localStorage.setItem("triton-design-mode", state.designMode);
+  } catch {
+    /* private window: kept for this visit */
+  }
+}
+
+async function designJob(section, chosen, onResults, mode = "detailed") {
   const pid = state.project.id;
   const url = `${ROOT}/api/projects/${pid}/sections/${section.id}`;
   const key = `design-${pid}-${section.id}`;
   const names = chosen || designUnits(section);
   const job = newJob({
     kind: "design",
-    title: `Designing ${section.name}${chosen ? ` (${names.length} of ${designUnits(section).length})` : ""}`,
+    title: `${mode === "standard" ? "Standard design of" : "Designing"} ${section.name}${chosen ? ` (${names.length} of ${designUnits(section).length})` : ""}`,
     slot: `design-${section.id}`,
     home: `#/project/${pid}/design/${section.id}`,
     steps: names.map((n) => ({ label: n, name: n, state: "waiting" })),
@@ -2729,7 +2783,7 @@ async function designJob(section, chosen, onResults) {
     for (;;) {
       if (job.stopped) throw new Error("Stopped.");
       // Not sent again after Stop, even when the host cut the request off.
-      res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3 }) })));
+      res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3, mode }) })));
       const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"].flatMap((k) => res[k] || []);
       for (const n of res.designed) {
         const s = step(n);
@@ -2738,9 +2792,9 @@ async function designJob(section, chosen, onResults) {
         s.fraction = 1;
         if (!r) s.note = (res.skipped || []).some((m) => m.startsWith(`${n}:`)) ? "No results in the workbook" : "Nothing to design";
         else if (r.passed === false) {
-          s.note = "Unsafe";
+          s.note = mode === "standard" ? "Not workable" : "Unsafe";
           s.bad = true;
-        } else s.note = "OK";
+        } else s.note = mode === "standard" ? "Workable" : "OK";
       }
       res.designed.forEach((n) => done.add(n));
       onResults?.(res, done);
@@ -2917,7 +2971,49 @@ function wireExportPick(names, steelOnly, anyCages) {
   draw();
 }
 
+// Standard design: a quick overview (workable or not, utilisation, steel ratio) without the bar
+// layout. Those elements get one table; the Detailed ones keep their cards, exports and drawings.
+const RESULT_KINDS = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"];
+const isStandard = (e) => e?.design_mode === "standard";
+const withoutStandard = (r) => {
+  const out = { ...r };
+  for (const k of RESULT_KINDS) out[k] = (r[k] || []).filter((e) => !isStandard(e));
+  return out;
+};
+
+function standardHtml(res) {
+  const list = RESULT_KINDS.flatMap((k) => (res[k] || []).filter(isStandard));
+  if (!list.length) return "";
+  const seen = new Set();
+  const rows = list
+    .filter((e) => !seen.has(e.element) && seen.add(e.element))
+    .map((e) => {
+      const o = e.standard || {};
+      const tip = (o.checks || []).map((c) => `${c.check}: ${fmt(c.utilisation, 2)}${c.passed ? "" : " (fails)"}`).join("\n");
+      return `<tr><td>${esc(e.element)}</td>
+        <td class="cell ${o.workable ? "ok" : "error"}">${o.workable ? "Workable" : "Not workable"}</td>
+        <td class="cell ${o.utilisation != null && o.utilisation <= 1 + 1e-6 ? "ok" : "error"}" title="${esc(tip)}">${fmt(o.utilisation, 2)}</td>
+        <td>${esc(o.governs || "–")}</td><td>${fmt(o.kg_per_m3)}</td><td>${o.ratio_pct == null ? "–" : `${fmt(o.ratio_pct, 2)}%`}</td>
+        <td>${(o.why || []).map((w) => esc(w)).join("<br>") || "–"}</td></tr>`;
+    })
+    .join("");
+  return `<h2>Standard design (overview)</h2><div class="panel scroll">
+    <p class="status" style="margin-top:0">The same checks and forces as a Detailed design, without the bar layout. The steel is an estimate.
+      Bars, cages, drawings, AdSec files and clash checks need a Detailed design: tick these elements and design them in Detailed.</p>
+    <table><tr><th>Element</th><th>Result</th><th title="Hover a value for every check">Utilisation</th><th>Governed by</th><th>kg/m³</th><th>Steel</th><th>What does not work</th></tr>${rows}</table></div>`;
+}
+
 function drawResults(res, full = res) {
+  drawCards(withoutStandard(res), withoutStandard(full));
+  const html = standardHtml(res);
+  if (!html) return;
+  const out = document.getElementById("design-out");
+  const at = out?.querySelector(":scope > p.status");
+  if (at) at.insertAdjacentHTML("afterend", html);
+  else out?.insertAdjacentHTML("afterbegin", html);
+}
+
+function drawCards(res, full = res) {
   const out = document.getElementById("design-out");
   const walls = res.combi_walls || [];
   const spws = res.sheet_pile_walls || [];
