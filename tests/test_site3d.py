@@ -52,6 +52,9 @@ def test_the_site_round_section_01a(api):
         assert f["box"]["X"][0] >= 1.0 - 1e-9 and -16.8 <= f["box"]["Y"][0] <= 16.8
     crane = out["crane"]
     assert crane and max(p[0] for ln in crane["lines"] for p in ln) > 60  # the boom reaches out to sea
+    # Drawn about 35 m high overall above the cope, for show (Ahmed: 30 to 40 m).
+    top = max(p[2] for ln in crane["lines"] for p in ln)
+    assert top - lv["cope"] == pytest.approx(35.0)
     assert any("assumed" in n for n in out["notes"])
 
 
