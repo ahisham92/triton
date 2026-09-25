@@ -135,6 +135,52 @@ function solid(items, box, color, tip) {
   for (const [a, b, c, d, f] of faces) items.push({ kind: "quad", pts: [a, b, c, d], fill: shade(f), base: 0, stroke: false, site: true, tip });
 }
 
+// An element drawn extruded: its box's faces cut into tiles (so they sort among the piles), each face
+// wound anticlockwise seen from outside so the faces turned away are left out when drawn.
+const TILE = 2.5;
+const AXES = { X: ["Y", "Z"], Y: ["Z", "X"], Z: ["X", "Y"] };
+function extruded(box, color, common) {
+  const tiles = [];
+  const faces = {};
+  const shade = { Z1: 1.0, Z0: 0.55, X0: 0.8, X1: 0.8, Y0: 0.68, Y1: 0.68 };
+  for (const a of ["X", "Y", "Z"]) {
+    const [u, v] = AXES[a];
+    const cut = (k) => {
+      const [lo, hi] = box[k];
+      const n = Math.max(1, Math.ceil((hi - lo) / TILE - 1e-9));
+      return Array.from({ length: n + 1 }, (_, i) => lo + ((hi - lo) * i) / n);
+    };
+    const us = cut(u);
+    const vs = cut(v);
+    for (const side of [0, 1]) {
+      const c = color.match(/\w\w/g).map((h) => Math.round(parseInt(h, 16) * shade[a + side]));
+      const fill = `rgb(${c.join(",")})`;
+      const grid = [];
+      for (let i = 1; i < us.length; i++) {
+        const row = [];
+        for (let j = 1; j < vs.length; j++) {
+          const p = (uu, vv) => {
+            const q = { [a]: box[a][side], [u]: uu, [v]: vv };
+            return [q.X, q.Y, q.Z];
+          };
+          const pts = [p(us[i - 1], vs[j - 1]), p(us[i], vs[j - 1]), p(us[i], vs[j]), p(us[i - 1], vs[j])];
+          const it = { kind: "quad", pts: side ? pts : pts.reverse(), fill, base: 0, stroke: false, cull: true, ...common };
+          tiles.push(it);
+          row.push(it);
+        }
+        grid.push(row);
+      }
+      // The tile a point on this face lies on.
+      faces[a + side] = (pt) => {
+        const q = { X: pt[0], Y: pt[1], Z: pt[2] };
+        const at = (ks, x) => Math.min(ks.length - 2, Math.max(0, ks.findIndex((k) => k >= x) - 1));
+        return grid[at(us, q[u])][at(vs, q[v])];
+      };
+    }
+  }
+  return { tiles, faces };
+}
+
 export function deformedLegendHtml(d) {
   const stops = DEFORM.map(([u, c]) => `rgb(${c}) ${u * 100}%`).join(", ");
   const max = fmt1(d.max_mm);
@@ -182,7 +228,8 @@ export class View3D {
       <select data-combo aria-label="Combination" hidden></select>
       <select data-dir aria-label="Slab bar direction" hidden><option value="x">Slabs: bars along X (M11)</option>
       <option value="y">Slabs: bars along Y (M22)</option></select></span></div>
-      <div class="v3d-bar v3d-site" hidden><label class="toggle">Soil <select data-soil aria-label="Soil">
+      <div class="v3d-bar v3d-site" hidden><label class="toggle"><input type="checkbox" data-show="extrude"> Extrude elements</label>
+      <label class="toggle">Soil <select data-soil aria-label="Soil">
       <option value="hidden">Hidden</option><option value="half">50%</option><option value="full">Full</option></select></label>
       <label class="toggle"><input type="checkbox" data-show="water"> Water</label><span class="v3d-waters" data-waters></span>
       <label class="toggle"><input type="checkbox" data-show="furniture"> Fenders and bollards</label>
@@ -403,6 +450,8 @@ export class View3D {
 
   _build() {
     const { elements, selected } = this.scene;
+    const sizes = this.siteView?.extrude !== false ? this.scene.site?.sizes || null : null;
+    this.tops = {};
     let items = [];
     for (const e of elements) {
       const faded = selected && e.element !== selected;
@@ -505,7 +554,10 @@ export class View3D {
         }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);
         items.push({ kind: "label", at: mid, text: e.key || e.element, faded, element: e.element });
+        if (sizes?.[e.element]?.t) this._extrude(items, first, e, sizes[e.element], faded);
       }
+      if (e.lines && sizes?.[e.element]?.round)
+        for (const it of items.slice(first)) if (it.kind === "line") Object.assign(it, { size: sizes[e.element].round, cap: "butt" });
       if (e.turn) turnBack(items.slice(first), e.turn);
     }
     if (this.view === "crack") {
@@ -513,11 +565,12 @@ export class View3D {
         const faded = selected && e.element !== selected;
         // Slab cells are small and many: one mark per 3 m block, at its widest crack.
         const blocks = new Map();
+        const top = this.tops[e.key || e.element];
         for (const [x, y, z, u, size] of this.scene.crack?.[e.key || e.element] || []) {
           if (!(u >= 0.5)) continue;
           const key = size ? `${Math.floor(x / 3)},${Math.floor(y / 3)}` : `${x},${y},${z}`;
           const was = blocks.get(key);
-          if (!was || u > was.u) blocks.set(key, { u, at: [x, y, z] });
+          if (!was || u > was.u) blocks.set(key, { u, at: [x, y, top ?? z] });
         }
         const first = items.length;
         for (const { at, u } of blocks.values()) items.push({ kind: "mark", at, u, faded, element: e.element });
@@ -548,6 +601,67 @@ export class View3D {
     this.center = lo.map((l, k) => (l + hi[k]) / 2);
     this.bounds = { lo, hi };
     this.size = Math.max(...hi.map((h, k) => h - lo[k]), 1);
+  }
+
+  // A plate element drawn with its real thickness (site3d.sizes): its colour bands move onto the
+  // top face (walls: both faces), each drawn with the tile it lies on.
+  _extrude(items, first, e, sz, faded) {
+    const own = items.splice(first);
+    const c = { X: [...e.box.X], Y: [...e.box.Y], Z: [...e.box.Z] };
+    const flat = ["X", "Y", "Z"].find((a) => c[a][1] - c[a][0] < 0.05) || "Z";
+    const mid = (c[flat][0] + c[flat][1]) / 2;
+    let t = sz.t;
+    if (flat === "Z") {
+      const hi = sz.top ?? (sz.at === "top" ? c.Z[1] : mid + t / 2);
+      c.Z = [hi - t, hi];
+      if (sz.w) {
+        const across = c.X[1] - c.X[0] <= c.Y[1] - c.Y[0] ? "X" : "Y";
+        const m = (c[across][0] + c[across][1]) / 2;
+        c[across] = [m - sz.w / 2, m + sz.w / 2];
+      }
+      this.tops[e.key || e.element] = hi;
+    } else {
+      if (sz.w) t = sz.w; // a beam drawn as an upright plate: its width across
+      c[flat] = [mid - t / 2, mid + t / 2];
+    }
+    const steel = e.type === "sheet_pile_wall";
+    const { tiles, faces } = extruded(c, steel ? "#8a939e" : "#c6cacf", { faded, element: e.element });
+    items.push(...tiles);
+    const lift = 0.004;
+    for (const it of own) {
+      if (it.kind === "label") {
+        if (flat === "Z") it.at = [it.at[0], it.at[1], c.Z[1]];
+        items.push(it);
+        continue;
+      }
+      if (it.kind !== "quad" || it.under) continue;
+      const sides = flat === "Z" ? [1] : [0, 1];
+      for (const side of sides) {
+        const k = flat === "X" ? 0 : flat === "Y" ? 1 : 2;
+        const at = c[flat][side] + (side ? lift : -lift);
+        const pts = it.pts.map((p) => p.map((v, i) => (i === k ? at : v)));
+        const ctr = [0, 1, 2].map((i) => pts.reduce((s, p) => s + p[i], 0) / pts.length);
+        items.push({ ...it, pts, on: faces[flat + side](ctr) });
+      }
+    }
+  }
+
+  // Where furniture sits: the drawn top of the slab or beam under a plan point (the nearest one for
+  // what hangs off the face), so it rests on the concrete whether the elements are extruded or not.
+  _seat() {
+    const plates = [];
+    for (const e of this.scene.elements) {
+      if (!e.box || e.turn || e.box.Z[1] - e.box.Z[0] >= 0.05) continue;
+      plates.push({ X: e.box.X, Y: e.box.Y, top: this.tops[e.key || e.element] ?? e.box.Z[1] });
+    }
+    if (!plates.length) return () => 0;
+    const cope = this.scene.site.levels.cope;
+    const gap = (p, x, y) => Math.hypot(Math.max(p.X[0] - x, 0, x - p.X[1]), Math.max(p.Y[0] - y, 0, y - p.Y[1]));
+    return (x, y) => {
+      const on = plates.filter((p) => gap(p, x, y) < 0.05);
+      const top = on.length ? Math.max(...on.map((p) => p.top)) : plates.reduce((b, p) => (gap(p, x, y) < gap(b, x, y) ? p : b)).top;
+      return top - cope;
+    };
   }
 
   // The deformed shape (triton/deformed.py): each pile and king pile, the sheet pile wall's strips and
@@ -680,23 +794,31 @@ export class View3D {
       for (const [p, q] of [[c0, c1], [c3, c0], [c1, c2]])
         quad([up(p, bed), up(q, bed), up(q, w), up(p, w)], "rgba(56,132,200,0.12)", -3e6);
     });
+    const seat = this._seat();
+    const lower = (p, dz) => [p[0], p[1], p[2] + dz];
     if (v.furniture) {
       for (const f of S.furniture || []) {
         if (f.line) {
-          items.push({ kind: "line", a: f.line[0], b: f.line[1], color: "#b45309", width: 2, site: true, tip: f.label });
+          const dz = seat(f.line[0][0], f.line[0][1]);
+          items.push({ kind: "line", a: lower(f.line[0], dz), b: lower(f.line[1], dz), color: "#b45309", width: 2, site: true, tip: f.label });
           continue;
         }
+        const dz = seat((f.box.X[0] + f.box.X[1]) / 2, (f.box.Y[0] + f.box.Y[1]) / 2);
         const color = f.kind === "fenders" ? (/panel/.test(f.label) ? "#d4a017" : "#2f3337")
           : f.kind === "fender_blocks" ? "#aab0b8" : f.kind === "bollards" ? "#4b5563"
           : f.kind === "crane_stoppers" ? "#b91c1c" : "#6b7280";
-        solid(items, f.box, color, f.label);
+        solid(items, { ...f.box, Z: [f.box.Z[0] + dz, f.box.Z[1] + dz] }, color, f.label);
       }
-      for (const r of S.rails || [])
-        items.push({ kind: "line", a: r.line[0], b: r.line[1], color: "#374151", width: 2.5, site: true, tip: r.label });
+      for (const r of S.rails || []) {
+        const dz = seat((r.line[0][0] + r.line[1][0]) / 2, (r.line[0][1] + r.line[1][1]) / 2);
+        items.push({ kind: "line", a: lower(r.line[0], dz), b: lower(r.line[1], dz), color: "#374151", width: 2.5, site: true, tip: r.label });
+      }
     }
     if (v.crane && S.crane) {
+      const [x, y] = S.crane.lines[0][0]; // the foot of a sea-side leg
+      const dz = seat(x, y);
       for (const [a, b] of S.crane.lines)
-        items.push({ kind: "line", a, b, color: "#1d4ed8", width: 2.5, site: true, tip: S.crane.label });
+        items.push({ kind: "line", a: lower(a, dz), b: lower(b, dz), color: "#1d4ed8", width: 2.5, site: true, tip: S.crane.label });
     }
   }
 
@@ -718,7 +840,9 @@ export class View3D {
       }
       if (it.kind === "quad") {
         const g = ground(it.pts[0]);
-        out.push(it.pts.every((p) => p[2] <= g + 1e-6) ? { ...it, buried: true } : it);
+        // The same object: colour bands find the extruded tile they lie on by it.
+        if (it.pts.every((p) => p[2] <= g + 1e-6)) it.buried = true;
+        out.push(it);
         continue;
       }
       const g = ground(it.a);
@@ -808,11 +932,26 @@ export class View3D {
         drawn.push({ it, depth: (a[2] + b[2]) / 2, a, b });
       } else if (it.kind === "quad") {
         const ps = it.pts.map((p, i) => P(p, it.dpts?.[i]));
+        if (it.cull) {
+          // An extruded face turned away from the eye (screen y runs down): not drawn.
+          let area = 0;
+          ps.forEach((p, i) => {
+            const q = ps[(i + 1) % ps.length];
+            area += p[0] * q[1] - q[0] * p[1];
+          });
+          it.hidden = area > -1e-9;
+          if (it.hidden) continue;
+        }
+        if (it.on?.hidden) continue;
         // Panels behind lines; the soil and the water behind every panel; solids among the lines.
         const base = it.base ?? (it.under ? -2e6 : -1e6);
-        drawn.push({ it, depth: ps.reduce((s, p) => s + p[2], 0) / ps.length + base, ps });
+        const depth = ps.reduce((s, p) => s + p[2], 0) / ps.length + base;
+        it.depth = depth;
+        drawn.push({ it, depth, ps });
       }
     }
+    // Colour bands on an extruded face: drawn just after the tile they lie on.
+    for (const d of drawn) if (d.it.on?.depth != null) d.depth = d.it.on.depth + 1e-3;
     if (this.def) {
       const stat = this.host.querySelector("[data-defstat]");
       const text = `× ${Math.round(this._defScale()).toLocaleString()} · largest ${fmt1(this.def.max_mm)} mm`;
@@ -839,7 +978,8 @@ export class View3D {
         ctx.moveTo(d.a[0], d.a[1]);
         ctx.lineTo(d.b[0], d.b[1]);
         ctx.strokeStyle = d.it.color;
-        ctx.lineWidth = d.it.width;
+        // Extruded piles and king piles: as wide as their diameter.
+        ctx.lineWidth = d.it.size ? Math.max(d.it.width, d.it.size * this.cam.scale) : d.it.width;
         // Faint lines in pieces would show their round ends overlapping as dots.
         ctx.lineCap = d.it.buried || d.it.ghost ? "butt" : d.it.cap || "round";
         ctx.stroke();

@@ -56,6 +56,12 @@ def test_the_site_round_section_01a(api):
     top = max(p[2] for ln in crane["lines"] for p in ln)
     assert top - lv["cope"] == pytest.approx(35.0)
     assert any("assumed" in n for n in out["notes"])
+    # Sizes to draw the elements extruded (on by default): piles round, plates their depth.
+    assert out["site"]["extrude"] is True
+    sizes = out["sizes"]
+    assert sizes["Combi Wall"]["round"] == pytest.approx(1.626)
+    beam = sizes["Front Beam"]
+    assert beam["t"] == pytest.approx(1.6) and beam["at"] == "mid"
 
 
 def test_site_settings_are_open_while_locked_and_never_stale_a_design(api):
