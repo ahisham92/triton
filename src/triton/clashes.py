@@ -626,8 +626,7 @@ def heads(
         r_out = max(r["radius_mm"] + r["diameter_mm"] / 2 for r in rows) / 1e3
         for i, pos in enumerate(p.get("positions") or []):
             x, y = pos["x"], pos["y"]
-            host = next((h for h in hosts if h.kind == "beam" and _in_host(h, x, y)), None)
-            host = host or next((h for h in hosts if h.kind == "slab" and _in_host(h, x, y)), None)
+            host = host_at(hosts, x, y)
             if host is None:
                 continue
             level = p.get("head_level_m")
@@ -664,18 +663,188 @@ def heads(
             else:
                 h.top_zone = _beam_top_zone(host.data)
                 h.hbars, h.legs = _beam_bars(host, x, y, r_out + 0.3)
-            for r in h.rings:
-                bend = host.top - (h.top_zone + r["diameter_mm"] / 2) / 1e3
-                top = r["bar_top_m"] if r["bar_top_m"] is not None else bend
-                h.z1.append(round(min(top, bend), 3))
-                over = round(max(top - bend, 0.0), 3)
-                straight = host.kind == "beam" and rule.beam_bars == "straight"
-                h.legs_m.append(0.0 if straight else over)
-                h.short_m.append(over if straight else 0.0)
+            for end in bar_ends(rule, host, h.top_zone, h.rings):
+                h.z1.append(end["end_m"])
+                h.legs_m.append(end["leg_m"])
+                h.short_m.append(end["short_m"])
             if host.kind == "slab":
                 h.punch, h.punch_info = _punching(settings, h)
             out.append(h)
     return out, notes
+
+
+def host_at(hosts: list[Host], x: float, y: float) -> Host | None:
+    """The element over a pile head: a beam it lies in, else the slab (the model's plates)."""
+    host = next((h for h in hosts if h.kind == "beam" and _in_host(h, x, y)), None)
+    return host or next((h for h in hosts if h.kind == "slab" and _in_host(h, x, y)), None)
+
+
+def bar_ends(rule: ClashSettings, host: Host, top_zone: float, rows: list[dict]) -> list[dict]:
+    """Where each row of pile bars ends in the element over it.
+
+    The bars run up to their anchorage (``bar_top_m``) but no higher than under the element's top
+    bars. Into a slab (or a beam with L bars) the rest turns out as an L leg under the top bars; into a
+    beam with straight bars (drawing SC-401) they stop there, short of the anchorage by ``short_m``.
+    """
+    straight = host.kind == "beam" and rule.beam_bars == "straight"
+    out = []
+    for r in rows:
+        bend = host.top - (top_zone + r["diameter_mm"] / 2) / 1e3
+        top = r["bar_top_m"] if r.get("bar_top_m") is not None else bend
+        over = round(max(top - bend, 0.0), 3)
+        out.append(
+            {
+                "end_m": round(min(top, bend), 3),
+                "leg_m": 0.0 if straight else over,
+                "short_m": over if straight else 0.0,
+            }
+        )
+    return out
+
+
+def pile_connections(rule: ClashSettings, drawing: dict, results: dict) -> dict[tuple[str, str], list]:
+    """Per pile (element, part), per position: the slab or beam over its head from the model (or the
+    top levels set on the Clashes tab) and how each row of the top run ends there, with the bar's real
+    length (the L leg counted in, a straight bar stopped under the top bars). None where nothing is
+    over the head or the head is above it."""
+    hosts = _hosts(rule, drawing, results)
+    out: dict[tuple[str, str], list] = {}
+    for p in drawing.get("piles") or []:
+        runs = p.get("runs") or []
+        rows = runs[0]["rows"] if runs else []
+        level = p.get("head_level_m")
+        start = level if level is not None else (runs[0].get("top_m") if runs else None)
+        conns: list = []
+        for pos in p.get("positions") or []:
+            host = host_at(hosts, pos["x"], pos["y"])
+            if host is None or not rows or (level is not None and level > host.top):
+                conns.append(None)
+                continue
+            if host.kind == "slab":
+                zone = _slab_top_zone(host.data, pos["x"], pos["y"])
+            else:
+                zone = _beam_top_zone(host.data)
+            ends = bar_ends(rule, host, zone, rows)
+            conns.append(
+                {
+                    "host": host.element,
+                    "host_kind": host.kind,
+                    "host_top_m": round(host.top, 3),
+                    "host_soffit_m": round(host.soffit, 3),
+                    "shape": "L" if any(e["leg_m"] > 0 for e in ends) else "straight",
+                    "rows": [
+                        {
+                            "count": r["count"],
+                            "diameter_mm": r["diameter_mm"],
+                            "anchor_top_m": r.get("bar_top_m"),
+                            "bar_top_m": e["end_m"],
+                            "up_m": None if start is None else round(e["end_m"] - start, 3),
+                            "leg_m": e["leg_m"],
+                            "short_m": e["short_m"],
+                            "bar_length_m": None
+                            if r.get("bar_length_m") is None
+                            else round(r["bar_length_m"] - e["short_m"], 2),
+                        }
+                        for r, e in zip(rows, ends, strict=True)
+                    ],
+                }
+            )
+        out[(p["element"], p["part"])] = conns
+    return out
+
+
+def connection_groups(conns: list) -> list[dict]:
+    """Pile positions with the same connection: the element over them, the shape and the real top-run
+    bar lengths ("L=") row by row."""
+    groups: dict[tuple, dict] = {}
+    for i, c in enumerate(conns):
+        if c is None:
+            continue
+        rows = [
+            {k: r[k] for k in ("count", "diameter_mm", "up_m", "leg_m", "short_m", "bar_length_m")}
+            for r in c["rows"]
+        ]
+        key = (c["host"], c["shape"], tuple(tuple(r.values()) for r in rows))
+        g = groups.setdefault(
+            key,
+            {
+                "host": c["host"],
+                "host_kind": c["host_kind"],
+                "shape": c["shape"],
+                "count": 0,
+                "positions": [],
+                "rows": rows,
+            },
+        )
+        g["count"] += 1
+        g["positions"].append(i)
+    return list(groups.values())
+
+
+def _connection_words(name: str, groups: list[dict]) -> str:
+    parts = []
+    for g in groups:
+        rows = ", ".join(
+            f"{r['count']}Ø{r['diameter_mm']:g} L={r['bar_length_m']:g} m"
+            + (f" with a {r['leg_m']:.2f} m L leg" if r["leg_m"] > 0 else "")
+            + (f" ({r['short_m']:.2f} m short of the anchorage)" if r["short_m"] > 0 else "")
+            for r in g["rows"]
+            if r["bar_length_m"] is not None
+        )
+        shape = "L bars" if g["shape"] == "L" else "straight bars"
+        parts.append(f"{g['count']} into {g['host']} ({g['host_kind']}, {shape}): {rows}")
+    return f"{CONNECTION_NOTE} " + "; ".join(parts) + "."
+
+
+CONNECTION_NOTE = "Top bars into the element over each pile, from the model:"
+
+
+def apply_connections(results: dict, rule: ClashSettings) -> dict:
+    """Each pile's connection per position (slab or beam over it, L or straight) kept with its design
+    result, and its steel weight with the real top-run bar lengths. Can run again (after the Clashes
+    settings change): the earlier change to the weight is taken off first."""
+    for p, _ in _pile_parts(results):
+        p.pop("connections", None)
+    drawing = pile_cages("", results)
+    conns = pile_connections(rule, drawing, results)
+    for p, part in _pile_parts(results):
+        c = conns.get((p.get("element"), part))
+        if not c:
+            continue
+        p["connections"] = c
+        groups = connection_groups(c)
+        p["connection_groups"] = groups
+        notes = [n for n in p.get("notes") or [] if not n.startswith(CONNECTION_NOTE)]
+        if groups:
+            notes.append(_connection_words(p["element"], groups))
+        p["notes"] = notes
+        steel = p.get("steel") or {}
+        if steel.get("longitudinal_kg") is None:
+            continue
+        per = [
+            sum(
+                r["count"] * math.pi * r["diameter_mm"] ** 2 / 4e6 * STEEL_DENSITY * r["short_m"]
+                for r in x["rows"]
+            )
+            for x in c
+            if x is not None
+        ]
+        change = -sum(per) / len(c) + 0.0  # no -0.0
+        old = steel.get("connection_kg") or 0.0
+        steel["longitudinal_kg"] = round(steel["longitudinal_kg"] - old + change, 1)
+        if steel.get("total_kg") is not None:
+            steel["total_kg"] = round(steel["total_kg"] - old + change, 1)
+            if steel.get("concrete_m3"):
+                steel["kg_per_m3"] = round(steel["total_kg"] / steel["concrete_m3"], 1)
+            if "element_total_t" in steel:
+                steel["element_total_t"] = round(steel["total_kg"] * p.get("count", len(c)) / 1000, 2)
+        steel["connection_kg"] = round(change, 1)
+    return results
+
+
+def _pile_parts(results: dict) -> list[tuple[dict, str]]:
+    out = [(p, "pile") for p in results.get("piles") or []]
+    return out + [(w["infill"], "infill") for w in results.get("combi_walls") or [] if w.get("infill")]
 
 
 def connection(head: Head) -> dict:
