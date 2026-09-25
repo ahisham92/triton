@@ -2060,6 +2060,13 @@ class ClashSettings(_Model):
         "EC2: bars closer than EN 1992-1-1 8.2(2) allows, max(Ø, dg + 5, 20 mm), even if they do not touch.",
     )
     fixing_tolerance: float = _mm("Fixing tolerance", 10.0, ge=0, le=50)
+    beam_bars: Literal["straight", "l"] = Field(
+        "straight",
+        title="Pile bars into a beam",
+        description="Straight: they stop under the beam's top bars, as the office details them "
+        "(drawing SC-401). L: they turn outwards under the top bars for the rest of their "
+        "anchorage, as into a slab.",
+    )
     plate_level: Literal["mid", "top"] = Field(
         "mid",
         title="Plaxis plates are at the element's",

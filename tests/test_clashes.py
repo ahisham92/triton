@@ -2,6 +2,7 @@
 
 import io
 import zipfile
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -186,3 +187,33 @@ def test_saving_the_project_page_keeps_the_what_ifs(api):
     page["prices"] = {**page.get("prices", {})}
     assert client.put(f"/api/projects/{pid}", json=page).status_code == 200
     assert len(client.get(base + "/clashes").json()["whatifs"]) == 1
+
+
+def test_set_out_lays_the_slab_bars_between_the_pile_bars():
+    # Ø20 bars along X at 150 mm across a cage of 8 Ø32: a few pass over a pile bar.
+    bars = [
+        C.HBar(
+            f"s|x|1|mesh|{k}",
+            "X",
+            (-750 + 150 * k) / 1e3 + 0.0,
+            0.4,
+            20.0,
+            "bottom",
+            "slab|bottom_x|1",
+            "mesh",
+            150.0,
+        )
+        for k in range(11)
+    ]
+    head = _head(hbars=bars)
+    ctx = type("Ctx", (), {"rule": ClashSettings(), "dg": 20.0})()
+    assert C.pile_hits(C.conflicts(head, ctx.rule, ctx.dg, C.pile_bars(head)))
+    so = C.set_out(ctx, head)
+    (g,) = so["groups"]
+    assert g["ok"] and not g["cut"] and g["widest_mm"] <= 150 + 1e-6
+    moved = [replace(b, at=b.at + g["moved"].get(j, 0.0) / 1e3) for j, b in enumerate(bars)]
+    assert not C.pile_hits(C.conflicts(head, ctx.rule, ctx.dg, C.pile_bars(head, so["turn"]), moved, []))
+
+
+def test_pile_bars_run_straight_into_a_beam_by_default():
+    assert ClashSettings().beam_bars == "straight"
