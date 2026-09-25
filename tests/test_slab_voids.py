@@ -104,7 +104,7 @@ def heavy_shear_deck(voids):
         "Deck": SlabInput(thickness=800, voids=voids, peaks="design"),
         "Pile(1)": PileInput(head_level=2.7),
     }
-    return run_section(DesignSettings(), Section(elements=els), wb)["slabs"][0]
+    return run_section(DesignSettings(), Section(elements=els, end_trim=0.0), wb)["slabs"][0]
 
 
 def test_links_in_the_webs_where_the_voided_slab_needs_them():

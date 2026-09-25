@@ -81,10 +81,12 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
     """What the design of a section depends on, part by part, as short hashes."""
     parts = {
         "design settings": _hash(project.design.model_dump(mode="json", exclude=_settings_left_out(project))),
-        # No end trim (0): the hash it had before the setting existed.
+        # No edge left out (0): the hash it had before the settings existed. The 2 m along the berth
+        # every section has by default (Ahmed, 2026-09-25) asks sections designed before for a redesign.
         "working zone and peaks": _hash(
             section.model_dump(
-                mode="json", exclude=_SECTION_OWN | (set() if section.end_trim else {"end_trim"})
+                mode="json",
+                exclude=_SECTION_OWN | {k for k in ("end_trim", "side_trim") if not getattr(section, k)},
             )
         ),
         "load multipliers": _hash([f.model_dump(mode="json") for f in section.load_factors]),

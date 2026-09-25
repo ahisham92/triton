@@ -127,7 +127,7 @@ def _deck(**openings):
 
     limits = {"crack_width_limit": 0.3, "crack_width_limit_bottom": 0.3, "peaks": "design"}
     els = {"Deck": SlabInput(thickness=800, **limits, **openings), "Pile(1)": PileInput(head_level=2.7)}
-    return run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
+    return run_section(DesignSettings(), Section(elements=els, end_trim=0.0), deck_workbook())["slabs"][0]
 
 
 def test_manhole_gets_trimmer_bars_and_cuts_the_punching_perimeter():

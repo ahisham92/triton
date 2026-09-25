@@ -156,7 +156,8 @@ def section(**kw):
         "Front Beam": default_element("Front Beam"),
         "Pile(1)": PileInput(head_level=2.7),
     }
-    return Section(elements=els, **kw)
+    # The model's ends are kept unless a test cuts them: turned models then match node for node.
+    return Section(elements=els, **{"end_trim": 0.0, **kw})
 
 
 ONLY = ["Deck", "Front Beam"]
@@ -318,10 +319,10 @@ def test_a_trimmed_corner_keeps_its_parts_and_designs_without_the_ends():
     assert [p["rotation_deg"] for p in cut["alignment"]["parts"]] == pytest.approx([0.0, 25.0], abs=1e-6)
     for a, b in zip(whole["beams"], cut["beams"], strict=True):
         assert b["end_m"] - b["start_m"] < a["end_m"] - a["start_m"]
-        assert any("2 m of the model's two ends" in n for n in b["notes"])
+        assert any("2 m at each end along the berth" in n for n in b["notes"])
 
 
-def test_new_sections_start_with_the_office_trim_and_saved_ones_keep_none():
+def test_every_section_leaves_out_2_m_along_the_berth_and_nothing_across():
     from fastapi.testclient import TestClient
 
     from triton.api import app
@@ -330,14 +331,45 @@ def test_new_sections_start_with_the_office_trim_and_saved_ones_keep_none():
 
     c = TestClient(app)
     p = c.post("/api/projects", json={"info": {"name": "Trim"}}).json()
-    assert p["sections"][0]["end_trim"] == 2.0
-    p = c.post(f"/api/projects/{p['id']}/sections", json={"name": "Blank"}).json()
-    assert p["sections"][-1]["end_trim"] == 2.0
+    assert (p["sections"][0]["end_trim"], p["sections"][0]["side_trim"]) == (2.0, 0.0)
     saved = Section.model_validate({"name": "Old"})
-    assert saved.end_trim == 0.0
+    assert (saved.end_trim, saved.side_trim) == (2.0, 0.0)
     project = Project(sections=[saved])
-    before = fingerprint(project, saved, None)["working zone and peaks"]
-    old = Section.model_validate({k: v for k, v in saved.model_dump(mode="json").items() if k != "end_trim"})
-    assert fingerprint(project, old, None)["working zone and peaks"] == before
-    trimmed = saved.model_copy(update={"end_trim": 2.0})
-    assert fingerprint(project, trimmed, None)["working zone and peaks"] != before
+    trimmed = fingerprint(project, saved, None)["working zone and peaks"]
+    none = saved.model_copy(update={"end_trim": 0.0})
+    before = fingerprint(project, none, None)["working zone and peaks"]
+    assert trimmed != before  # the 2 m asks for one redesign
+    sides = none.model_copy(update={"side_trim": 1.0})
+    assert fingerprint(project, sides, None)["working zone and peaks"] != before
+
+
+def test_both_ends_are_cut_on_one_line_inside_the_element_that_stops_first():
+    # The deck stops 3 m before the front beam at the start and 1 m at the far end: every element is
+    # cut 2 m inside the deck's ends, so the front beam keeps the deck's length of one structural system.
+    beam = dict(x_range=(-1.0, 1.0), y_range=(-8.0, 8.0), step=0.25)
+    deck = dict(x_range=(-9.0, -1.0), y_range=(-5.0, 7.0), step=0.5)
+    wb = import_sheets(
+        {
+            "Deck-PT-B-Apron": deck_rows(plate, **deck),
+            "Front Beam-PT-B-Apron": deck_rows(plate, **beam),
+            "Pile(1)-PT-B-Apron": piles_at([(-4.0, 0.0)]),
+        }
+    )
+    elements = wb.elements()
+    pts = [[0.0, -8.0], [0.0, 8.0]]
+    out, info = trim_ends(elements, pts, "Y", 2.0, keep={"Pile(1)"})
+    assert info["cut_m"] == pytest.approx([5.0, 13.0]) and info["skew_deg"] == [0.0, 0.0]
+    for name in ("Deck", "Front Beam"):
+        y = out[name]["PT-B-Apron"].frame["Y"]
+        assert y.min() == pytest.approx(-3.0) and y.max() == pytest.approx(5.0)
+    # A skewed end (the pile rows at 30° there): the cut runs parallel to it.
+    t = math.tan(math.radians(30))
+    skew = copy.copy(wb)
+    skew.sheets = [
+        replace(sh, frame=sh.frame[sh.frame["Y"] >= -5.0 - t * (sh.frame["X"] + 1.0) - 1e-9])
+        if sh.parsed is not None and sh.parsed.element != "Pile(1)"
+        else sh
+        for sh in wb.sheets
+    ]
+    _, info = trim_ends(skew.elements(), pts, "Y", 2.0, keep={"Pile(1)"})
+    assert info["skew_deg"][0] == pytest.approx(30.0, abs=1.0) and info["skew_deg"][1] == 0.0

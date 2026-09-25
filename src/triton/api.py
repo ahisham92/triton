@@ -57,7 +57,6 @@ from .importer import is_header
 from .joints import joints_drawing, section_joints
 from .materials import catalogue
 from .project import (
-    NEW_SECTION_END_TRIM,
     ClashSettings,
     CombiWallInput,
     DesignSettings,
@@ -212,7 +211,7 @@ def list_projects() -> list[ProjectSummary]:
 
 @app.post("/api/projects", status_code=201)
 def create_project(body: NewProject) -> Project:
-    section = Section(name=body.section_name, end_trim=NEW_SECTION_END_TRIM)
+    section = Section(name=body.section_name)
     section.add_elements(body.element_names)
     project = Project(info=body.info, design=body.design or DesignSettings(), sections=[section])
     return store().save(project)
@@ -446,7 +445,7 @@ def add_section(project_id: str, body: NewSection) -> Project:
     if body.copy_from:
         settings = _section(project, body.copy_from).model_dump(mode="json", exclude=WORKBOOK_OWN)
     try:
-        section = Section.model_validate({"end_trim": NEW_SECTION_END_TRIM, **settings, "name": body.name})
+        section = Section.model_validate({**settings, "name": body.name})
     except ValidationError as e:
         raise HTTPException(422, e.errors(include_url=False, include_context=False)) from None
     project.sections.append(section)
@@ -1974,6 +1973,7 @@ class ClashSettingsIn(BaseModel):
     rule: Literal["touch", "ec2"] | None = None
     fixing_tolerance: float | None = Field(None, ge=0, le=50)
     plate_level: Literal["mid", "top"] | None = None
+    water_margin: float | None = Field(None, ge=0)
     beam_bars: Literal["straight", "l"] | None = None
     weld: WeldSettings | None = None
     top_levels: dict[str, float] | None = None

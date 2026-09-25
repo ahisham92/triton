@@ -171,7 +171,7 @@ def deck_workbook():
 def design_deck(**slab):
     limits = {"crack_width_limit": 0.3, "crack_width_limit_bottom": 0.3, "peaks": "design"} | slab
     els = {"Deck": SlabInput(thickness=800, **limits), "Pile(1)": PileInput(head_level=2.7)}
-    return run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
+    return run_section(DesignSettings(), Section(elements=els, end_trim=0.0), deck_workbook())["slabs"][0]
 
 
 def test_slab_user_meshes_punching_depth_crane_and_peaks():
@@ -432,7 +432,7 @@ def test_slab_is_designed_with_each_mesh_spacing_and_the_pick_drives_it():
     d2 = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
     assert d2["mesh_choice"]["chosen_mm"] == other and d2["mesh_choice"]["picked"]
     assert {lay["basic"]["spacing_mm"] for lay in d2["layers"].values()} == {other}
-    assert "as you picked" in d2["notes"][0]
+    assert any("as you picked" in n for n in d2["notes"])
 
 
 def test_added_layers_sit_inside_their_mesh():
