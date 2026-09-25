@@ -29,12 +29,14 @@ from . import (
     drawings,
     durability,
     dxf,
+    existing,
     fresh,
     furniture_report,
     matrix,
     method,
     package,
     revit,
+    sequence,
     site3d,
     trials,
     views,
@@ -315,6 +317,8 @@ def _model(p: Project) -> dict:
         s.pop("clashes", None)  # the Clashes tab never changes the design
         s.pop("furniture", None)  # designed on its own tab, from the element design
         s.pop("site", None)  # seabed, water and soil as drawn in 3D
+        s.pop("existing", None)  # the quay already on site: drawn and checked, never designed
+        s.pop("sequence", None)  # the construction sequence
         for el in s.get("elements", {}).values():  # a sheet pile wall's "ignore N or Q", ticked on its card
             if el.get("kind") == "sheet_pile_wall":
                 el.pop("ignore", None)
@@ -1943,7 +1947,7 @@ def _view_parts(project: Project, section: Section, *, site: bool = False) -> li
     return [
         _CODE,
         project.model_dump(mode="json", exclude={"updated_at", "created_at", "locked", "sections"}),
-        section.model_dump(mode="json", exclude=None if site else {"site"}),
+        section.model_dump(mode="json", exclude=None if site else {"site", "existing", "sequence"}),
         summary.get("version"),
         summary.get("uploaded_at"),
     ]
@@ -2340,6 +2344,37 @@ def _site(project_id: str, project: Project, section: Section) -> dict:
         except (ValueError, HTTPException):
             furn = None
     return site3d.scene(project, section, geometry, frame, furn)
+
+
+@app.get(SECTION + "/sequence")
+def section_sequence(project_id: str, section_id: str, combination: str = "") -> dict:
+    """The Construction sequence tab: the stages to play, the existing structure's clashes with the new
+    piles and walls, and what its tie rods do to the new wall's movement (triton/sequence.py,
+    triton/existing.py). Never a design input."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    geometry = _berth_geometry(project_id, section)
+    out = sequence.stages(project, section, geometry)
+    out["existing"] = None
+    if not section.existing.use:
+        return out
+    try:
+        frame = furniture_mod.berth_frame(project, section, geometry)
+    except ValueError as e:
+        out["notes"].append(f"The existing structure cannot be placed: {e}")
+        return out
+    found = existing.clashes(project, section, geometry, frame)
+    shape = None
+    if section.existing.system == "combi_wall" and section.existing.tie_rods:
+        try:
+            shape = section_deformed(project_id, section_id, combination)
+        except HTTPException:
+            shape = None
+    found["tie_rods"] = existing.tie_rods(project, section, geometry, frame, shape)
+    if shape:
+        found["tie_rods"]["combinations"] = shape.get("combinations", [])
+    out["existing"] = found
+    return out
 
 
 @app.get(SECTION + "/furniture")

@@ -2366,6 +2366,12 @@ class SiteView(_Model):
         description="Drawn only where the section has STS cranes (its furniture settings); this only "
         "hides it.",
     )
+    existing: Literal["show", "see_through", "hidden"] = Field(
+        "see_through",
+        title="Existing structure",
+        description="Drawn solid, see-through or not at all, where the section has an existing structure "
+        "(Construction sequence tab).",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -2385,6 +2391,148 @@ class SiteView(_Model):
         if data.get("seabed_level") == -16.0:
             data["seabed_level"] = -16.12
         return data
+
+
+_COMBI_ONLY = {"show_when": {"system": ["combi_wall"]}}
+_GRAVITY_ONLY = {"show_when": {"system": ["gravity_wall"]}}
+
+
+class ExistingStructure(_Model):
+    """The quay already on site where the new one is built: drawn in the 3D views and the construction
+    sequence and checked against the new piles and walls. Never a design input."""
+
+    use: bool = Field(False, title="This section has an existing structure")
+    system: Literal["combi_wall", "gravity_wall"] = Field(
+        "combi_wall",
+        title="Existing system",
+        description="Combi wall with tie rods to piles inside, or gravity block wall with quarry run behind.",
+    )
+    edge: float | None = _m(
+        "Existing edge (sea face of its capping beam), inland of the new quay face",
+        None,
+        description="Empty: at the land-side edge of the new steel pipes, so the existing capping "
+        "beam is the "
+        "working platform for the new combi wall.",
+    )
+    cope_level: float | None = _m("Existing cope level", None, description="Empty: the new cope.")
+    dredge_level: float = _m(
+        "Existing dredge level",
+        -14.0,
+        description="The seabed until the new berth is dredged (last step of the sequence).",
+    )
+    capping_width: float = _m("Existing capping beam width", 2.0, gt=0)
+    capping_depth: float = _m("Existing capping beam depth", 1.5, gt=0)
+    wall_diameter: float = Field(
+        1220.0, title="Existing king pile diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+    )
+    wall_toe: float = _m("Existing combi wall toe", -26.0, extra=_COMBI_ONLY)
+    tie_rods: bool = Field(True, title="Tie rods", json_schema_extra=_COMBI_ONLY)
+    tie_rod_length: float = _m("Tie rod length", 36.0, gt=0, extra=_COMBI_ONLY)
+    tie_rod_spacing: float = _m("Tie rods every", 1.4, gt=0, extra=_COMBI_ONLY)
+    tie_rod_diameter: float = Field(
+        75.0, title="Tie rod diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+    )
+    tie_rod_level: float | None = _m(
+        "Tie rod level", None, extra=_COMBI_ONLY, description="Empty: the existing cope less 1.5 m."
+    )
+    tie_rod_fy: float = Field(
+        355.0, title="Tie rod yield strength", gt=0, json_schema_extra={"unit": "MPa", **_COMBI_ONLY}
+    )
+    tie_rod_share: float = Field(
+        0.5,
+        title="Share of the tie rods' stiffness that holds the new wall",
+        gt=0,
+        le=1,
+        json_schema_extra=_COMBI_ONLY,
+        description="Slack, the anchor piles moving and the connection through the new front beam: an "
+        "assumed half by default.",
+    )
+    piles: bool = Field(True, title="Existing piles (slab on piles)", json_schema_extra=_COMBI_ONLY)
+    pile_diameter: float = Field(
+        800.0, title="Existing pile diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+    )
+    pile_toe: float = _m("Existing pile toe", -25.0, extra=_COMBI_ONLY)
+    pile_spacing: float = _m("Existing piles along a row, every", 6.0, gt=0, extra=_COMBI_ONLY)
+    row_spacing: float = _m("Existing pile rows, every", 4.2, gt=0, extra=_COMBI_ONLY)
+    pile_offset: float = _m(
+        "First existing pile along the berth, from the model's start",
+        3.0,
+        extra=_COMBI_ONLY,
+    )
+    last_row: float | None = _m(
+        "Last existing pile row, inland of the existing edge",
+        None,
+        extra=_COMBI_ONLY,
+        description="Empty: at the tie rods' anchor (the tie rod length). Rows run from it towards the sea, "
+        "every row spacing, up to the capping beam.",
+    )
+    slab_thickness: float = Field(
+        500.0, title="Existing slab thickness", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+    )
+    block_base_width: float = _m("Block wall width at its base", 10.0, gt=0, extra=_GRAVITY_ONLY)
+    block_top_width: float = _m("Block wall width at its top", 3.0, gt=0, extra=_GRAVITY_ONLY)
+    block_founding: float = _m("Block wall founding level", -15.5, extra=_GRAVITY_ONLY)
+    quarry_slope: float = Field(
+        1.0,
+        title="Quarry run slope behind the blocks (horizontal per 1 vertical)",
+        gt=0,
+        json_schema_extra=_GRAVITY_ONLY,
+    )
+    warehouse: bool = Field(True, title="Warehouses behind the quay")
+    warehouse_distance: float = _m("Warehouses from the existing edge", 21.0, ge=0)
+    warehouse_depth: float = _m("Warehouse depth across the quay", 40.0, gt=0)
+    warehouse_height: float = _m("Warehouse height", 12.0, gt=0)
+    clearance: float = _m(
+        "Clear gap kept from existing piles and tie rods",
+        0.3,
+        ge=0,
+        description="New piles closer than this (face to face) are reported as clashes.",
+    )
+    warehouse_clearance: float = _m(
+        "Working room kept from the warehouses",
+        5.0,
+        ge=0,
+        description="New elements closer than this to a warehouse are flagged for the piling rig.",
+    )
+
+
+SEQUENCE_WORKS = (
+    "steel_pipes",
+    "combi_cages",
+    "combi_infill",
+    "sheet_piles",
+    "demolition",
+    "pile_cages",
+    "pile_concrete",
+    "pile_heads",
+    "front_beam",
+    "rear_beam",
+    "transverse_beam",
+    "slab",
+    "approach_slab",
+    "furniture",
+    "dredging",
+)
+
+
+class SequenceStep(_Model):
+    """One step of the construction sequence."""
+
+    work: Literal[SEQUENCE_WORKS] = Field("pile_cages", title="Work")  # type: ignore[valid-type]
+    name: str = Field("", title="Name", description="Empty: the work's own name.")
+    with_previous: bool = Field(False, title="At the same time as the step before")
+
+
+class ConstructionSequence(_Model):
+    steps: list[SequenceStep] = Field(
+        default_factory=list,
+        title="Steps",
+        description="Empty: the default order (pipes, cages, infill, sheet piles, demolition, piles, beams, "
+        "slabs, furniture, dredging).",
+    )
+    cast_above: float = _m(
+        "Piles cast above their cut-off level by", 1.0, ge=0, description="Broken down in their own step."
+    )
 
 
 class Section(_Model):
@@ -2450,6 +2598,17 @@ class Section(_Model):
         default_factory=SiteView,
         title="Site in the 3D views",
         description="Seabed, water, soil, furniture and crane as drawn in 3D; never a design input.",
+    )
+    existing: ExistingStructure = Field(
+        default_factory=ExistingStructure,
+        title="Existing structure",
+        description="The quay already on site: drawn, sequenced and checked for clashes; never a "
+        "design input.",
+    )
+    sequence: ConstructionSequence = Field(
+        default_factory=ConstructionSequence,
+        title="Construction sequence",
+        description="The order the works are built in; never a design input.",
     )
     user_cages: dict[str, UserCage] = Field(
         default_factory=dict,

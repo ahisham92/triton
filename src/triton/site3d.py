@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import furniture
+from . import existing, furniture
 from .design import sheet_piles
 from .project import BeamInput, CombiWallInput, PileInput, Project, Section, SheetPileInput, SlabInput
 
@@ -200,6 +200,10 @@ def scene(
     notes.append(
         f"Seabed {seabed:g} m; water {waters}; soil behind the wall at {ground:g} m ({ground_from})."
     )
+    if section.existing.use:
+        lay = existing.layout(project, section, geometry, frame)
+        out["existing"] = {k: lay[k] for k in ("system", "edge_d", "cope", "dredge_level", "objects")}
+        notes += lay["notes"]
     out["notes"] = notes
     return out
 

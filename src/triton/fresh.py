@@ -35,6 +35,8 @@ _SECTION_OWN = {
     "deflection",
     "joints",
     "site",
+    "existing",
+    "sequence",
 }
 
 

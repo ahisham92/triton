@@ -234,6 +234,8 @@ export class View3D {
       <label class="toggle"><input type="checkbox" data-show="water"> Water</label><span class="v3d-waters" data-waters></span>
       <label class="toggle"><input type="checkbox" data-show="furniture"> Fenders and bollards</label>
       <label class="toggle"><input type="checkbox" data-show="crane"> STS crane</label>
+      <label class="toggle" data-exrow>Existing <select data-existing aria-label="Existing structure">
+      <option value="show">Show</option><option value="see_through">See-through</option><option value="hidden">Hide</option></select></label>
       <span class="v3d-def" ${deformed ? "" : "hidden"}><select data-def aria-label="Deformed shape"><option value="">Deformed shape: off</option></select>
       <select data-scale aria-label="Displacement scale" hidden><option value="auto">Scale: auto</option>
       ${[1, 10, 50, 100, 200, 500, 1000, 2000].map((k) => `<option value="${k}">× ${k}</option>`).join("")}</select>
@@ -262,6 +264,7 @@ export class View3D {
       };
     }
     host.querySelector("[data-soil]").onchange = (e) => this._site({ soil: e.target.value });
+    host.querySelector("[data-existing]").onchange = (e) => this._site({ existing: e.target.value });
     host.querySelectorAll("[data-show]").forEach((b) => (b.onchange = () => this._site({ [b.dataset.show]: b.checked })));
     host.querySelector("[data-def]").onchange = (e) => this._deform(e.target.value);
     host.querySelector("[data-scale]").onchange = (e) => {
@@ -291,6 +294,8 @@ export class View3D {
       return;
     }
     this.host.querySelector("[data-soil]").value = this.siteView.soil;
+    this.host.querySelector("[data-existing]").value = this.siteView.existing || "see_through";
+    this.host.querySelector("[data-exrow]").hidden = !site.existing;
     // Several named water levels: a switch for each.
     const waters = this.host.querySelector("[data-waters]");
     const hidden = new Set(this.siteView.water_hidden || []);
@@ -454,7 +459,10 @@ export class View3D {
   }
 
   _build() {
-    const { elements, selected } = this.scene;
+    const { selected } = this.scene;
+    const stage = this.scene.stage;
+    // A construction stage: only what is built so far.
+    const elements = stage ? this.scene.elements.filter((e) => stage.elements[e.element]) : this.scene.elements;
     const sizes = this.siteView?.extrude !== false ? this.scene.site?.sizes || null : null;
     this.tops = {};
     let items = [];
@@ -475,7 +483,7 @@ export class View3D {
         e.lines.forEach(([x, y, top, bottom], i) => {
           const segs = (byPos.get(`${x.toFixed(2)},${y.toFixed(2)}`) || []).sort((a, c) => c[0] - a[0]);
           if (!segs.length) {
-            items.push({ kind: "line", a: [x, y, top], b: [x, y, bottom], color: `rgb(${GREY})`, width, faded, element: e.element });
+            items.push({ kind: "line", a: [x, y, top], b: [x, y, bottom], color: e.tint || `rgb(${GREY})`, width: e.thin ? 1.5 : width, faded, element: e.element, tip: e.tip, thin: e.thin });
           } else {
             // Undesigned ends (above the top level, below the last result) stay grey.
             const hi = Math.min(top, segs[0][0] + 0.25);
@@ -506,8 +514,8 @@ export class View3D {
           p[v] = c[v][b];
           return [p.X, p.Y, p.Z];
         };
-        items.push({ kind: "quad", pts: [at(0, 0), at(1, 0), at(1, 1), at(0, 1)], faded, element: e.element, under: true,
-          fill: e.type === "sheet_pile_wall" ? "rgba(120,130,145,0.30)" : "rgba(150,158,168,0.22)" });
+        items.push({ kind: "quad", pts: [at(0, 0), at(1, 0), at(1, 1), at(0, 1)], faded, element: e.element, under: true, tip: e.tip,
+          fill: e.tint ? `${e.tint}55` : e.type === "sheet_pile_wall" ? "rgba(120,130,145,0.30)" : "rgba(150,158,168,0.22)" });
         const b = src.bands;
         if (b.length && flat === "Z") {
           // Beams: 0.5 m bands along the beam, across its full width.
@@ -561,7 +569,7 @@ export class View3D {
         items.push({ kind: "label", at: mid, text: e.key || e.element, faded, element: e.element });
         if (sizes?.[e.element]?.t) this._extrude(items, first, e, sizes[e.element], faded);
       }
-      if (e.lines && sizes?.[e.element]?.round)
+      if (e.lines && sizes?.[e.element]?.round && !e.thin)
         for (const it of items.slice(first)) if (it.kind === "line") Object.assign(it, { size: sizes[e.element].round, cap: "butt" });
       if (e.turn) turnBack(items.slice(first), e.turn);
     }
@@ -583,6 +591,9 @@ export class View3D {
       }
     }
     for (const a of this.scene.arrows || []) items.push({ kind: "arrow", ...a });
+    // Extra lines a tab adds (a pile cast above its cut-off, its head broken down) and pins (clashes).
+    for (const x of this.scene.extras || []) items.push({ kind: "line", width: 4, cap: "butt", ...x });
+    for (const p of this.scene.pins || []) items.push({ kind: "pin", ...p });
     if (this.def) {
       // The structure as it stands stays faint behind its deformed shape.
       for (const it of items) if (it.element && it.kind !== "label") it.ghost = true;
@@ -630,7 +641,7 @@ export class View3D {
       c[flat] = [mid - t / 2, mid + t / 2];
     }
     const steel = e.type === "sheet_pile_wall";
-    const { tiles, faces } = extruded(c, steel ? "#8a939e" : "#c6cacf", { faded, element: e.element });
+    const { tiles, faces } = extruded(c, e.tint || (steel ? "#8a939e" : "#c6cacf"), { faded, element: e.element, tip: e.tip });
     items.push(...tiles);
     const lift = 0.004;
     for (const it of own) {
@@ -752,7 +763,9 @@ export class View3D {
   _siteItems(items) {
     const S = this.scene.site;
     const v = this.siteView;
-    const L = S.levels;
+    const stage = this.scene.stage;
+    // A construction stage: the seabed before or after the dredging.
+    const L = stage?.seabed != null ? { ...S.levels, seabed: Math.min(stage.seabed, S.levels.ground) } : S.levels;
     const move = this._wallMove();
     const still = [0, 0, 0];
     const alpha = v.soil === "full" ? 0.92 : v.soil === "half" ? 0.22 : 0;
@@ -762,12 +775,13 @@ export class View3D {
     if (alpha) {
       const top = `rgba(181,150,105,${alpha})`;
       const side = `rgba(146,116,78,${alpha})`;
-      for (const b of S.soil) {
+      for (let b of S.soil) {
         const [c0, c1, c2, c3] = b.corners; // c0, c1 on the sea side; c2, c3 inland
         const wall = b.part === "sea" ? [c2, c3] : [c0, c1];
         const dz = (c, z) => (move && wall.includes(c) ? move(z) : still);
         const face = (p, q, z0, z1) =>
           quad([up(p, z0), up(q, z0), up(q, z1), up(p, z1)], side, -4e6, [dz(p, z0), dz(q, z0), dz(q, z1), dz(p, z1)]);
+        if (b.part === "sea" && stage) b = { ...b, top: L.seabed };
         quad([c0, c1, c2, c3].map((c) => up(c, b.top)), top, -4e6, [c0, c1, c2, c3].map((c) => dz(c, b.top)),
           b.part === "sea" ? `Seabed at ${L.seabed} m` : `Soil behind the wall at ${L.ground} m (${L.ground_from})`);
         face(c3, c0, b.bottom, b.top);
@@ -802,9 +816,10 @@ export class View3D {
       for (const [p, q] of [[c0, c1], [c3, c0], [c1, c2]])
         quad([up(p, bed), up(q, bed), up(q, w), up(p, w)], "rgba(56,132,200,0.12)", -3e6);
     });
+    if (S.existing && v.existing !== "hidden") this._existingItems(items, S.existing, v.existing === "show" ? 1 : 0.3, stage);
     const seat = this._seat();
     const lower = (p, dz) => [p[0], p[1], p[2] + dz];
-    if (v.furniture) {
+    if (v.furniture && (!stage || stage.furniture)) {
       for (const f of S.furniture || []) {
         if (f.line) {
           const dz = seat(f.line[0][0], f.line[0][1]);
@@ -822,11 +837,37 @@ export class View3D {
         items.push({ kind: "line", a: lower(r.line[0], dz), b: lower(r.line[1], dz), color: "#374151", width: 2.5, site: true, tip: r.label });
       }
     }
-    if (v.crane && S.crane) {
+    if (v.crane && S.crane && (!stage || stage.furniture)) {
       const [x, y] = S.crane.lines[0][0]; // the foot of a sea-side leg
       const dz = seat(x, y);
       for (const [a, b] of S.crane.lines)
         items.push({ kind: "line", a: lower(a, dz), b: lower(b, dz), color: "#1d4ed8", width: 2.5, site: true, tip: S.crane.label });
+    }
+  }
+
+  // The existing structure (triton/existing.py): solid or see-through; what the demolition takes away
+  // is gone from that stage of the construction sequence on.
+  _existingItems(items, ex, alpha, stage) {
+    const COLOR = { capping_beam: "#a8a29e", slab: "#b8b2aa", combi_wall: "#6b7280", piles: "#8b7355", tie_rods: "#c2410c",
+      blocks: "#9ca3af", quarry_run: "#a3824f", warehouse: "#94a3b8" };
+    for (const o of ex.objects || []) {
+      if (stage?.demolished && o.removed_by === "demolition") continue;
+      const color = COLOR[o.part] || "#9ca3af";
+      const tip = `${o.label} (existing)`;
+      const first = items.length;
+      if (o.shape === "line") {
+        items.push({ kind: "line", a: o.a, b: o.b, color, width: o.part === "tie_rods" ? 1.5 : 3, size: o.part === "tie_rods" ? null : o.size,
+          cap: "butt", site: true, tip });
+      } else if (o.shape === "box") {
+        solid(items, o.box, color, tip);
+      } else if (o.shape === "faces") {
+        o.faces.forEach((pts, i) => {
+          const f = [1.0, 0.8, 0.68, 0.55][i % 4];
+          const c = color.match(/\w\w/g).map((h) => Math.round(parseInt(h, 16) * f));
+          items.push({ kind: "quad", pts, fill: `rgb(${c.join(",")})`, base: 0, stroke: false, site: true, tip });
+        });
+      }
+      for (const it of items.slice(first)) Object.assign(it, { alpha, existing: true });
     }
   }
 
@@ -968,7 +1009,7 @@ export class View3D {
     drawn.sort((p, q) => p.depth - q.depth);
     this.hits = [];
     for (const d of drawn) {
-      ctx.globalAlpha = d.it.faded ? 0.18 : d.it.buried ? 0.12 : d.it.ghost ? 0.22 : 1;
+      ctx.globalAlpha = d.it.faded ? 0.18 : d.it.buried ? 0.12 : d.it.ghost ? 0.22 : d.it.alpha ?? 1;
       if (d.it.kind === "quad") {
         ctx.beginPath();
         d.ps.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])));
@@ -993,6 +1034,20 @@ export class View3D {
         ctx.stroke();
         if (d.it.tip && !d.it.faded && !d.it.ghost) this.hits.push(d);
       }
+    }
+    // Pins on top: a clash or a warning at a point.
+    for (const it of this.items) {
+      if (it.kind !== "pin") continue;
+      const [px, py] = this._project(it.at);
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.arc(px, py, 6, 0, 2 * Math.PI);
+      ctx.fillStyle = it.level === "clash" ? "#dc2626" : "#d97706";
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      if (it.tip) this.hits.push({ it, a: [px, py], b: [px, py] });
     }
     // Crack marks on top: a small zigzag where wk is over half the limit.
     ctx.lineCap = ctx.lineJoin = "round";

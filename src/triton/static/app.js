@@ -8,6 +8,7 @@ import { renderClashes } from "./clashes.js";
 import { APPROACH, approachCard, approachPanel } from "./approach.js";
 import { renderFurniture } from "./furniture.js";
 import { renderMovedPiles } from "./moved.js";
+import { renderSequence } from "./sequence.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -403,7 +404,7 @@ function deflectionChart(el, e) {
 // ---------------------------------------------------------------- project page
 
 // Elements, workbook, load multipliers and design results belong to one section of the project.
-const SECTION_TABS = new Set(["elements", "workbook", "design", "openings", "view3d", "clashes", "furniture", "moved", "compare", "ve"]);
+const SECTION_TABS = new Set(["elements", "workbook", "design", "openings", "view3d", "clashes", "furniture", "moved", "sequence", "compare", "ve"]);
 const sec = () => state.project.sections.find((s) => s.id === state.sectionId) || state.project.sections[0];
 const secIndex = () => state.project.sections.indexOf(sec());
 const secUrl = () => `${ROOT}/api/projects/${state.project.id}/sections/${sec().id}`;
@@ -434,6 +435,7 @@ async function projectPage(id, tab, sectionId) {
     ["clashes", "Clashes"],
     ["furniture", "Furniture"],
     ["moved", "Moved piles"],
+    ["sequence", "Construction sequence"],
     ["costing", "Costing"],
     ["compare", "Comparisons"],
     ["ve", "Value engineering"],
@@ -529,6 +531,27 @@ async function projectPage(id, tab, sectionId) {
       api, again, esc, fmt, secUrl, ROOT, tabData,
       project: () => state.project,
       sectionId: () => sec().id,
+    });
+  else if (tab === "sequence")
+    renderSequence(host, {
+      api, esc, fmt, tabData, sectionGeometry, sectionSite, saveSite, View3D, markDirty, save,
+      again: () => route(),
+      section: () => sec(),
+      get lastStage() { return state.seqStage; },
+      set lastStage(v) { state.seqStage = v; },
+      existingForm: () => {
+        const box = document.createElement("div");
+        box.append(renderObject(SCHEMA.$defs.Section.properties.existing, sec().existing, `sections.${secIndex()}.existing`, ""));
+        const b = document.createElement("button");
+        b.className = "quiet";
+        b.textContent = "Redraw with these values";
+        b.onclick = async () => {
+          await save();
+          route();
+        };
+        box.append(b);
+        return box;
+      },
     });
   else if (tab === "furniture")
     renderFurniture(host, {
