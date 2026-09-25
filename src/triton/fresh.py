@@ -119,6 +119,8 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
                 own.pop(key, None)  # none: the fingerprint it had before these existed
         if own.get("construction_joints"):
             own["construction_joint_rules"] = project.design.construction_joints.model_dump(mode="json")
+        if own.get("punching_fix") == "bars":
+            own.pop("punching_fix")  # the default: designs made before it keep their hash
         if own.get("punching_per") == "type":
             own.pop("punching_per")  # the default: older results are unified when read (store)
         # A corner berth's parts keep their own bars and stations ("Deck · Part 2").

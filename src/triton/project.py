@@ -1207,6 +1207,13 @@ class SlabInput(_ConcreteSection):
         description="One per pile type: every head of a type gets the design of its worst head, as detailed "
         "on site (each head's own check is still shown). Per head: each head its own links.",
     )
+    punching_fix: Literal["bars", "report"] = Field(
+        "bars",
+        title="Punching that links cannot carry",
+        description="Bars: where vEd is over kmax·vRd,c, bars are added over the pile (face in tension, both "
+        "ways) until ρl is enough, and links carry the rest. Report: the check fails and says what would fix "
+        "it (more bars, or a thicker slab at the pile).",
+    )
     punching_depths: list[PunchingDepth] = Field(
         default_factory=list,
         title="Slab thickness at single piles",

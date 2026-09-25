@@ -1141,6 +1141,8 @@ def _punching_summary(r: Report, res: dict) -> None:
                 links = f"{q['perimeters']} perimeters @ {q['radial_spacing_mm']} mm, {q['asw_mm2_per_perimeter']} mm² each"
             else:
                 links = "NO NEED FOR R.F.T"
+            if q.get("added_bars"):
+                links += f"; added {q['added_bars']}"
             rows.append(
                 [
                     label,
@@ -2386,7 +2388,8 @@ def _slab(r: Report, s: dict) -> None:
                     f"{t['vEd_face_MPa']:.2f} / {t['vRd_max_MPa']:.2f}",
                     f"{t['perimeters']} perimeters @ {t['radial_spacing_mm']} mm, {t['asw_mm2_per_perimeter']} mm² each"
                     if t.get("perimeters")
-                    else ("needed" if t.get("needs_reinforcement") else "none"),
+                    else ("needed" if t.get("needs_reinforcement") else "none")
+                    + (f"; added {t['added_bars']}" if t.get("added_bars") else ""),
                     _ok(t.get("passed")),
                 ]
                 for t in unified

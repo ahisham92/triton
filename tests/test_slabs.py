@@ -648,3 +648,47 @@ def test_older_results_are_unified_when_read(tmp_path):
     assert len(s["punching_types"]) == 2
     a, b = (q for q in s["punching"] if q["pile"] == "Pile(1)")
     assert a["V_kN"] == b["V_kN"] == 4000.0
+
+
+def test_punching_that_links_cannot_carry_gets_bars_over_the_pile():
+    from triton.design.export import _slab
+
+    def forces(x, y):
+        return [0.0, 0.0, 0.0, 20.0, 30.0, -300.0, 80.0, 0.0]
+
+    heavy = piles_at([(-6.0, -2.0)], 5200.0)
+    light = piles_at([(-6.0, 2.0)], 3400.0)[1:]
+    for r in light:
+        r[1] += 100
+    raw = {
+        "Deck-PT-B-Apron": deck_rows(forces),
+        "Deck-QP": deck_rows(lambda x, y: [0.0] * 5 + [100.0, 50.0, 0.0]),
+        "Pile(1)-PT-B-Apron": heavy + light,
+        "Pile(1)-QP": piles_at([(-6.0, -2.0), (-6.0, 2.0)], 1000.0),
+    }
+
+    def deck(**kw):
+        els = {"Deck": SlabInput(thickness=700, **kw), "Pile(1)": PileInput(head_level=2.7)}
+        return run_section(DesignSettings(), Section(elements=els), import_sheets(raw))["slabs"][0]
+
+    report = deck(punching_fix="report")
+    assert not any(q["passed"] for q in report["punching"]) and not report["punching_bars"]
+    need = report["punching"][0]["fix"]["rho_l_with_links"]
+
+    d = deck()
+    (b,) = d["punching_bars"]
+    # The type's one detail: the same bars on both heads, on the top face (the pile pushes up).
+    assert b["face"] == "top" and len(b["heads"]) == 2
+    assert all(q["passed"] and q["perimeters"] and q["rho_l"] >= need for q in d["punching"])
+    assert b["width_mm"] == 1200 + 6 * d["punching"][0]["d_mm"]
+    assert d["steel"]["punching_bars_kg"] == round(b["kg"]) > 0
+    # They are drawn as their own zones, inside the face's other bars.
+    top_x = next(f for f in _slab(d)["faces"] if f["face"] == "top" and f["bars_along"] == "X")
+    zones = [z for z in top_x["zones"] if z.get("punching")]
+    assert (
+        len(zones) == 2
+        and zones[0]["x_m"][1] - zones[0]["x_m"][0] == b["directions"]["x"]["length_mm"] / 1000
+    )
+    assert zones[0]["layers"][0]["from_face_mm"] > max(
+        r["from_face_mm"] for r in d["layers"]["top_x"]["mesh_bar_layers"]
+    )
