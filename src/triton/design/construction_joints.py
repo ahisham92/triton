@@ -416,7 +416,8 @@ def _beam_stop(e, j: BeamJoint, settings, laws: Laws, design, uls, bars, b, h) -
 
     as_t = _least_share(util) * area
     top = (design.get("cage") or {}).get("top") or {}
-    d = h - float(design.get("cover_mm") or 50) - 16 - float(top.get("phi") or 25) / 2
+    link = float(((design.get("shear") or {}).get("link") or {}).get("phi") or 16)
+    d = h - float(design.get("cover_mm") or 50) - link - float(top.get("phi") or 25) / 2
     v, vh = near["V"].abs().to_numpy(float), near["Vh"].abs().to_numpy(float)
     v_edi = np.hypot(v * 1e3 / (0.9 * d * b), vh * 1e3 / (0.9 * (b - (h - d)) * h))
     ai = b * h
