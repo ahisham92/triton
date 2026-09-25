@@ -1,8 +1,9 @@
 """Triton drawings as an AutoCAD DXF (R12, ASCII): opens in any AutoCAD, and in Revit with Import CAD.
 
-Each view is placed in model space in a row, left to right, at 1:1 in mm, with a gap between views.
-Every bar size has its own layer (named on the Project tab); cut bars are filled dots (a donut), bars
-and links along the view are lines, circles or closed polylines.
+Each view is placed in model space where the drawings file puts it (``at``: a row per element), at 1:1 in
+mm. Every bar size has its own layer (named on the Project tab); cut bars are filled dots (a donut), bars
+and links along the view are lines, circles or closed polylines. Office Revit families and dimensions
+are drawn as the plain items they carry (``fallback``).
 """
 
 from __future__ import annotations
@@ -36,7 +37,10 @@ def _cad_name(name: str) -> str:
 
 
 def placements(views: list[dict[str, Any]]) -> list[tuple[float, float]]:
-    """Where each view's own origin goes in model space: views side by side, rows downward."""
+    """Where each view's own origin goes in model space: its ``at``, else views side by side, rows
+    downward."""
+    if views and all(v.get("at") for v in views):
+        return [(v["at"][0], v["at"][1]) for v in views]
     out = []
     x = 0.0
     y = 0.0
@@ -95,10 +99,19 @@ def to_dxf(data: dict[str, Any]) -> str:
     _pairs(out, (0, "ENDSEC"))
     _pairs(out, (0, "SECTION"), (2, "ENTITIES"))
     for v, (dx, dy) in zip(data["views"], placements(data["views"]), strict=True):
-        for it in v["items"]:
-            _entity(out, it, layers.get(it["layer"], "0"), dx, dy)
+        _entities(out, v["items"], layers, dx, dy)
     _pairs(out, (0, "ENDSEC"), (0, "EOF"))
     return "\r\n".join(out) + "\r\n"
+
+
+def _entities(
+    out: list[str], items: list[dict[str, Any]], layers: dict[str, str], dx: float, dy: float
+) -> None:
+    for it in items:
+        if "fallback" in it:
+            _entities(out, it["fallback"], layers, dx, dy)
+        else:
+            _entity(out, it, layers.get(it["layer"], _cad_name(it["layer"])), dx, dy)
 
 
 def _entity(out: list[str], it: dict[str, Any], layer: str, dx: float, dy: float) -> None:

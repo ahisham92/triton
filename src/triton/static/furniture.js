@@ -4,8 +4,8 @@
 // laid out along this section's berth, clear of joints, piles, rails and each other.
 // app.js passes its helpers in: api, again, esc, fmt, secUrl, forms() -> [project form, section form], save().
 
-const COL = { fenders: "#2a5fae", bollards: "#c87814", ladders: "#2e8b4a", storm_pins: "#7a4696", crane_stoppers: "#c62828" };
-const NAMES = { fenders: "Fenders", bollards: "Bollards", ladders: "Ladders", storm_pins: "Storm pins", crane_stoppers: "Crane stoppers", crane_rails: "Crane rails", tie_rods: "Tie rods", fender_blocks: "Fender protrusions" };
+const COL = { fenders: "#2a5fae", bollards: "#c87814", ladders: "#2e8b4a", storm_pins: "#7a4696", crane_stoppers: "#c62828", tie_downs: "#1f8a9a" };
+const NAMES = { fenders: "Fenders", bollards: "Bollards", ladders: "Ladders", storm_pins: "Storm pins", crane_stoppers: "Crane stoppers", tie_downs: "Crane tie-downs", crane_rails: "Crane rails", tie_rods: "Tie rods", fender_blocks: "Fender protrusions" };
 
 export async function renderFurniture(host, h) {
   const { api, again, esc, fmt, secUrl } = h;
@@ -118,7 +118,7 @@ export async function renderFurniture(host, h) {
           ${lay.clashes ? `<span class="flag-bad">${lay.clashes} item(s) still clash.</span>` : ""}</p>
         <div class="scroll"><table class="cost"><tr>${counts}</tr></table></div>
         <p>${dl("calc.docx", "Calculation (Word)")} · ${dl("calc.pdf", "PDF")} · ${dl("calc.xlsx", "Excel")} · ${dl("plan.dxf", "Plan and bolts (AutoCAD)")} · ${dl("plan.crm", "for Revit (.crm)")}</p>
-        <p class="status">Costing takes these numbers for its Fenders, Bollards, Ladders, Storm pins, Crane stoppers and Tie rods rows where no number is given, and the section's drawings include this plan.</p></div>
+        <p class="status">Costing takes these numbers for its Fenders, Bollards, Ladders, Storm pins, Crane stoppers, Crane tie-downs and Tie rods rows where no number is given, and the section's drawings include this plan.</p></div>
       <div class="panel" style="margin-top:10px"><h2 style="margin-top:0">Arrangement</h2>${plan(r)}${arrangement}</div>
       <div style="margin-top:10px"><h2>Design</h2>${itemsRows}</div>
       <div class="panel" style="margin-top:10px"><h2 style="margin-top:0">Assumptions to confirm</h2><ul>${[...r.assumptions, ...r.notes].map((a) => `<li>${esc(a)}</li>`).join("")}</ul></div>`;

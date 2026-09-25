@@ -115,7 +115,7 @@ def scene(
         },
         "levels": {
             "seabed": seabed,
-            "water": site.water_level,
+            "water": [w.level for w in site.water_levels],
             "ground": round(ground, 3),
             "ground_from": ground_from,
             "bottom": round(bottom, 3),
@@ -141,14 +141,15 @@ def scene(
                 "corners": _corners(at, s0, s1, wall_d, land),
             },
         ],
-        "water": {
-            "level": site.water_level,
-            "corners": _corners(at, s0, s1, wall_d - SEA, wall_d),
-        }
-        if site.water_level > seabed
-        else None,
+        # Each named level its own plane over the sea bed, highest first.
+        "water": [
+            {"name": w.name, "level": w.level, "corners": _corners(at, s0, s1, wall_d - SEA, wall_d)}
+            for w in sorted(site.water_levels, key=lambda w: -w.level)
+            if w.level > seabed
+        ],
     }
-    items, rails, crane = _furniture(project, section, frame, furniture, at, s0, s1, site.water_level)
+    low = min((w.level for w in site.water_levels), default=0.0)
+    items, rails, crane = _furniture(project, section, frame, furniture, at, s0, s1, low)
     out["furniture"] = items
     out["rails"] = rails
     out["crane"] = crane
@@ -156,9 +157,9 @@ def scene(
         notes += crane.pop("notes")
     if frame.get("notes"):
         notes += frame["notes"]
+    waters = ", ".join(f"{w.name} {w.level:g} m" for w in site.water_levels) or "none"
     notes.append(
-        f"Seabed {seabed:g} m, water {site.water_level:g} m, soil behind the wall at {ground:g} m "
-        f"({ground_from})."
+        f"Seabed {seabed:g} m; water {waters}; soil behind the wall at {ground:g} m ({ground_from})."
     )
     out["notes"] = notes
     return out
@@ -279,7 +280,11 @@ def _furniture(
                 "line": [at(s, -proj - 0.05, cope), at(s, -proj - 0.05, min(water - 1.0, cope - 1.0))],
             }
         )
-    for row in lay["items"].get("crane_stoppers", []) + lay["items"].get("storm_pins", []):
+    for row in (
+        lay["items"].get("crane_stoppers", [])
+        + lay["items"].get("storm_pins", [])
+        + lay["items"].get("tie_downs", [])
+    ):
         s = row["s_m"]
         if not inside(s):
             continue

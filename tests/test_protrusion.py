@@ -14,9 +14,17 @@ from triton.design import protrusion as P
 from triton.furniture_inputs import Fenders
 from triton.protrusion_inputs import FenderProtrusion, StsCrane
 
+# The hand checks below were worked for a 1000 mm fender of 1100 kN (the old defaults).
+HAND = Fenders(
+    reaction=1100.0,
+    height=1.0,
+    flange=1400.0,
+    anchors=dict(pattern="circle", count=6, circle_diameter=1100, diameter=36, embedment=500),
+)
+
 
 def block(**kw):
-    return P.block(FenderProtrusion(**kw), Fenders(), 4500, 2000, "C40/50", 50)
+    return P.block(FenderProtrusion(**kw), HAND, 4500, 2000, "C40/50", 50)
 
 
 def test_the_loads_on_the_block_by_hand():
@@ -67,7 +75,7 @@ def test_a_heavier_fender_needs_more_ties():
 
 
 def test_the_crane_stand_off_by_hand():
-    c = P.clearance(StsCrane(), Fenders(), FenderProtrusion(), 2.25)
+    c = P.clearance(StsCrane(), HAND, FenderProtrusion(), 2.25)
     assert c["standoff"]["free_m"] == pytest.approx(1.5 + 1.0 + 0.25)
     assert c["standoff"]["compressed_m"] == pytest.approx(1.5 + 0.28 + 0.25)
     assert c["reach"]["needed_m"] == pytest.approx(2.25 + 2.75 + 43.2 - 1.5)
@@ -78,10 +86,10 @@ def test_the_crane_stand_off_by_hand():
         70 - 2.25 - 43.2 + 1.5 - 1.25
     )
     # Without the block the ship's flare reaches the crane's legs: the reason for the protrusion.
-    bare = P.clearance(StsCrane(), Fenders(), None, 2.25)
+    bare = P.clearance(StsCrane(), HAND, None, 2.25)
     assert not bare["passed"] and bare["parts"][1]["passed"] is False
     # Too far out and the crane cannot reach the far row.
-    far = P.clearance(StsCrane(), Fenders(), FenderProtrusion(projection=30000), 2.25)
+    far = P.clearance(StsCrane(), HAND, FenderProtrusion(projection=30000), 2.25)
     assert not far["parts"][0]["passed"] and any("outside the range" in n for n in far["notes"])
 
 

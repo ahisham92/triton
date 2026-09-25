@@ -1,5 +1,5 @@
 # ruff: noqa  (runs inside Revit under IronPython 2 as well, so it keeps to Python 2 syntax)
-# Triton drawings for Revit: draws a Triton drawings file (triton.drawings/1, "Drawings for Revit" on
+# Triton drawings for Revit: draws a Triton drawings file (triton.drawings/1 or /2, "Drawings for Revit" on
 # Triton's Design tab) as detail lines in drafting views.
 #
 # Runs in Revit's own Dynamo (Manage > Dynamo: open Triton-drawings.dyn, pick the file, Run) or as a
@@ -227,9 +227,16 @@ class Drawer:
         self.circle(view, key, c, d / 2.0)
 
     def draw(self, view, v):
-        for it in v["items"]:
+        self.draw_items(view, v["items"])
+
+    def draw_items(self, view, items):
+        # Office families and dimensions: drawn here as the plain items they carry (the DevKit code
+        # and the add-in place the families themselves).
+        for it in items:
             t, key = it["type"], it["layer"]
-            if t == "line":
+            if "fallback" in it:
+                self.draw_items(view, it["fallback"])
+            elif t == "line":
                 self.line(view, key, it["a"], it["b"])
             elif t == "rect":
                 (ax, ay), (bx, by) = it["a"], it["b"]
@@ -247,7 +254,7 @@ class Drawer:
 def run(path):
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    if data.get("format") != "triton.drawings/1":
+    if data.get("format") not in ("triton.drawings/1", "triton.drawings/2"):
         return "Not a Triton drawings file (Drawings for Revit on the Design tab): " + path
     if DYNAMO:
         TransactionManager.Instance.EnsureInTransaction(doc)

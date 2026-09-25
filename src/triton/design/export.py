@@ -60,6 +60,15 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
                 "positions": [{"x": x, "y": y} for x, y in p.get("positions", [])],
                 "splice": c.get("splice", "lap"),
                 "construction_joints": joints_for_drawing(p),
+                "link_zones": [
+                    {
+                        "top_m": z.get("top"),
+                        "bottom_m": z.get("bottom"),
+                        "spacing_mm": z.get("spacing_mm"),
+                        "label": z.get("link"),
+                    }
+                    for z in (p.get("shear") or {}).get("zones") or []
+                ],
                 "user_set": bool(p.get("user_set")),
                 "runs": [
                     {

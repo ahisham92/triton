@@ -49,7 +49,7 @@ def _furniture_spots(project: Project, section: Section) -> list | None:
 
 
 # Costing items added to the defaults with the Furniture tab.
-_NEW = {"Ladders", "Storm pins", "Crane stoppers"}
+_NEW = {"Ladders", "Storm pins", "Crane stoppers", "Crane tie-downs"}
 
 
 def _hash(value: Any) -> str:
