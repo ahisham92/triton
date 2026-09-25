@@ -21,6 +21,9 @@ export async function renderMatrix(out, h) {
     peaks: new Set(s?.peaks || []),
     solid: (s?.decks || []).some((d) => d.type === "solid"),
     voids: (s?.decks || []).filter((d) => d.type === "voided").map((d) => `${fmt(d.diameter)}@${fmt(d.spacing)}`).join(", "),
+    mesh: new Set(s?.mesh || []),
+    punching: new Set(s?.punching_per || []),
+    use: { thickness: true, crack_width_limit: true, peaks: true, decks: true, mesh: false, punching_per: false, ...(s?.use || {}) },
   });
   const list = (t) => [...new Set(String(t || "").split(/[,;\s]+/).map(Number).filter((v) => Number.isFinite(v) && v > 0))];
   const voidList = (t) =>
@@ -35,10 +38,15 @@ export async function renderMatrix(out, h) {
     crack_width_limit: list(form.wk),
     peaks: [...form.peaks],
     decks: [...(form.solid ? [{ type: "solid" }] : []), ...voidList(form.voids)],
+    mesh: [...form.mesh].sort((a, b) => a - b),
+    punching_per: [...form.punching],
+    use: { ...form.use },
   });
+  // A list with its tick box off is not compared: the deck keeps its own value for it.
+  const AXES = ["thickness", "crack_width_limit", "peaks", "decks", "mesh", "punching_per"];
   const count = () => {
     const s = spec();
-    return Math.max(1, s.thickness.length) * Math.max(1, s.crack_width_limit.length) * Math.max(1, s.peaks.length) * Math.max(1, s.decks.length);
+    return AXES.reduce((n, k) => n * (s.use[k] ? Math.max(1, s[k].length) : 1), 1);
   };
 
   const cur = () => data.currency || "";
@@ -51,23 +59,36 @@ export async function renderMatrix(out, h) {
   };
   const wkOf = (o) => opt(o).crack_width_limit ?? data.current?.crack_width_limit;
   const peaksOf = (o) => data.peaks[opt(o).peaks || data.current?.peaks] || opt(o).peaks || "";
+  const meshOf = (o) => (opt(o).mesh ? `mesh @ ${fmt(opt(o).mesh)}` : "");
+  const punchOf = (o) => (opt(o).punching_per ? (data.punching || {})[opt(o).punching_per] : "");
+  const acrossKey = (o) => `${wkOf(o)}|${peaksOf(o)}|${meshOf(o)}|${punchOf(o)}`;
   const safe = (o) => o.deck?.passed;
 
   const inputs = () => {
     const s = spec();
     const n = count();
+    const use = (k) => `<input type="checkbox" data-use="${k}" ${form.use[k] ? "checked" : ""} title="Compare this: untick to leave it as the deck has it">`;
+    const off = (k) => (form.use[k] ? "" : " mx-off");
+    const cur_ = data.current || {};
     return `<div class="matrix-form">
       <label>Deck <select data-f="element">${data.slabs.map((n) => `<option ${n === form.element ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>
-      <label>Thicknesses (mm) <input data-f="thickness" value="${esc(form.thickness)}" placeholder="e.g. 650, 700, 750" style="width:12em"></label>
-      <label>Crack width limits (mm) <input data-f="wk" value="${esc(form.wk)}" placeholder="e.g. 0.2, 0.3" style="width:8em"></label>
-      <div><span class="status">Moments at the pile faces</span><br>${Object.entries(data.peaks)
-        .map(([k, t]) => `<label class="check"><input type="checkbox" data-peak="${k}" ${form.peaks.has(k) ? "checked" : ""}> ${esc(t)}</label>`)
+      <div class="mx-axis${off("thickness")}"><label class="check">${use("thickness")} <b>Thicknesses (mm)</b></label><br><input data-f="thickness" value="${esc(form.thickness)}" placeholder="e.g. 650, 700, 750" style="width:12em" ${form.use.thickness ? "" : "disabled"}></div>
+      <div class="mx-axis${off("crack_width_limit")}"><label class="check">${use("crack_width_limit")} <b>Crack width limits (mm)</b></label><br><input data-f="wk" value="${esc(form.wk)}" placeholder="e.g. 0.2, 0.3" style="width:8em" ${form.use.crack_width_limit ? "" : "disabled"}></div>
+      <div class="mx-axis${off("peaks")}"><label class="check">${use("peaks")} <b>Moments at the pile faces</b></label><br>${Object.entries(data.peaks)
+        .map(([k, t]) => `<label class="check"><input type="checkbox" data-peak="${k}" ${form.peaks.has(k) ? "checked" : ""} ${form.use.peaks ? "" : "disabled"}> ${esc(t)}</label>`)
         .join(" ")}</div>
-      <div><span class="status">Deck types</span><br><label class="check"><input type="checkbox" data-f="solid" ${form.solid ? "checked" : ""}> Solid</label>
-        <label>With voids, Ø @ spacing (mm) <input data-f="voids" value="${esc(form.voids)}" placeholder="e.g. 500@700, 400@600" style="width:12em"></label></div>
+      <div class="mx-axis${off("decks")}"><label class="check">${use("decks")} <b>Deck types</b></label><br><label class="check"><input type="checkbox" data-f="solid" ${form.solid ? "checked" : ""} ${form.use.decks ? "" : "disabled"}> Solid</label>
+        <label>With voids, Ø @ spacing (mm) <input data-f="voids" value="${esc(form.voids)}" placeholder="e.g. 500@700, 400@600" style="width:12em" ${form.use.decks ? "" : "disabled"}></label></div>
+      <div class="mx-axis${off("mesh")}"><label class="check">${use("mesh")} <b>Mesh spacing (mm)</b></label><br>${(data.spacings || [150, 200])
+        .map((m) => `<label class="check"><input type="checkbox" data-mesh="${m}" ${form.mesh.has(m) ? "checked" : ""} ${form.use.mesh ? "" : "disabled"}> ${fmt(m)}</label>`)
+        .join(" ")}</div>
+      <div class="mx-axis${off("punching_per")}"><label class="check">${use("punching_per")} <b>Punching design</b></label><br>${Object.entries(data.punching || {})
+        .map(([k, t]) => `<label class="check"><input type="checkbox" data-punch="${k}" ${form.punching.has(k) ? "checked" : ""} ${form.use.punching_per ? "" : "disabled"}> ${esc(t.replace("punching ", ""))}</label>`)
+        .join(" ")}</div>
     </div>
+    <p class="status">Untick a list to leave it out of the comparison: the deck keeps what it has (now ${fmt(cur_.thickness)} mm, wk ${fmt(cur_.crack_width_limit, 2)} mm, ${esc(data.peaks[cur_.peaks] || "")}${cur_.voids ? ", with voids" : ", solid"}, ${cur_.mesh ? `mesh @ ${fmt(cur_.mesh)}` : "the lighter mesh"}, ${esc((data.punching || {})[cur_.punching_per] || "")}).</p>
     <p class="status">${n} combination${n === 1 ? "" : "s"}${n > data.max ? `: <span class="flag-bad">at most ${data.max} at a time</span>` : ""}.
-      An empty list keeps the deck as it is (now ${fmt(data.current?.thickness)} mm, wk ${fmt(data.current?.crack_width_limit, 2)} mm, ${esc(data.peaks[data.current?.peaks] || "")}${data.current?.voids ? ", with voids" : ", solid"}).
+      An empty list keeps the deck as it is too.
       The crack width limit is the deck's own, on both faces; every combination is designed with the whole section and without the bars you set by hand.
       Combinations already designed from the same inputs are not designed again.${s.decks.some((d) => d.type === "voided") && !data.current?.voids ? " Voids run across the quay from 1 m behind the front beam to 1 m before the rear beam, as the Elements tab's defaults." : ""}</p>
     <div class="row"><button class="primary" id="mx-run" ${running || n > data.max ? "disabled" : ""}>Design every combination</button>
@@ -78,9 +99,9 @@ export async function renderMatrix(out, h) {
   // per metre, green where the deck is safe, with its bars in kg/m³.
   const grid = (rows) => {
     const down = [...new Map(rows.map((o) => [`${opt(o).thickness}|${deckType(o)}`, o])).values()].sort((a, b) => opt(a).thickness - opt(b).thickness || deckType(a).localeCompare(deckType(b)));
-    const across = [...new Map(rows.map((o) => [`${wkOf(o)}|${peaksOf(o)}`, o])).values()].sort((a, b) => wkOf(a) - wkOf(b) || peaksOf(a).localeCompare(peaksOf(b)));
-    const cell = (r, c) => rows.find((o) => opt(o).thickness === opt(r).thickness && deckType(o) === deckType(r) && wkOf(o) === wkOf(c) && peaksOf(o) === peaksOf(c));
-    return `<div class="scroll"><table class="matrix-grid"><tr><th>Thickness, type</th>${across.map((c) => `<th>wk ${fmt(wkOf(c), 2)} mm<br><span class="hint">${esc(peaksOf(c))}</span></th>`).join("")}</tr>
+    const across = [...new Map(rows.map((o) => [acrossKey(o), o])).values()].sort((a, b) => acrossKey(a).localeCompare(acrossKey(b)));
+    const cell = (r, c) => rows.find((o) => opt(o).thickness === opt(r).thickness && deckType(o) === deckType(r) && acrossKey(o) === acrossKey(c));
+    return `<div class="scroll"><table class="matrix-grid"><tr><th>Thickness, type</th>${across.map((c) => `<th>wk ${fmt(wkOf(c), 2)} mm<br><span class="hint">${esc([peaksOf(c), meshOf(c), punchOf(c)].filter(Boolean).join(", "))}</span></th>`).join("")}</tr>
       ${down.map((r) => `<tr><th>${fmt(opt(r).thickness)} mm, ${esc(deckType(r))}</th>${across.map((c) => {
         const o = cell(r, c);
         if (!o) return "<td>–</td>";
@@ -98,15 +119,15 @@ export async function renderMatrix(out, h) {
 
   const table = (rows) => {
     const done = rows.filter((o) => o.deck);
-    const head = `<tr><th title="In the report">⎙</th><th>Thickness</th><th>Type</th><th>wk (mm)</th><th>Pile faces</th><th>Deck safe</th><th>Utilisation</th><th>Bars kg/m³</th><th>With links kg/m³</th>
+    const head = `<tr><th title="In the report">⎙</th><th>Thickness</th><th>Type</th><th>wk (mm)</th><th>Pile faces</th>${form.use.mesh ? "<th>Mesh</th>" : ""}${form.use.punching_per ? "<th>Punching design</th>" : ""}<th>Deck safe</th><th>Utilisation</th><th>Bars kg/m³</th><th>With links kg/m³</th>
       <th>Punching links</th><th>Shear link cells</th><th>Concrete m³/m</th><th>Rebar t/m</th><th>Deck ${esc(cur())}/m</th><th>Section ${esc(cur())}/m</th><th>Over the cheapest safe</th><th></th></tr>`;
     const body = sorted(rows).map((o) => {
       const dk = o.deck || {};
       const need = (dk.punching || []).filter((p) => p.needs_links);
       const tags = `${o.base ? ' <span class="chip small-chip">as set</span>' : ""}${o.best ? ' <span class="chip small-chip trial-best">cheapest safe</span>' : ""}`;
-      if (!o.deck) return `<tr class="trial-idle"><td></td><td colspan="4">${esc(o.label)}${tags}</td><td colspan="12" class="status">${o.deck_state === "out of date" ? "Inputs changed: design again." : "Not designed yet."}</td></tr>`;
+      if (!o.deck) return `<tr class="trial-idle"><td></td><td colspan="4">${esc(o.label)}${tags}</td><td colspan="${12 + (form.use.mesh ? 1 : 0) + (form.use.punching_per ? 1 : 0)}" class="status">${o.deck_state === "out of date" ? "Inputs changed: design again." : "Not designed yet."}</td></tr>`;
       return `<tr class="${o.best ? "trial-best-row" : ""}"><td><input type="checkbox" data-rep="${esc(o.key)}" ${ticked.has(o.key) ? "" : "checked"}></td>
-        <td>${fmt(opt(o).thickness ?? dk.thickness_mm)}${tags}</td><td>${esc(deckType(o))}</td><td>${fmt(wkOf(o), 2)}</td><td>${esc(peaksOf(o))}</td>
+        <td>${fmt(opt(o).thickness ?? dk.thickness_mm)}${tags}</td><td>${esc(deckType(o))}</td><td>${fmt(wkOf(o), 2)}</td><td>${esc(peaksOf(o))}</td>${form.use.mesh ? `<td>${fmt(opt(o).mesh) || "–"}</td>` : ""}${form.use.punching_per ? `<td>${esc(punchOf(o) || "–")}</td>` : ""}
         <td title="${esc(dk.why || "")}">${safe(o) ? '<span class="flag-ok">Yes</span>' : '<span class="flag-bad">No</span>'}${o.others_unsafe?.length ? `<div class="hint" title="${esc(o.others_unsafe.join(", "))}">${o.others_unsafe.length} other element${o.others_unsafe.length > 1 ? "s" : ""} not safe</div>` : ""}</td>
         <td class="cell ${dk.utilisation > 1 ? "error" : "ok"}">${fmt(dk.utilisation, 2)}</td><td>${fmt(dk.kg_per_m3)}</td><td>${fmt(dk.kg_per_m3_with_links)}</td>
         <td>${need.length ? need.map((p) => `${esc(p.pile)} (${fmt(p.heads)})`).join(", ") : "none"}${(dk.punching || []).some((p) => !p.passed) ? '<div class="flag-bad">some fail even with links</div>' : ""}</td>
@@ -144,6 +165,20 @@ export async function renderMatrix(out, h) {
         draw();
       };
     });
+    out.querySelectorAll("[data-use]").forEach((i) => (i.onchange = () => {
+      form.use[i.dataset.use] = i.checked;
+      draw();
+    }));
+    out.querySelectorAll("[data-mesh]").forEach((i) => (i.onchange = () => {
+      if (i.checked) form.mesh.add(+i.dataset.mesh);
+      else form.mesh.delete(+i.dataset.mesh);
+      draw();
+    }));
+    out.querySelectorAll("[data-punch]").forEach((i) => (i.onchange = () => {
+      if (i.checked) form.punching.add(i.dataset.punch);
+      else form.punching.delete(i.dataset.punch);
+      draw();
+    }));
     out.querySelectorAll("[data-peak]").forEach((i) => (i.onchange = () => {
       if (i.checked) form.peaks.add(i.dataset.peak);
       else form.peaks.delete(i.dataset.peak);

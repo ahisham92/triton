@@ -67,7 +67,13 @@ from .project import (
     with_project_grades,
 )
 from .reader import UnsupportedWorkbook
-from .report import RENDERERS, build_matrix_report, build_report
+from .report import (
+    RENDERERS,
+    build_matrix_report,
+    build_report,
+    build_scenarios_report,
+    build_trials_report,
+)
 from .review import choices
 from .stepped import assemble, is_read, read_step
 from .store import UPLOAD_ID, ProjectNotFound, ProjectStore, housekeeping
@@ -1620,7 +1626,9 @@ def run_matrix(project_id: str, section_id: str, body: MatrixRequest) -> dict:
     d = store()._dir(project_id, section_id)
     try:
         spec = matrix.clean_spec(
-            body.spec or matrix.load_spec(d) or matrix.default_spec(section) or {}, section
+            body.spec or matrix.load_spec(d) or matrix.default_spec(section) or {},
+            section,
+            project.design.reinforcement.slab_spacings,
         )
         variants = matrix.variants(spec, section)
     except ValueError as e:
@@ -1667,6 +1675,43 @@ def matrix_report(project_id: str, section_id: str, fmt: str, keys: str | None =
         raise HTTPException(409, "Design the options first.")
     rep = build_matrix_report(project, section, v, designs)
     name = _file_name(project.info.name, section.name, "deck options")
+    render, media = RENDERERS[fmt]
+    return Response(
+        render(rep),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'},
+    )
+
+
+@app.get(SECTION + "/comparisons/report.{fmt}")
+def comparisons_report(
+    project_id: str, section_id: str, fmt: str, what: str, element: str | None = None
+) -> Response:
+    """The Comparisons tab's own export (not part of the design report), as Word, PDF or Excel:
+    ``what`` = element (one element's sizes, with ``element``), all (a change on every element) or ve
+    (Value engineering). The deck option matrix has its own, with its figures."""
+    if fmt not in RENDERERS:
+        raise HTTPException(404, "Reports are Word (.docx), PDF (.pdf) or Excel (.xlsx).")
+    project = _get(project_id)
+    section = _section(project, section_id)
+    if what == "element":
+        d = store()._dir(project_id, section_id)
+        summary = store().workbook_summary(project_id, section_id)
+        view = trials.view(project, section, summary, store().load_results(project_id, section_id), d)
+        if not any(e["element"] == element for e in view["elements"]):
+            raise HTTPException(404, f"No trials for {element}.")
+        rep = build_trials_report(project, section, view, element)
+        name = _file_name(project.info.name, section.name, element or "", "sizes")
+    elif what in ("all", "ve"):
+        which = "ve" if what == "ve" else "scenarios"
+        view = _scenarios(project_id, section_id, which)
+        title = "Value engineering: ideas costed" if which == "ve" else "All elements: changes compared"
+        rep = build_scenarios_report(project, section, view, title)
+        name = _file_name(
+            project.info.name, section.name, "value engineering" if which == "ve" else "comparisons"
+        )
+    else:
+        raise HTTPException(422, "what is element, all or ve.")
     render, media = RENDERERS[fmt]
     return Response(
         render(rep),

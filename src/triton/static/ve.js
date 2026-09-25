@@ -123,7 +123,8 @@ export async function renderValueEngineering(host, h) {
       <div class="panel"><h2 style="margin-top:0">Costed against the section as set</h2>
         ${waiting.length ? `<p class="status">To design and cost: ${waiting.map((q) => `<span class="chip small-chip">${esc(q.label)} <button class="small quiet" data-unwait="${esc(changeKey(q))}">×</button></span>`).join(" ")}</p>` : ""}
         <div class="row"><button id="ve-run" ${running ? "disabled" : ""}>${running ? "Designing…" : "Design and cost"}</button>
-          ${running ? '<button id="ve-stop" class="quiet">Stop</button>' : ""}<span class="status" id="ve-status">${running ? esc(running.text) : ""}</span></div>
+          ${running ? '<button id="ve-stop" class="quiet">Stop</button>' : ""}<span class="status" id="ve-status">${running ? esc(running.text) : ""}</span>
+          <span style="margin-left:auto">Export: ${["docx:Word", "pdf:PDF", "xlsx:Excel"].map((x) => { const [f, t] = x.split(":"); return `<a class="quiet-link" href="${secUrl()}/comparisons/report.${f}?what=ve">${t}</a>`; }).join(" ")}</span></div>
         <p class="status">Each line designs every element of the section with the change, without the bars you set by hand (so the lines differ only
           by the idea). Elements an idea does not touch are designed once and shared, so a new idea costs little more than the elements it changes.</p>
         <div class="scroll"><table class="cost trials"><tr><th>What</th><th>Cost per m (${esc(cur)}/m)</th><th>Against as set, per m</th>

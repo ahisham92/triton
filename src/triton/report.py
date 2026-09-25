@@ -162,6 +162,155 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     return r
 
 
+def _saving(v: Any) -> str:
+    if v is None:
+        return "–"
+    return "0" if v == 0 else (f"saves {_fmt(v)}" if v > 0 else f"costs {_fmt(-v)} more")
+
+
+def build_trials_report(project: Project, section: Section, view: dict, element: str) -> Report:
+    """Comparisons, one element at several sizes: each size's safety, reinforcement, links and cost."""
+    info = project.info
+    el = next(e for e in view["elements"] if e["element"] == element)
+    cur = view.get("currency") or ""
+    r = Report(f"{info.name}: {section.name}", f"{element}: sizes compared")
+    r.kv(
+        [
+            ("Project", info.name),
+            ("Section", section.name),
+            ("Element", f"{element} (now {el['current_label']})"),
+            ("Berth length", f"{view['berth_length_m']:g} m" if view.get("berth_length_m") else None),
+            ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
+        ]
+    )
+    r.p(
+        "Each size is the element designed again with the section's other inputs, without the bars set by "
+        f"hand for its current size. Costs are per metre of berth in {cur}, at the unit prices on the "
+        "Project tab; savings are against the current size."
+    )
+    for n in view.get("notes") or []:
+        r.note(n)
+    slab = el["kind"] == "slabs"
+    rows = []
+    for t in el["rows"]:
+        tag = " (current)" if t.get("current") else ""
+        tag += " (cheapest safe)" if t.get("best") else ""
+        if t.get("state") != "done":
+            rows.append([t["label"] + tag, "not run", *[""] * (8 if slab else 6)])
+            continue
+        common = [
+            t["label"] + tag,
+            "yes" if t.get("passed") else "no",
+            t.get("utilisation"),
+            t.get("cost_per_m"),
+            _saving(t.get("saving_per_m")),
+            t.get("kg_per_m3"),
+        ]
+        if slab:
+            common += [
+                t.get("kg_per_m3_with_links"),
+                f"{t.get('punching_need_links') or 0} of {t.get('punching_heads') or 0} heads",
+            ]
+        else:
+            common += [t.get("links") or t.get("bars") or "–"]
+        rows.append([*common, t.get("concrete_m3_per_m"), t.get("rebar_t_per_m")])
+    head = ["Size (mm)", "Safe", "Utilisation", f"{cur}/m", "Against current, per m", "Bars kg/m³"]
+    head += ["With links kg/m³", "Punching links"] if slab else ["Links / cage"]
+    r.table([*head, "Concrete m³/m", "Rebar t/m"], rows)
+    for t in el["rows"]:
+        if t.get("state") == "done" and not t.get("passed") and t.get("why"):
+            r.note(f"{t['label']}: {t['why']}")
+    return r
+
+
+def build_scenarios_report(project: Project, section: Section, view: dict, title: str) -> Report:
+    """Comparisons, all elements (or Value engineering): the whole section per change, per element."""
+    info = project.info
+    cur = view.get("currency") or ""
+    r = Report(f"{info.name}: {section.name}", title)
+    r.kv(
+        [
+            ("Project", info.name),
+            ("Section", section.name),
+            ("Berth length", f"{view['berth_length_m']:g} m" if view.get("berth_length_m") else None),
+            ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
+        ]
+    )
+    r.p(
+        "Each change is the whole section designed again with it, every element without the bars set by "
+        f"hand, and costed per metre of berth in {cur} against the section as set."
+    )
+    cols = view.get("variants") or []
+    r.table(
+        [
+            "Change",
+            f"{cur}/m",
+            "Against as set, per m",
+            "Whole berth",
+            "Concrete m³/m",
+            "Rebar t/m",
+            "Safe",
+            "Not safe",
+        ],
+        [
+            [
+                c["label"],
+                c.get("cost_per_m") if c.get("complete") else "not complete",
+                _saving(c.get("saving_per_m")) if not c.get("base") else "–",
+                _saving(c.get("saving")) if not c.get("base") and c.get("saving") is not None else "–",
+                c.get("concrete_m3_per_m"),
+                c.get("rebar_t_per_m"),
+                c.get("safe_count"),
+                ", ".join(c.get("unsafe") or []) or "–",
+            ]
+            for c in cols
+        ],
+    )
+    names = view.get("elements") or []
+    if names and cols:
+        r.h(2, "Each element")
+        rows = []
+        for n in names:
+            for c in cols:
+                e = (c.get("elements") or {}).get(n) or {}
+                if e.get("state") != "done":
+                    rows.append([n, c["label"], e.get("state") or "not run", "", ""])
+                    continue
+                rows.append(
+                    [
+                        n,
+                        c["label"],
+                        "yes" if e.get("passed") else "no",
+                        e.get("utilisation"),
+                        e.get("cost_per_m"),
+                    ]
+                )
+        r.table(["Element", "Change", "Safe", "Utilisation", f"{cur}/m"], rows)
+    return r
+
+
+def _matrix_axes(view: dict) -> list[tuple[str, str, Any]]:
+    """Each list of the option matrix: its key, its name in the report and how a value reads."""
+    return [
+        ("thickness", "Thicknesses (mm)", lambda t: f"{t:g}"),
+        ("crack_width_limit", "Crack width limits (mm)", lambda t: f"{t:g}"),
+        ("peaks", "Moments at the pile faces", lambda p: view["peaks"].get(p, p)),
+        (
+            "decks",
+            "Deck types",
+            lambda d: "solid" if d["type"] == "solid" else f"voids Ø{d['diameter']:g} @ {d['spacing']:g}",
+        ),
+        ("mesh", "Mesh spacings (mm)", lambda m: f"{m:g}"),
+        ("punching_per", "Punching design", lambda p: (view.get("punching") or {}).get(p, p)),
+    ]
+
+
+def _axis(spec: dict, key: str, text: Any) -> str:
+    if not (spec.get("use") or {}).get(key, True) or not spec.get(key):
+        return "not compared (as set)"
+    return ", ".join(text(v) for v in spec[key])
+
+
 def build_matrix_report(project: Project, section: Section, view: dict, designs: dict[str, dict]) -> Report:
     """A deck's options compared (Comparisons tab, option matrix): the options set, a summary of every
     option, then each option's bars (as the design page draws them), governing sections, shear and
@@ -176,23 +325,7 @@ def build_matrix_report(project: Project, section: Section, view: dict, designs:
             ("Project", info.name),
             ("Section", section.name),
             ("Deck", name),
-            ("Thicknesses (mm)", ", ".join(f"{t:g}" for t in spec.get("thickness") or []) or "as set"),
-            (
-                "Crack width limits (mm)",
-                ", ".join(f"{t:g}" for t in spec.get("crack_width_limit") or []) or "as set",
-            ),
-            (
-                "Moments at the pile faces",
-                ", ".join(view["peaks"].get(p, p) for p in spec.get("peaks") or []) or "as set",
-            ),
-            (
-                "Deck types",
-                ", ".join(
-                    "solid" if d["type"] == "solid" else f"voids Ø{d['diameter']:g} @ {d['spacing']:g}"
-                    for d in spec.get("decks") or []
-                )
-                or "as set",
-            ),
+            *[(label, _axis(spec, k, text)) for k, label, text in _matrix_axes(view)],
             ("Berth length", f"{view['berth_length_m']:g} m" if view.get("berth_length_m") else None),
             ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
         ]
