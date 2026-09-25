@@ -365,6 +365,18 @@ def build_calc(
         ["Row", "Bars", "Up into the element (m)", "L leg (m)", "Shape"],
         [[c["row"], c["bars"], c["up_m"], c["leg_m"], c["shape"]] for c in sc["connection"]["rows"]],
     )
+    wd = entry.get("weld")
+    if wd:
+        r.h(2, "Bars welded to the tube")
+        r.p(
+            f"Each bar carries its design strength As·fyk/γs into the tube through a {wd['leg_mm']:g} mm fillet weld: "
+            f"throat a = leg/√2 = {wd['throat_mm']:g} mm, fvw,d = fu/(√3 βw γM2) = {wd['filler_fu_mpa']:g}/(√3 × "
+            f"{wd['beta_w']:g} × {wd['gamma_m2']:g}) = {wd['fvw_mpa']:g} MPa (EN 1993-1-8 4.5.3.3); length = F/(fvw,d a)."
+        )
+        r.table(
+            ["Row", "Bars", "Force per bar (kN)", "Weld per bar (mm)"],
+            [[x["row"], x["bars"], x["force_kN"], x["length_mm"]] for x in wd["rows"]],
+        )
     removed = set((whatif or {}).get("bars") or [])
     pile_removed = set((whatif or {}).get("pile_bars") or [])
     r.image(

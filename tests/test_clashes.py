@@ -217,3 +217,13 @@ def test_set_out_lays_the_slab_bars_between_the_pile_bars():
 
 def test_pile_bars_run_straight_into_a_beam_by_default():
     assert ClashSettings().beam_bars == "straight"
+
+
+def test_weld_of_a_t32_to_the_tube_matches_the_office_report():
+    # Appendix 2: T32 welded to the steel pile, E70XX, 16 mm fillet: 124 mm of weld per bar.
+    head = _head(part="infill", rings=[{"count": 36, "diameter_mm": 32.0, "radius_mm": 700.0}])
+    ctx = type("Ctx", (), {"rule": ClashSettings(), "fyd": 500 / 1.15})()
+    w = C.weld_check(ctx, head)
+    assert w["rows"][0]["force_kN"] == pytest.approx(349.7, abs=0.1)
+    assert w["rows"][0]["length_mm"] == pytest.approx(124, abs=1)
+    assert C.weld_check(ctx, _head()) is None  # a pile, not a combi wall infill
