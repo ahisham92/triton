@@ -540,7 +540,9 @@ def tag_part(result: dict[str, Any], part: Part, parts: list[Part]) -> dict[str,
         # A slab joint's X/Y line and a beam stop end's position are read in the part's turned frame.
         out["construction_joints"] = [
             {**j, "where": f"{j['where']} ({part.name}'s turned frame)"}
-            if j.get("kind") == "slab" and j.get("line", {}).get("along") and "face of" not in j["where"]
+            if j.get("kind") == "slab"
+            and j.get("line", {}).get("along")
+            and "face of" not in j["where"]
             or "at_m" in j
             else j
             for j in out["construction_joints"]

@@ -260,8 +260,10 @@ def test_a_corner_takes_every_ultimate_sheet():
         sh = next(s for s in wb.sheets if s.name == src)
         f = sh.frame.copy()
         cols = [c for c in f.columns if c not in ("X", "Y", "Z", "Node", "Element")]
-        f[cols] = f[cols].apply(lambda c: c * k if c.dtype.kind == "f" else c)
-        both.sheets.append(replace(sh, name=name, frame=f, parsed=replace(sh.parsed, combination="PT-B-Yard")))
+        f[cols] = f[cols].apply(lambda c, k=k: c * k if c.dtype.kind == "f" else c)
+        both.sheets.append(
+            replace(sh, name=name, frame=f, parsed=replace(sh.parsed, combination="PT-B-Yard"))
+        )
     corner = turn_workbook(both, -25.0, where=lambda x, y: y >= 0)
     out = run_section(DesignSettings(), section(), corner, only=ONLY)
     alone = copy.copy(corner)
