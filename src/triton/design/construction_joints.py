@@ -6,25 +6,33 @@ along it (a stop end), and a slab along a line at an X or a Y or at a beam's fac
 against the beam). Every joint is checked with the Plaxis actions at it, as designed (load
 multipliers, working zone and sign as for the element's own design, ULS combinations only):
 
+The rules are in Design settings (Construction joints); their defaults follow the office's Final
+Design Report, Appendix 18 "Shear check at construction joint", which gives 6040 mm² (front beam
+joint, VEd 1294 kN/m, NEd 640 kN/m tension, h 700) and 3343 mm² (rear beam joint, 920 and 72 kN/m).
+
 Shear across the joint, EN 1992-1-1 6.2.5
-    vEdi = β VEd / (z bi) with β = 1 (all the force crosses the joint), z = 0.9 d; bi = D for a pile,
-    the beam width, 1 m of slab. The resistance is
+    vEdi = β VEd / (z bi) with β = 1 (all the force crosses the joint) and z = 0.8 d (office; 0.9 d
+    is a setting), d = h − cover (office) or to the tension bars; bi = D for a pile, the beam width,
+    1 m of slab. The resistance is
     vRdi = c fctd + μ σn + ρ fyd μ ≤ 0.5 ν fcd, bars at 90° to the joint (α = 90°), with c and μ of
     the joint's surface (6.2.5(2): very smooth 0.025 / 0.5, smooth 0.20 / 0.6, rough 0.40 / 0.7,
-    indented 0.50 / 0.9), fctd = fctk,0.05 / γc, σn = N / Ai (compression +, at most 0.6 fcd) and c fctd
-    = 0 when σn is tension. ρ = As / Ai over the whole joint area Ai.
+    indented 0.50 / 0.9; indented, a keyed joint such as Stremaform, is the default as the office's),
+    fctd = fctk,0.05 / γc, σn = N / (b d) (office; N / (b h) is a setting; compression +, at most
+    0.6 fcd) and c fctd = 0 when σn is tension. ρ = As / Ai over the whole joint area Ai = b h, so
+    As = ρ b h. For a slab the shear is the largest at the joint (office), or the mean over the strip
+    width as the slab design (a setting); results inside the pile heads are left out.
 
 Tension across the joint
-    A joint carries no tension in the concrete, so the bars crossing it take the tension of N with M:
-    for a pile or a beam stop end the least share of its crossing bars that still carries every ULS
-    result near the joint in N + M (the element's own N–M check with the bars scaled down); for a
-    slab, the tension face's steel for M with N (the strip design's rule), both faces when the whole
-    depth is in tension.
+    A joint carries no tension in the concrete. As the office's check, N enters through σn and the
+    joint bars are the shear-friction steel; bending is checked in the element's own design. With the
+    setting "add", the tension steel of N with M is added on top (no bar counted twice): for a pile or
+    a beam stop end the least share of its crossing bars that still carries every ULS result near the
+    joint in N + M; for a slab, the tension face's steel for M with N (both faces when the whole depth
+    is in tension). It is shown either way.
 
 Bars needed
-    The bars crossing the joint must give the tension steel and, on top of it, the shear friction steel
-    (bars are not counted twice): needed = As,tension + As,shear. For a horizontal joint in a beam
-    the crossing bars are the links (Asw/s per metre), which carry no tension from bending there. Where
+    The bars crossing the joint (all of them) must give the steel needed. For a horizontal joint in a
+    beam the crossing bars are the links (Asw/s per metre). Where
     the bars crossing are not enough, the additional bars at that joint are chosen: the fewest dowels
     or starter bars (an even number on a ring inside a pile cage; bars per metre, half on each face, in
     a slab; spread round the perimeter at a beam stop end; U-bars with the links' legs in a horizontal
@@ -231,6 +239,8 @@ def pile_joints(
     pile = with_project_grades(pile, settings.materials, settings.durability)
     laws = Laws(pile.concrete, settings)
     dg = settings.piles.aggregate_size
+    rules = settings.construction_joints
+    add = rules.tension == "add"
     out = []
     for i, j in enumerate(pile.construction_joints):
         e = _base(name, "pile", i, j.surface, j.note, f"Level {j.level:g} m, across the pile")
@@ -260,7 +270,7 @@ def pile_joints(
         ac = math.pi * pile.diameter**2 / 4
         rs = max((float(r["radius"]) for r in rings), default=pile.diameter / 2 - 100)
         d = pile.diameter / 2 + 2 * rs / math.pi
-        z = 0.9 * d
+        z = rules.lever_arm * d
         v_edi = v * 1e3 / (z * pile.diameter)
         sigma = n * 1e3 / ac
         need_v = shear_steel(v_edi, sigma, j.surface, laws) * ac
@@ -274,9 +284,9 @@ def pile_joints(
             "V_kN": _r(v[g]),
             "results": int(len(near)),
         }
-        spare = max(area - as_t, 0.0)
+        spare = max(area - as_t, 0.0) if add else area
         _shear_terms(e, v_edi[g], sigma[g], spare / ac, j.surface, laws)
-        _needs(e, as_t, float(need_v[g]), area)
+        _needs(e, as_t, float(need_v[g]), area, add=add)
         crushes = float(v_edi.max()) > laws.v_max + 1e-9
         extra = None
         if (e["additional_mm2"] or 0) > 0 and not crushes:
@@ -357,8 +367,14 @@ def _beam_level(e, j: BeamJoint, settings, laws: Laws, design, uls, top_level, b
     asw = legs * math.pi * phi * phi / 4 * 1000 / s if s else 0.0  # mm²/m
     e["crossing"] = {"label": link.get("label") or "no links", "area_mm2_per_m": round(asw)}
     bottom = (design.get("cage") or {}).get("bottom") or {}
-    d = h - float(design.get("cover_mm") or 50) - phi - float(bottom.get("phi") or 25) / 2
-    z = 0.9 * d
+    cover = float(design.get("cover_mm") or 50)
+    rules = settings.construction_joints
+    d = (
+        h - cover
+        if rules.effective_depth == "cover"
+        else h - cover - phi - float(bottom.get("phi") or 25) / 2
+    )
+    z = rules.lever_arm * d
     v = uls["V"].abs().to_numpy(float)
     v_edi = v * 1e3 / (z * b)
     need = shear_steel(v_edi, np.zeros_like(v_edi), j.surface, laws) * b * 1000  # mm²/m
@@ -416,11 +432,14 @@ def _beam_stop(e, j: BeamJoint, settings, laws: Laws, design, uls, bars, b, h) -
 
     as_t = _least_share(util) * area
     top = (design.get("cage") or {}).get("top") or {}
-    d = h - float(design.get("cover_mm") or 50) - 16 - float(top.get("phi") or 25) / 2
+    rules = settings.construction_joints
+    cover = float(design.get("cover_mm") or 50)
+    d = h - cover if rules.effective_depth == "cover" else h - cover - 16 - float(top.get("phi") or 25) / 2
     v, vh = near["V"].abs().to_numpy(float), near["Vh"].abs().to_numpy(float)
-    v_edi = np.hypot(v * 1e3 / (0.9 * d * b), vh * 1e3 / (0.9 * (b - (h - d)) * h))
+    za = rules.lever_arm
+    v_edi = np.hypot(v * 1e3 / (za * d * b), vh * 1e3 / (za * (b - (h - d)) * h))
     ai = b * h
-    sigma = n * 1e3 / ai
+    sigma = n * 1e3 / (b * d if rules.sigma_n_area == "d" else ai)
     need_v = shear_steel(v_edi, sigma, j.surface, laws) * ai
     g = int(np.argmax(need_v - 1e-9 * v_edi))
     row = near.iloc[g]
@@ -434,8 +453,9 @@ def _beam_stop(e, j: BeamJoint, settings, laws: Laws, design, uls, bars, b, h) -
         "Vh_kN": _r(vh[g]),
         "results": int(len(near)),
     }
-    _shear_terms(e, v_edi[g], sigma[g], max(area - as_t, 0.0) / ai, j.surface, laws)
-    _needs(e, as_t, float(need_v[g]), area)
+    add = rules.tension == "add"
+    _shear_terms(e, v_edi[g], sigma[g], (max(area - as_t, 0.0) if add else area) / ai, j.surface, laws)
+    _needs(e, as_t, float(need_v[g]), area, add=add)
     crushes = float(v_edi.max()) > laws.v_max + 1e-9
     extra = None
     if (e["additional_mm2"] or 0) > 0 and not crushes:
@@ -570,10 +590,12 @@ def slab_joints(
             e["status"] = "no slab results within 1 m of the line (outside the pile heads): not checked"
             out.append(e)
             continue
-        near = strip_mean(near, other, width)
-        e["averaged_over_m"] = width
+        if settings.construction_joints.actions == "strip_mean":
+            near = strip_mean(near, other, width)
+            e["averaged_over_m"] = width
         e["line"]["range_m"] = [_r(near[other].min(), 2), _r(near[other].max(), 2)]
-        out.append(_slab_line_check(e, j, settings, laws, drawing, near, along, other, at, h))
+        covers = (float(design.get("cover_top_mm") or 50), float(design.get("cover_bottom_mm") or 50))
+        out.append(_slab_line_check(e, j, settings, laws, drawing, near, along, other, at, h, covers))
     return out
 
 
@@ -593,9 +615,12 @@ def strip_mean(near: pd.DataFrame, other: str, width: float) -> pd.DataFrame:
     return pd.concat(parts)
 
 
-def _slab_line_check(e, j: SlabJoint, settings, laws: Laws, drawing, near, along, other, at, h) -> dict:
+def _slab_line_check(
+    e, j: SlabJoint, settings, laws: Laws, drawing, near, along, other, at, h, covers
+) -> dict:
     from .slabs import required_as
 
+    cover_top, cover_bot = covers
     m = near[f"M{along.lower()}"].to_numpy(float)
     n = near[f"N{along.lower()}"].to_numpy(float)
     v = near[f"V{along.lower()}"].abs().to_numpy(float)
@@ -619,10 +644,14 @@ def _slab_line_check(e, j: SlabJoint, settings, laws: Laws, drawing, near, along
     whole = (n < 0) & (np.abs(m) * 1e6 < -n * 1e3 * (d - h / 2))  # the whole depth in tension
     as_t = np.where(whole, 2 * as_t, as_t)
     provided = a_top + a_bot
-    v_edi = v * 1e3 / (0.9 * d * 1000)
-    sigma = n * 1e3 / (1000 * h)
+    rules = settings.construction_joints
+    if rules.effective_depth == "cover":
+        d = np.where(m >= 0, h - cover_bot, h - cover_top)
+    v_edi = v * 1e3 / (rules.lever_arm * d * 1000)
+    sigma = n * 1e3 / (1000 * (d if rules.sigma_n_area == "d" else h))
     need_v = shear_steel(v_edi, sigma, j.surface, laws) * 1000 * h
-    short = as_t + need_v - provided
+    add = rules.tension == "add"
+    short = (as_t if add else 0.0) + need_v - provided
     g = int(np.argmax(short))
     row = near.iloc[g]
     e["forces"] = {
@@ -637,8 +666,9 @@ def _slab_line_check(e, j: SlabJoint, settings, laws: Laws, drawing, near, along
         "label": f"top {steel[g][0][2]}; bottom {steel[g][1][2]}",
         "area_mm2_per_m": round(float(provided[g])),
     }
-    _shear_terms(e, v_edi[g], sigma[g], max(provided[g] - as_t[g], 0.0) / (1000 * h), j.surface, laws)
-    _needs(e, float(as_t[g]), float(need_v[g]), float(provided[g]), per_m=True)
+    spare = max(provided[g] - as_t[g], 0.0) if add else provided[g]
+    _shear_terms(e, v_edi[g], sigma[g], spare / (1000 * h), j.surface, laws)
+    _needs(e, float(as_t[g]), float(need_v[g]), float(provided[g]), per_m=True, add=add)
     crushes = float(v_edi.max()) > laws.v_max + 1e-9
 
     def pick(amount: float, lo: float, hi: float) -> dict | None:
@@ -723,9 +753,14 @@ def _shear_terms(e: dict, v_edi: float, sigma: float, rho: float, surface: str, 
     }
 
 
-def _needs(e: dict, tension: float, shear: float, provided: float, per_m: bool = False) -> None:
+def _needs(
+    e: dict, tension: float, shear: float, provided: float, per_m: bool = False, add: bool = True
+) -> None:
+    """The steel the joint needs: the shear-friction steel, plus the tension steel with ``add`` (else the
+    tension is shown only: bending is checked in the element's own design)."""
     unit = "_mm2_per_m" if per_m else "_mm2"
-    total = tension + shear
+    e["tension_added"] = add
+    total = (tension if add else 0.0) + shear
     extra = max(total - provided, 0.0)
     e |= {
         "tension" + unit: None if not math.isfinite(tension) else round(tension),
@@ -769,9 +804,8 @@ def summary(results: dict) -> list[dict]:
 
 def assumptions() -> list[str]:
     return [
-        "Construction joints: β = 1 (all the shear crosses the joint), z = 0.9 d, bars at 90° to the joint.",
-        "Tension across a joint is carried by the bars only; the shear-friction steel is added on top of it "
-        "(no bar counted twice).",
+        "Construction joints: β = 1 (all the shear crosses the joint), bars at 90° to the joint; z, d, σn "
+        "and the tension rule as Design settings (office report by default).",
         "Additional bars at a joint are 2 × the lap length long, the lap factor × Ø each side of it.",
         "Laps of slab and beam bars are kept a lap length clear of the joints by the detailer.",
     ]

@@ -146,7 +146,7 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     _displacements(r, section)
     for a in results.get("approach_slabs", []):
         _approach_summary(r, a)
-    _construction_joints(r, results)
+    _construction_joints(r, results, project.design.construction_joints.model_dump(mode="json"))
     _deflections(r, results.get("deflections"))
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
@@ -1406,7 +1406,7 @@ def _joint_extra(j: dict) -> str:
     return "None" if j.get("passed") else j.get("status") or "–"
 
 
-def _construction_joints(r: Report, res: dict) -> None:
+def _construction_joints(r: Report, res: dict, rules: dict) -> None:
     """Every construction joint set on the elements: its check and the bars it needs there."""
     from .design.construction_joints import summary
 
@@ -1416,9 +1416,10 @@ def _construction_joints(r: Report, res: dict) -> None:
     r.h(2, "3.7 Construction joints")
     r.p(
         "Each construction joint set on an element is checked with the Plaxis actions at it (ULS): shear "
-        "across the joint to EN 1992-1-1 6.2.5 (vRdi = c fctd + μ σn + ρ fyd μ ≤ 0.5 ν fcd, β = 1, z = 0.9 d), "
-        "and the bars crossing it carry the tension of N with M there, with the shear friction steel on top. "
-        "Where they are not enough, the additional bars at that joint are given."
+        "across the joint to EN 1992-1-1 6.2.5: vEdi = β VEd / (z bi) with β = 1, vRdi = c fctd + μ σn + "
+        "ρ fyd μ ≤ 0.5 ν fcd, c fctd = 0 when σn is tension, As = ρ b h. "
+        + _joint_rules(rules)
+        + " Where the bars crossing the joint are not enough, the additional bars at that joint are given."
     )
     r.caption("Table 3-8: Construction joints")
     rows = []
@@ -1454,6 +1455,24 @@ def _construction_joints(r: Report, res: dict) -> None:
     )
 
 
+def _joint_rules(rules: dict) -> str:
+    return (
+        f"z = {rules['lever_arm']:g} d, d = "
+        + ("h − cover" if rules["effective_depth"] == "cover" else "to the tension bars")
+        + f", σn = N / (b {rules['sigma_n_area']})"
+        + (
+            ", the slab's largest shear at the joint"
+            if rules["actions"] == "peak"
+            else ", slab actions averaged over the strip width"
+        )
+        + (
+            "; the joint bars are the shear-friction steel, N through σn, bending checked in the element design."
+            if rules["tension"] == "separate"
+            else "; the tension steel of N with M is added to the shear-friction steel."
+        )
+    )
+
+
 def _joint_calcs(r: Report, d: dict) -> None:
     """The calculation of each construction joint of one element (detailed report)."""
     joints = d.get("construction_joints") or []
@@ -1478,7 +1497,15 @@ def _joint_calcs(r: Report, d: dict) -> None:
             ("fctd, fyd", f"{j.get('fctd_MPa')} MPa, {j.get('fyd_MPa')} MPa"),
             ("ρ of the bars left after the tension", f"{j.get('rho_pct')}%"),
             ("vRdi (≤ 0.5 ν fcd)", f"{j['v_Rdi_MPa']} MPa (max {j['v_Rdi_max_MPa']} MPa)"),
-            ("Steel for tension (N with M)", f"{get('tension')} {unit}"),
+            (
+                "Steel for tension (N with M)",
+                f"{get('tension')} {unit}"
+                + (
+                    ""
+                    if j.get("tension_added", True)
+                    else " (shown only: bending is checked in the element design)"
+                ),
+            ),
             ("Steel for shear friction", f"{get('shear')} {unit}"),
             (
                 "Needed / provided",

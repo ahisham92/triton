@@ -5444,17 +5444,17 @@ function jointsBlock(list) {
     return parts.length ? parts.map((t) => `<b>${t}</b>`).join("<br>") : "";
   };
   return `<h3 style="margin-top:18px">Construction joints</h3>
-    <div class="scroll"><table><tr><th>Joint</th><th>Surface</th><th>Bars crossing</th><th>v<sub>Edi</sub> / v<sub>Rdi</sub></th><th>Needed (tension + shear)</th><th>Utilisation</th><th>Additional bars at this joint</th><th></th></tr>
+    <div class="scroll"><table><tr><th>Joint</th><th>Surface</th><th>Bars crossing</th><th>v<sub>Edi</sub> / v<sub>Rdi</sub></th><th>Needed</th><th>Utilisation</th><th>Additional bars at this joint</th><th></th></tr>
     ${list.map((j) => `<tr><td>${esc(j.where)}${j.note ? `<br><span class="status">${esc(j.note)}</span>` : ""}</td>
       <td>${esc(j.surface)} (c ${fmt(j.c, 3)}, μ ${fmt(j.mu, 2)})</td>
       <td>${j.crossing ? `${esc(j.crossing.label)}<br>${fmt(val(j, "provided"))} ${pm(j)}` : "–"}</td>
       <td>${j.v_Edi_MPa != null ? `${fmt(j.v_Edi_MPa, 2)} / ${fmt(j.v_Rdi_MPa, 2)} MPa (max ${fmt(j.v_Rdi_max_MPa, 2)})` : "–"}</td>
-      <td>${val(j, "needed") != null ? `${fmt(val(j, "tension"))} + ${fmt(val(j, "shear"))} = ${fmt(val(j, "needed"))} ${pm(j)}` : "–"}</td>
+      <td>${val(j, "needed") == null ? "–" : j.tension_added === false ? `${fmt(val(j, "needed"))} ${pm(j)} shear friction<br><span class="status">tension for N with M ${fmt(val(j, "tension"))}, checked in the element design</span>` : `${fmt(val(j, "tension"))} tension + ${fmt(val(j, "shear"))} shear = ${fmt(val(j, "needed"))} ${pm(j)}`}</td>
       <td>${j.utilisation != null ? `<b class="${j.utilisation > 1 ? "bad" : ""}">${fmt(j.utilisation, 2)}</b>` : "–"}</td>
       <td>${extra(j) || esc(j.status || "")}${(j.laps || []).map((w) => `<br><span class="status">${esc(w)}</span>`).join("")}</td>
       <td>${j.passed == null ? "" : j.passed ? '<span class="sev ok">OK</span>' : '<span class="sev error">more bars</span>'}</td></tr>`).join("")}
     </table></div>
-    <p class="status">EN 1992-1-1 6.2.5 at each joint with the Plaxis actions there (ULS): the bars crossing it carry the tension of N with M, and the shear friction steel on top of it. Details of each check in the report.</p>`;
+    <p class="status">EN 1992-1-1 6.2.5 at each joint with the Plaxis actions there (ULS): v<sub>Edi</sub> = V / (z b<sub>i</sub>), σ<sub>n</sub> from N, c f<sub>ctd</sub> = 0 in tension; z, d, σ<sub>n</sub> and whether the tension steel is added are in Design settings (the office report by default). Details of each check in the report.</p>`;
 }
 
 function curtailmentBlock(c) {
