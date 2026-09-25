@@ -3899,7 +3899,7 @@ function barDiagrams(card, d) {
     { key: "along", dir: al, title: `Bars along ${sd.along} (${mAlong})` },
     { key: "across", dir: cl, title: `Bars along ${acrossAxis} (${across?.moment || ""})` },
   ];
-  let view = 0;
+  let view = 0, strip = "column";
   pick.innerHTML = views.map((v, i) => `<button class="quiet${i ? "" : " on"}" data-bd="${i}">${esc(v.title)}</button>`).join("");
   const draw = () => {
     const v = views[view];
@@ -3910,13 +3910,14 @@ function barDiagrams(card, d) {
     for (const f of ["top", "bottom"]) {
       const rows = (sd.rows || []).filter((r) => r.layer === `${f}_${v.dir}` && r.additional_bars);
       if (isAlong) {
-        for (const strip of ["column", "field"]) {
+        {
+          // One strip at a time, picked with the Column strip / Field strip buttons.
           const mine = rows.filter((r) => r.strip === strip).sort((a, b) => a.station[0] - b.station[0]);
           const merged = [];
           for (const r of mine) {
             const last = merged[merged.length - 1];
             if (last && last.text === r.additional_bars && Math.abs(last.b - r.station[0]) < 1e-6) last.b = r.station[1];
-            else merged.push({ a: r.station[0], b: r.station[1], text: r.additional_bars, lane: strip === "column" ? 0 : 1, what: `${strip} strip`, layers: r.bar_layers });
+            else merged.push({ a: r.station[0], b: r.station[1], text: r.additional_bars, lane: 0, what: `${strip} strip`, layers: r.bar_layers });
           }
           segs[f].push(...merged);
         }
@@ -3949,7 +3950,7 @@ function barDiagrams(card, d) {
     const depth = (f) => (d.layers[`${f}_${v.dir}`]?.mesh_bar_layers || [])[0]?.from_face_mm;
     // Which strip (or zones) and which moment each lane of bars is for, at the left.
     const laneNames = (f) => [...new Set(segs[f].map((s) => s.lane))].map((k) => {
-      const name = isAlong ? `${k ? "Field" : "Column"} strip, ${mAlong}` : k ? "" : `Zones, ${across?.moment || ""}`;
+      const name = isAlong ? (k ? "" : `${strip === "column" ? "Column" : "Field"} strip, ${mAlong}`) : k ? "" : `Zones, ${across?.moment || ""}`;
       return name ? `<text class="tick" x="${L - 8}" y="${(laneY(f, k) + 4).toFixed(1)}" text-anchor="end">${esc(name)}</text>` : "";
     }).join("");
     const segSvg = (f) => segs[f].map((s, si) => {
@@ -3970,8 +3971,9 @@ function barDiagrams(card, d) {
     const ticks = isAlong ? sd.stations : marks;
     const axisY = H - 18;
     const piles = marks.map((m) => `<path class="pile-row" d="M${X(m).toFixed(1)},${axisY - 11} l-6,10 h12 z"><title>${isAlong ? "Row" : "Line"} of piles at ${fmt(m, 2)} m</title></path>`).join("");
-    el.innerHTML = `<div class="chart-title">${esc(v.title)}: basic mesh of each face over the whole ${isAlong ? "deck" : "length"}, additional bars where they are added. ${isAlong ? "Sea side on the left; stations in m from the " + esc(sd.from) + "." : `${acrossAxis} in m along the quay.`}</div>
-      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (layer 1, at the cover)</span><span><i class="bd-add"></i>additional bars, one line per layer (mesh level = between the mesh bars; L1, L2… inside the mesh)${isAlong ? `: column strip next to the mesh, field strip beyond, both for ${mAlong}` : `, one group per zone, for ${across?.moment || ""}`}</span><span>▲ piles</span><span>click a group for its section</span></div>
+    const stripPick = isAlong ? `<div class="row">${["column", "field"].map((k) => `<button class="quiet${k === strip ? " on" : ""}" data-strip="${k}">${k === "column" ? "Column" : "Field"} strip (${esc(mAlong)})</button>`).join("")}</div>` : "";
+    el.innerHTML = `${stripPick}<div class="chart-title">${esc(v.title)}${isAlong ? `, ${strip} strip` : ""}: basic mesh of each face over the whole ${isAlong ? "deck" : "length"}, additional bars where they are added. ${isAlong ? "Sea side on the left; stations in m from the " + esc(sd.from) + "." : `${acrossAxis} in m along the quay.`}</div>
+      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (mesh level, at the cover)</span><span><i class="bd-add"></i>additional bars, one line per layer (mesh level = between the mesh bars; L1, L2… inside the mesh)${isAlong ? `, ${strip} strip, for ${mAlong}` : `, one group per zone, for ${across?.moment || ""}`}</span><span>▲ piles</span><span>click a group for its section</span></div>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(v.title)}">
         <rect x="${X(lo)}" y="${slabTop}" width="${X(hi) - X(lo)}" height="${slabBot - slabTop}" class="bd-slab"/>
         <line class="bd-mesh" x1="${X(lo)}" x2="${X(hi)}" y1="${yMeshT}" y2="${yMeshT}"><title>Top mesh ${esc(mesh("top"))}, centre ${fmt(depth("top"))} mm from the top</title></line>
@@ -3984,6 +3986,7 @@ function barDiagrams(card, d) {
       </svg><div data-kind="bar-section"></div>`;
     // A cut through every group of additional bars, top face first, each in turn along the axis; the
     // heaviest (most layers) starts open, and clicking a group on the elevation opens its cut.
+    el.querySelectorAll("[data-strip]").forEach((b) => (b.onclick = () => { strip = b.dataset.strip; draw(); }));
     const secEl = el.querySelector('[data-kind="bar-section"]');
     const all = ["top", "bottom"].flatMap((f) => segs[f].map((s, i) => ({ f, s, i }))).filter((g) => g.s.layers?.length);
     all.sort((p, q) => (p.f === q.f ? p.s.a - q.s.a || p.s.lane - q.s.lane : p.f === "top" ? -1 : 1));
@@ -3992,7 +3995,7 @@ function barDiagrams(card, d) {
     secEl.innerHTML = all.length
       ? `<div class="chart-title">Cuts through each group of additional bars (${all.length}), 1 m wide:</div>` +
         all.map((g) => `<details class="bar-cut" data-cut="${g.f}:${g.i}"${g === heaviest ? " open" : ""}><summary>${esc(cutTitle(g))}: ${esc(layerLines(g.s.layers, false).join(" · ") || shortBars(g.s.text))}</summary>${barSection(g.s.layers, g.f, d.thickness_mm, cutTitle(g))}</details>`).join("")
-      : "";
+      : `<div class="status">No additional bars ${isAlong ? `in the ${strip} strip` : "along this axis"}: the mesh only.</div>`;
     el.querySelectorAll("[data-seg]").forEach((g) => (g.onclick = () => {
       const cut = secEl.querySelector(`[data-cut="${g.dataset.seg}"]`);
       if (!cut) return;
