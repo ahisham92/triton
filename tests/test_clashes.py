@@ -227,3 +227,40 @@ def test_weld_of_a_t32_to_the_tube_matches_the_office_report():
     assert w["rows"][0]["force_kN"] == pytest.approx(349.7, abs=0.1)
     assert w["rows"][0]["length_mm"] == pytest.approx(124, abs=1)
     assert C.weld_check(ctx, _head()) is None  # a pile, not a combi wall infill
+
+
+def test_bars_end_straight_in_a_beam_and_as_an_l_in_a_slab():
+    rows = [{"count": 24, "diameter_mm": 32.0, "bar_top_m": 3.5}]
+    beam = C.Host("Rear Beam", "beam", 1.0, 3.0, {}, {})
+    (end,) = C.bar_ends(ClashSettings(), beam, 100.0, rows)
+    assert end == {"end_m": 2.884, "leg_m": 0.0, "short_m": 0.616}
+    (end,) = C.bar_ends(ClashSettings(beam_bars="l"), beam, 100.0, rows)
+    assert end["leg_m"] == 0.616 and end["short_m"] == 0.0
+    slab = replace(beam, element="Deck", kind="slab")
+    assert C.bar_ends(ClashSettings(), slab, 100.0, rows)[0]["leg_m"] == 0.616
+
+
+def test_each_pile_keeps_its_connection_and_real_bar_lengths(designed):
+    from copy import deepcopy
+
+    from triton.design.export import pile_cages
+
+    _, section, results = designed
+    r = deepcopy(results)
+    kg = r["piles"][0]["steel"]["total_kg"]
+    C.apply_connections(r, section.clashes)
+    C.apply_connections(r, section.clashes)  # again: the same
+    p = r["piles"][0]
+    (g,) = p["connection_groups"]
+    assert g["host"] == "Deck" and g["shape"] == "L" and g["count"] == len(p["positions"])
+    assert all(row["leg_m"] > 0 and row["short_m"] == 0 for row in g["rows"])
+    assert p["steel"]["total_kg"] == kg  # the L leg is the anchorage turned: same length
+    assert sum(n.startswith(C.CONNECTION_NOTE) for n in p["notes"]) == 1
+    d = pile_cages("x", r)["piles"][0]
+    conn = d["positions"][0]["connection"]
+    assert (
+        conn["host"] == "Deck" and conn["rows"][0]["bar_length_m"] == d["runs"][0]["rows"][0]["bar_length_m"]
+    )
+    assert conn["rows"][0]["bar_top_m"] < conn["rows"][0]["anchor_top_m"]
+    # A design made before: worked out when the file is made.
+    assert pile_cages("x", results)["piles"][0]["connections"] == d["connections"]
