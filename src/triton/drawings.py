@@ -2,7 +2,7 @@
 
 Triton works out every line here, so the AutoCAD file and the Revit code only copy it:
 
-* a view is one drawing (a pile cage section, a pile elevation, a beam section, a slab plan of one face,
+* a view is one drawing (a pile sheet: elevation and cage sections, a beam section, a slab plan of one face,
   a slab section at a pile); its items are in mm in the view's own plane. Every view is framed, with a
   caption under the frame saying what it holds and a base point (a circled cross) to copy it from;
   ``at`` places it in the one drafting view (or DXF model space) that holds a whole run, a row per
@@ -74,7 +74,7 @@ class View:
         base: tuple[float, float] | None = (0.0, 0.0),
         base_text: str = "",
     ) -> None:
-        self.name, self.title, self.scale, self.element = name, title, scale, element
+        self.name, self.heading, self.scale, self.element = name, title, scale, element
         self.items: list[dict[str, Any]] = []
         self.caption: list[str] = []
         self.base, self.base_text = base, base_text
@@ -96,9 +96,37 @@ class View:
     def bar(self, d: float, c: tuple[float, float]) -> None:
         self.items.append({"type": "bar", "layer": bar_key(d), "c": _pt(c), "d": d})
 
-    def text(self, at: tuple[float, float], text: str, size: float = 1.0) -> None:
+    def text(self, at: tuple[float, float], text: str, size: float = 1.0, rot: float = 0.0) -> None:
+        """Text from ``at`` (its bottom left), ``rot`` degrees anticlockwise (90: reading upward)."""
         h = round(TEXT_MM * size * self.scale, 1)
-        self.items.append({"type": "text", "layer": "text", "at": _pt(at), "text": text, "h": h})
+        it = {"type": "text", "layer": "text", "at": _pt(at), "text": text, "h": h}
+        if rot:
+            it["rot"] = rot
+        self.items.append(it)
+
+    def title(self, at: tuple[float, float], words: str, scale: int | None = None) -> None:
+        """An office title: the words underlined, "SCALE: 1 : n" under the line."""
+        s = self.scale
+        self.text(at, words, 1.6)
+        length = 0.8 * TEXT_MM * 1.6 * s * len(words)
+        self.line("text", (at[0], at[1] - 0.8 * s), (at[0] + length, at[1] - 0.8 * s))
+        self.text((at[0], at[1] - 3.2 * s), f"SCALE: 1 : {scale or s}", 0.7)
+
+    def leader(
+        self, tip: tuple[float, float], at: tuple[float, float], words: str, size: float = 0.9
+    ) -> None:
+        """A label at ``at`` (its bottom left) with a line under it and on to ``tip``, what it names."""
+        s = self.scale
+        width = 0.8 * TEXT_MM * size * s * len(words)
+        y = at[1] - 0.4 * s
+        near = (at[0] + width, y) if tip[0] > at[0] + width / 2 else (at[0], y)
+        self.line("text", (at[0], y), (at[0] + width, y))
+        self.line("text", near, tip)
+        self.text(at, words, size)
+
+    def merge(self, other: View, dx: float, dy: float) -> None:
+        """Another drawing's items, moved by (dx, dy), into this one."""
+        self.items += _moved(other.items, dx, dy)
 
     def family(
         self,
@@ -191,12 +219,13 @@ class View:
         m = 5 * s
         x0, y0, x1, y1 = x0 - m, y0 - m, x1 + m, y1 + m
         self.rect("zones", (x0, y0), (x1, y1))
-        lines = [(f"{self.title}  1:{s}", 1.2)] + [(c, 1.0) for c in self.caption]
+        self.title((x0, y0 - 5 * s), self.heading.upper().replace(": ", " - "))
+        lines = [(c, 0.9) for c in self.caption]
         if self.base is not None:
             lines.append(
-                (f"BP = base point to copy from: {self.base_text or 'the origin of this drawing'}", 0.9)
+                (f"BP = base point to copy from: {self.base_text or 'the origin of this drawing'}", 0.8)
             )
-        y = y0 - 2 * s
+        y = y0 - 11 * s
         for words, size in lines:
             y -= TEXT_MM * size * s
             self.text((x0, y), words, size)
@@ -206,7 +235,7 @@ class View:
         self.finish()
         return {
             "name": self.name,
-            "title": self.title,
+            "title": self.heading,
             "element": self.element,
             "scale": self.scale,
             "base": _pt(self.base) if self.base is not None else None,
@@ -214,6 +243,19 @@ class View:
             "box": box(self.items),
             "items": self.items,
         }
+
+
+def _moved(items: list[dict[str, Any]], dx: float, dy: float) -> list[dict[str, Any]]:
+    out = []
+    for it in items:
+        it = dict(it)
+        for k in ("a", "b", "c", "at"):
+            if k in it:
+                it[k] = [round(it[k][0] + dx, 1), round(it[k][1] + dy, 1)]
+        if "fallback" in it:
+            it["fallback"] = _moved(it["fallback"], dx, dy)
+        out.append(it)
+    return out
 
 
 def _pt(p: tuple[float, float]) -> list[float]:
@@ -243,8 +285,13 @@ def box(items: list[dict[str, Any]]) -> list[float]:
             xs += [it["c"][0] - r, it["c"][0] + r]
             ys += [it["c"][1] - r, it["c"][1] + r]
         elif t == "text":
-            xs += [it["at"][0], it["at"][0] + 0.8 * it["h"] * len(it["text"])]
-            ys += [it["at"][1], it["at"][1] + it["h"]]
+            w = 0.8 * it["h"] * len(it["text"])
+            if abs(it.get("rot", 0) - 90) < 1:  # reading upward
+                xs += [it["at"][0] - it["h"], it["at"][0]]
+                ys += [it["at"][1], it["at"][1] + w]
+            else:
+                xs += [it["at"][0], it["at"][0] + w]
+                ys += [it["at"][1], it["at"][1] + it["h"]]
     if not xs:
         return [0.0, 0.0, 0.0, 0.0]
     return [round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1)]
@@ -285,145 +332,261 @@ def _links_in(p: dict[str, Any], top: float | None, bottom: float | None) -> dic
     return min(zones, key=lambda z: z["spacing_mm"]) if zones else None
 
 
-def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
-    el = p["element"] + (" infill" if p["part"] == "infill" else "")
+def _ring_label(rows: list[dict[str, Any]]) -> str:
+    """The office's bar label: "26ø32+26ø25"."""
+    return "+".join(f"{r['count']}ø{r['diameter_mm']}" for r in rows)
+
+
+def _spiral_label(link: float, pitch: float | None) -> str:
+    return f"SPIRAL ø{_mm(link)}" + (f" PITCH {_mm(pitch)}" if pitch else "")
+
+
+def _pile_section(
+    v: View, p: dict[str, Any], run: dict[str, Any], c: tuple[float, float], st: DrawingSettings
+) -> None:
+    """A cage's section centred at ``c``: the office Round Col family (pile, spiral, up to four rings of
+    bars and its own labels), inner hoops and any further rings as items, the labels by leaders."""
     D, cover, link = p["diameter_mm"], p["cover_mm"], p["link_diameter_mm"]
-    views = []
-    for i, run in enumerate(p["runs"], 1):
-        cut = _letter(i - 1)
-        v = View(
-            f"{el} - cage {i} section",
-            f"{el}: section {cut}-{cut}, cage {i}",
-            20,
-            p["element"],
-            base_text="the pile's centre",
+    cx, cy = c
+    s = v.scale
+    z = _links_in(p, run["top_m"], run["bottom_m"])
+    pitch = z["spacing_mm"] if z else None
+    rows = run["rows"]
+    r_link = D / 2 - cover - link / 2
+
+    def ring(w: View, row: dict[str, Any]) -> None:
+        n = row["count"]
+        for k in range(n):
+            a = math.radians(row["first_bar_angle_deg"] + 360.0 * k / n)
+            w.bar(
+                row["diameter_mm"], (cx + row["radius_mm"] * math.cos(a), cy + row["radius_mm"] * math.sin(a))
+            )
+
+    in_family = rows[:4]
+    fb = v.sub()
+    fb.circle("concrete", c, D / 2)
+    fb.circle(bar_key(link), c, r_link)
+    for row in in_family:
+        ring(fb, row)
+    # The family writes these itself; drawn with lines, leaders say them.
+    a = math.radians(135)
+    fb.leader(
+        (cx + r_link * math.cos(a), cy + r_link * math.sin(a)),
+        (cx - D / 2 - 2 * s, cy + D / 2 + 3 * s),
+        _spiral_label(link, pitch),
+        0.8,
+    )
+    if rows:
+        r0 = rows[0]["radius_mm"]
+        a = math.radians(20)
+        fb.leader(
+            (cx + r0 * math.cos(a), cy + r0 * math.sin(a)),
+            (cx + D / 2 + 3 * s, cy + D / 2 * 0.55),
+            _ring_label(in_family),
+            0.8,
         )
-        z = _links_in(p, run["top_m"], run["bottom_m"])
-        pitch = z["spacing_mm"] if z else None
-        rows = run["rows"]
-        r_link = D / 2 - cover - link / 2
-
-        def ring(w: View, row: dict[str, Any]) -> None:
-            n = row["count"]
-            for k in range(n):
-                a = math.radians(row["first_bar_angle_deg"] + 360.0 * k / n)
-                w.bar(row["diameter_mm"], (row["radius_mm"] * math.cos(a), row["radius_mm"] * math.sin(a)))
-
-        fb = v.sub()
-        fb.circle("concrete", (0, 0), D / 2)
-        fb.circle(bar_key(link), (0, 0), r_link)
-        if rows:
-            ring(fb, rows[0])
-        if rows:
-            r0 = rows[0]
-            main = f"{r0['count']}T{r0['diameter_mm']}"
-            params = [
-                P("DAR_NO OF BARS", n=r0["count"]),
-                P("DAR_BAR DIAMETER", mm=r0["diameter_mm"]),
-                P("DAR_ARRAY RADIUS", mm=r0["radius_mm"]),
-                P("DAR_STIRRUP DIAMETER", mm=link),
-                P("DAR_MAIN RFT", text=main),
-                P("DAR_STIRRUPS RFT", text=f"T{_mm(link)}@{_mm(pitch)}" if pitch else f"T{_mm(link)}"),
-                P("DAR_DIAMETER|DAR_PILE DIAMETER|DAR_COLUMN DIAMETER|Diameter|D", mm=D),
-                P("DAR_COVER|Cover", mm=cover),
-            ]
-            v.family(st.pile_section_family, (0, 0), params, fb)
-        else:
-            v.items += fb.items
-        for hoop in run["inner_link_hoops_mm"]:
-            v.circle(bar_key(link), (0, 0), hoop / 2)
-        for row in rows[1:]:
-            ring(v, row)
-        v.dim((-D / 2, -D / 2), (D / 2, -D / 2), -6 * v.scale, f"Ø{_mm(D)}")
-        v.caption += [
-            f"Ø{_mm(D)} pile, {run['label']}",
-            f"Links Ø{_mm(link)}" + (f" @ {_mm(pitch)}" if pitch else "") + f", cover {_mm(cover)}",
-            f"Bars from {_f(run['top_m'])} to {_f(run['bottom_m'])} m, x axis = model X",
+    a = math.radians(25)
+    diam = fb.sub()  # the diameter across, drawn as lines under the family's own
+    diam.dim(
+        (cx - D / 2 * math.cos(a), cy - D / 2 * math.sin(a)),
+        (cx + D / 2 * math.cos(a), cy + D / 2 * math.sin(a)),
+        0.0,
+        f"ø {_mm(D)}",
+    )
+    fb.items += diam.items[0]["fallback"] if diam.items else []
+    if rows:
+        r0 = rows[0]
+        params = [
+            P("DAR_WIDTH|DAR_DIAMETER|Diameter", mm=D),
+            P("DAR_COVER", mm=cover),
+            P("DAR_NO OF BARS", n=r0["count"]),
+            P("DAR_BAR DIAMETER", mm=r0["diameter_mm"]),
+            P("DAR_STIRRUP DIAMETER", mm=link),
+            P("DAR_MAIN RFT", text=_ring_label(in_family)),
+            P("DAR_STIRRUPS RFT", text=_spiral_label(link, pitch)),
         ]
-        views.append(v)
-    views.append(_pile_elevation(p, el))
-    return views
+        if pitch:
+            params.append(P("DAR_STIRRUPS SPACING", mm=pitch))
+        for k in (2, 3, 4):
+            row = rows[k - 1] if len(rows) >= k else None
+            # LAYER<k>: the ring's bar count (or, if the family has it as Yes/No, whether it is there).
+            params.append(P(f"LAYER{k}", n=row["count"] if row else 0))
+            if row:
+                params.append(P(f"Layer{k}_BarDiameter", mm=row["diameter_mm"]))
+        v.family(st.pile_section_family, c, params, fb)
+    else:
+        v.items += fb.items
+    for hoop in run["inner_link_hoops_mm"]:
+        v.circle(bar_key(link), c, hoop / 2)
+    for row in rows[4:]:
+        ring(v, row)
+    if len(rows) > 4:
+        r = rows[4]["radius_mm"]
+        v.leader((cx + r, cy), (cx + D / 2 + 3 * s, cy - D / 4), _ring_label(rows[4:]) + " (INNER)", 0.8)
 
 
-def _pile_elevation(p: dict[str, Any], el: str) -> View:
-    """Pile along its length at true levels (y = level in mm): the bars of each cage with their laps, the
-    spiral link as a zigzag at its pitch, the section marks and the lengths."""
+def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
+    """One sheet per pile, as the office draws it: the elevation at true levels (the cap, the bars of each
+    cage with their laps and lengths, the spiral at its pitch, section marks and levels) and, to its
+    right at the level of its mark, the section of each cage."""
+    el = p["element"] + (" infill" if p["part"] == "infill" else "")
+    EL = el.upper()
+    code = re.sub(r"[^A-Z0-9]+", "", EL)[:6] or "P"
     D, cover, link = p["diameter_mm"], p["cover_mm"], p["link_diameter_mm"]
     head, toe = p["head_level_m"], p["toe_level_m"]
-    tops = [r["top_m"] for r in p["runs"]] + [head]
+    runs = p["runs"]
+    bar_top = max((r["bar_top_m"] for run in runs for r in run["rows"]), default=head)
+    tops = [r["top_m"] for r in runs] + [head, bar_top]
     top = max(t for t in tops if t is not None)
-    bottom = toe if toe is not None else min(r["bottom_m"] for r in p["runs"])
+    bottom = toe if toe is not None else min(r["bottom_m"] for r in runs)
+    y_head = (head if head is not None else top) * 1000
     v = View(
-        f"{el} - elevation",
-        f"{el}: elevation",
+        f"{el} - pile sheet",
+        f"{el} - reinforcement details",
         50,
         p["element"],
-        (0.0, top * 1000),
-        f"the pile's axis at its head ({_f(top)})",
+        (0.0, y_head),
+        f"the pile's axis at its head ({_f(head if head is not None else top)})",
     )
-    v.rect("concrete", (-D / 2, bottom * 1000), (D / 2, top * 1000))
-    marks = {head: "head", bottom: "toe"}
-    for j, run in enumerate(p["runs"]):
-        shift = (j % 2) * 2 * max(r["diameter_mm"] for r in run["rows"])  # laps side by side
+    s = v.scale
+    # The cap the pile is built into, broken off at the sides.
+    soffit = y_head - st.pile_into_slab
+    cap_top = max(bar_top * 1000 + 150, soffit + 1500)
+    w = D / 2 + 900
+    v.line("concrete", (-w, soffit), (-D / 2, soffit))
+    v.line("concrete", (D / 2, soffit), (w, soffit))
+    v.line("concrete", (-w, cap_top), (w, cap_top))
+    for sx in (-1, 1):  # break lines
+        x = sx * w
+        ym = (soffit + cap_top) / 2
+        v.line("concrete", (x, soffit), (x, ym - 150))
+        v.line("concrete", (x, ym - 150), (x + sx * 120, ym - 50))
+        v.line("concrete", (x + sx * 120, ym - 50), (x - sx * 120, ym + 50))
+        v.line("concrete", (x - sx * 120, ym + 50), (x, ym + 150))
+        v.line("concrete", (x, ym + 150), (x, cap_top))
+    v.text((-w, cap_top + 1.0 * s), "CAPPING BEAM / DECK (SEE ITS SECTION)", 0.7)
+    # The pile.
+    v.line("concrete", (-D / 2, bottom * 1000), (-D / 2, soffit))
+    v.line("concrete", (D / 2, bottom * 1000), (D / 2, soffit))
+    v.line("concrete", (-D / 2, bottom * 1000), (D / 2, bottom * 1000))
+    # Bars as seen: every bar of a ring projected on the plane of the drawing; alternate cages set in by
+    # two bar sizes so the laps show side by side.
+    marks_x = D / 2 + 4 * s
+    for j, run in enumerate(runs):
+        shift = (j % 2) * 2 * max((r["diameter_mm"] for r in run["rows"]), default=0)
         for row in run["rows"]:
-            x = row["radius_mm"] - shift
-            for s in (-1, 1):
+            xs = sorted(
+                {
+                    round(
+                        (row["radius_mm"] - shift)
+                        * math.cos(math.radians(row["first_bar_angle_deg"] + 360.0 * i / row["count"]))
+                    )
+                    for i in range(row["count"])
+                }
+            )
+            for x in xs:
                 v.line(
-                    bar_key(row["diameter_mm"]),
-                    (s * x, row["bar_bottom_m"] * 1000),
-                    (s * x, row["bar_top_m"] * 1000),
+                    bar_key(row["diameter_mm"]), (x, row["bar_bottom_m"] * 1000), (x, row["bar_top_m"] * 1000)
                 )
-        mid = (run["top_m"] + run["bottom_m"]) / 2 * 1000
-        cut = _letter(j)
-        for s in (-1, 1):
-            v.line("zones", (s * (D / 2 + 1 * v.scale), mid), (s * (D / 2 + 6 * v.scale), mid))
-        v.text((-D / 2 - 9 * v.scale, mid + 0.5 * v.scale), cut, 1.4)
-        v.text((D / 2 + 7 * v.scale, mid + 0.5 * v.scale), cut, 1.4)
-        v.text((D / 2 + 24 * v.scale, mid - 4 * v.scale), f"Cage {j + 1}: {run['label']}", 0.9)
-        marks.setdefault(run["bottom_m"], "")
+        # The run of each size of bar, as the office marks it: a line over its length, "26ø32 L= 8000".
+        by_d: dict[float, list[dict[str, Any]]] = {}
+        for row in run["rows"]:
+            by_d.setdefault(row["diameter_mm"], []).append(row)
+        for k, (d, rs) in enumerate(sorted(by_d.items(), reverse=True)):
+            x = marks_x + ((j % 2) * len(by_d) + k) * 7 * s
+            y0, y1 = min(r["bar_bottom_m"] for r in rs) * 1000, max(r["bar_top_m"] for r in rs) * 1000
+            v.line(bar_key(d), (x, y0), (x, y1))
+            n = sum(r["count"] for r in rs)
+            length = max(r["bar_length_m"] for r in rs) * 1000
+            v.text((x - 0.4 * s, (y0 + y1) / 2 - 8 * s), f"{n}ø{_mm(d)}", 0.7, 90)
+            v.text((x + 2.2 * s, (y0 + y1) / 2 - 8 * s), f"L= {_mm(length)}", 0.7, 90)
     # The spiral: a zigzag across the cage at the pitch of each link zone.
     r = D / 2 - cover - link / 2
     lines = 0
-    for z in p.get("link_zones") or []:
-        s, zt, zb = z.get("spacing_mm"), z.get("top_m"), z.get("bottom_m")
-        if not s or zt is None or zb is None or zt <= zb:
+    for zn in p.get("link_zones") or []:
+        sp, zt, zb = zn.get("spacing_mm"), zn.get("top_m"), zn.get("bottom_m")
+        if not sp or zt is None or zb is None or zt <= zb:
             continue
         y, yb = zt * 1000, zb * 1000
-        while y - s / 2 >= yb - 1e-6 and lines < 4000:
-            v.line(bar_key(link), (-r, y), (r, y - s / 2))
-            v.line(bar_key(link), (r, y - s / 2), (-r, y - s))
-            y -= s
+        while y - sp / 2 >= yb - 1e-6 and lines < 4000:
+            v.line(bar_key(link), (-r, y), (r, y - sp / 2))
+            v.line(bar_key(link), (r, y - sp / 2), (-r, y - sp))
+            y -= sp
             lines += 2
-        v.text((D / 2 + 24 * v.scale, (zt + zb) / 2 * 1000 + 2 * v.scale), f"Spiral {z['label']}", 0.9)
-    for level, what in sorted(marks.items(), reverse=True):
+        v.leader(
+            (-r, (zt + zb) / 2 * 1000),
+            (-D / 2 - 45 * s, (zt + zb) / 2 * 1000 - 6 * s),
+            _spiral_label(link, sp),
+            0.7,
+        )
+    # Levels on the left.
+    levels = {head: "PILE HEAD", bottom: "PILE TOE"}
+    for j in p.get("construction_joints") or []:
+        if j.get("level_m") is not None:
+            levels.setdefault(j["level_m"], "CONSTRUCTION JOINT")
+    for level, what in levels.items():
         if level is None:
             continue
         y = level * 1000
-        v.line("zones", (-D / 2 - 8 * v.scale, y), (-D / 2, y))
-        v.text((-D / 2 - 30 * v.scale, y + v.scale), f"{_f(level)} {what}".strip(), 0.9)
+        x = -D / 2 - 3 * s
+        v.line("zones", (x - 14 * s, y), (-D / 2, y))
+        v.line("zones", (x, y), (x - 0.8 * s, y + 1.2 * s))
+        v.line("zones", (x - 0.8 * s, y + 1.2 * s), (x + 0.8 * s, y + 1.2 * s))
+        v.line("zones", (x + 0.8 * s, y + 1.2 * s), (x, y))
+        v.text((x - 14 * s, y + 0.5 * s), f"{level:+.2f}", 0.8)
+        v.text((x - 14 * s, y - 1.8 * s), what, 0.6)
     for j in p.get("construction_joints") or []:
         if j.get("level_m") is None:
             continue
         y = j["level_m"] * 1000
-        v.line("zones", (-D / 2 - 4 * v.scale, y), (D / 2 + 4 * v.scale, y))
+        v.line("zones", (-D / 2, y), (D / 2, y))
         for x in j["additional"]:
             rr, half = x.get("radius_mm"), x.get("length_m", 0) * 500
             if rr:
-                for s in (-1, 1):
-                    v.line(bar_key(x["diameter_mm"]), (s * rr, y - half), (s * rr, y + half))
+                for sx in (-1, 1):
+                    v.line(bar_key(x["diameter_mm"]), (sx * rr, y - half), (sx * rr, y + half))
         words = "; ".join(x["label"] for x in j["additional"]) or "no additional bars"
-        v.text((D / 2 + 4 * v.scale, y + v.scale), f"Construction joint {_f(j['level_m'])}: {words}", 0.8)
-    # Lengths: the pile on the left, each cage on the right.
-    v.dim((-D / 2, top * 1000), (-D / 2, bottom * 1000), -20 * v.scale)
-    for run in p["runs"]:
-        v.dim((D / 2, run["top_m"] * 1000), (D / 2, run["bottom_m"] * 1000), 12 * v.scale)
-    v.dim((-D / 2, bottom * 1000), (D / 2, bottom * 1000), -6 * v.scale, f"Ø{_mm(D)}")
+        v.text((-D / 2 - 17 * s, y - 4 * s), f"CONSTRUCTION JOINT {j['level_m']:+.2f}: {words}", 0.6)
+    # Sections to the right, each at the level of its mark (moved down where they would meet).
+    x_sec = (
+        marks_x
+        + 2 * max(len({r["diameter_mm"] for r in run["rows"]}) for run in runs) * 7 * s
+        + 20 * s
+        + D / 2
+    )
+    x_sec = max(x_sec, D / 2 + 30 * s + D / 2)
+    room = D + 22 * s
+    last = None
+    for j, run in enumerate(runs):
+        cut = _letter(j)
+        y_mark = min(run["top_m"] * 1000 - 0.25 * (run["top_m"] - run["bottom_m"]) * 1000, soffit - 3 * s)
+        y_c = y_mark if last is None else min(y_mark, last - room)
+        last = y_c
+        # The mark: its name on the left, a line across the pile, a thick end on the right.
+        x0 = -D / 2 - 18 * s
+        v.line("zones", (x0, y_mark), (marks_x - 1 * s, y_mark))
+        v.rect("zones", (marks_x - 1 * s, y_mark - 0.4 * s), (marks_x + 2 * s, y_mark + 0.4 * s))
+        v.line("zones", (x0 + 6 * s, y_mark), (x0 + 6 * s, y_mark + 2.5 * s))
+        v.line("zones", (x0 + 5.3 * s, y_mark + 1.5 * s), (x0 + 6 * s, y_mark + 2.5 * s))
+        v.line("zones", (x0 + 6.7 * s, y_mark + 1.5 * s), (x0 + 6 * s, y_mark + 2.5 * s))
+        v.text((x0, y_mark + 0.5 * s), f"{code}-{cut}", 1.0)
+        _pile_section(v, p, run, (x_sec, y_c), st)
+        v.title((x_sec - D / 2 - 6 * s, y_c - D / 2 - 6 * s), f"{EL} - SECTION {cut}")
+        v.text(
+            (x_sec - D / 2 - 6 * s, y_c - D / 2 - 11 * s),
+            f"{run['label']}; BARS {_f(run['top_m'])} TO {_f(run['bottom_m'])}",
+            0.6,
+        )
+    # Lengths: the pile on the left, each cage on the right of the marks.
+    v.dim((-D / 2, y_head), (-D / 2, bottom * 1000), -20 * s)
+    v.dim((-D / 2, bottom * 1000), (D / 2, bottom * 1000), -4 * s, f"ø {_mm(D)}")
+    v.title((-D / 2 - 18 * s, bottom * 1000 - 10 * s), f"{EL} - ELEVATION")
     n = p.get("count") or 1
     v.caption += [
-        f"{n} No. Ø{_mm(D)}, head {_f(head)}, toe {_f(toe)}; cages and laps at their levels",
-        f"Links Ø{_mm(link)}, spiral drawn at its pitch; sections A-A, B-B... are the cage sections",
+        f"{n} No. ø{_mm(D)} piles, head {_f(head)}, toe {_f(toe)}, cover {_mm(cover)}",
+        "Bars drawn at their levels, laps side by side; sections are at their marks on the elevation",
     ]
-    return v
+    return [v]
 
 
 # --- beams -------------------------------------------------------------------------------------------
@@ -454,6 +617,40 @@ def _beam_views(b: dict[str, Any], st: DrawingSettings) -> list[View]:
         v.family(st.stirrup_family, (0.0, 0.0), params, fb, align="center")
     for bar in b["bars"]:
         v.bar(bar["diameter_mm"], (bar["y_mm"], bar["z_mm"]))
+    sc = v.scale
+    if phi:
+        # The inner legs as single ties across the depth, evenly between the outer link's legs.
+        e = cover + phi / 2
+        legs = int(links.get("legs") or 2)
+        for k in range(1, max(legs - 1, 1)):
+            x = -W / 2 + e + k * (W - 2 * e) / (legs - 1)
+            v.line(bar_key(phi), (x, -H / 2 + e), (x, H / 2 - e))
+        words = f"ø{_mm(phi)} @ {_mm(links.get('spacing_mm') or 0)} ({legs} LEGS)"
+        v.leader(
+            (-W / 2 + e, -H / 2 + H * 0.3),
+            (-W / 2 - 8 * sc - 0.8 * TEXT_MM * 0.8 * sc * len(words), -H / 2 + H * 0.3 - 4 * sc),
+            words,
+            0.8,
+        )
+    # Each group of bars named by a leader, as the office labels them: "19ø25".
+    groups: dict[str, list[dict[str, Any]]] = {"top": [], "bottom": [], "sides": []}
+    if b["bars"]:
+        zt, zb = max(x["z_mm"] for x in b["bars"]), min(x["z_mm"] for x in b["bars"])
+        for bar in b["bars"]:
+            z = bar["z_mm"]
+            groups["top" if z > zt - 100 else "bottom" if z < zb + 100 else "sides"].append(bar)
+    for g, bars in groups.items():
+        if not bars:
+            continue
+        by: dict[float, int] = {}
+        for bar in bars:
+            by[bar["diameter_mm"]] = by.get(bar["diameter_mm"], 0) + 1
+        words = "+".join(f"{n}ø{_mm(d)}" for d, n in sorted(by.items(), reverse=True))
+        if g == "sides":
+            words += " (SIDES)"
+        tip = max(bars, key=lambda x: (x["y_mm"], x["z_mm"] * (1 if g == "top" else -1)))
+        dy = {"top": 5, "bottom": -6, "sides": 2}[g] * sc
+        v.leader((tip["y_mm"], tip["z_mm"]), (W / 2 + 6 * sc, tip["z_mm"] + dy), words, 0.8)
     v.dim((-W / 2, -H / 2), (W / 2, -H / 2), -6 * v.scale)
     v.dim((-W / 2, H / 2), (-W / 2, -H / 2), -6 * v.scale)
     v.caption.append(f"{_mm(W)} x {_mm(H)}, {b.get('label') or ''}")
@@ -614,7 +811,67 @@ def _add_length(span: float, phi: float, st: DrawingSettings) -> float:
     return math.ceil((span + 2 * st.lap_factor * phi) / 100.0 - 1e-9) * 100.0
 
 
-def _slab_views(d: dict[str, Any], piles: list[dict[str, Any]], st: DrawingSettings) -> list[View]:
+def _plan_context(
+    v: View,
+    box: tuple[float, float, float, float],
+    piles: list[dict[str, Any]],
+    beams: list[dict[str, Any]],
+) -> None:
+    """What the office shows under the bars of a slab plan: the piles with their grid lines (dash-dot in
+    the office; the zones layer here) and the beams at the slab's edges."""
+    X0, Y0, X1, Y1 = box
+    m = 1500.0
+    xs: set[float] = set()
+    ys: set[float] = set()
+    for p in piles:
+        if p.get("part") != "pile":
+            continue
+        for q in p.get("positions") or []:
+            x, y = q["x"] * 1000, q["y"] * 1000
+            if X0 - m <= x <= X1 + m and Y0 - m <= y <= Y1 + m:
+                v.circle("concrete", (x, y), p["diameter_mm"] / 2)
+                xs.add(round(x))
+                ys.add(round(y))
+    for x in sorted(xs):
+        v.line("zones", (x, Y0 - m), (x, Y1 + m))
+    for y in sorted(ys):
+        v.line("zones", (X0 - m, y), (X1 + m, y))
+    for b in beams:
+        c, w = (b.get("centre_m") or 0.0) * 1000, b.get("width_mm") or 0.0
+        s0, s1 = (b.get("start_m") or 0.0) * 1000, (b.get("end_m") or 0.0) * 1000
+        if b.get("along") == "Y" and X0 - m <= c <= X1 + m:
+            v.rect("concrete", (c - w / 2, max(s0, Y0)), (c + w / 2, min(s1, Y1)))
+            v.text((c - w / 2 + v.scale, (Y0 + Y1) / 2), b["element"].upper(), 0.8, 90)
+        elif b.get("along") == "X" and Y0 - m <= c <= Y1 + m:
+            v.rect("concrete", (max(s0, X0), c - w / 2), (min(s1, X1), c + w / 2))
+            v.text(((X0 + X1) / 2, c - w / 2 + v.scale), b["element"].upper(), 0.8)
+
+
+def _mesh_symbol(v: View, at: tuple[float, float], phi: float, sp: float, face: str, along: str) -> None:
+    """The office's mesh note: a hatched circle (lines the way the bars run) and "ø16 mm @ 150 (BOT)"."""
+    r = 5 * v.scale
+    cx, cy = at
+    v.circle(bar_key(phi), at, r)
+    for k in range(-4, 5):
+        t = k * r / 5
+        h = math.sqrt(max(r * r - t * t, 0.0))
+        if along == "X":
+            v.line(bar_key(phi), (cx - h, cy + t), (cx + h, cy + t))
+        else:
+            v.line(bar_key(phi), (cx + t, cy - h), (cx + t, cy + h))
+    w1 = f"ø{_mm(phi)} mm @ {_mm(sp)} ({'BOT' if face == 'bottom' else 'TOP'})"
+    w2 = f"IN {along} DIRECTION"
+    for i, words in enumerate((w1, w2)):
+        tw = 0.8 * TEXT_MM * 0.9 * v.scale * len(words)
+        v.text((cx - tw / 2, cy - r - (2.8 + 2.8 * i) * v.scale), words, 0.9)
+
+
+def _slab_views(
+    d: dict[str, Any],
+    piles: list[dict[str, Any]],
+    st: DrawingSettings,
+    beams: list[dict[str, Any]] | None = None,
+) -> list[View]:
     bx = d.get("box_m") or {}
     if not bx.get("X") or not bx.get("Y"):
         return []
@@ -639,8 +896,9 @@ def _slab_views(d: dict[str, Any], piles: list[dict[str, Any]], st: DrawingSetti
             base_text,
         )
         v.rect("concrete", (X0, Y0), (X1, Y1))
+        _plan_context(v, (X0, Y0, X1, Y1), piles, beams or [])
         mesh_text = []
-        for f in faces:
+        for i, f in enumerate(faces):
             along = f["bars_along"]  # the direction the bars run
             s_mesh = f["mesh"].get("spacing_mm") or 150.0
             lo = Y0 if along == "X" else X0
@@ -662,10 +920,17 @@ def _slab_views(d: dict[str, Any], piles: list[dict[str, Any]], st: DrawingSetti
             layers = " + ".join(f"{layer_name(lay['layer'])} {lay['text']}" for lay in f["mesh"]["layers"])
             mesh_text.append(f"Mesh along {along}: {layers}, cover {_mm(f.get('cover_mm') or 0)}")
             fam = st.additional_bars_x_family if along == "X" else st.additional_bars_y_family
+            _mesh_symbol(
+                v,
+                (X0 + (X1 - X0) * (0.3 + 0.4 * i), Y0 + (Y1 - Y0) * (0.62 - 0.24 * i)),
+                f["mesh"].get("diameter_mm") or 0,
+                s_mesh,
+                face,
+                along,
+            )
             for z in f["zones"]:
                 zx0, zx1 = (x * 1000 for x in z["x_m"])
                 zy0, zy1 = (y * 1000 for y in z["y_m"])
-                v.rect("zones", (zx0, zy0), (zx1, zy1))
                 span = (zx0, zx1) if along == "X" else (zy0, zy1)
                 across = (zy0, zy1) if along == "X" else (zx0, zx1)
                 k = 0
@@ -680,24 +945,42 @@ def _slab_views(d: dict[str, Any], piles: list[dict[str, Any]], st: DrawingSetti
                         count = len(_grid(across[0], across[1], sp, lo + off))
                         length = _add_length(span[1] - span[0], phi, st)
                         name = layer_name(lay["layer"])
+                        # As the office's RFT_ADD family draws it: one bar of its length through the
+                        # zone, the width it is spread over with ticks, "ø25 @150 L=4000 (ADD.)".
                         fb = v.sub()
-                        draw(fb, phi, sp, off, span, across)
-                        # The family shows its own label; drawn with lines, the text says it.
-                        label = f"{count}T{phi}@{_mm(sp)} L={_mm(length)}" + (
-                            "" if lay["layer"] == 1 else f" {name}"
-                        )
-                        at = (zx0 + v.scale, zy0 + (1 + 3 * k) * v.scale)
-                        if along == "Y":
-                            at = (zx0 + (1 + 3 * k) * v.scale, zy0 + v.scale)
-                        fb.text(at, label, 0.6)
+                        cx, cy = (zx0 + zx1) / 2, (zy0 + zy1) / 2
+                        k_off = (k - (len(z["layers"]) - 1) / 2) * 3 * v.scale
+                        w1 = f"ø{_mm(phi)} @{_mm(sp)}" + ("" if lay["layer"] == 1 else f" {name}")
+                        w2 = f"L={_mm(length)} (ADD.)"
+                        tw = 0.8 * TEXT_MM * 0.7 * v.scale * max(len(w1), len(w2))
+                        th = TEXT_MM * 0.7 * v.scale
+                        if along == "X":
+                            yb = cy + k_off
+                            fb.line(bar_key(phi), (cx - length / 2, yb), (cx + length / 2, yb))
+                            xd = cx + k_off
+                            fb.line("zones", (xd, zy0), (xd, zy1))
+                            for yy in (zy0, zy1):
+                                fb.line("zones", (xd - 0.8 * v.scale, yy), (xd + 0.8 * v.scale, yy))
+                            fb.text((cx - tw / 2, yb + 0.5 * v.scale), w1, 0.7)
+                            fb.text((cx - tw / 2, yb - 0.5 * v.scale - th), w2, 0.7)
+                        else:
+                            xb = cx + k_off
+                            fb.line(bar_key(phi), (xb, cy - length / 2), (xb, cy + length / 2))
+                            yd = cy + k_off
+                            fb.line("zones", (zx0, yd), (zx1, yd))
+                            for xx in (zx0, zx1):
+                                fb.line("zones", (xx, yd - 0.8 * v.scale), (xx, yd + 0.8 * v.scale))
+                            fb.text((xb - 0.5 * v.scale, cy - tw / 2), w1, 0.7, 90)
+                            fb.text((xb + 0.5 * v.scale + th, cy - tw / 2), w2, 0.7, 90)
                         k += 1
                         params = [
                             P("L", mm=length),
                             P("Spacing", mm=sp),
                             P("Diameter", mm=phi),
-                            P("Distribution Length", mm=across[1] - across[0]),
-                            P("Top No.|No.|Number", n=count),
-                            P("Layer|Comments", text=name),
+                            P("Distribution|Distribution Length", mm=across[1] - across[0]),
+                            P("Top No.", n=lay["layer"]),
+                            P("TOP REINF.", n=1 if face == "top" else 0),
+                            P("Comments", text=f"{count} bars, {name}"),
                         ]
                         v.family(fam, ((zx0 + zx1) / 2, (zy0 + zy1) / 2), params, fb, align="center")
             for j in d.get("construction_joints") or []:
@@ -1070,7 +1353,7 @@ def from_cages(
     for b in data["beams"]:
         views += _beam_views(b, settings)
     for d in data["slabs"]:
-        views += _slab_views(d, data["piles"], settings)
+        views += _slab_views(d, data["piles"], settings, data["beams"])
         views += [_manhole_view(d, m) for m in d.get("manholes") or []]
         views += [
             _room_view(

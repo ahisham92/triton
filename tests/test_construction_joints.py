@@ -134,7 +134,7 @@ def test_pile_and_slab_joints_in_the_design_report_and_drawings():
     assert "3.7 Construction joints" in heads and "Deck: construction joints" in heads
     d = drawings("P", res, DrawingSettings(), "S1")
     texts = [i["text"] for v in d["views"] for i in v["items"] if i["type"] == "text"]
-    assert any(t.startswith("Construction joint +2.70") for t in texts)
+    assert any(t.startswith("CONSTRUCTION JOINT +2.70") for t in texts)
     assert sum("Construction joint:" in t for t in texts) >= 2
 
 

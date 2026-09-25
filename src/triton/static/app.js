@@ -2903,7 +2903,7 @@ function drawingHelp() {
   box.id = "drawing-help-box";
   box.className = "panel";
   box.innerHTML = `<h2>Reinforcement drawings in AutoCAD and Revit</h2>
-    <p>Pile cage sections and elevations, beam sections, slab bottom and top plans, a slab section at a pile, 1 m slab cuts
+    <p>Pile sheets (elevation with the cage sections), beam sections, slab bottom and top plans, a slab section at a pile, 1 m slab cuts
       and shear link zones. Every drawing sits in its frame with a caption under it and a base point (BP) to copy it from.
       Bars use the office line styles (T32-Reinforcement Section …) and families (pile section, cut bar, link, slab additional
       bars); the names are on the Project tab under <em>Drawing names</em>.</p>

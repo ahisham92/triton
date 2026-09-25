@@ -30,6 +30,7 @@ def _cad_text(text: str) -> str:
     t = (
         text[:250]
         .replace("Ø", "%%c")
+        .replace("ø", "%%c")
         .replace("×", "x")
         .replace("·", "-")
         .replace("–", "-")
@@ -166,6 +167,7 @@ def _entity(out: list[str], it: dict[str, Any], layer: str, dx: float, dy: float
             (30, 0.0),
             (40, float(it["h"])),
             (1, _cad_text(it["text"])),
+            *([(50, float(it["rot"]))] if it.get("rot") else []),
         )
 
 

@@ -40,9 +40,7 @@ def test_views_of_every_element():
     d = sample()
     assert d["format"] == FORMAT and d["units"] == "mm"
     names = [v["name"] for v in d["views"]]
-    runs = len(SAMPLE["piles"][0]["runs"])
-    assert names[:runs] == [f"Pile(1) - cage {i} section" for i in range(1, runs + 1)]
-    assert "Pile(1) - elevation" in names and "Front Beam - section" in names
+    assert names[0] == "Pile(1) - pile sheet" and "Front Beam - section" in names
     assert {
         "Deck - bottom plan",
         "Deck - top plan",
@@ -56,45 +54,49 @@ def test_views_of_every_element():
     assert both == {"Front Beam", "Deck"}
 
 
-def test_pile_section_has_every_bar_on_its_circle():
+def test_pile_sheet_sections_have_every_bar_on_its_circle():
     p = SAMPLE["piles"][0]
-    run = p["runs"][0]
-    v = view(sample(), "Pile(1) - cage 1 section")
-    fam = next(i for i in v["items"] if i["type"] == "family")
-    assert fam["family"] == "DET_Round_Col_RFT_Dar: Round Col-RFT" and fam["at"] == [0, 0]
-    params = {x["names"].split("|")[0]: x for x in fam["params"]}
-    r0 = run["rows"][0]
-    assert (
-        params["DAR_NO OF BARS"]["n"] == r0["count"] and params["DAR_BAR DIAMETER"]["mm"] == r0["diameter_mm"]
-    )
-    assert params["DAR_MAIN RFT"]["text"] == f"{r0['count']}T{r0['diameter_mm']}"
-    assert params["DAR_STIRRUPS RFT"]["text"] == "T10@100"  # the tightest link zone over the cage
-    bars = [i for i in flat(v["items"]) if i["type"] == "bar"]
-    assert len(bars) == sum(r["count"] for r in run["rows"])
-    radii = sorted({round(math.hypot(*b["c"])) for b in bars})
-    assert radii == sorted(round(r["radius_mm"]) for r in run["rows"])
-    assert {b["layer"] for b in bars} == {f"bar-{r['diameter_mm']}" for r in run["rows"]}
-    circles = [i for i in flat(v["items"]) if i["type"] == "circle"]
-    assert circles[0] == {"type": "circle", "layer": "concrete", "c": [0, 0], "r": p["diameter_mm"] / 2}
-    link = p["diameter_mm"] / 2 - p["cover_mm"] - p["link_diameter_mm"] / 2
-    assert (
-        circles[1]["r"] == pytest.approx(link) and circles[1]["layer"] == f"bar-{int(p['link_diameter_mm'])}"
-    )
+    v = view(sample(), "Pile(1) - pile sheet")
+    fams = [i for i in v["items"] if i["type"] == "family"]
+    assert len(fams) == len(p["runs"])
+    assert all(f["family"] == "DET_Round_Col_RFT_Dar: Round Col-RFT" for f in fams)
+    # The sections sit to the right of the elevation, each lower than the one before.
+    assert all(f["at"][0] > p["diameter_mm"] for f in fams)
+    assert [f["at"][1] for f in fams] == sorted((f["at"][1] for f in fams), reverse=True)
+    for fam, run in zip(fams, p["runs"], strict=True):
+        params = {x["names"].split("|")[0]: x for x in fam["params"]}
+        assert params["DAR_WIDTH"]["mm"] == p["diameter_mm"]
+        r0 = run["rows"][0]
+        assert params["DAR_NO OF BARS"]["n"] == r0["count"]
+        assert params["DAR_MAIN RFT"]["text"] == "+".join(
+            f"{r['count']}ø{r['diameter_mm']}" for r in run["rows"][:4]
+        )
+        bars = [i for i in fam["fallback"] if i["type"] == "bar"]
+        assert len(bars) == sum(r["count"] for r in run["rows"][:4])
+        cx, cy = fam["at"]
+        radii = sorted({round(math.hypot(b["c"][0] - cx, b["c"][1] - cy)) for b in bars})
+        assert radii == sorted({round(r["radius_mm"]) for r in run["rows"][:4]})
+    first = {x["names"].split("|")[0]: x for x in fams[0]["params"]}
+    assert first["DAR_STIRRUPS RFT"]["text"] == "SPIRAL ø10 PITCH 100"  # the tightest zone over the cage
+    texts = [i["text"] for i in v["items"] if i["type"] == "text"]
+    assert "PILE(1) - SECTION A" in texts and "PILE(1) - ELEVATION" in texts
 
 
-def test_pile_elevation_bars_at_true_levels():
+def test_pile_sheet_elevation_bars_at_true_levels():
     p = SAMPLE["piles"][0]
-    v = view(sample(), "Pile(1) - elevation")
-    link = f"bar-{int(p['link_diameter_mm'])}"
-    lines = [
-        i for i in v["items"] if i["type"] == "line" and i["layer"].startswith("bar-") and i["layer"] != link
-    ]
-    assert len(lines) == 2 * sum(len(r["rows"]) for r in p["runs"])
+    v = view(sample(), "Pile(1) - pile sheet")
     top = p["runs"][0]["rows"][0]
-    first = lines[0]
-    assert first["b"][1] == pytest.approx(top["bar_top_m"] * 1000) and first["a"][1] == pytest.approx(
-        top["bar_bottom_m"] * 1000
+    k = f"bar-{top['diameter_mm']}"
+    lines = [i for i in v["items"] if i["type"] == "line" and i["layer"] == k]
+    assert any(
+        i["a"][1] == pytest.approx(top["bar_bottom_m"] * 1000)
+        and i["b"][1] == pytest.approx(top["bar_top_m"] * 1000)
+        for i in lines
     )
+    # Each run of bars marked as the office does: "55ø32" and "L= 9650" reading upward.
+    rot = {i["text"] for i in v["items"] if i["type"] == "text" and i.get("rot") == 90}
+    n = sum(r["count"] for r in p["runs"][0]["rows"])
+    assert f"{n}ø32" in rot and f"L= {top['bar_length_m'] * 1000:.0f}" in rot
 
 
 def test_beam_section_bars():
@@ -115,11 +117,11 @@ def test_beam_section_bars():
     # Every drawing: a frame, its caption under it and the base point to copy it from.
     assert v["base"] == [0, b["depth_mm"] / 2]
     texts = [i["text"] for i in v["items"] if i["type"] == "text"]
-    assert "Front Beam: section  1:20" in texts and any(t.startswith("BP = base point") for t in texts)
+    assert "FRONT BEAM - SECTION" in texts and "SCALE: 1 : 20" in texts
+    assert any(t.startswith("BP = base point") for t in texts)
+    assert {"19ø25", "48ø25", "22ø32 (SIDES)", "ø16 @ 175 (5 LEGS)"} <= set(texts)
     frame = [i for i in v["items"] if i["type"] == "rect" and i["layer"] == "zones"][-1]
-    caption = next(
-        i for i in v["items"] if i["type"] == "text" and i["text"].startswith("Front Beam: section")
-    )
+    caption = next(i for i in v["items"] if i["type"] == "text" and i["text"] == "FRONT BEAM - SECTION")
     assert caption["at"][1] < frame["a"][1]
 
 
@@ -146,9 +148,13 @@ def test_slab_plans_bottom_and_top_with_the_additional_bar_family():
     phi = extra["diameter_mm"]
     assert p["Diameter"]["mm"] == phi and p["Spacing"]["mm"] == extra["spacing_mm"]
     assert p["L"]["mm"] == math.ceil((zx[1] - zx[0] + 90 * phi) / 100) * 100
-    assert p["Distribution Length"]["mm"] == pytest.approx(zy[1] - zy[0])
-    lines = [i for i in f["fallback"] if i["type"] == "line"]
-    assert len(lines) == p["Top No."]["n"] and all(i["a"][0] == zx[0] and i["b"][0] == zx[1] for i in lines)
+    assert p["Distribution"]["mm"] == pytest.approx(zy[1] - zy[0])
+    assert p["Top No."]["n"] == 1 and p["TOP REINF."]["n"] == 0
+    # Drawn with lines: one bar of its length through the zone and its label, as the family shows it.
+    (bar,) = [i for i in f["fallback"] if i["type"] == "line" and i["layer"] == f"bar-{phi}"]
+    assert bar["b"][0] - bar["a"][0] == pytest.approx(p["L"]["mm"])
+    words = [i["text"] for i in f["fallback"] if i["type"] == "text"]
+    assert words == [f"ø{phi} @{extra['spacing_mm']:.0f}", f"L={p['L']['mm']:.0f} (ADD.)"]
     # The mesh is drawn by hand: only in the caption, no mesh lines across the slab.
     x0, x1 = (x * 1000 for x in d["box_m"]["X"])
     assert not [
@@ -312,7 +318,7 @@ def test_drawing_endpoints(tmp_path, monkeypatch):
     assert r.status_code == 200 and "Berth_1_Section_1-drawings.crm" in r.headers["content-disposition"]
     assert client.get(f"{url}/design/drawings.json").json() == r.json()
     d = r.json()
-    assert d["section"] == "Section 1" and d["views"][-1]["name"] == "Pile(1) - elevation"
+    assert d["section"] == "Section 1" and d["views"][-1]["name"] == "Pile(1) - pile sheet"
     r = client.get(f"{url}/design/drawings.dxf", params={"element": "Pile(1)"})
     assert r.status_code == 200 and "Berth_1_Section_1_Pile_1_.dxf" in r.headers["content-disposition"]
     assert "-REINFORCEMENT_SECTION" in r.text

@@ -462,7 +462,10 @@ if (!cancelled)
                 }
                 else if (p.StorageType == Autodesk.Revit.DB.StorageType.Integer)
                 {
-                    if (hasN) p.Set((int)System.Math.Round(cnt));
+                    bool yesNo = false;
+                    try { yesNo = p.Definition.GetDataType() == Autodesk.Revit.DB.SpecTypeId.Boolean.YesNo; } catch { }
+                    if (yesNo) p.Set((hasN ? cnt : mm) > 0 ? 1 : 0);   // a count of 0: not there
+                    else if (hasN) p.Set((int)System.Math.Round(cnt));
                     else if (hasMm) p.Set((int)System.Math.Round(mm));
                     else continue;
                 }
@@ -790,8 +793,19 @@ if (!cancelled)
             else if (type == "text")
             {
                 // Triton gives the text's bottom left; a text note is placed by its top left.
-                Autodesk.Revit.DB.TextNote.Create(theDoc, view.Id,
-                    pt(coord(it, "at", 0), coord(it, "at", 1) + num(it, "h")), str(it, "text"), textType);
+                double rot = get(it, "rot") != null ? num(it, "rot") * System.Math.PI / 180.0 : 0.0;
+                double th = num(it, "h");
+                Autodesk.Revit.DB.XYZ tl = pt(coord(it, "at", 0) - th * System.Math.Sin(rot),
+                    coord(it, "at", 1) + th * System.Math.Cos(rot));
+                if (rot == 0.0)
+                    Autodesk.Revit.DB.TextNote.Create(theDoc, view.Id, tl, str(it, "text"), textType);
+                else
+                {
+                    Autodesk.Revit.DB.TextNoteOptions opts = new Autodesk.Revit.DB.TextNoteOptions(textType);
+                    opts.Rotation = rot;
+                    opts.HorizontalAlignment = Autodesk.Revit.DB.HorizontalTextAlignment.Left;
+                    Autodesk.Revit.DB.TextNote.Create(theDoc, view.Id, tl, str(it, "text"), opts);
+                }
                 texts++;
             }
             else if (get(it, "fallback") != null)
