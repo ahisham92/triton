@@ -555,7 +555,7 @@ def test_an_empty_least_spacing_keeps_stored_designs_fresh():
     p = Project()
     before = fingerprint(p, Section(), None)["design settings"]
     # The same hash as before the setting existed: the settings without it.
-    old = p.design.model_dump(mode="json", exclude={"joints"})
+    old = p.design.model_dump(mode="json", exclude={"joints", "construction_joints"})
     del old["reinforcement"]["slab_min_bar_spacing"]
     assert before == _hash(old)
     p.design.reinforcement.slab_min_bar_spacing = 150
