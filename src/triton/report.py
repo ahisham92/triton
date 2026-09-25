@@ -1327,6 +1327,8 @@ def _joint_calcs(r: Report, d: dict) -> None:
 
 
 TOE_WORDS = {
+    "tied": "tied at the deck (every head under it moves the same, by the mean head movement of the piles "
+    "fixed at their toes) and held at the toe or firm soil level, rotating about it",
     "fixed": "fixed at the toe (no displacement and no rotation), the member being deeply embedded",
     "firm_soil": "held at the toe and at the firm soil level (no displacement at either), the toe rotating",
 }
@@ -1352,6 +1354,15 @@ def _deflections(r: Report, est: dict | None) -> None:
         "bending: it leaves out the soil springs, the toe moving in the ground, axial shortening and "
         "second-order effects, and it is only as good as the Plaxis moments. Signs follow each member's local "
         "axes; the size and the shape are what it gives."
+    )
+    if est.get("deck"):
+        r.p(est["deck"]["words"])
+    base = next((e["baseline_note"] for e in est.get("elements") or [] if e.get("baseline_note")), "")
+    r.p(
+        f"Movement from: {base}."
+        if base
+        else "The moments in a Plaxis phase are the total since the model started, construction included, so "
+        "this is the total movement. Measuring from the end of construction needs that phase in the workbook."
     )
     rows = [
         [
