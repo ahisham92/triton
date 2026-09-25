@@ -34,6 +34,7 @@ from .combi import design_combi_wall
 from .construction_joints import add_weights, beam_lines, beam_top, for_beam, for_pile, for_slab
 from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
+from .pile_heads import assumed_heads
 from .piles import design_pile
 from .slabs import design_slab_meshes
 from .spw_design import design_spw
@@ -182,6 +183,7 @@ def run_section(
     out: dict[str, Any] = {k: [] for k in (*RESULT_KINDS, "skipped")}
     out |= {"alignment": None, "joints": None}
     stopped = False
+    section, heads = assumed_heads(section, workbook)
     try:
         _design(settings, section, workbook, approach, furniture_at, tick, take, out, mode == "standard")
         on.clear()
@@ -195,6 +197,9 @@ def run_section(
         unfinished = [n for n in handled if n in on or not (n in started or n in found or n in said)]
         handled[:] = [n for n in handled if n not in unfinished]
         left[:0] = unfinished
+    for e in out["piles"]:
+        if e.get("element") in heads:
+            e.setdefault("notes", []).append(heads[e["element"]])
     if mode == "standard":
         for kind in RESULT_KINDS:
             for e in out[kind]:
