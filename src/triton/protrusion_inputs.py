@@ -2,8 +2,8 @@
 the STS crane that the berth must still serve. Both are the project's (QuayFurniture): typical for
 every section's berth.
 
-The block's sizes are Ahmed's (1.5 m out from a 4.5 m beam, 2.5 m deep to suit the fender, 2.5 m
-long). The ship and fender panel values are the design report's (N25185-...-RPT-ST-01 Rev 2); the
+The block's sizes are Ahmed's and drawing SC-502-1's (1.5 m out from a 4.5 m beam, 2.5 m deep to
+suit the fender, 3.0 m long, a bollard on top). The ship and fender panel values are the design report's (N25185-...-RPT-ST-01 Rev 2); the
 crane's outreach and legs, the ship's flare and the clearance are not in it and stay assumed.
 """
 
@@ -44,9 +44,20 @@ class FenderProtrusion(_Model):
         gt=0,
         description="The fender manufacturer's depth; may be more than the beam's.",
     )
-    length: float = _mm("Length along the berth", 2500.0, gt=0)
+    length: float = _mm(
+        "Length along the berth",
+        3000.0,
+        gt=0,
+        description="Drawing SC-502-1 (reinforcement at protruded area): 3000 along, 1500 out.",
+    )
     fender_centre_below_cope: float | None = _m(
         "Fender centre below the cope", None, gt=0, description="Empty: the middle of the block's depth."
+    )
+    bollard_on_block: bool = Field(
+        True,
+        title="A bollard stands on the block",
+        description="As on drawing SC-502-1 (150 t bollard on the protruded area): the Furniture tab's "
+        "bollard pulls on the block (mooring, not with berthing).",
     )
     joint: Joint = Field(
         "rough",

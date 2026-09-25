@@ -636,6 +636,7 @@ def design(
                 project.design.partial_factors.gamma_c,
                 project.design.partial_factors.gamma_s,
                 project.design.partial_factors.alpha_cc,
+                f.bollards,
             )
         )
     if f.sts_crane:
