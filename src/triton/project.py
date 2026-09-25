@@ -111,6 +111,14 @@ class ReinforcementSettings(_Model):
         description="EC2 8.2(2): the larger bar's Ø, aggregate + 5 mm and 20 mm, at least; 32 mm lets Ø32 "
         "additional bars sit between Ø20 @ 150 mesh bars, as on the issued drawings.",
     )
+    slab_min_bar_spacing: float | None = _mm(
+        "Least spacing of additional slab bars",
+        None,
+        gt=0,
+        description="Each set of additional bars in a slab is at this spacing or wider: 150 on a 150 mm "
+        "mesh keeps Ø @ 150 (every gap) and Ø @ 300 (every second gap) and drops the bars @ 75 behind "
+        "the mesh bars; a third layer @ 150 takes their place when 3 layers are allowed. Empty: no limit.",
+    )
     max_spacing: float = _mm("Maximum bar spacing (slabs and beams)", 250.0, gt=0)
     spacing_step: float = _mm("Spacing increment (slabs and beams)", 25.0, gt=0)
     slab_spacings: list[float] = Field(

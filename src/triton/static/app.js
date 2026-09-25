@@ -3939,16 +3939,23 @@ function barDiagrams(card, d) {
         <line class="axis" x1="${X(lo)}" x2="${X(hi)}" y1="${axisY}" y2="${axisY}"/>
         ${[lo, ...ticks, hi].map((t) => `<line class="axis" x1="${X(t)}" x2="${X(t)}" y1="${axisY}" y2="${axisY + 4}"/><text class="tick" x="${X(t)}" y="${axisY + 14}" text-anchor="middle">${fmt(t, 1)}</text>`).join("")}
       </svg><div data-kind="bar-section"></div>`;
+    // A cut through every group of additional bars, top face first, each in turn along the axis; the
+    // heaviest (most layers) starts open, and clicking a group on the elevation opens its cut.
     const secEl = el.querySelector('[data-kind="bar-section"]');
-    const show = (f, s) => {
-      const title = `${f === "top" ? "Top" : "Bottom"} bars along ${v.dir.toUpperCase()}, ${s.what}, ${fmt(s.a, 2)} to ${fmt(s.b, 2)} m`;
-      secEl.innerHTML = barSection(s.layers, f, d.thickness_mm, title);
-    };
-    el.querySelectorAll("[data-seg]").forEach((g) => (g.onclick = () => { const [f, i] = g.dataset.seg.split(":"); show(f, segs[f][+i]); }));
-    // Start with the heaviest group: the most layers.
-    const all = ["bottom", "top"].flatMap((f) => segs[f].map((s) => [f, s]));
-    const first = all.sort((p, q) => (q[1].layers?.length || 0) - (p[1].layers?.length || 0))[0];
-    if (first && first[1].layers?.length) show(first[0], first[1]);
+    const all = ["top", "bottom"].flatMap((f) => segs[f].map((s, i) => ({ f, s, i }))).filter((g) => g.s.layers?.length);
+    all.sort((p, q) => (p.f === q.f ? p.s.a - q.s.a || p.s.lane - q.s.lane : p.f === "top" ? -1 : 1));
+    const heaviest = all.reduce((b, g) => (!b || g.s.layers.length > b.s.layers.length ? g : b), null);
+    const cutTitle = (g) => `${g.f === "top" ? "Top" : "Bottom"} bars along ${v.dir.toUpperCase()}, ${g.s.what}, ${fmt(g.s.a, 2)} to ${fmt(g.s.b, 2)} m`;
+    secEl.innerHTML = all.length
+      ? `<div class="chart-title">Cuts through each group of additional bars (${all.length}), 1 m wide:</div>` +
+        all.map((g) => `<details class="bar-cut" data-cut="${g.f}:${g.i}"${g === heaviest ? " open" : ""}><summary>${esc(cutTitle(g))}: ${esc(layerLines(g.s.layers, false).join(" · ") || shortBars(g.s.text))}</summary>${barSection(g.s.layers, g.f, d.thickness_mm, cutTitle(g))}</details>`).join("")
+      : "";
+    el.querySelectorAll("[data-seg]").forEach((g) => (g.onclick = () => {
+      const cut = secEl.querySelector(`[data-cut="${g.dataset.seg}"]`);
+      if (!cut) return;
+      cut.open = true;
+      cut.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }));
   };
   pick.querySelectorAll("[data-bd]").forEach((b) => (b.onclick = () => {
     view = Number(b.dataset.bd);

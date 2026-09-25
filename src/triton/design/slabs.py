@@ -774,11 +774,12 @@ def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, lis
     """
     area, phi_b, s_b, layers_b = mesh
     n_b = layers_b * 1000 / s_b
+    least = settings.reinforcement.slab_min_bar_spacing
     out = [(mesh, phi_b, label(mesh), [])]
     for phi_a in settings.reinforcement.bar_diameters:
         if phi_a < 10 or not fits_between(phi_a, phi_b, s_b, settings):
             continue
-        for n_a, spacing, lay, text, spec in (
+        choices = [
             (1000 / s_b, s_b / 2, layers_b, f"Ø{phi_a} @ {s_b:g}", [(phi_a, s_b)]),
             (1000 / (2 * s_b), s_b, layers_b, f"Ø{phi_a} @ {2 * s_b:g}", [(phi_a, 2 * s_b)]),
             (
@@ -795,7 +796,23 @@ def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, lis
                 f"Ø{phi_a} @ {s_b:g} in 2 layers + Ø{phi_a} behind the mesh bars",
                 [(phi_a, s_b), (phi_a, s_b / 2)],
             ),
-        ):
+        ]
+        if least is not None:
+            # The user's least spacing of additional bars: no set closer than it. Where that drops the
+            # bars behind the mesh bars, a third layer at the mesh spacing carries the same steel.
+            kept = [c for c in choices if min(p[1] for p in c[4]) >= least - 1e-9]
+            if len(kept) < len(choices) and settings.reinforcement.max_layers >= 3 and s_b >= least - 1e-9:
+                kept.append(
+                    (
+                        3000 / s_b,
+                        s_b / 2,
+                        max(layers_b, 3),
+                        f"Ø{phi_a} @ {s_b:g} in 3 layers",
+                        [(phi_a, s_b), (phi_a, s_b), (phi_a, s_b)],
+                    )
+                )
+            choices = kept
+        for n_a, spacing, lay, text, spec in choices:
             phi_eq = (n_b * phi_b**2 + n_a * phi_a**2) / (n_b * phi_b + n_a * phi_a)
             o = (area + n_a * math.pi * phi_a**2 / 4, phi_eq, spacing, lay)
             out.append((o, max(phi_a, phi_b), text, spec))
@@ -2084,6 +2101,14 @@ def design_slab(
                         else p[1] - p[0] < max(settings.reinforcement.slab_min_clear_spacing, p[0]) - 1e-9
                     )
                 ]
+                least = settings.reinforcement.slab_min_bar_spacing
+                close = [p for p in spec if p is not None and least is not None and p[1] < least - 1e-9]
+                if close and not bad:
+                    notes.append(
+                        f"{LAYER_TEXT[layer].capitalize()}: {layers_text(spec)} has bars closer than the "
+                        f"least spacing of additional bars ({least:g} mm, Design settings): left out."
+                    )
+                    continue
                 if bad:
                     notes.append(
                         f"{LAYER_TEXT[layer].capitalize()}: {layers_text(spec)} leaves less than the clear "

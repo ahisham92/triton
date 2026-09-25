@@ -527,3 +527,34 @@ def test_squares_without_results_borrow_from_their_neighbours():
     assert gaps[(4, 4)][1] == "pile"
     # A corner square with results on two sides only lies beyond the slab's outline: left out.
     assert (0, 5) not in gaps
+
+
+def test_least_spacing_of_additional_bars():
+    from triton.design.slabs import additional_options
+    from triton.project import ReinforcementSettings
+
+    mesh = (2094.0, 20, 150.0, 1)
+
+    def labels(**r):
+        return additional_options(mesh, DesignSettings(reinforcement=ReinforcementSettings(**r)))[2]
+
+    assert "Ø32 @ 150 in 2 layers + Ø32 behind the mesh bars" in labels()  # the bars @ 75
+    kept = labels(slab_min_bar_spacing=150)
+    assert "Ø32 @ 300" in kept and "Ø32 @ 150 in 2 layers" in kept
+    assert not any("behind" in t for t in kept) and not any("3 layers" in t for t in kept)
+    assert "Ø32 @ 150 in 3 layers" in labels(slab_min_bar_spacing=150, max_layers=3)
+    assert all(t == "Ø20 @ 150" or t.endswith("@ 300") for t in labels(slab_min_bar_spacing=300))
+
+
+def test_an_empty_least_spacing_keeps_stored_designs_fresh():
+    from triton.fresh import _hash, fingerprint
+    from triton.project import Project
+
+    p = Project()
+    before = fingerprint(p, Section(), None)["design settings"]
+    # The same hash as before the setting existed: the settings without it.
+    old = p.design.model_dump(mode="json", exclude={"joints"})
+    del old["reinforcement"]["slab_min_bar_spacing"]
+    assert before == _hash(old)
+    p.design.reinforcement.slab_min_bar_spacing = 150
+    assert fingerprint(p, Section(), None)["design settings"] != before

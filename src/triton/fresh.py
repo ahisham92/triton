@@ -67,10 +67,19 @@ def _rear_beam(section: Section) -> Any:
     return next((e for e in section.elements.values() if getattr(e, "kind", None) == "rear_beam"), None)
 
 
+def _settings_left_out(project: Project) -> dict:
+    """Design settings the fingerprint leaves out: joints (their own part), and settings added later
+    while they are empty, so designs run before they existed stay fresh."""
+    out: dict = {"joints": True}
+    if project.design.reinforcement.slab_min_bar_spacing is None:
+        out["reinforcement"] = {"slab_min_bar_spacing"}
+    return out
+
+
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
     """What the design of a section depends on, part by part, as short hashes."""
     parts = {
-        "design settings": _hash(project.design.model_dump(mode="json", exclude={"joints"})),
+        "design settings": _hash(project.design.model_dump(mode="json", exclude=_settings_left_out(project))),
         "working zone and peaks": _hash(section.model_dump(mode="json", exclude=_SECTION_OWN)),
         "load multipliers": _hash([f.model_dump(mode="json") for f in section.load_factors]),
         "sheet mapping": _hash({k: v.model_dump(mode="json") for k, v in section.sheet_map.items()}),

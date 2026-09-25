@@ -345,6 +345,8 @@ tr.gov-row td { font-weight: 600; }
 .bd-slab { fill: var(--miss-bg); stroke: var(--border); }
 line.bd-mesh { stroke: var(--text); stroke-width: 2.5; }
 .bd-seg line { stroke: #c8341e; stroke-width: 2.5; }
+.bar-cut { margin: 4px 0; }
+.bar-cut > summary { cursor: pointer; font-size: 13px; padding: 3px 0; }
 .legend i.bd-mesh { background: var(--text) !important; height: 3px; }
 .legend i.bd-add { background: #c8341e !important; height: 3px; }
 td.set-by { font-size: 12px; white-space: nowrap; }
