@@ -282,20 +282,22 @@ function displacementsPanel(box) {
 // server from the stored workbook with the section's settings, kept apart from the typed-in ones.
 function deflectionsPanel(box) {
   const s = sec();
-  s.deflection ??= { toe: "fixed", firm_soil_level: null, stiffness: "gross", long_term: false, combination: "" };
+  s.deflection ??= { toe: "tied", firm_soil_level: null, stiffness: "gross", long_term: false, combination: "", baseline: "" };
   const ds = s.deflection;
   box.innerHTML = `<h3>Estimated displacements <span class="chip small-chip stale-chip">Estimate</span>
     <span class="status">from the straining actions (M / EI integrated twice along each member), not a Plaxis displacement result</span></h3>
     <div class="row defl-settings">
-      <label>Piles and walls at the toe <select data-d="toe">
-        <option value="fixed">Fixed: no displacement, no rotation</option>
-        <option value="firm_soil">Held at the toe and at the firm soil level</option></select></label>
-      <label>Firm soil level (piles) <input data-d="firm_soil_level" type="number" step="any" style="width:6em" placeholder="none"> m</label>
+      <label>Piles and walls <select data-d="toe">
+        <option value="tied">Tied at the deck: heads move together, held at the toe</option>
+        <option value="fixed">Each on its own, fixed at the toe</option>
+        <option value="firm_soil">Each on its own, held at the toe and the firm soil level</option></select></label>
+      <label>Firm soil level <input data-d="firm_soil_level" type="number" step="any" style="width:6em" placeholder="walls' own"> m</label>
       <label>Stiffness <select data-d="stiffness">
         <option value="gross">Gross (uncracked)</option>
         <option value="cracked">Cracked (EC2 7.4.3; combi infill 0.6 EcIc)</option></select></label>
       <label><input type="checkbox" data-d="long_term"> Long term (Ecm / (1 + φ))</label>
       <label>Combination <input data-d="combination" list="defl-combos" placeholder="QP, else governing" style="width:10em"></label>
+      <label title="A phase in the workbook, such as the end of construction: its moments are taken off, so the estimate is the movement after it">Movement from <input data-d="baseline" list="defl-combos" placeholder="the start (total)" style="width:10em"></label>
       <datalist id="defl-combos">${(s.combinations || []).map((c) => `<option value="${esc(c)}">`).join("")}</datalist>
     </div>
     <div data-defl-out><p class="status">Working out the estimate…</p></div>`;
@@ -328,17 +330,20 @@ async function drawDeflections(box) {
   if (!document.body.contains(out)) return;
   const els = est.elements || [];
   const mm = (v) => (v == null ? "–" : `${fmt(v, 1)}`);
-  out.innerHTML = `${els.length
+  const deck = est.deck ? `<p><b>Deck:</b> ${esc(est.deck.words)}</p>` : "";
+  const from = els.find((e) => e.baseline_note)?.baseline_note;
+  out.innerHTML = `${deck}${from ? `<p class="status">Movement from: ${esc(from)}.</p>` : ""}${els.length
     ? `<div class="scroll"><table><tr><th>Element</th><th>Head / top (mm)</th><th>Largest (mm)</th><th>At</th><th>Direction of the largest</th><th>Combination</th><th>How</th></tr>
       ${els.map((e) => `<tr><td>${esc(e.element)}</td><td>${mm(e.head_mm)}</td><td><b>${mm(e.max_mm)}</b></td>
         <td>${e.axis === "level" ? `level ${fmt(e.max_at, 1)} m` : `${fmt(e.max_at, 1)} m along`}</td><td>${esc(e.max_direction)}</td>
         <td title="${esc(e.combination_note)}">${esc(e.combination)}</td>
-        <td><details><summary class="status">Assumptions</summary><p class="status">${esc(e.at)}.<br>${esc(e.boundary)}<br>${esc(e.stiffness)}<br>Combination: ${esc(e.combination_note)}.${(e.notes || []).map((n) => `<br>${esc(n)}`).join("")}</p></details></td></tr>`).join("")}</table></div>
+        <td><details><summary class="status">Assumptions</summary><p class="status">${esc(e.at)}.<br>${esc(e.boundary)}<br>${esc(e.stiffness)}<br>Combination: ${esc(e.combination_note)}.${e.baseline_note ? `<br>Movement from: ${esc(e.baseline_note)}.` : ""}${(e.notes || []).map((n) => `<br>${esc(n)}`).join("")}</p></details></td></tr>`).join("")}</table></div>
       <div class="charts">${els.map((_, i) => `<div class="chart" data-defl="${i}"></div>`).join("")}</div>`
     : `<p class="status">No element to estimate.</p>`}
     ${(est.skipped || []).length ? `<p class="status">${est.skipped.map(esc).join("<br>")}</p>` : ""}
     <p class="status">${esc(est.note || "")} Signs follow each member's local axes; the size and the shape are the estimate.
-      It leaves out the soil springs, the toe moving in the ground and second-order effects. Compare it with the displacements received above; it does not replace them.</p>`;
+      The moments in a Plaxis phase are the total since the model started, construction included: pick the end of construction under "Movement from" to see only what comes after it.
+      It leaves out the soil springs, the ground itself moving and second-order effects. Compare it with the displacements received above; it does not replace them.</p>`;
   els.forEach((e, i) => deflectionChart(out.querySelector(`[data-defl="${i}"]`), e));
 }
 

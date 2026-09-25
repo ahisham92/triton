@@ -837,6 +837,17 @@ def _workbook(project_id: str, section: Section) -> ImportResult | None:
     return _view(wb, section)
 
 
+def _deflections(project: Project, section: Section, wb: ImportResult, results: dict | None) -> dict:
+    """The estimated displacements; a phase picked under 'Movement from' (the end of construction) is
+    read from the stored workbook even though it is not one of the section's load combinations."""
+    phases = None
+    if section.deflection.baseline.strip():
+        raw = store().load_workbook(project.id, section.id)
+        if raw is not None:
+            phases = apply_section(raw, _sheet_map(section), None, None, section.review, _sizes(section))
+    return estimate_deflections(project.design, section, wb, results, phases)
+
+
 # The checked workbook depends on the stored workbook, the section's reading of it and this code;
 # it is kept once worked out, so opening the Workbook tab again only reads a file.
 _CODE = hashlib.sha1(
@@ -1770,7 +1781,7 @@ def design_report(
     section, results, suffix = _picked(section, results, elements)
     wb = _workbook(project_id, section)
     if wb is not None:
-        results = {**results, "deflections": estimate_deflections(project.design, section, wb, results)}
+        results = {**results, "deflections": _deflections(project, section, wb, results)}
     rep = build_report(project, section, results, detail)
     name = _file_name(project.info.name, section.name + suffix, detail)
     render, media = RENDERERS[fmt]
@@ -1791,7 +1802,7 @@ def section_deflections(project_id: str, section_id: str) -> dict:
     wb = _workbook(project_id, section)
     if wb is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
-    return estimate_deflections(project.design, section, wb, store().load_results(project_id, section_id))
+    return _deflections(project, section, wb, store().load_results(project_id, section_id))
 
 
 # --- Clashes -------------------------------------------------------------------------------------------

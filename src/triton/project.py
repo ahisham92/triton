@@ -2098,17 +2098,21 @@ class DeflectionSettings(_Model):
     """How the Design tab estimates displacements from the straining actions (no Plaxis displacement
     run). Not a design input: it never makes the design out of date."""
 
-    toe: Literal["fixed", "firm_soil"] = Field(
-        "fixed",
-        title="Piles and walls at the toe",
-        description="Fixed: no displacement and no rotation at the toe (deeply embedded). Firm soil: no "
-        "displacement at the toe or at the firm soil level; the toe rotates to suit.",
+    toe: Literal["tied", "fixed", "firm_soil"] = Field(
+        "tied",
+        title="Piles and walls",
+        description="Tied at the deck: every pile and wall head under the deck moves the same (the deck is "
+        "stiff in its own plane), by the mean head movement of the piles fixed at their toes; each wall "
+        "is held at its toe (or firm soil level) and rotates about it to meet the deck. Fixed: each "
+        "member on its own, no displacement and no rotation at the toe. Firm soil: each member on its "
+        "own, no displacement at the toe or at the firm soil level.",
     )
     firm_soil_level: float | None = _m(
-        "Firm soil level (piles)",
+        "Firm soil level",
         None,
-        description="For 'Firm soil'. Empty: the combi wall's and sheet pile wall's own firm soil level; "
-        "piles without one are fixed at the toe.",
+        description="Tied: the level each member rotates about (empty: the toe). Firm soil: the second "
+        "level held. Empty: the combi wall's and sheet pile wall's own firm soil level; piles without "
+        "one at the toe.",
     )
     stiffness: Literal["gross", "cracked"] = Field(
         "gross",
@@ -2127,6 +2131,21 @@ class DeflectionSettings(_Model):
         title="Combination",
         description="Empty: the QP combination where there is one, else each element's governing phase.",
     )
+    baseline: str = Field(
+        "",
+        title="Movement from",
+        description="Empty: the total movement since the start of the Plaxis model, construction included. "
+        "A phase or combination (the end of construction): its moments are taken off first, so the "
+        "estimate is the movement after it.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _tied_by_default(cls, data: Any) -> Any:
+        # Saved before 'tied' existed (no baseline key): 'fixed' was only the default then.
+        if isinstance(data, dict) and "baseline" not in data and data.get("toe") == "fixed":
+            data = {**data, "toe": "tied"}
+        return data
 
 
 class ElementCheck(_Model):
