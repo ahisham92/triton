@@ -47,8 +47,12 @@ def test_the_matrix_is_checked():
     p, s = section()
     with pytest.raises(ValueError, match="slab"):
         matrix.clean_spec({**SPEC, "element": "Pile(1)"}, s)
-    with pytest.raises(ValueError, match="at most"):
-        matrix.clean_spec({**SPEC, "thickness": list(range(600, 1100, 50))}, s)
+    with pytest.raises(ValueError, match="check the lists"):
+        matrix.clean_spec({**SPEC, "thickness": list(range(600, 3000, 10))}, s)
+    # 80 and more are fine: the page designs them in steps and collects them in one table.
+    assert (
+        len(matrix.options(matrix.clean_spec({**SPEC, "thickness": list(range(600, 1600, 50))}, s), s)) == 80
+    )
     with pytest.raises(ValueError, match="pile-face"):
         matrix.clean_spec({**SPEC, "peaks": ["mean"]}, s)
     with pytest.raises(ValueError, match="too little concrete"):

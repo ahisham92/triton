@@ -307,7 +307,8 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
                     "spacing_mm": (lay.get("basic") or {}).get("spacing_mm"),
                     "layers": placed(face, lay.get("mesh_bar_layers") or []),
                 },
-                "zones": [{**z, "layers": placed(face, z["layers"])} for z in zones],
+                "zones": [{**z, "layers": placed(face, z["layers"])} for z in zones]
+                + [{**z, "layers": placed(face, z["layers"])} for z in _punching_zones(d, face, direction)],
             }
         )
     return {
@@ -344,6 +345,39 @@ def _slab(d: dict[str, Any]) -> dict[str, Any]:
             if c.get("section")
         ],
     }
+
+
+def _punching_zones(d: dict[str, Any], face: str, direction: str) -> list[dict]:
+    """Bars added over pile heads for punching, on this face and direction: one rectangle per head,
+    the bars' length along them and the width they are spread over across them."""
+    out = []
+    for b in d.get("punching_bars") or []:
+        v = (b.get("directions") or {}).get(direction)
+        if b.get("face") != face or not v:
+            continue
+        half_l, half_w = v["length_mm"] / 2000, b["width_mm"] / 2000
+        for x, y in b["heads"]:
+            hx, hy = (half_l, half_w) if direction == "x" else (half_w, half_l)
+            out.append(
+                {
+                    "x_m": [round(x - hx, 3), round(x + hx, 3)],
+                    "y_m": [round(y - hy, 3), round(y + hy, 3)],
+                    "label": f"{v['label']} (punching, {b['pile']})",
+                    "punching": True,
+                    "layers": [
+                        {
+                            "layer": 9,
+                            "text": f"{v['label']} (added for punching)",
+                            "from_face_mm": v["from_face_mm"],
+                            "as_mm2_per_m": v["as_mm2_per_m"],
+                            "bars": [
+                                {"diameter_mm": v["phi"], "spacing_mm": v["spacing_mm"], "kind": "punching"}
+                            ],
+                        }
+                    ],
+                }
+            )
+    return out
 
 
 def _manhole(m: dict[str, Any]) -> dict[str, Any]:

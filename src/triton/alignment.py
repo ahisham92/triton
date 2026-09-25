@@ -687,3 +687,72 @@ def named_parts(results: dict[str, Any]) -> dict[str, Any]:
             for d in results.get(kind) or []
         ]
     return out
+
+
+def stations(points: list[list[float]] | None, along: str, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Each point's distance (m) along the berth: along the berth's line (``points``, round its corners)
+    or, with no line, its ``along`` coordinate. Points past the line's ends run on beyond them."""
+    if not points or len(points) < 2:
+        return np.asarray(x if along == "X" else y, float)
+    p = np.asarray(points, float)
+    xy = np.column_stack([np.asarray(x, float), np.asarray(y, float)])
+    best_d = np.full(len(xy), np.inf)
+    out = np.zeros(len(xy))
+    start = 0.0
+    last = len(p) - 2
+    for i in range(len(p) - 1):
+        a, b = p[i], p[i + 1]
+        seg = b - a
+        length = float(np.hypot(*seg))
+        if length <= 1e-9:
+            continue
+        u = seg / length
+        t = (xy - a) @ u
+        near = np.clip(t, 0.0, length)
+        d = np.hypot(*(xy - (a + near[:, None] * u)).T)
+        lo = -np.inf if i == 0 else 0.0
+        hi = np.inf if i == last else length
+        take = d < best_d - 1e-9
+        out[take] = start + np.clip(t, lo, hi)[take]
+        best_d[take] = d[take]
+        start += length
+    return out
+
+
+def trim_ends(
+    elements: dict[str, dict[str, SheetData]],
+    points: list[list[float]] | None,
+    along: str,
+    trim: float,
+    keep: set[str] = frozenset(),
+) -> tuple[dict[str, dict[str, SheetData]], dict[str, Any] | None]:
+    """The results with those within ``trim`` m of each element's two ends along the berth left out (the
+    FE edges), and where each element's ends were. The elements in ``keep`` (the piles) stay whole; a
+    corner is inside the berth and never trimmed."""
+    if trim <= 0:
+        return elements, None
+    out: dict[str, dict[str, SheetData]] = {}
+    ends: dict[str, list[float]] = {}
+    for n, combos in elements.items():
+        out[n] = dict(combos)
+        if n in keep:
+            continue
+        own = {
+            c: stations(points, along, sh.frame["X"].to_numpy(), sh.frame["Y"].to_numpy())
+            for c, sh in combos.items()
+            if not sh.frame.empty and {"X", "Y"} <= set(sh.frame.columns)
+        }
+        if not own:
+            continue
+        lo = min(float(v.min()) for v in own.values())
+        hi = max(float(v.max()) for v in own.values())
+        if hi - lo <= 2 * trim:
+            continue  # too short to lose both ends
+        ends[n] = [round(lo, 2), round(hi, 2)]
+        for c, st in own.items():
+            inside = (st >= lo + trim - 1e-9) & (st <= hi - trim + 1e-9)
+            if not inside.all():
+                out[n][c] = replace(combos[c], frame=combos[c].frame[inside])
+    if not ends:
+        return elements, None
+    return out, {"trim_m": trim, "ends_m": ends, "corner": bool(points and len(points) > 2)}

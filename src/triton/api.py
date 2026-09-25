@@ -57,6 +57,7 @@ from .importer import is_header
 from .joints import joints_drawing, section_joints
 from .materials import catalogue
 from .project import (
+    NEW_SECTION_END_TRIM,
     ClashSettings,
     CombiWallInput,
     DesignSettings,
@@ -211,7 +212,7 @@ def list_projects() -> list[ProjectSummary]:
 
 @app.post("/api/projects", status_code=201)
 def create_project(body: NewProject) -> Project:
-    section = Section(name=body.section_name)
+    section = Section(name=body.section_name, end_trim=NEW_SECTION_END_TRIM)
     section.add_elements(body.element_names)
     project = Project(info=body.info, design=body.design or DesignSettings(), sections=[section])
     return store().save(project)
@@ -445,7 +446,7 @@ def add_section(project_id: str, body: NewSection) -> Project:
     if body.copy_from:
         settings = _section(project, body.copy_from).model_dump(mode="json", exclude=WORKBOOK_OWN)
     try:
-        section = Section.model_validate({**settings, "name": body.name})
+        section = Section.model_validate({"end_trim": NEW_SECTION_END_TRIM, **settings, "name": body.name})
     except ValidationError as e:
         raise HTTPException(422, e.errors(include_url=False, include_context=False)) from None
     project.sections.append(section)
@@ -1651,6 +1652,7 @@ class MatrixRequest(BaseModel):
     budget_s: float | None = Field(
         None, gt=0, description="Start no element after this long; what is left comes back in 'left'."
     )
+    view: bool = Field(True, description="Send the table back with each step (false: only at the end).")
 
 
 def _matrix(project_id: str, section_id: str) -> dict:
@@ -1694,6 +1696,8 @@ def run_matrix(project_id: str, section_id: str, body: MatrixRequest) -> dict:
         done = trials.run_scenarios(
             project, section, workbook, summary, d, variants, deadline, tell, "matrix"
         )
+    if done["left"] and not body.view:
+        return done  # still designing: the page asks for the table once all are done (or stopped)
     return {**_matrix(project_id, section_id), **done}
 
 

@@ -1207,6 +1207,13 @@ class SlabInput(_ConcreteSection):
         description="One per pile type: every head of a type gets the design of its worst head, as detailed "
         "on site (each head's own check is still shown). Per head: each head its own links.",
     )
+    punching_fix: Literal["bars", "report"] = Field(
+        "bars",
+        title="Punching that links cannot carry",
+        description="Bars: where vEd is over kmax·vRd,c, bars are added over the pile (face in tension, both "
+        "ways) until ρl is enough, and links carry the rest. Report: the check fails and says what would fix "
+        "it (more bars, or a thicker slab at the pile).",
+    )
     punching_depths: list[PunchingDepth] = Field(
         default_factory=list,
         title="Slab thickness at single piles",
@@ -2366,6 +2373,9 @@ class SiteView(_Model):
         return data
 
 
+NEW_SECTION_END_TRIM = 2.0  # m, the office's trim at each end of a model (Ahmed, 2026-09-25)
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
@@ -2382,6 +2392,15 @@ class Section(_Model):
         title="Isolated peaks",
         description="Raw: use the values as they are. Average: replace a peak by the mean of the nodes "
         "above and below it.",
+    )
+    end_trim: float = _m(
+        "Ignore results at the model's ends",
+        0.0,
+        ge=0,
+        description="Results within this distance of each element's two ends along the berth are not used "
+        "(the FE edges; the office removes 2 m at each end, and new sections start at 2 m). On a corner "
+        "berth only the berth's outer ends are trimmed, never the corner. Piles are not trimmed. 0: every "
+        "result is used.",
     )
     peak_ratio: float = Field(
         1.5,

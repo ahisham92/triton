@@ -1576,6 +1576,141 @@ def _punching_fix(
     return out
 
 
+def _bars_for(need: float, mesh_spacing: float, diameters: list[int]) -> tuple[int, float]:
+    """The smallest bar at the mesh spacing (one under each mesh bar), else at half of it, giving
+    at least ``need`` mm²/m."""
+    sizes = sorted(p for p in diameters if p >= 10) or [16]
+    for s in (mesh_spacing, mesh_spacing / 2):
+        for phi in sizes:
+            if 1000 * math.pi * phi * phi / 4 / s >= need - 1e-6:
+                return phi, s
+    return sizes[-1], mesh_spacing / 2
+
+
+def _punching_bars(punch, punch_types, slab, settings, layers, strip_rows, as_at, extra, rerun):
+    """Heads that fail because links alone cannot carry the punching (vEd over kmax·vRd,c) get bars
+    added over the pile on the face in tension, both ways, until ρl gives kmax·vRd,c ≥ vEd (the fix's
+    ρl with links); links then carry the rest. With one design per pile type, every head of the type
+    gets the same bars. Over a width of D + 6d (EN 1992-1-1 6.4.4(1): 3d each side of the pile), each
+    bar running the lap length past it each way. Returns the punching and the bars."""
+    r = settings.reinforcement
+    groups: dict[str, dict] = {}
+    for _ in range(4):
+        changed = False
+        rows = (
+            [(t["pile"], t) for t in punch_types if t.get("unified")]
+            if slab.punching_per == "type"
+            else [(f"{q['pile']} {q['x']:g},{q['y']:g}", q) for q in punch]
+        )
+        for key, q in rows:
+            fix = q.get("fix") or {}
+            rho_req = fix.get("rho_l_with_links")
+            if q.get("passed") or not rho_req:
+                continue  # passes, or crushing at the face / over 2%: only a thicker slab
+            gx, gy = (q["governing_x"], q["governing_y"]) if "governing_x" in q else (q["x"], q["y"])
+            face = "top" if q["direction"] == "pile pushes up" else "bottom"
+            g = groups.setdefault(key, {"face": face, "dirs": {}})
+            for direction in ("x", "y"):
+                lay = layers[f"{face}_{direction}"]
+                need = rho_req * 1.001 * 1000 * lay["d_mm"] - as_at(gx, gy, face, direction)
+                have = g["dirs"].get(direction, {}).get("as_mm2_per_m", 0.0)
+                if need > have + 1e-6:
+                    phi, sp = _bars_for(need, lay["basic"]["spacing_mm"], r.bar_diameters)
+                    g["dirs"][direction] = {
+                        "phi": phi,
+                        "spacing_mm": sp,
+                        "as_mm2_per_m": round(1000 * math.pi * phi * phi / 4 / sp),
+                        "needed_mm2_per_m": round(need),
+                    }
+                    changed = True
+            if slab.punching_per == "type":
+                g["heads"] = [(h["x"], h["y"], h) for h in punch if h["pile"] == q["pile"]]
+            else:
+                g["heads"] = [(q["x"], q["y"], q)]
+            g["pile"], g["D_mm"], g["d_mm"] = q["pile"], q["D_mm"], q["d_mm"]
+            g["rho_required"] = rho_req
+        if not changed:
+            break
+        for g in groups.values():
+            for x, y, _ in g["heads"]:
+                extra[(round(x, 2), round(y, 2), g["face"])] = {
+                    k: v["as_mm2_per_m"] for k, v in g["dirs"].items()
+                }
+        punch, punch_types = rerun()
+    out = []
+    for g in groups.values():
+        if not g["dirs"]:
+            continue
+        width = g["D_mm"] + 6 * g["d_mm"]
+        dirs = {}
+        for direction, b in g["dirs"].items():
+            lay = layers[f"{g['face']}_{direction}"]
+            length = math.ceil((width + 2 * settings.piles.lap_factor * b["phi"]) / 100) * 100
+            count = math.floor(width / b["spacing_mm"]) + 1
+            # Inside every layer already there at this face and direction (mesh, zones, strip rows).
+            deepest = [
+                (row["from_face_mm"], max(bb["diameter_mm"] for bb in row["bars"]))
+                for src in (
+                    [lay.get("mesh_bar_layers") or []]
+                    + [z.get("bar_layers") or [] for z in lay.get("zones") or []]
+                    + [
+                        sr.get("bar_layers") or []
+                        for sr in strip_rows
+                        if sr.get("layer") == f"{g['face']}_{direction}"
+                    ]
+                )
+                for row in src
+                if row.get("bars")
+            ]
+            at, prev = max(deepest, default=(lay.get("cover_mm", 50) + b["phi"] / 2, 0))
+            if prev:
+                at += prev / 2 + max(25.0, prev, b["phi"]) + b["phi"] / 2
+            dirs[direction] = {
+                **b,
+                "label": f"Ø{b['phi']} @ {b['spacing_mm']:g}",
+                "count": count,
+                "length_mm": length,
+                "from_face_mm": round(at),
+            }
+        heads = [(x, y) for x, y, _ in g["heads"]]
+        kg = sum(
+            len(heads)
+            * v["count"]
+            * v["length_mm"]
+            / 1000
+            * math.pi
+            * v["phi"] ** 2
+            / 4
+            * STEEL_DENSITY
+            / 1e6
+            for v in dirs.values()
+        )
+        text = f"{g['face']} bars over the pile: " + ", ".join(
+            f"{v['count']} {v['label']} along {k.upper()}, {v['length_mm']:g} long" for k, v in dirs.items()
+        )
+        out.append(
+            {
+                "pile": g["pile"],
+                "face": g["face"],
+                "heads": [[round(x, 2), round(y, 2)] for x, y in heads],
+                "width_mm": round(width),
+                "rho_l_required": round(g["rho_required"], 4),
+                "directions": dirs,
+                "text": text,
+                "kg": round(kg, 1),
+            }
+        )
+    by_head = {(round(x, 2), round(y, 2)): b["text"] for b in out for x, y in b["heads"]}
+    for q in punch:
+        if (t := by_head.get((round(q["x"], 2), round(q["y"], 2)))) is not None:
+            q["added_bars"] = t
+    for t in punch_types:
+        hit = next((b for b in out if b["pile"] == t["pile"]), None)
+        if hit is not None:
+            t["added_bars"] = hit["text"]
+    return punch, punch_types, out
+
+
 # --- Restraint --------------------------------------------------------------------------------------
 
 
@@ -2659,13 +2794,20 @@ def design_slab(
         for layer, pc in per_cell.items()
     }
 
-    def rho_at(x: float, y: float, face: str) -> float:
+    # Bars added over pile heads for punching: (x, y, face) -> mm²/m added along x and along y.
+    punch_extra: dict[tuple[float, float, str], dict[str, float]] = {}
+
+    def as_at(x: float, y: float, face: str, direction: str) -> float:
         i, j = (int(v[0]) for v in _cells(np.array([x]), np.array([y]), x0, y0, size))
+        lay = layers[f"{face}_{direction}"]
+        return prov_at[f"{face}_{direction}"].get((i, j), lay["basic"]["as_mm2_per_m"])
+
+    def rho_at(x: float, y: float, face: str) -> float:
+        extra = punch_extra.get((round(x, 2), round(y, 2), face), {})
         vals = []
         for direction in ("x", "y"):
-            lay = layers[f"{face}_{direction}"]
-            a = prov_at[f"{face}_{direction}"].get((i, j), lay["basic"]["as_mm2_per_m"])
-            vals.append(a / (1000 * lay["d_mm"]))
+            a = as_at(x, y, face, direction) + extra.get(direction, 0.0)
+            vals.append(a / (1000 * layers[f"{face}_{direction}"]["d_mm"]))
         return math.sqrt(vals[0] * vals[1])
 
     # Shear per metre.
@@ -2889,9 +3031,24 @@ def design_slab(
         left = [p for p in in_slab if p not in slab.punching_piles]
         if left:
             notes.append(f'Punching not checked for {", ".join(left)} (slab setting "Punching for").')
-    punch, punch_types = unify_punching(
-        punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams), slab.punching_per
-    )
+
+    def run_punching() -> tuple[list[dict], list[dict]]:
+        return unify_punching(
+            punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams), slab.punching_per
+        )
+
+    punch, punch_types = run_punching()
+    punch_bars: list[dict] = []
+    if slab.punching_fix == "bars":
+        punch, punch_types, punch_bars = _punching_bars(
+            punch, punch_types, slab, settings, layers, strip_rows, as_at, punch_extra, run_punching
+        )
+        if punch_bars:
+            notes.append(
+                "Punching: where links alone cannot carry it (vEd over kmax·vRd,c), bars are added over the "
+                "pile on the face in tension, both ways, to raise ρl; see the punching table. A thicker "
+                "slab at the pile is given as the other way."
+            )
     if slab.punching_per == "type" and any(len(t["thicknesses_mm"]) > 1 for t in punch_types):
         notes.append(
             "Punching: a pile type has heads with different slab thicknesses; its one design is the "
@@ -2981,6 +3138,8 @@ def design_slab(
             kg += a * cell_area / 1e6 * STEEL_DENSITY
         area_m2 += cell_area
     allc = pd.concat([pc.assign(layer=k) for k, pc in per_cell.items()])
+    punch_kg = sum(b["kg"] for b in punch_bars)
+    kg += punch_kg
     rho_dir = []
     for direction in ("x", "y"):
         both = allc[allc["layer"].str.endswith(direction)].groupby(["i", "j"])["a"].sum()
@@ -3041,6 +3200,8 @@ def design_slab(
         "area_m2": round(area_m2, 1),
         "total_t": round(kg / 1000, 2),
     }
+    if punch_kg:
+        steel["punching_bars_kg"] = round(punch_kg)
     bands = [
         [
             round(x0 + (i + 0.5) * size, 2),
@@ -3193,6 +3354,7 @@ def design_slab(
         "shear": shear,
         "punching": punch,
         "punching_types": punch_types,
+        "punching_bars": punch_bars,
         "restraint": restraint,
         "steel": steel,
         "utilisation": round(
