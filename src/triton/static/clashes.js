@@ -48,6 +48,7 @@ export async function renderClashes(host, h) {
         <option value="l" ${s.beam_bars === "l" ? "selected" : ""}>L, outwards under the top bars</option></select></label>
       <label>Combi bars welded to the tube: fillet leg <input id="cl-leg" type="number" min="1" step="1" value="${s.weld?.leg ?? 16}" style="width:4em"> mm,
         filler fu <input id="cl-fu" type="number" min="1" step="0.1" value="${s.weld?.filler_fu ?? 482.6}" style="width:5em"> MPa (E70XX)</label>
+      <label>Front beam clear height above the highest water <input id="cl-water" type="number" min="0" step="0.1" value="${s.water_margin ?? 0.5}" style="width:4em"> m</label>
       <button id="cl-save">Find again</button></div>
       <ul class="status">${data.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></details>`;
   };
@@ -68,6 +69,14 @@ export async function renderClashes(host, h) {
           .map((id) => `<option value="${id}" ${g.choice === id ? "selected" : ""}>${esc(solTitle(id))}</option>`).join("")}</select></td></tr>`;
     }).join("")}</tbody></table></div></div>`;
 
+  const FLAG = { ok: "flag-ok", warning: "flag-warn", critical: "flag-bad" };
+  const waterHtml = () => !data.water?.length ? "" : `<div class="panel"><h2>Front beam and the water</h2>
+    <p class="status">Water levels from the section's site settings (3D tab). A soffit in the tidal zone is cast between tides; below the lowest level it needs a cofferdam or a precast shell.</p>
+    <div class="scroll"><table><thead><tr><th>Underside</th><th class="num">Level (m)</th><th>Where</th>${data.water[0].levels.map((l) => `<th class="num">${esc(l.name)} ${l.level_m}</th>`).join("")}</tr></thead><tbody>
+    ${data.water.map((w) => `<tr><td>${esc(w.what)}</td><td class="num">${w.level_m.toFixed(2)}</td><td><span class="${FLAG[w.severity]}">${esc(w.status)}</span></td>
+      ${w.levels.map((l) => `<td class="num">${l.above_m >= 0 ? "+" : ""}${l.above_m.toFixed(2)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+    <ul class="status">${data.water.filter((w) => w.severity !== "ok").map((w) => `<li>${esc(w.text)}</li>`).join("")}</ul></div>`;
+
   const whatifsHtml = () => !data.whatifs.length ? "" : `<div class="panel"><h2>What ifs kept</h2><div class="scroll"><table><thead><tr><th>Connection</th><th>Taken out</th><th>Note</th><th>Result</th><th>Steel</th><th>Calculation</th><th></th></tr></thead><tbody>
     ${data.whatifs.map((w) => `<tr><td>${esc(w.group.replace("|", " into "))}, head ${w.head + 1}</td><td>${w.bars.length} bar(s)${w.pile_bars.length ? `, ${w.pile_bars.length} pile bar(s)` : ""}</td>
       <td>${esc(w.note || "")}</td><td>${w.error ? `<span class="flag-bad">${esc(w.error)}</span>` : yes(w.passes)}</td><td class="num">${w.delta_kg == null ? "–" : `${f1(w.delta_kg)} kg`}</td>
@@ -76,9 +85,9 @@ export async function renderClashes(host, h) {
     </tbody></table></div></div>`;
 
   const draw = () => {
-    out.innerHTML = settingsHtml() + groupsHtml() + whatifsHtml() + `<div id="cl-head"></div>`;
+    out.innerHTML = settingsHtml() + waterHtml() + groupsHtml() + whatifsHtml() + `<div id="cl-head"></div>`;
     out.querySelector("#cl-save").onclick = async () => {
-      const body = { rule: out.querySelector("#cl-rule").value, fixing_tolerance: Number(out.querySelector("#cl-tol").value), plate_level: out.querySelector("#cl-plate").value, beam_bars: out.querySelector("#cl-beam").value,
+      const body = { rule: out.querySelector("#cl-rule").value, fixing_tolerance: Number(out.querySelector("#cl-tol").value), plate_level: out.querySelector("#cl-plate").value, beam_bars: out.querySelector("#cl-beam").value, water_margin: Number(out.querySelector("#cl-water").value),
         weld: { ...(data.settings.weld || {}), leg: Number(out.querySelector("#cl-leg").value), filler_fu: Number(out.querySelector("#cl-fu").value) } };
       out.querySelector("#cl-save").disabled = true;
       await api(`${secUrl()}/clashes/settings`, { method: "PUT", body: JSON.stringify(body) });

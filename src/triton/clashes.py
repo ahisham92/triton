@@ -2677,9 +2677,75 @@ def find_clashes(
                 if not h["count"]["pairs"] and not h["punch_count"]["pairs"]
             ),
             "whatifs": [c.whatif(w) for w in rule.whatifs],
+            "water": water_check(project, section, rule, c.drawing),
             "notes": c.notes + assumptions(rule, c.ctx.settings),
         }
     )
+
+
+def water_check(project: Project, section: Section, rule: ClashSettings, drawing: dict) -> list[dict]:
+    """Each front beam's soffit (and the fender protrusion block's underside, where the section has it)
+    against the section's water levels (the 3D site settings): clear of the highest, in the tidal zone
+    (cast between tides: a construction warning) or below the lowest (always wet: a cofferdam or a
+    precast shell). Known from the start, before any bars are fixed."""
+    from .furniture import for_section  # imports the design modules
+
+    levels = sorted(section.site.water_levels, key=lambda w: -w.level)
+    if not levels:
+        return []
+    high, low = levels[0], levels[-1]
+    block = None
+    if section.furniture.use:
+        block = for_section(project.furniture, section.furniture).protrusion
+    out = []
+    for b in drawing.get("beams") or []:
+        if b.get("kind") != "front_beam":
+            continue
+        top = _top_of(rule, b["element"], b["level_m"], b["depth_mm"])
+        faces = [(f"{b['element']} soffit", top - b["depth_mm"] / 1e3)]
+        if block is not None:
+            faces.append((f"{b['element']} fender protrusion block underside", top - block.depth / 1e3))
+        for what, z in faces:
+            z = round(z, 3)
+            wet = [w for w in levels if w.level > z]
+            if not wet and z - high.level >= rule.water_margin:
+                status, severity = f"clear of {high.name}", "ok"
+                advice = f"{z - high.level:.2f} m above {high.name}: cast in the dry at any tide."
+            elif not wet:
+                status, severity = f"just above {high.name}", "warning"
+                advice = (
+                    f"only {z - high.level:.2f} m above {high.name} (less than {rule.water_margin:g} m): waves "
+                    "and surge reach it at spring tides. Plan the pour for neap tides, or raise it."
+                )
+            elif z < low.level:
+                status, severity = f"below {low.name} (always wet)", "critical"
+                advice = (
+                    f"{low.level - z:.2f} m below {low.name}: never out of the water. It needs a cofferdam, a "
+                    "precast shell or a permanent formwork box, or a higher soffit."
+                )
+            else:
+                dry = [w for w in levels if w.level <= z]
+                status, severity = "in the tidal zone", "warning"
+                advice = (
+                    f"{high.level - z:.2f} m below {high.name}: in the water from {wet[-1].name} upwards, "
+                    f"out of it only below {dry[0].name} ({dry[0].level:g} m). Cast between tides with "
+                    "tide-work formwork, or raise the soffit."
+                )
+            out.append(
+                {
+                    "element": b["element"],
+                    "what": what,
+                    "level_m": z,
+                    "status": status,
+                    "severity": severity,
+                    "clearance_m": round(z - high.level, 3),
+                    "levels": [
+                        {"name": w.name, "level_m": w.level, "above_m": round(z - w.level, 3)} for w in levels
+                    ],
+                    "text": f"{what} at {z:+.2f} m: {status}. {advice}",
+                }
+            )
+    return out
 
 
 def _group_summary(g: dict) -> dict:

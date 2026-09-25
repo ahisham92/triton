@@ -264,3 +264,26 @@ def test_each_pile_keeps_its_connection_and_real_bar_lengths(designed):
     assert conn["rows"][0]["bar_top_m"] < conn["rows"][0]["anchor_top_m"]
     # A design made before: worked out when the file is made.
     assert pile_cages("x", results)["piles"][0]["connections"] == d["connections"]
+
+
+def test_the_front_beam_is_checked_against_the_water():
+    from triton.project import WaterLevel
+
+    section = Section(name="S")
+    section.site.water_levels = [WaterLevel(name="MHWS", level=0.945), WaterLevel(name="LAT", level=0.0)]
+    project = Project(sections=[section])
+    beam = {"element": "Front Beam", "kind": "front_beam", "level_m": 2.7, "depth_mm": 1600.0}
+    rear = {**beam, "element": "Rear Beam", "kind": "rear_beam"}
+    rule = ClashSettings()
+
+    def check(level):
+        return C.water_check(project, section, rule, {"beams": [{**beam, "level_m": level}, rear]})
+
+    soffit, block = check(2.7)  # soffit +1.90; the block (2.5 m deep) +1.00, 0.06 m above MHWS
+    assert soffit["severity"] == "ok" and soffit["clearance_m"] == pytest.approx(0.955)
+    assert block["severity"] == "warning" and "just above MHWS" in block["status"]
+    assert check(1.3)[0]["status"] == "in the tidal zone"  # soffit +0.50
+    wet = check(0.5)[0]  # soffit -0.30
+    assert wet["severity"] == "critical" and "cofferdam" in wet["text"]
+    section.furniture.protrusion = False
+    assert len(check(2.7)) == 1
