@@ -184,7 +184,7 @@ export class View3D {
       <option value="y">Slabs: bars along Y (M22)</option></select></span></div>
       <div class="v3d-bar v3d-site" hidden><label class="toggle">Soil <select data-soil aria-label="Soil">
       <option value="hidden">Hidden</option><option value="half">50%</option><option value="full">Full</option></select></label>
-      <label class="toggle"><input type="checkbox" data-show="water"> Water</label>
+      <label class="toggle"><input type="checkbox" data-show="water"> Water</label><span class="v3d-waters" data-waters></span>
       <label class="toggle"><input type="checkbox" data-show="furniture"> Fenders and bollards</label>
       <label class="toggle"><input type="checkbox" data-show="crane"> STS crane</label>
       <span class="v3d-def" ${deformed ? "" : "hidden"}><select data-def aria-label="Deformed shape"><option value="">Deformed shape: off</option></select>
@@ -229,6 +229,7 @@ export class View3D {
   // Site switches: drawn at once, and kept on the section (never a design input).
   _site(change) {
     Object.assign(this.siteView, change);
+    if ("water" in change) this.host.querySelector("[data-waters]").hidden = !change.water;
     this.onSite?.(change);
     this._build();
     this.draw();
@@ -243,6 +244,19 @@ export class View3D {
       return;
     }
     this.host.querySelector("[data-soil]").value = this.siteView.soil;
+    // Several named water levels: a switch for each.
+    const waters = this.host.querySelector("[data-waters]");
+    const hidden = new Set(this.siteView.water_hidden || []);
+    const list = site.water || [];
+    waters.innerHTML = list.length > 1
+      ? list.map((w, i) => `<label class="toggle"><input type="checkbox" data-water="${i}" ${hidden.has(w.name) ? "" : "checked"}>
+        ${w.name.replace(/</g, "&lt;")} (${w.level} m)</label>`).join("")
+      : "";
+    waters.hidden = !this.siteView.water;
+    waters.querySelectorAll("[data-water]").forEach((b) => (b.onchange = () => {
+      const off = list.filter((w, i) => !waters.querySelector(`[data-water="${i}"]`).checked).map((w) => w.name);
+      this._site({ water_hidden: off });
+    }));
     this.host.querySelectorAll("[data-show]").forEach((b) => {
       b.checked = !!this.siteView[b.dataset.show];
       b.closest("label").hidden = (b.dataset.show === "crane" && !site.crane) || (b.dataset.show === "furniture" && !site.furniture?.length);
@@ -651,15 +665,21 @@ export class View3D {
         }
       }
     }
-    if (v.water && S.water) {
-      const [c0, c1, c2, c3] = S.water.corners;
-      const w = S.water.level;
+    const shown = v.water ? (S.water || []).filter((w) => !(v.water_hidden || []).includes(w.name)) : [];
+    shown.forEach((wl, i) => {
+      // Highest first: each level a plane, the sea's sides up to the highest one shown.
+      const [c0, c1, c2, c3] = wl.corners;
+      const w = wl.level;
       const dz = (c) => (move && (c === c2 || c === c3) ? move(w) : still);
-      quad([c0, c1, c2, c3].map((c) => up(c, w)), "rgba(56,132,200,0.30)", -3e6, [c0, c1, c2, c3].map(dz), `Water at ${w} m`);
+      const a = Math.max(0.16, 0.3 - 0.05 * i);
+      quad([c0, c1, c2, c3].map((c) => up(c, w)), `rgba(56,132,200,${a})`, -3e6 + i, [c0, c1, c2, c3].map(dz), `${wl.name}: ${w} m`);
+      items.push({ kind: "line", a: up(c0, w), b: up(c1, w), color: "rgba(30,90,160,0.8)", width: 1.5, site: true, tip: `${wl.name}: ${w} m` });
+      if (shown.length > 1) items.push({ kind: "label", at: up(c0, w), text: `${wl.name} ${w} m`, site: true });
+      if (i) return;
       const bed = L.seabed;
       for (const [p, q] of [[c0, c1], [c3, c0], [c1, c2]])
-        quad([up(p, bed), up(q, bed), up(q, w), up(p, w)], "rgba(56,132,200,0.14)", -3e6);
-    }
+        quad([up(p, bed), up(q, bed), up(q, w), up(p, w)], "rgba(56,132,200,0.12)", -3e6);
+    });
     if (v.furniture) {
       for (const f of S.furniture || []) {
         if (f.line) {
