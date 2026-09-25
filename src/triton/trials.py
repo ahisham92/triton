@@ -12,6 +12,7 @@ from, so a change to the workbook, settings or element makes it run again.
 
 from __future__ import annotations
 
+import functools
 import gzip
 import json
 import time
@@ -172,9 +173,18 @@ def save(d: Path, data: dict[str, Any]) -> None:
 
 def load_design(d: Path, key: str) -> dict[str, Any] | None:
     path = d / "trials" / f"{key}.json.gz"
-    if not path.exists():
+    try:
+        stamp = path.stat().st_mtime_ns
+    except FileNotFoundError:
         return None
-    return json.loads(gzip.decompress(path.read_bytes()))
+    return json.loads(_read_design(str(path), stamp))
+
+
+@functools.lru_cache(maxsize=256)
+def _read_design(path: str, stamp: int) -> bytes:
+    """A stored design's JSON, unzipped once while the file is unchanged (a big matrix reads the shared
+    piles and beams for every option)."""
+    return gzip.decompress(Path(path).read_bytes())
 
 
 def _save_design(d: Path, key: str, design: dict[str, Any]) -> None:
