@@ -37,6 +37,7 @@ TEXT_MM = 2.5  # text height on paper
 GAP_MM = 3000.0  # between views in the drafting view
 ROW_WIDTH_MM = 120_000.0  # start a new row of views past this width
 CLEAR_OVER_PILE = 25.0  # mm, bottom bars over a pile head that sits in the slab
+CRANK_SLOPE = 6.0  # cranked bars rise 1 in this
 BAR_PARAM = "DAR_BAR DIAMETER|Bar Diameter|Diameter"  # the cut bar family's size
 
 
@@ -804,7 +805,15 @@ def _slab_pile_section(d: dict[str, Any], piles: list[dict[str, Any]], st: Drawi
         default=None,
     )
     shift = max(0.0, into + CLEAR_OVER_PILE - lowest) if lowest is not None else 0.0
-    x_crank = D / 2 + 50  # the crank starts past the pile face
+    x_crank = D / 2 + 50  # the bars are up over the pile and 50 mm past its face
+    run = CRANK_SLOPE * shift  # the crank at 1:6
+
+    def raised(x: float) -> float:
+        """How much a bottom bar is lifted at x: all of it over the pile, sloping down along the crank."""
+        if run <= 0:
+            return 0.0
+        return shift * min(1.0, max(0.0, (x_crank + run - abs(x)) / run))
+
     for rows, lift in ((bottom, shift), (top, 0.0)):
         for along, lay, z in rows:
             for b in lay["bars"]:
@@ -814,10 +823,10 @@ def _slab_pile_section(d: dict[str, Any], piles: list[dict[str, Any]], st: Drawi
                         k = bar_key(phi)
                         pts = [
                             (-half + 50, z),
-                            (-x_crank - lift, z),
+                            (-x_crank - run, z),
                             (-x_crank, z + lift),
                             (x_crank, z + lift),
-                            (x_crank + lift, z),
+                            (x_crank + run, z),
                             (half - 50, z),
                         ]
                         for a, c in zip(pts[:-1], pts[1:], strict=True):
@@ -827,7 +836,7 @@ def _slab_pile_section(d: dict[str, Any], piles: list[dict[str, Any]], st: Drawi
                 else:  # across the cut: dots at their spacing
                     sp = b["spacing_mm"] or 150.0
                     for c in _grid(-half + 50, half - 50, sp, sp / 2):
-                        v.bar(phi, (c, z + (lift if abs(c) <= x_crank + lift else 0.0)))
+                        v.bar(phi, (c, z + (raised(c) if lift > 0 else 0.0)))
     links = d.get("links") or []
     if links and bottom and top:
         z0 = min(z for _, _, z in bottom)
@@ -837,8 +846,8 @@ def _slab_pile_section(d: dict[str, Any], piles: list[dict[str, Any]], st: Drawi
         hook = 6 * phi
         for sgn in (-1, 1):
             k = 1
-            while x_crank + shift + (k - 0.5) * sx < half - 100 and k <= 6:
-                x = sgn * (x_crank + shift + (k - 0.5) * sx)  # past the crank, round the bottom bars
+            while x_crank + run + (k - 0.5) * sx < half - 100 and k <= 6:
+                x = sgn * (x_crank + run + (k - 0.5) * sx)  # past the crank, round the bottom bars
                 k += 1
                 v.line(bar_key(phi), (x, z0), (x, z1))
                 v.line(bar_key(phi), (x, z1), (x + sgn * hook, z1))
@@ -847,7 +856,7 @@ def _slab_pile_section(d: dict[str, Any], piles: list[dict[str, Any]], st: Drawi
     if shift > 0:
         v.caption.append(
             f"Pile head {_mm(into)} into the slab: bottom bars cranked up {_mm(shift)} over it "
-            f"({_mm(CLEAR_OVER_PILE)} clear), cranks at 45° starting 50 mm past the pile face"
+            f"({_mm(CLEAR_OVER_PILE)} clear), cranks at 1:{CRANK_SLOPE:g} from 50 mm past the pile face"
         )
     else:
         v.caption.append(f"Pile head {_mm(into)} into the slab: the bottom bars clear it, not cranked")
