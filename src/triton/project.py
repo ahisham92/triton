@@ -1839,6 +1839,7 @@ def _other_items() -> list[OtherItem]:
         OtherItem(name="Ladders", unit="each", spacing=30.0),
         OtherItem(name="Storm pins", unit="each"),
         OtherItem(name="Crane stoppers", unit="each"),
+        OtherItem(name="Crane tie-downs", unit="each"),
     ]
 
 

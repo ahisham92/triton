@@ -37,6 +37,7 @@ LABEL = {
     "ladders": "Ladder",
     "storm_pins": "Storm pin",
     "crane_stoppers": "Crane stopper",
+    "tie_downs": "Crane tie-down",
     "tie_rods": "Tie rod",
     "crane_rails": "Crane rail",
     "fender_blocks": "Fender protrusion",
@@ -47,6 +48,7 @@ PLURAL = {
     "ladders": "Ladders",
     "storm_pins": "Storm pins",
     "crane_stoppers": "Crane stoppers",
+    "tie_downs": "Crane tie-downs",
     "tie_rods": "Tie rods",
     "crane_rails": "Crane rails",
     "fender_blocks": "Fender protrusions",
@@ -233,6 +235,12 @@ def stow_spots(f: QuayFurniture, sf: SectionFurniture) -> list[float]:
     return [start + f.storm_pins.crane_width * (i + 0.5) for i in range(f.storm_pins.cranes)]
 
 
+def tie_down_spots(f: QuayFurniture, sf: SectionFurniture) -> list[float]:
+    """A set at each leg of each stowed crane: half the leg spacing each side of its stow position."""
+    half = f.tie_downs.leg_spacing / 2
+    return [s + k * half for s in stow_spots(f, sf) for k in (-1, 1)]
+
+
 def nominal(f: QuayFurniture, sf: SectionFurniture, length: float) -> list[dict[str, Any]]:
     """Where the items go at their spacing, before anything moves them: what the expansion joints
     keep clear of."""
@@ -251,6 +259,8 @@ def nominal(f: QuayFurniture, sf: SectionFurniture, length: float) -> list[dict[
         out += [("Crane stopper", length - f.crane_stoppers.end_distance - half)]
     if f.crane_rails and f.storm_pins and f.storm_pins.cranes:
         out += [("Storm pin", s) for s in stow_spots(f, sf)]
+        if f.tie_downs:
+            out += [("Crane tie-down", s) for s in tie_down_spots(f, sf)]
     return [{"name": n, "chainage": round(c, 3)} for n, c in out if 0 <= c <= length]
 
 
@@ -322,7 +332,7 @@ def _conflicts(
             and min(o.d1, it.d1) > max(o.d0, it.d0) - 1e-9
         ):
             out.append(f"{LABEL[o.kind].lower()} {o.tag or ''}".strip() + f" at {o.s:.2f} m")
-    if it.plane == "top" and it.kind not in ("crane_stoppers",):
+    if it.plane == "top" and it.kind not in ("crane_stoppers", "tie_downs"):
         for r0, r1 in rails:
             if min(r1, it.d1) > max(r0, it.d0):
                 out.append(RAIL_CLASH)
@@ -382,10 +392,12 @@ def arrange(
         if f.protrusion:
             half = max(half, f.protrusion.length / 2000)  # the whole block stays clear of the joints
         items = []
+        # On a protrusion block the bolts stay in the block, seaward of the beam and its pile heads.
+        in_beam = f.protrusion is None or a.embedment >= f.protrusion.projection
         for s in evenly(length, fe.end_distance, fe.spacing):
             items.append(
                 _place(
-                    Item("fenders", s, half, 0.0, a.embedment / 1000 + 0.05, "face", True),
+                    Item("fenders", s, half, 0.0, a.embedment / 1000 + 0.05, "face", in_beam),
                     placed,
                     joints,
                     heads,
@@ -482,6 +494,27 @@ def arrange(
                 items.append(_place(it, placed, joints, heads, rails, rules, length))
                 placed.append(items[-1])
         out["storm_pins"] = items
+        if f.tie_downs:
+            td = f.tie_downs
+            reach = (td.offset_from_rail if td.plates > 1 else 0.0) + td.plate_width / 2000
+            items = []
+            for s0 in [s + k * td.leg_spacing / 2 for s in spots for k in (-1, 1)]:
+                for tag, r in (("front rail", rail_f), ("rear rail", rail_r)):
+                    if r is None:
+                        continue
+                    it = Item(
+                        "tie_downs",
+                        s0,
+                        td.plate_length / 2000,
+                        r - reach,
+                        r + reach,
+                        "top",
+                        td.anchors.embedment > TOP_BARS,
+                        tag=tag,
+                    )
+                    items.append(_place(it, placed, joints, heads, rails, rules, length))
+                    placed.append(items[-1])
+            out["tie_downs"] = items
 
     counts = {k: len(v) for k, v in out.items()}
     rows = {k: [it.to_dict(i + 1) for i, it in enumerate(v)] for k, v in out.items()}
@@ -547,6 +580,12 @@ def assumptions(f: QuayFurniture) -> list[str]:
         out.append(
             f"Crane stopper buffer force {f.crane_stoppers.force:g} kN (service, × {f.crane_stoppers.load_factor:g}) "
             f"at {f.crane_stoppers.buffer_height:g} m."
+        )
+    if f.tie_downs and f.storm_pins and f.storm_pins.cranes:
+        t = f.tie_downs
+        out.append(
+            f"Crane tie-downs {t.force:g} kN uplift per set (service, × {t.load_factor:g}), {t.plates} plates per set "
+            f"{t.offset_from_rail:g} m each side of the rail, a set at each leg, legs {t.leg_spacing:g} m apart."
         )
     if f.crane_rails:
         out.append(
@@ -668,6 +707,8 @@ def design(
         items.append(fd.stopper(f.crane_stoppers, front, lay["rail_front_m"]))
     if f.storm_pins and f.storm_pins.cranes:
         items.append(fd.storm_pin(f.storm_pins, front))
+        if f.tie_downs and lay["rail_front_m"] is not None:
+            items.append(fd.tie_down(f.tie_downs, front, lay["rail_front_m"]))
     if f.tie_rods and not sf.no_tie_rods:
         items.append(fd.tie_rod(f.tie_rods, front))
     notes = list(frame["notes"])
