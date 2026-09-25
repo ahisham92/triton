@@ -22,11 +22,11 @@ export async function renderTrials(host, h) {
   host.innerHTML = `<p class="sub">Pick an element. A deck opens on its option matrix: thickness, crack width, pile-face method, deck type, mesh and punching compared together (tick the ones you want). Beams and piles are tried at several sizes. Each option shows its reinforcement, links and cost per metre of berth.
       Trials never change the design; <strong>Use this size</strong> does. Costs use the unit prices on the Project tab and the berth
       length and spacings on the <a href="${h.costingHash}">Costing tab</a>.</p>
-    <div id="tr-out"><p class="status">Loading…</p></div>`;
+    <div id="tr-out"></div>`;
   const out = host.querySelector("#tr-out");
   let data;
   try {
-    data = await api(`${secUrl()}/trials`);
+    data = h.tabData ? await h.tabData("trials", { box: out, title: "Loading the comparisons", keep: false }) : await api(`${secUrl()}/trials`);
   } catch (e) {
     out.innerHTML = `<p class="status">${esc(e.message)}</p>`;
     return;

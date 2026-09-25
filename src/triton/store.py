@@ -128,7 +128,7 @@ class ProjectStore:
         src, dst = self.root / project_id, self.root / project.id
         try:
             if src.is_dir():
-                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("*.tmp", "revisions"))
+                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("*.tmp", "revisions", "views"))
             return self.save(project)
         except BaseException:
             shutil.rmtree(dst, ignore_errors=True)

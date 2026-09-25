@@ -37,6 +37,7 @@ from . import (
     revit,
     site3d,
     trials,
+    views,
 )
 from . import furniture as furniture_mod
 from . import moved as moved_piles
@@ -1896,9 +1897,16 @@ def section_deflections(project_id: str, section_id: str) -> dict:
 @app.get(SECTION + "/deformed")
 def section_deformed(project_id: str, section_id: str, combination: str = "") -> dict:
     """The whole structure's deformed shape for one combination (triton/deformed.py): the Design tab's
-    displacement estimate for every pile, king pile, wall strip and deck strip. Never a design input."""
+    displacement estimate for every pile, king pile, wall strip and deck strip. Never a design input.
+    Kept once worked out, until the inputs, the workbook or the design change."""
     project = _get(project_id)
     section = _section(project, section_id)
+    key = views.key(_view_parts(project, section), _results_stat(project_id, section_id), combination.strip())
+    name = "deformed-" + views.key(combination.strip().lower())
+    d = store()._dir(project_id, section_id)
+    kept = views.get(d, name, key)
+    if kept is not None:
+        return kept
     wb = _workbook(project_id, section)
     if wb is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
@@ -1918,7 +1926,9 @@ def section_deformed(project_id: str, section_id: str, combination: str = "") ->
         store().load_results(project_id, section_id),
         _phases(project, section),
     )
-    return {**out, "combinations": combos}
+    out = {**out, "combinations": combos}
+    views.put(d, name, key, out)
+    return out
 
 
 # --- Clashes -------------------------------------------------------------------------------------------
@@ -1926,36 +1936,92 @@ def section_deformed(project_id: str, section_id: str, combination: str = "") ->
 _CLASHES: dict[tuple, Clashes] = {}
 
 
-def _clashes(project_id: str, section_id: str) -> tuple[Project, Section, Clashes]:
+def _view_parts(project: Project, section: Section, *, site: bool = False) -> list:
+    """What the kept tab data depends on (triton/views.py): this code, the project's settings, this
+    section's inputs (its 3D switches only when ``site``) and the workbook."""
+    summary = store().workbook_summary(project.id, section.id) or {}
+    return [
+        _CODE,
+        project.model_dump(mode="json", exclude={"updated_at", "created_at", "locked", "sections"}),
+        section.model_dump(mode="json", exclude=None if site else {"site"}),
+        summary.get("version"),
+        summary.get("uploaded_at"),
+    ]
+
+
+def _results_stat(project_id: str, section_id: str) -> str:
+    return views.stat(store()._dir(project_id, section_id) / "results.json")
+
+
+def _clash_keys(project: Project, section: Section) -> tuple[str, str]:
+    """The key of the heads and bars (the design, the design settings and the clash rule; what-ifs
+    and choices do not count), and of the Clashes tab's answer (with them)."""
+    parts = _view_parts(project, section)
+    parts[2] = {k: v for k, v in parts[2].items() if k != "clashes"}
+    rule = section.clashes.model_dump(mode="json", exclude={"whatifs", "choices"})
+    heads = views.key(
+        parts,
+        rule,
+        section.site.model_dump(mode="json", include={"water_levels"}),
+        _results_stat(project.id, section.id),
+    )
+    return heads, views.key(heads, section.clashes.model_dump(mode="json", include={"whatifs", "choices"}))
+
+
+def _clashes(
+    project_id: str, section_id: str, tell: Callable[[float, str], None] | None = None
+) -> tuple[Project, Section, Clashes]:
     """The section's pile heads and bars round them, kept while the design, the design settings and the
-    clash rule stay the same (what-ifs and choices do not count)."""
+    clash rule stay the same: in this worker, and in the section's views folder for the others."""
     project, section, results = _results(project_id, section_id)
     results = _detailed(results, "Clash checks")
-    rule = section.clashes.model_dump(mode="json", exclude={"whatifs", "choices"})
-    key = (
-        project_id,
-        section_id,
-        results.get("run_at"),
-        hashlib.sha1(
-            json.dumps([rule, project.design.model_dump(mode="json")], sort_keys=True, default=str).encode()
-        ).hexdigest(),
-    )
-    c = _CLASHES.get(key)
+    k = (project_id, section_id, _clash_keys(project, section)[0])
+    c = _CLASHES.get(k)
     if c is None:
-        for k in [k for k in _CLASHES if k[:2] == (project_id, section_id)]:
-            del _CLASHES[k]
-        c = _CLASHES[key] = Clashes(project, section, results)
+        for old in [x for x in _CLASHES if x[:2] == (project_id, section_id)]:
+            del _CLASHES[old]
+        d = store()._dir(project_id, section_id)
+        c = views.get_object(d, "clashes-heads", k[2])
+        if c is None:
+            if tell:
+                tell(0.05, "Collecting the pile heads and the bars round them")
+            c = Clashes(project, section, results)
+        _CLASHES[k] = c
     c.ctx.rule = section.clashes
     return project, section, c
 
 
+@app.get(SECTION + "/stamp")
+def section_stamp(project_id: str, section_id: str) -> dict:
+    """Changes whenever the project, the section's workbook or its results are written: the page keeps
+    what a tab loaded and uses it again while this stays the same. Reads no file, so it is quick."""
+    d = store()._dir(project_id, section_id)
+    files = [store()._path(project_id), d / "workbook.json", d / "results.json"]
+    return {"stamp": views.key([views.stat(f) for f in files])}
+
+
 @app.get(SECTION + "/clashes")
-def section_clashes(project_id: str, section_id: str) -> dict:
-    """The Clashes tab: every pile head's clashes by pile and element, solutions and the what-ifs kept."""
-    project, section, c = _clashes(project_id, section_id)
-    out = find_clashes(project, section, c.ctx.results, c=c)
-    # Elements designed in Standard mode have no bars to check.
-    _, out["standard"] = standard_mod.detailed_only(_results(project_id, section_id)[2], _BARS)
+def section_clashes(project_id: str, section_id: str, progress: str | None = None) -> dict:
+    """The Clashes tab: every pile head's clashes by pile and element, solutions and the what-ifs kept.
+    Kept once worked out, so a second look (from any worker) is quick; ``progress`` says how far it is."""
+    project, section, results = _results(project_id, section_id)
+    _detailed(results, "Clash checks")
+    heads_key, key = _clash_keys(project, section)
+    d = store()._dir(project_id, section_id)
+    kept = views.get(d, "clashes", key)
+    if kept is not None:
+        return kept
+    with _Progress(progress) if progress else contextlib.nullcontext(None) as tell:
+        if tell:
+            tell.stoppable = False
+        project, section, c = _clashes(project_id, section_id, tell)
+        out = find_clashes(project, section, c.ctx.results, c=c, tell=tell)
+        # Elements designed in Standard mode have no bars to check.
+        _, out["standard"] = standard_mod.detailed_only(results, _BARS)
+        if tell:
+            tell(0.97, "Keeping the answer for next time")
+        views.put(d, "clashes", key, out)
+        views.put_object(d, "clashes-heads", heads_key, c)  # with each head's solutions worked out
     return out
 
 
@@ -2061,8 +2127,15 @@ def clash_calc(
 
 @app.get(SECTION + "/geometry")
 def geometry(project_id: str, section_id: str) -> dict:
-    """Element geometry for the 3D view, with the directions found in the workbook check."""
-    section = _section(_get(project_id), section_id)
+    """Element geometry for the 3D view, with the directions found in the workbook check. Kept once
+    worked out, until the section's inputs or the workbook change."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    key = views.key(_view_parts(project, section))
+    d = store()._dir(project_id, section_id)
+    kept = views.get(d, "geometry", key)
+    if kept is not None:
+        return kept
     wb = _workbook(project_id, section)
     if wb is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
@@ -2070,7 +2143,9 @@ def geometry(project_id: str, section_id: str) -> dict:
     parts, alignment = section_alignment(section, sheets)
     axes = {a["element"]: a.get("local") for a in getattr(wb, "axes", None) or []}
     elements = plan_geometry(section_geometry(wb), sheets, parts, axes)
-    return {"elements": elements, "axes": wb.summary()["axes"], "alignment": alignment}
+    out = {"elements": elements, "axes": wb.summary()["axes"], "alignment": alignment}
+    views.put(d, "geometry", key, out)
+    return out
 
 
 @app.get(SECTION + "/joints")
@@ -2241,6 +2316,17 @@ def section_site(project_id: str, section_id: str) -> dict:
     berth and the STS crane (triton/site3d.py). Never a design input."""
     project = _get(project_id)
     section = _section(project, section_id)
+    key = views.key(_view_parts(project, section, site=True))
+    d = store()._dir(project_id, section_id)
+    kept = views.get(d, "site", key)
+    if kept is not None:
+        return kept
+    out = _site(project_id, project, section)
+    views.put(d, "site", key, out)
+    return out
+
+
+def _site(project_id: str, project: Project, section: Section) -> dict:
     geometry = _berth_geometry(project_id, section)
     try:
         frame = furniture_mod.berth_frame(project, section, geometry)

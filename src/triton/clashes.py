@@ -62,6 +62,7 @@ strip, the beam, the pile head and the punching resistance without them.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, NamedTuple
 
@@ -2624,6 +2625,7 @@ def find_clashes(
     drawing: dict | None = None,
     detail: bool = False,
     c: Clashes | None = None,
+    tell: Callable[[float, str], None] | None = None,
 ) -> dict:
     """Every pile head's clashes with the slab or beam over it, grouped by pile type and element, each
     head with its solutions designed again; the punching links; and the "what if" checks kept. Without
@@ -2631,7 +2633,9 @@ def find_clashes(
     c = c or Clashes(project, section, results, drawing)
     rule = c.ctx.rule
     groups: dict[str, dict] = {}
-    for head in c.heads:
+    for i, head in enumerate(c.heads):
+        if tell:
+            tell(0.15 + 0.8 * i / len(c.heads), f"Pile head {i + 1} of {len(c.heads)}")
         e = c.entry(head)
         key = e["group"]
         g = groups.setdefault(

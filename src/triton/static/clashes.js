@@ -12,14 +12,17 @@ const SOL_ORDER = ["set_out", "rotate", "shift", "rotate_shift", "crank", "cut_t
 
 export async function renderClashes(host, h) {
   const { api, again, esc, fmt, secUrl } = h;
+  // The page's loader: kept while nothing changes, with a bar and the time spent while it works.
+  const get = (path, box, title, progress = false) =>
+    h.tabData ? h.tabData(path, { box, title, progress }) : again(() => api(`${secUrl()}/${path}`));
   host.innerHTML = `<p class="sub">The pile bars where they run up into the slab or beam over them, against that element's bars, links and
     punching links. Each way out is designed again. <strong>What if</strong> takes bars out of a connection and checks it again.
-    Nothing on this tab changes the design.</p><div id="cl-out"><p class="status">Finding the clashes… (the first time takes a few seconds)</p></div>`;
+    Nothing on this tab changes the design.</p><div id="cl-out"></div>`;
   const out = host.querySelector("#cl-out");
   let data;
   const load = async () => {
     try {
-      data = await again(() => api(`${secUrl()}/clashes`));
+      data = await get("clashes", out, "Finding the clashes", true);
     } catch (e) {
       out.innerHTML = `<p class="status">${esc(e.message)}</p>`;
       return false;
@@ -91,7 +94,6 @@ export async function renderClashes(host, h) {
         weld: { ...(data.settings.weld || {}), leg: Number(out.querySelector("#cl-leg").value), filler_fu: Number(out.querySelector("#cl-fu").value) } };
       out.querySelector("#cl-save").disabled = true;
       await api(`${secUrl()}/clashes/settings`, { method: "PUT", body: JSON.stringify(body) });
-      out.innerHTML = '<p class="status">Finding the clashes again…</p>';
       st.head = null;
       if (await load()) draw();
     };
@@ -139,9 +141,8 @@ export async function renderClashes(host, h) {
     st.note = "";
     out.querySelectorAll("tr[data-group]").forEach((tr) => tr.classList.toggle("on", tr.dataset.group === key));
     const box = out.querySelector("#cl-head");
-    box.innerHTML = '<p class="status">Loading the pile head…</p>';
     try {
-      st.head = await again(() => api(`${secUrl()}/clashes/head?${new URLSearchParams({ group: key, index: st.index })}`));
+      st.head = await get(`clashes/head?${new URLSearchParams({ group: key, index: st.index })}`, box, "Loading the pile head");
     } catch (e) {
       box.innerHTML = `<p class="status">${esc(e.message)}</p>`;
       return;

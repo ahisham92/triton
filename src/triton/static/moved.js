@@ -19,7 +19,7 @@ export async function renderMovedPiles(host, h) {
   host.innerHTML = `<p class="sub">Move a row of piles, or single piles, and see whether the piles, beams and slab are still safe, without a new Plaxis run.
       Triton adds the change the move makes to the Plaxis results and checks every element with the bars it has now.
       Nothing here changes your design.</p>
-    <div id="mv-out"><p class="status">Loading…</p></div>`;
+    <div id="mv-out"></div>`;
   const out = host.querySelector("#mv-out");
   let data;
   let picked = null; // scenario id shown
@@ -28,7 +28,7 @@ export async function renderMovedPiles(host, h) {
 
   const load = async () => {
     try {
-      data = await api(`${secUrl()}/moved-piles`);
+      data = h.tabData ? await h.tabData("moved-piles", { box: out, title: "Loading the moved piles", keep: false }) : await api(`${secUrl()}/moved-piles`);
     } catch (e) {
       out.innerHTML = `<p class="status">${esc(e.message)}</p>`;
       return false;
