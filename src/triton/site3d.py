@@ -22,7 +22,8 @@ SEA = 20.0  # m of sea bed drawn in front of the wall
 LAND = 5.0  # m of soil drawn beyond the model's landward end
 BELOW = 3.0  # m of soil drawn below the deepest toe
 # Drawing-only sizes of the STS crane (not in its design values): assumed.
-LIFT = 48.0  # m, portal girder and boom above the rail
+HEIGHT = 35.0  # m, the drawn crane overall above the rail (Ahmed 09-25: 30 to 40 m, for show)
+LIFT = 26.0  # m, portal girder above the rail
 BACKREACH = 25.0  # m, boom landward of the land-side rail
 LEG_SPACING = 18.0  # m, between the legs along the quay (clear between the sill beams' legs)
 GAUGE = 30.48  # m, rail gauge when there is no rear rail
@@ -328,13 +329,14 @@ def _crane(project: Project, section: Section, lay: dict[str, Any], at, s0: floa
     s = spots[0] if spots else (s0 + s1) / 2
     half = LEG_SPACING / 2
     top = cope + LIFT
-    boom = top + 4.0
+    boom = top + 2.0
+    apex = cope + HEIGHT
     legs = [[at(s + k * half, d, cope), at(s + k * half, d, top)] for k in (-1, 1) for d in (rf, rr)]
     lines = [
         *legs,
         # Sill beams along the quay and portal girders across it.
-        [at(s - half, rf, cope + 12.0), at(s + half, rf, cope + 12.0)],
-        [at(s - half, rr, cope + 12.0), at(s + half, rr, cope + 12.0)],
+        [at(s - half, rf, cope + 6.0), at(s + half, rf, cope + 6.0)],
+        [at(s - half, rr, cope + 6.0), at(s + half, rr, cope + 6.0)],
         [at(s - half, rf, top), at(s - half, rr, top)],
         [at(s + half, rf, top), at(s + half, rr, top)],
         [at(s - half, rf, top), at(s + half, rf, top)],
@@ -342,14 +344,14 @@ def _crane(project: Project, section: Section, lay: dict[str, Any], at, s0: floa
         # Boom: from the backreach to the outreach, measured from the sea-side rail.
         [at(s, rr + BACKREACH, boom), at(s, rf - sts.outreach, boom)],
         # A-frame and its stays.
-        [at(s, rf, top), at(s, (rf + rr) / 2, boom + 14.0)],
-        [at(s, rr, top), at(s, (rf + rr) / 2, boom + 14.0)],
-        [at(s, (rf + rr) / 2, boom + 14.0), at(s, rf - sts.outreach * 0.6, boom)],
-        [at(s, (rf + rr) / 2, boom + 14.0), at(s, rr + BACKREACH, boom)],
+        [at(s, rf, top), at(s, (rf + rr) / 2, apex)],
+        [at(s, rr, top), at(s, (rf + rr) / 2, apex)],
+        [at(s, (rf + rr) / 2, apex), at(s, rf - sts.outreach * 0.6, boom)],
+        [at(s, (rf + rr) / 2, apex), at(s, rr + BACKREACH, boom)],
     ]
     notes.append(
         f"STS crane drawn at {s:.1f} m along the berth: outreach {sts.outreach:g} m from the sea-side rail "
-        f"(Furniture tab); lift height {LIFT:g} m, backreach {BACKREACH:g} m and legs {LEG_SPACING:g} m "
+        f"(Furniture tab); {HEIGHT:g} m high overall, backreach {BACKREACH:g} m and legs {LEG_SPACING:g} m "
         "apart are drawing "
         "sizes only (assumed)."
     )
