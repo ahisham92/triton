@@ -762,13 +762,17 @@ def fits_between(phi_a: float, mesh_phi: float, mesh_spacing: float, settings: D
     return mesh_spacing / 2 - (phi_a + mesh_phi) / 2 >= clear - 1e-9
 
 
-def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, list, list, list]:
+def additional_options(
+    mesh: tuple, settings: DesignSettings, room: float | None = None
+) -> tuple[list, list, list, list]:
     """The mesh alone, then the mesh with additional bars, least steel first.
 
     Additional bars go between the mesh bars: in every second gap, in every gap, in every gap in two
-    layers, or also behind the mesh bars (three per gap, two layers; layer 2 is inside layer 1: above the
-    bottom mesh, below the top mesh). For crack widths the mix has
-    the equivalent Ø of 7.12 and the largest gap between tension bars. Returns (options as
+    layers, also behind the mesh bars (three per gap, two layers), or in every gap in 3, 4, ... layers,
+    as many as the design needs (Maximum bar layers is for beams and slab meshes). Layer 2 is inside
+    layer 1: above the bottom mesh, below the top mesh. ``room`` (mm) is how deep the layers may reach
+    from the face (to mid-depth); without it the additional bars stop at 3 layers. For crack widths the
+    mix has the equivalent Ø of 7.12 and the largest gap between tension bars. Returns (options as
     (mm²/m, Ø, spacing, layers), Ø setting the depth, labels, bar layers): the bar layers are the
     additional bars as [(Ø, spacing)] per layer, the first between the mesh bars.
     """
@@ -797,21 +801,25 @@ def additional_options(mesh: tuple, settings: DesignSettings) -> tuple[list, lis
                 [(phi_a, s_b), (phi_a, s_b / 2)],
             ),
         ]
-        if least is not None:
-            # The user's least spacing of additional bars: no set closer than it. Where that drops the
-            # bars behind the mesh bars, a third layer at the mesh spacing carries the same steel.
-            kept = [c for c in choices if min(p[1] for p in c[4]) >= least - 1e-9]
-            if len(kept) < len(choices) and settings.reinforcement.max_layers >= 3 and s_b >= least - 1e-9:
-                kept.append(
-                    (
-                        3000 / s_b,
-                        s_b / 2,
-                        max(layers_b, 3),
-                        f"Ø{phi_a} @ {s_b:g} in 3 layers",
-                        [(phi_a, s_b), (phi_a, s_b), (phi_a, s_b)],
-                    )
+        # More layers in every gap, while the stack stays on its side of mid-depth.
+        big = max(phi_a, phi_b)
+        pitch = big + max(25.0, big)
+        k = 3
+        while k <= (3 if room is None else 12) and (room is None or big + (k - 1) * pitch <= room + 1e-9):
+            choices.append(
+                (
+                    k * 1000 / s_b,
+                    s_b / 2,
+                    max(layers_b, k),
+                    f"Ø{phi_a} @ {s_b:g} in {k} layers",
+                    [(phi_a, s_b)] * k,
                 )
-            choices = kept
+            )
+            k += 1
+        if least is not None:
+            # The user's least spacing of additional bars: no set closer than it (no bars @ 75 behind
+            # the mesh bars on a 150 mesh; more layers at the mesh spacing carry that steel instead).
+            choices = [c for c in choices if min(p[1] for p in c[4]) >= least - 1e-9]
         for n_a, spacing, lay, text, spec in choices:
             phi_eq = (n_b * phi_b**2 + n_a * phi_a**2) / (n_b * phi_b + n_a * phi_a)
             o = (area + n_a * math.pi * phi_a**2 / 4, phi_eq, spacing, lay)
@@ -2038,7 +2046,7 @@ def design_slab(
             )
             tried = []
             for k in cands:
-                combos, dphi, labels, specs = additional_options(options[k], settings)
+                combos, dphi, labels, specs = additional_options(options[k], settings, h / 2 - covers[face])
                 eff2, _, ok2, _ = assess(combos, dphi)
                 ok2 = (eff2[None, :] >= target[:, None] - 1e-6) & ok2
                 tried.append((k, combos, labels, eff2, ok2, dphi, specs))
