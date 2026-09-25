@@ -27,13 +27,22 @@ def _pairs(out: list[str], *codes: tuple[int, Any]) -> None:
 
 def _cad_text(text: str) -> str:
     """Text as AutoCAD R12 reads it: Ø as %%c, other non-ASCII spelled out."""
-    t = text.replace("Ø", "%%c").replace("×", "x").replace("·", "-").replace("–", "-").replace("°", "%%d")
+    t = (
+        text[:250]
+        .replace("Ø", "%%c")
+        .replace("×", "x")
+        .replace("·", "-")
+        .replace("–", "-")
+        .replace("°", "%%d")
+    )
     return t.encode("ascii", "replace").decode("ascii")
 
 
 def _cad_name(name: str) -> str:
-    bad = '<>/\\":;?*|=`'
-    return "".join("_" if c in bad or ord(c) > 126 else c for c in name).strip() or "0"
+    """A layer name R12 accepts: letters, digits, $ - _ only, upper case, at most 31 characters (a space
+    in a name, as in "T32-Reinforcement Section", stops AutoCAD reading the file)."""
+    out = "".join(c if c.isascii() and (c.isalnum() or c in "$-_") else "_" for c in name.strip().upper())
+    return out[:31] or "0"
 
 
 def placements(views: list[dict[str, Any]]) -> list[tuple[float, float]]:
@@ -69,7 +78,7 @@ def to_dxf(data: dict[str, Any]) -> str:
         else:
             colours.setdefault(layers[k], 7)
     out: list[str] = []
-    _pairs(out, (0, "SECTION"), (2, "HEADER"), (9, "$ACADVER"), (1, "AC1009"), (9, "$INSUNITS"), (70, 4))
+    _pairs(out, (0, "SECTION"), (2, "HEADER"), (9, "$ACADVER"), (1, "AC1009"))
     _pairs(out, (0, "ENDSEC"))
     _pairs(out, (0, "SECTION"), (2, "TABLES"))
     _pairs(out, (0, "TABLE"), (2, "LTYPE"), (70, 1))

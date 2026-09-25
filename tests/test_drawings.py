@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import math
+import re
 from pathlib import Path
 
 import pytest
@@ -246,11 +247,13 @@ def test_dxf_layers_and_entities():
     assert not auditor.errors
     names = {layer.dxf.name for layer in doc.layers}
     assert {
-        "T32-Reinforcement Section",
-        "T16-Reinforcement Section",
+        "T32-REINFORCEMENT_SECTION",
+        "T16-REINFORCEMENT_SECTION",
         "TRITON-CONCRETE",
         "TRITON-TEXT",
     } <= names
+    # R12 names: no spaces (AutoCAD refuses the whole file), upper case, at most 31 characters.
+    assert all(re.fullmatch(r"[A-Z0-9$_-]{1,31}", n) for n in names - {"Defpoints"})  # ezdxf adds Defpoints
     msp = doc.modelspace()
     n_bars = sum(1 for v in data["views"] for i in flat(v["items"]) if i["type"] == "bar")
     assert len(msp.query("POLYLINE")) >= n_bars
@@ -312,7 +315,7 @@ def test_drawing_endpoints(tmp_path, monkeypatch):
     assert d["section"] == "Section 1" and d["views"][-1]["name"] == "Pile(1) - elevation"
     r = client.get(f"{url}/design/drawings.dxf", params={"element": "Pile(1)"})
     assert r.status_code == 200 and "Berth_1_Section_1_Pile_1_.dxf" in r.headers["content-disposition"]
-    assert "-Reinforcement Section" in r.text
+    assert "-REINFORCEMENT_SECTION" in r.text
     assert client.get(f"{url}/design/drawings.dxf", params={"element": "Deck"}).status_code == 404
     g = client.get("/api/revit/triton-drawings.dyn")
     assert g.status_code == 200 and json.loads(g.text)["Name"] == "Triton drawings"
