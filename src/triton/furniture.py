@@ -360,6 +360,13 @@ def _place(it: Item, placed, joints, heads, rails, rules, length: float) -> Item
     return it
 
 
+def for_section(f: QuayFurniture, sf: SectionFurniture) -> QuayFurniture:
+    """The project's furniture as this section has it: the protrusion and the STS crane only where the
+    section ticks them (null otherwise)."""
+    off = {k: None for k in ("protrusion", "sts_crane") if not getattr(sf, k)}
+    return f.model_copy(update=off) if off else f
+
+
 def arrange(
     f: QuayFurniture,
     sf: SectionFurniture,
@@ -608,11 +615,18 @@ def assumptions(f: QuayFurniture) -> list[str]:
         c = f.sts_crane
         out.append(
             f"STS crane: outreach {c.outreach:g} m from the seaside rail for a {c.ship_beam:g} m wide ship, far row "
-            f"{c.far_row_inside:g} m inside its side; legs {c.leg_seaward_of_rail:g} m seaward of the rail; ship's flare "
-            f"{c.flare_overhang:g} m and {c.min_clearance:g} m clearance kept; fender panel {c.panel_thickness:g} m, "
-            f"deflection {c.rated_deflection:g} at the rated reaction. No code gives these. The ship's beam, the panel and "
-            "the deflection defaults are the design report's (RPT-ST-01, section 7); the outreach, legs, far row, flare "
-            "and clearance are assumed until the crane specification gives them."
+            f"{c.far_row_inside:g} m inside its side; legs {c.leg_seaward_of_rail:g} m seaward of the rail; "
+            + (
+                f"ship's flare {c.flare_overhang:g} m (typed in)"
+                if c.flare_overhang is not None
+                else f"ship's flare worked out from its {c.ship_depth:g} m depth and {c.ballast_draft:g} m ballast draft "
+                f"at high water {c.high_water:g} m, with {c.flare_angle:g}° flare and {c.list_angle:g}° list"
+            )
+            + f"; {c.min_clearance:g} m clearance kept; fender panel {c.panel_thickness:g} m, deflection "
+            f"{c.rated_deflection:g} at the rated reaction. No code gives these. The ship (beam, depth, draft), the "
+            "panel and the deflection are the design report's (RPT-ST-01, section 7) and high water the tidal bar's "
+            "(SC-502-1); the outreach, legs, far row, flare and list angles and the clearance are assumed until the "
+            "crane specification gives them."
         )
     if f.tie_rods:
         out.append(
@@ -630,8 +644,8 @@ def design(
     """Arrangement and design of the project's furniture on this section's berth. ``joints``: the
     section's expansion joint layout (``joints.section_joints``); without one, a joint at each of the
     front beam's lengths between joints."""
-    f: QuayFurniture = project.furniture
     sf: SectionFurniture = section.furniture
+    f: QuayFurniture = for_section(project.furniture, sf)
     if not sf.use:
         return {"section": section.name, "section_id": section.id, "use": False}
     frame = berth_frame(project, section, geometry)
@@ -683,7 +697,7 @@ def design(
         )
     if f.sts_crane:
         rail = lay["rail_front_m"] if lay["rail_front_m"] is not None else front.width / 2000
-        items.append(protrusion.clearance(f.sts_crane, f.fenders, f.protrusion, rail))
+        items.append(protrusion.clearance(f.sts_crane, f.fenders, f.protrusion, rail, frame["cope_m"]))
         if lay["rail_front_m"] is None:
             items[-1]["notes"].append(
                 "No crane rails in the items: the front rail is taken over the beam's centre."

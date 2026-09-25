@@ -2340,7 +2340,10 @@ class SiteView(_Model):
     )
     furniture: bool = Field(True, title="Show the fenders, bollards and crane rails")
     crane: bool = Field(
-        True, title="Show the STS crane", description="Where the project has STS cranes (Furniture tab)."
+        True,
+        title="Show the STS crane",
+        description="Drawn only where the section has STS cranes (its furniture settings); this only "
+        "hides it.",
     )
 
     @model_validator(mode="before")
@@ -2710,6 +2713,20 @@ class Project(_Model):
             data["info"] = {k: v for k, v in data["info"].items() if k != "section"}
         if isinstance(data, dict) and "revisions" in data:  # issued revisions were dropped
             data = {k: v for k, v in data.items() if k != "revisions"}
+        fur = data.get("furniture") if isinstance(data, dict) else None
+        off = [
+            k for k in ("protrusion", "sts_crane") if isinstance(fur, dict) and k in fur and fur[k] is None
+        ]
+        if off and isinstance(data.get("sections"), list):
+            # The protrusion and STS crane ticks were the project's: unticked there, unticked on every
+            # section.
+            data = dict(data)
+            data["sections"] = [
+                {**sec, "furniture": {**(sec.get("furniture") or {}), **{k: False for k in off}}}
+                if isinstance(sec, dict)
+                else sec
+                for sec in data["sections"]
+            ]
         return data
 
     @field_validator("id")

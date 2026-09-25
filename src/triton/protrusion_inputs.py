@@ -1,11 +1,12 @@
 """Inputs of the fender protrusion (a block cast on the front beam's sea face at each fender) and of
-the STS crane that the berth must still serve. Both are the project's (QuayFurniture): typical for
-every section's berth.
+the STS crane that the berth must still serve. Their sizes are the project's (QuayFurniture); each
+section ticks whether it has them (SectionFurniture).
 
 The block's sizes are Ahmed's and drawing SC-502-1's (1.5 m out from a 4.5 m beam, 2.5 m deep to
 suit the fender, 3.0 m long, a bollard on top). The ship and fender panel values are the design
-report's (N25185-...-RPT-ST-01 Rev 2); the crane's outreach and legs, the ship's flare and the
-clearance are not in it and stay assumed.
+report's (N25185-...-RPT-ST-01 Rev 2); the ship's flare is worked out from its depth and ballast
+draft at high water with an assumed flare and list; the crane's outreach and legs and the clearance
+are not in the report and stay assumed.
 """
 
 from __future__ import annotations
@@ -87,6 +88,9 @@ class StsCrane(_Model):
         report's (43.2 m, 0.25 m); a value the user changed is kept."""
         if isinstance(data, dict) and data.get("ship_beam") == 61.5 and data.get("panel_thickness") == 0.3:
             data = {**data, "ship_beam": 43.2, "panel_thickness": 0.25}
+        if isinstance(data, dict) and data.get("flare_overhang") == 2.0 and "flare_angle" not in data:
+            # The first, assumed 2.0 m: now worked out from the ship.
+            data = {**data, "flare_overhang": None}
         return data
 
     outreach: float = _m(
@@ -116,12 +120,48 @@ class StsCrane(_Model):
         ge=0,
         description="Their furthest part towards the sea. Not in the design report. " + ASSUMED,
     )
-    flare_overhang: float = _m(
+    flare_overhang: float | None = _m(
         "Ship's flare and list beyond the fender contact line",
-        2.0,
+        None,
         ge=0,
-        description="How far the hull leans towards the quay at the height of the crane's legs. "
-        "Not in the design report. " + ASSUMED,
+        description="How far the hull leans towards the quay at its deck edge. Empty: worked out from the "
+        "ship "
+        "(depth, ballast draft, flare and list below) at high water.",
+    )
+    ship_depth: float = _m(
+        "Design ship depth (keel to deck edge)",
+        19.12,
+        gt=0,
+        description=REPORT + ", 7 Input Data: moulded depth 19.12 m.",
+    )
+    ballast_draft: float = _m(
+        "Design ship ballast draft",
+        12.75,
+        gt=0,
+        description="The lightest ship stands highest. " + REPORT + ", 7 Input Data: ballast draft 12.75 m.",
+    )
+    high_water: float = _m(
+        "High water level",
+        0.945,
+        description="MHWS on the tidal bar of drawing SC-502-1 (m CD).",
+    )
+    flare_angle: float = Field(
+        10.0,
+        title="Hull flare at the fender contact",
+        ge=0,
+        lt=60,
+        description="Outward lean of the hull side above the fender line (0 on the parallel body, more "
+        "towards "
+        "the bow). Not in the design report. " + ASSUMED,
+        json_schema_extra={"unit": "°"},
+    )
+    list_angle: float = Field(
+        3.0,
+        title="List towards the quay",
+        ge=0,
+        lt=30,
+        description="While loading and unloading. Not in the design report. " + ASSUMED,
+        json_schema_extra={"unit": "°"},
     )
     min_clearance: float = _m(
         "Clearance kept between the ship and the crane's legs",
