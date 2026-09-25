@@ -126,6 +126,20 @@
       }
      ]
     }
+   ],
+   "link_zones": [
+    {
+     "top_m": 2.7,
+     "bottom_m": -4.0,
+     "spacing_mm": 100.0,
+     "label": "Ø10 @ 100"
+    },
+    {
+     "top_m": -4.0,
+     "bottom_m": -20.0,
+     "spacing_mm": 200.0,
+     "label": "Ø10 @ 200"
+    }
    ]
   }
  ],

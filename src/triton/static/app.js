@@ -2899,19 +2899,20 @@ function drawingHelp() {
   box.id = "drawing-help-box";
   box.className = "panel";
   box.innerHTML = `<h2>Reinforcement drawings in AutoCAD and Revit</h2>
-    <p>Every drawing is plain 2D detail lines: pile cage sections and elevations, beam sections, slab plans of each face and
-      direction, 1 m slab cuts and shear link zones. Each bar size is on its own layer (AutoCAD) or line style (Revit); the names
-      are on the Project tab under <em>Drawing names</em>. Until your office names are set there, they are placeholders (REBAR-16 …).</p>
+    <p>Pile cage sections and elevations, beam sections, slab bottom and top plans, a slab section at a pile, 1 m slab cuts
+      and shear link zones. Every drawing sits in its frame with a caption under it and a base point (BP) to copy it from.
+      Bars use the office line styles (T32-Reinforcement Section …) and families (pile section, cut bar, link, slab additional
+      bars); the names are on the Project tab under <em>Drawing names</em>.</p>
     <h3>AutoCAD</h3>
-    <p>Download <em>AutoCAD (DXF)</em> and open it (File › Open, file type DXF). The views sit side by side in model space, 1 unit = 1 mm.</p>
+    <p>Download <em>AutoCAD (DXF)</em> and open it (File › Open, file type DXF). The drawings sit in model space a row per element, 1 unit = 1 mm; the office families are drawn as lines and dots.</p>
     <h3>Revit</h3>
     <ol>
       <li>Download <em>Revit (.crm drawings file)</em> for the elements ticked.</li>
       <li>Paste <a class="quiet-link" href="${ROOT}/api/revit/triton-draw-bars.txt">the Triton DevKit code</a> into your DevKit code
-        runner in Revit and run it (Revit 2021 and later). It asks for the .crm file, lists its views to tick, and asks where: a
-        drafting view for each, or the view that is open, at a point you click.</li>
-      <li>Drafting views are named "Triton - section - view". Drawing a new file redraws the same views, so views already on
-        sheets stay there.</li>
+        runner in Revit and run it (made for Revit 2024). It asks for the .crm file, lists its drawings to tick, and draws
+        them all in one new drafting view (or a drafting view each, or the open view at a point you click).</li>
+      <li>Load the office families first. A family that is not loaded is drawn with lines, and the summary at the end lists
+        it, with any parameter it could not set and the parameters the family does have: send that list to Triton.</li>
     </ol>
     <p class="status">The same code as a <a class="quiet-link" href="${ROOT}/api/revit/triton-addin.zip">Revit add-in</a> (build once in
       Visual Studio) gives a Triton button on the Add-Ins tab instead.</p>

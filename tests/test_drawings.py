@@ -27,6 +27,14 @@ def view(data: dict, name: str) -> dict:
     return next(v for v in data["views"] if v["name"] == name)
 
 
+def flat(items: list[dict]) -> list[dict]:
+    """The items as AutoCAD draws them: families and dimensions by their fallback items."""
+    out = []
+    for i in items:
+        out += flat(i["fallback"]) if "fallback" in i else [i]
+    return out
+
+
 def test_views_of_every_element():
     d = sample()
     assert d["format"] == FORMAT and d["units"] == "mm"
@@ -34,10 +42,14 @@ def test_views_of_every_element():
     runs = len(SAMPLE["piles"][0]["runs"])
     assert names[:runs] == [f"Pile(1) - cage {i} section" for i in range(1, runs + 1)]
     assert "Pile(1) - elevation" in names and "Front Beam - section" in names
-    for face in ("bottom", "top"):
-        for along in ("X", "Y"):
-            assert f"Deck - {face} bars along {along}" in names
-    assert {"Deck - mesh cut across X", "Deck - mesh cut across Y", "Deck - shear links"} <= set(names)
+    assert {
+        "Deck - bottom plan",
+        "Deck - top plan",
+        "Deck - mesh cut across X",
+        "Deck - mesh cut across Y",
+        "Deck - section at Pile(1)",
+        "Deck - shear links",
+    } <= set(names)
     assert [v["name"] for v in sample(element="Front Beam")["views"]] == ["Front Beam - section"]
     both = {v["element"] for v in sample(element=["Front Beam", "Deck"])["views"]}
     assert both == {"Front Beam", "Deck"}
@@ -47,12 +59,21 @@ def test_pile_section_has_every_bar_on_its_circle():
     p = SAMPLE["piles"][0]
     run = p["runs"][0]
     v = view(sample(), "Pile(1) - cage 1 section")
-    bars = [i for i in v["items"] if i["type"] == "bar"]
+    fam = next(i for i in v["items"] if i["type"] == "family")
+    assert fam["family"] == "DET_Round_Col_RFT_Dar: Round Col-RFT" and fam["at"] == [0, 0]
+    params = {x["names"].split("|")[0]: x for x in fam["params"]}
+    r0 = run["rows"][0]
+    assert (
+        params["DAR_NO OF BARS"]["n"] == r0["count"] and params["DAR_BAR DIAMETER"]["mm"] == r0["diameter_mm"]
+    )
+    assert params["DAR_MAIN RFT"]["text"] == f"{r0['count']}T{r0['diameter_mm']}"
+    assert params["DAR_STIRRUPS RFT"]["text"] == "T10@100"  # the tightest link zone over the cage
+    bars = [i for i in flat(v["items"]) if i["type"] == "bar"]
     assert len(bars) == sum(r["count"] for r in run["rows"])
     radii = sorted({round(math.hypot(*b["c"])) for b in bars})
     assert radii == sorted(round(r["radius_mm"]) for r in run["rows"])
     assert {b["layer"] for b in bars} == {f"bar-{r['diameter_mm']}" for r in run["rows"]}
-    circles = [i for i in v["items"] if i["type"] == "circle"]
+    circles = [i for i in flat(v["items"]) if i["type"] == "circle"]
     assert circles[0] == {"type": "circle", "layer": "concrete", "c": [0, 0], "r": p["diameter_mm"] / 2}
     link = p["diameter_mm"] / 2 - p["cover_mm"] - p["link_diameter_mm"] / 2
     assert (
@@ -63,7 +84,10 @@ def test_pile_section_has_every_bar_on_its_circle():
 def test_pile_elevation_bars_at_true_levels():
     p = SAMPLE["piles"][0]
     v = view(sample(), "Pile(1) - elevation")
-    lines = [i for i in v["items"] if i["type"] == "line" and i["layer"].startswith("bar-")]
+    link = f"bar-{int(p['link_diameter_mm'])}"
+    lines = [
+        i for i in v["items"] if i["type"] == "line" and i["layer"].startswith("bar-") and i["layer"] != link
+    ]
     assert len(lines) == 2 * sum(len(r["rows"]) for r in p["runs"])
     top = p["runs"][0]["rows"][0]
     first = lines[0]
@@ -77,8 +101,25 @@ def test_beam_section_bars():
     v = view(sample(), "Front Beam - section")
     bars = [i for i in v["items"] if i["type"] == "bar"]
     assert [x["c"] for x in bars] == [[x["y_mm"], x["z_mm"]] for x in b["bars"]]
-    rects = [i for i in v["items"] if i["type"] == "rect"]
+    rects = [i for i in flat(v["items"]) if i["type"] == "rect"]
     assert rects[0]["a"] == [-b["width_mm"] / 2, -b["depth_mm"] / 2] and rects[1]["layer"] == "bar-16"
+    link = next(i for i in v["items"] if i["type"] == "family")
+    assert link["family"] == "DET_Rebar_51_Dar 1: Rebar_51" and link["align"] == "center"
+    ab = {x["names"]: x["mm"] for x in link["params"]}
+    assert (
+        ab["DAR_A"] == b["width_mm"] - 2 * b["cover_mm"] and ab["DAR_B"] == b["depth_mm"] - 2 * b["cover_mm"]
+    )
+    dims = sorted(i["text"] for i in v["items"] if i["type"] == "dim")
+    assert dims == sorted([f"{b['width_mm']:.0f}", f"{b['depth_mm']:.0f}"])
+    # Every drawing: a frame, its caption under it and the base point to copy it from.
+    assert v["base"] == [0, b["depth_mm"] / 2]
+    texts = [i["text"] for i in v["items"] if i["type"] == "text"]
+    assert "Front Beam: section  1:20" in texts and any(t.startswith("BP = base point") for t in texts)
+    frame = [i for i in v["items"] if i["type"] == "rect" and i["layer"] == "zones"][-1]
+    caption = next(
+        i for i in v["items"] if i["type"] == "text" and i["text"].startswith("Front Beam: section")
+    )
+    assert caption["at"][1] < frame["a"][1]
 
 
 def test_grid_positions():
@@ -86,24 +127,69 @@ def test_grid_positions():
     assert _grid(-100, 100, 100, 50) == [-50, 50]
 
 
-def test_slab_plan_mesh_and_zone_bars():
+def test_slab_plans_bottom_and_top_with_the_additional_bar_family():
     d = SAMPLE["slabs"][0]
     face = d["faces"][0]  # bottom, bars along X
-    v = view(sample(), "Deck - bottom bars along X")
-    y0, y1 = (y * 1000 for y in d["box_m"]["Y"])
-    x0, x1 = (x * 1000 for x in d["box_m"]["X"])
-    mesh = [i for i in v["items"] if i["type"] == "line" and i["a"][0] == x0 and i["b"][0] == x1]
-    s = face["mesh"]["spacing_mm"]
-    assert len(mesh) == len(_grid(y0, y1, s, y0 + s / 2))
-    assert all(m["a"][1] == m["b"][1] for m in mesh)  # along X
+    v = view(sample(), "Deck - bottom plan")
+    fams = [i for i in v["items"] if i["type"] == "family"]
+    assert {f["family"] for f in fams} <= {
+        "RFT_ADD_MODIFIED: RFT_ADD_TOP HL",
+        "RFT_ADD_MODIFIED: RFT_ADD_TOP VL",
+    }
     z = face["zones"][0]
-    zx = [x * 1000 for x in z["x_m"]]
-    added = [i for i in v["items"] if i["type"] == "line" and [i["a"][0], i["b"][0]] == zx]
     (extra,) = [b for b in z["layers"][0]["bars"] if b["kind"] != "mesh"]
-    assert added and {a["layer"] for a in added} == {f"bar-{extra['diameter_mm']}"}
-    # Added bars sit between the mesh bars.
-    mesh_y = {m["a"][1] for m in mesh}
-    assert not mesh_y & {a["a"][1] for a in added}
+    zx = [x * 1000 for x in z["x_m"]]
+    zy = [y * 1000 for y in z["y_m"]]
+    f = next(i for i in fams if i["at"] == [sum(zx) / 2, sum(zy) / 2] and "HL" in i["family"])
+    p = {x["names"].split("|")[0]: x for x in f["params"]}
+    phi = extra["diameter_mm"]
+    assert p["Diameter"]["mm"] == phi and p["Spacing"]["mm"] == extra["spacing_mm"]
+    assert p["L"]["mm"] == math.ceil((zx[1] - zx[0] + 90 * phi) / 100) * 100
+    assert p["Distribution Length"]["mm"] == pytest.approx(zy[1] - zy[0])
+    lines = [i for i in f["fallback"] if i["type"] == "line"]
+    assert len(lines) == p["Top No."]["n"] and all(i["a"][0] == zx[0] and i["b"][0] == zx[1] for i in lines)
+    # The mesh is drawn by hand: only in the caption, no mesh lines across the slab.
+    x0, x1 = (x * 1000 for x in d["box_m"]["X"])
+    assert not [
+        i
+        for i in flat(v["items"])
+        if i["type"] == "line" and i["layer"].startswith("bar-") and i["a"][0] == x0 and i["b"][0] == x1
+    ]
+    texts = [i["text"] for i in v["items"] if i["type"] == "text"]
+    assert any(t.startswith("Mesh along X") for t in texts)
+
+
+def test_slab_section_at_a_pile_cranks_the_bottom_bars():
+    d = SAMPLE["slabs"][0]
+    v = view(sample(), "Deck - section at Pile(1)")
+    bottom = [f for f in d["faces"] if f["face"] == "bottom"]
+    lowest = min(
+        lay["above_soffit_mm"] - lay["bars"][0]["diameter_mm"] / 2
+        for f in bottom
+        for lay in f["mesh"]["layers"]
+    )
+    lift = 100 + 25 - lowest
+    xb = next(f for f in bottom if f["bars_along"] == "X")["mesh"]["layers"][0]["above_soffit_mm"]
+    k = f"bar-{bottom[0]['mesh']['diameter_mm']}"
+    ys = {round(i["a"][1], 1) for i in v["items"] if i["type"] == "line" and i["layer"] == k}
+    assert lift > 0 and round(xb + lift, 1) in ys and xb in ys
+    none = sample(DrawingSettings(pile_into_slab=0))
+    ys = {
+        i["a"][1]
+        for i in view(none, "Deck - section at Pile(1)")["items"]
+        if i["type"] == "line" and i["layer"] == k
+    }
+    assert xb + lift not in ys
+
+
+def test_every_view_has_its_place_in_one_drawing():
+    views = sample()["views"]
+    rows = {}
+    for v in views:
+        rows.setdefault(v["element"], set()).add(v["at"][1] + v["box"][3])  # the top of its row
+    assert all(len(tops) >= 1 for tops in rows.values())
+    tops = [min(t) for t in rows.values()]
+    assert len(set(tops)) == len(tops)  # a row (or more) per element
 
 
 def test_slab_cut_dots_for_bars_through_it():
@@ -132,11 +218,19 @@ def test_layer_names_from_the_project_settings():
         layers["bar-32"]["cad_layer"] == "S-REBAR-T32"
         and layers["bar-32"]["revit_section_type"] == "Rebar Dot: T32"
     )
-    assert layers["bar-25"]["cad_layer"] == "REBAR-25"  # not listed: the placeholder
+    assert layers["bar-25"]["cad_layer"] == "T25-Reinforcement Section"  # not listed: the office name
+    assert layers["bar-25"]["revit_section_type"] == "DET_Rebar_Dot Bar_Dar: Section Bar"
     assert layers["concrete"]["cad_layer"] == "S-CONC"
-    # Placeholders until the office names come: one per bar size.
+    # The office line styles for every size, and the first placeholders move over to them.
     default = DrawingSettings()
-    assert [b.cad_layer for b in default.bars][:3] == ["REBAR-8", "REBAR-10", "REBAR-12"]
+    assert [b.revit_line_style for b in default.bars][:2] == [
+        "T8-Reinforcement Section",
+        "T10-Reinforcement Section",
+    ]
+    old = DrawingSettings.model_validate(
+        {"bars": [{"diameter": 32, "cad_layer": "REBAR-32", "revit_line_style": "REBAR-32"}]}
+    )
+    assert old.bars[0].revit_line_style == "T32-Reinforcement Section"
 
 
 def test_dxf_layers_and_entities():
@@ -151,9 +245,14 @@ def test_dxf_layers_and_entities():
     doc, auditor = recover.readfile(path)
     assert not auditor.errors
     names = {layer.dxf.name for layer in doc.layers}
-    assert {"REBAR-32", "REBAR-16", "TRITON-CONCRETE", "TRITON-TEXT"} <= names
+    assert {
+        "T32-Reinforcement Section",
+        "T16-Reinforcement Section",
+        "TRITON-CONCRETE",
+        "TRITON-TEXT",
+    } <= names
     msp = doc.modelspace()
-    n_bars = sum(1 for v in data["views"] for i in v["items"] if i["type"] == "bar")
+    n_bars = sum(1 for v in data["views"] for i in flat(v["items"]) if i["type"] == "bar")
     assert len(msp.query("POLYLINE")) >= n_bars
     assert any("%%c32" in t.dxf.text for t in msp.query("TEXT"))
     assert ezdxf.__version__
@@ -213,7 +312,7 @@ def test_drawing_endpoints(tmp_path, monkeypatch):
     assert d["section"] == "Section 1" and d["views"][-1]["name"] == "Pile(1) - elevation"
     r = client.get(f"{url}/design/drawings.dxf", params={"element": "Pile(1)"})
     assert r.status_code == 200 and "Berth_1_Section_1_Pile_1_.dxf" in r.headers["content-disposition"]
-    assert "REBAR-" in r.text
+    assert "-Reinforcement Section" in r.text
     assert client.get(f"{url}/design/drawings.dxf", params={"element": "Deck"}).status_code == 404
     g = client.get("/api/revit/triton-drawings.dyn")
     assert g.status_code == 200 and json.loads(g.text)["Name"] == "Triton drawings"
@@ -234,10 +333,11 @@ def test_revit_addin_source_zip():
     import zipfile
 
     names = zipfile.ZipFile(io.BytesIO(revit.addin_zip())).namelist()
-    for f in ("TritonDrawings.csproj", "TritonDrawings.addin", "DrawCommand.cs", "Drawer.cs", "README.txt"):
+    for f in ("TritonDrawings.csproj", "TritonDrawings.addin", "DrawCommand.cs", "README.txt"):
         assert f"TritonDrawings/{f}" in names
-    cs = (revit.ADDIN / "TritonFile.cs").read_text("utf-8")
-    assert f'Format = "{FORMAT}"' in cs  # the add-in reads the format Triton writes
+    assert "TritonDrawings/DevKitCode.cs" in names
+    cs = revit.addin_devkit_source()
+    assert f'"{FORMAT}"' in cs and "public static void Run(Autodesk.Revit.DB.Document doc)" in cs
 
 
 def test_devkit_code_is_statements_only():

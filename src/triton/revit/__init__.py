@@ -1,7 +1,8 @@
 """The Revit side of the drawing export: what draws a Triton drawings file as detail lines.
 
-``addin_zip()`` is the Revit add-in (C#, Revit API) as source to build once in Visual Studio: a Triton
-button that picks the file and draws it into drafting views or the open view. The Python script below
+``devkit_code()`` is the C# the office pastes into its DevKit code runner; ``addin_zip()`` is the Revit
+add-in as source to build once in Visual Studio: a Triton button that runs the same C# (wrapped in a
+method as DevKitCode.cs), so both always draw the same. The Python script below
 does the same without building anything:
 ``script()`` is the Python file (pyRevit, RevitPythonShell, or pasted into a Dynamo Python node);
 ``dynamo_graph()`` wraps it in a Dynamo graph (.dyn) with a File Path input, for Revit's own Dynamo.
@@ -31,6 +32,17 @@ def devkit_code() -> str:
     return DEVKIT.read_text("utf-8")
 
 
+def addin_devkit_source() -> str:
+    """The DevKit code as a C# method for the add-in (DevKitCode.cs)."""
+    body = "\n".join("            " + line if line.strip() else "" for line in devkit_code().splitlines())
+    return (
+        "// Made by Triton from TritonDrawBars.txt: the DevKit code, as a method.\n"
+        "namespace Triton.Revit\n{\n    public static class DevKitCode\n    {\n"
+        "        public static void Run(Autodesk.Revit.DB.Document doc)\n        {\n"
+        f"{body}\n        }}\n    }}\n}}\n"
+    )
+
+
 def addin_zip() -> bytes:
     """The add-in's source in a TritonDrawings folder, ready to open in Visual Studio."""
     buf = io.BytesIO()
@@ -38,6 +50,7 @@ def addin_zip() -> bytes:
         for pattern in ADDIN_FILES:
             for f in sorted(ADDIN.glob(pattern)):
                 z.write(f, f"TritonDrawings/{f.name}")
+        z.writestr("TritonDrawings/DevKitCode.cs", addin_devkit_source())
     return buf.getvalue()
 
 

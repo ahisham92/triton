@@ -1,18 +1,20 @@
 Triton drawings - Revit add-in
 ==============================
 
-Adds a "Draw bars" button (Add-Ins tab > Triton). It asks for a Triton drawings file
-(.crm; Triton, Design tab > Drawings > Revit), lists its views, and draws the ones you tick:
+Adds a "Draw bars" button (Add-Ins tab > Triton). It runs the same code as the DevKit
+text (TritonDrawBars.txt): it asks for a Triton drawings file (.crm; Triton, Design tab >
+Drawings > Revit), lists its drawings, and draws the ones you tick:
 
-  * each in its own drafting view, "Triton - <section> - <view>" (drawn again in place
-    when the view already exists, so views on sheets stay on them), or
-  * into the view that is open (drafting, plan, section, elevation or detail view), with
-    the top left of the drawing at a point you click.
+  * all in one new drafting view for the run (the default), each drawing in its frame
+    with a caption under it and a base point (BP) to copy it from, or
+  * each in its own drafting view, "Triton - <section> - <drawing>" (drawn again in
+    place when the view already exists), or
+  * into the view that is open, the top left at a point you click.
 
-Bars and links are detail lines in the line style named for their size on Triton's
-Project tab (Drawing names), or that size's line-based detail family when one is set.
-Cut bars are that size's detail family, else a filled dot. A line style the project
-does not have yet is made, and the add-in says which ones it made.
+Bars are detail lines in the office line styles (T32-Reinforcement Section...); the
+office families (DET_Round_Col_RFT_Dar, DET_Rebar_Dot Bar_Dar, DET_Rebar_51_Dar,
+RFT_ADD_MODIFIED) are placed with their parameters set, or drawn with lines if not
+loaded. The summary at the end lists anything missing.
 
 Build (once, and again for each Revit version you use)
 ------------------------------------------------------
@@ -33,6 +35,4 @@ Files
 TritonDrawings.csproj   project (targets .NET Framework 4.8 or .NET 8 by Revit version)
 TritonDrawings.addin    Revit manifest
 DrawCommand.cs          the button and the command
-PickViewsForm.cs        the view picker
-Drawer.cs               draws lines, bars and text
-TritonFile.cs, Json.cs  read the drawings file (no other DLL needed)
+DevKitCode.cs           the drawing code (TritonDrawBars.txt in a method)

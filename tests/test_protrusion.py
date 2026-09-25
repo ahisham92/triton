@@ -78,20 +78,20 @@ def test_a_heavier_fender_needs_more_ties():
 
 def test_the_crane_stand_off_by_hand():
     c = P.clearance(StsCrane(), HAND, FenderProtrusion(), 2.25)
-    assert c["standoff"]["free_m"] == pytest.approx(1.5 + 1.0 + 0.3)
-    assert c["standoff"]["compressed_m"] == pytest.approx(1.5 + 0.28 + 0.3)
-    assert c["reach"]["needed_m"] == pytest.approx(2.25 + 2.8 + 61.5 - 1.5)
-    assert c["legs"]["clearance_m"] == pytest.approx(2.25 - 1.0 + 2.08 - 2.0)
+    assert c["standoff"]["free_m"] == pytest.approx(1.5 + 1.0 + 0.25)
+    assert c["standoff"]["compressed_m"] == pytest.approx(1.5 + 0.28 + 0.25)
+    assert c["reach"]["needed_m"] == pytest.approx(2.25 + 2.75 + 43.2 - 1.5)
+    assert c["legs"]["clearance_m"] == pytest.approx(2.25 - 1.0 + 2.03 - 2.0)
     assert c["passed"]
     lo, hi = c["projection_range_m"]
-    assert lo == pytest.approx(3.0 + 1.0 - 2.25 - 0.28 - 0.3) and hi == pytest.approx(
-        70 - 2.25 - 61.5 + 1.5 - 1.3
+    assert lo == pytest.approx(3.0 + 1.0 - 2.25 - 0.28 - 0.25) and hi == pytest.approx(
+        70 - 2.25 - 43.2 + 1.5 - 1.25
     )
     # Without the block the ship's flare reaches the crane's legs: the reason for the protrusion.
     bare = P.clearance(StsCrane(), HAND, None, 2.25)
     assert not bare["passed"] and bare["parts"][1]["passed"] is False
     # Too far out and the crane cannot reach the far row.
-    far = P.clearance(StsCrane(), HAND, FenderProtrusion(projection=7000), 2.25)
+    far = P.clearance(StsCrane(), HAND, FenderProtrusion(projection=30000), 2.25)
     assert not far["parts"][0]["passed"] and any("outside the range" in n for n in far["notes"])
 
 
@@ -144,3 +144,14 @@ def test_the_drawings_show_the_block():
     assert views[1]["name"] == "Fender protrusion"
     plan = str(views[0])
     assert "1500" in plan  # the blocks stand 1.5 m out from the face
+
+
+def test_the_ship_and_panel_come_from_the_design_report():
+    c = StsCrane()
+    assert c.ship_beam == 43.2 and c.panel_thickness == 0.25 and c.rated_deflection == 0.72
+    assert "RPT-ST-01" in StsCrane.model_fields["ship_beam"].description
+    # A project saved with the first, assumed defaults takes the report's; a changed value stays.
+    old = StsCrane.model_validate({"ship_beam": 61.5, "panel_thickness": 0.3})
+    assert old.ship_beam == 43.2 and old.panel_thickness == 0.25
+    mine = StsCrane.model_validate({"ship_beam": 61.5, "panel_thickness": 0.4})
+    assert mine.ship_beam == 61.5 and mine.panel_thickness == 0.4

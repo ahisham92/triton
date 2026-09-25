@@ -1628,20 +1628,24 @@ class Prices(_Model):
     )
 
 
+OFFICE_LINE_STYLE = "T{d}-Reinforcement Section"  # the office's Revit line style for each bar size
+
+
 class BarLayer(_Model):
     """How one bar size is drawn: its AutoCAD layer and its Revit line style or detail family."""
 
     diameter: int = Field(16, title="Bar", json_schema_extra={"unit": "mm"})
-    cad_layer: str = Field("REBAR-16", title="AutoCAD layer")
+    cad_layer: str = Field("T16-Reinforcement Section", title="AutoCAD layer")
     revit_line_style: str = Field(
-        "REBAR-16",
+        "T16-Reinforcement Section",
         title="Revit line style",
         description="Bars along the view; made if the template lacks it.",
     )
     revit_section_type: str = Field(
         "",
         title="Revit family type, cut bar",
-        description="Detail component placed at each cut bar, as 'Family: Type'. Empty: a filled dot.",
+        description="Detail component at each cut bar of this size, as 'Family: Type'. Empty: the cut bar "
+        "family below.",
     )
     revit_line_type: str = Field(
         "",
@@ -1650,30 +1654,87 @@ class BarLayer(_Model):
         "detail line in the line style.",
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _office_names(cls, data):
+        """Projects saved with the first placeholders (REBAR-16) take the office names."""
+        if isinstance(data, dict) and data.get("diameter") is not None:
+            d = data["diameter"]
+            data = dict(data)
+            for k in ("cad_layer", "revit_line_style"):
+                if data.get(k) in (None, "", f"REBAR-{d}"):
+                    data[k] = OFFICE_LINE_STYLE.format(d=d)
+        return data
 
-def _placeholder_bar_layers() -> list[BarLayer]:
-    return [
-        BarLayer(diameter=d, cad_layer=f"REBAR-{d}", revit_line_style=f"REBAR-{d}") for d in BAR_DIAMETERS
-    ]
+
+def _office_bar_layers() -> list[BarLayer]:
+    return [BarLayer(diameter=d) for d in BAR_DIAMETERS]
 
 
 class DrawingSettings(_Model):
     """Names used by the AutoCAD and Revit drawing exports. They do not change any design."""
 
     bars: list[BarLayer] = Field(
-        default_factory=_placeholder_bar_layers,
+        default_factory=_office_bar_layers,
         title="Bars: layer, line style and family type by diameter",
-        description="Placeholders until the office names are set. A size not listed is drawn on REBAR-<Ø>.",
+        description="A size not listed is drawn on T<Ø>-Reinforcement Section.",
+    )
+    cut_bar_family: str = Field(
+        "DET_Rebar_Dot Bar_Dar: Section Bar",
+        title="Revit family, cut bar (dot)",
+        description="'Family: Type'. Its DAR_BAR DIAMETER is set to the bar. Empty or not loaded: a "
+        "filled dot.",
+    )
+    pile_section_family: str = Field(
+        "DET_Round_Col_RFT_Dar: Round Col-RFT",
+        title="Revit family, pile section",
+        description="Placed at each pile cage section with its bar and link parameters set. Empty or not "
+        "loaded: drawn with lines and dots.",
+    )
+    stirrup_family: str = Field(
+        "DET_Rebar_51_Dar 1: Rebar_51",
+        title="Revit family, closed link (beam sections)",
+        description="Its DAR_A and DAR_B are set to the link's outside size. Empty or not loaded: lines.",
+    )
+    additional_bars_x_family: str = Field(
+        "RFT_ADD_MODIFIED: RFT_ADD_TOP HL",
+        title="Revit family, slab additional bars along X",
+        description="On the slab plans, one per zone and bar set (X to the right on the plan).",
+    )
+    additional_bars_y_family: str = Field(
+        "RFT_ADD_MODIFIED: RFT_ADD_TOP VL", title="Revit family, slab additional bars along Y"
+    )
+    lap_factor: float = Field(
+        45.0,
+        title="Additional bars run past their zone by",
+        gt=0,
+        json_schema_extra={"unit": "Ø"},
+        description="Each end; the slab plans give L = zone length + 2 × this × Ø, rounded up to 100 mm.",
+    )
+    pile_into_slab: float = _mm(
+        "Pile head into the slab",
+        100.0,
+        ge=0,
+        description="For the slab section at a pile: bottom bars are cranked over the pile head when it "
+        "sits above them.",
     )
     concrete_cad_layer: str = Field("TRITON-CONCRETE", title="AutoCAD layer, concrete outline")
     concrete_revit_line_style: str = Field("TRITON-CONCRETE", title="Revit line style, concrete outline")
-    zones_cad_layer: str = Field("TRITON-ZONES", title="AutoCAD layer, zones and level marks")
-    zones_revit_line_style: str = Field("TRITON-ZONES", title="Revit line style, zones and level marks")
-    text_cad_layer: str = Field("TRITON-TEXT", title="AutoCAD layer, text")
+    zones_cad_layer: str = Field("TRITON-ZONES", title="AutoCAD layer, zones, frames and level marks")
+    zones_revit_line_style: str = Field(
+        "TRITON-ZONES", title="Revit line style, zones, frames and level marks"
+    )
+    text_cad_layer: str = Field("TRITON-TEXT", title="AutoCAD layer, text and dimensions")
     revit_text_type: str = Field(
         "", title="Revit text type", description="Empty: the project's default text type."
     )
+    revit_dimension_type: str = Field(
+        "", title="Revit dimension type", description="Empty: the project's default linear dimension type."
+    )
     revit_view_prefix: str = Field("Triton", title="Revit drafting view names start with")
+    revit_view_scale: int = Field(
+        50, title="Revit drafting view scale", ge=1, description="1:this, for the one drafting view of a run."
+    )
 
 
 class ElementCosting(_Model):
@@ -2161,19 +2222,27 @@ class ElementCheck(_Model):
     )
 
 
+class WaterLevel(_Model):
+    """A named water level drawn in the 3D views (HAT, MHWS, MSL, LAT...)."""
+
+    name: str = Field("Water level", title="Name", min_length=1)
+    level: float = _m("Level", 0.0)
+
+
 class SiteView(_Model):
     """The site round the structure in the 3D views: seabed, water, soil, quay furniture and the STS
     crane. Only what is drawn: it never changes the design, so it is open while the model is locked."""
 
     seabed_level: float = _m(
         "Seabed level in front of the wall",
-        -16.0,
-        description="The dredged level at the quay face. Assumed -16.0 m until set.",
+        -16.12,
+        description="The dredged level at the quay face.",
     )
-    water_level: float = _m(
-        "Water level",
-        0.0,
-        description="Drawn as a see-through surface on the sea side. Assumed 0.0 m until set.",
+    water_levels: list[WaterLevel] = Field(
+        default_factory=lambda: [WaterLevel()],
+        title="Water levels",
+        description="Each drawn as its own see-through plane on the sea side, switched on and off in the 3D "
+        "view. Assumed one level at 0.0 m until the levels are set.",
     )
     soil_level: float | None = _m(
         "Soil level behind the front wall",
@@ -2187,10 +2256,28 @@ class SiteView(_Model):
         "then drawn faint).",
     )
     water: bool = Field(True, title="Show the water")
+    water_hidden: list[str] = Field(
+        default_factory=list, title="Water levels switched off", json_schema_extra=_HIDDEN
+    )
     furniture: bool = Field(True, title="Show the fenders, bollards and crane rails")
     crane: bool = Field(
         True, title="Show the STS crane", description="Where the project has STS cranes (Furniture tab)."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_water_level(cls, data: Any) -> Any:
+        """Saved with one water level (the first version): it becomes the list. The seabed's first
+        assumed default (-16.0) becomes this project's dredge level, -16.12 m."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "water_level" in data:
+            level = data.pop("water_level")
+            data.setdefault("water_levels", [{"name": "Water level", "level": level}])
+        if data.get("seabed_level") == -16.0:
+            data["seabed_level"] = -16.12
+        return data
 
 
 class Section(_Model):
