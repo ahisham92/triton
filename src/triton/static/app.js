@@ -985,7 +985,7 @@ const KIND_LABEL = { pile: "Pile", combi_wall: "Combi wall", sheet_pile_wall: "S
 function renderSections(host) {
   const p = state.project;
   const def = SCHEMA.$defs.Section;
-  const keys = ["name", "x_min", "x_max", "y_min", "y_max", "peaks", "peak_ratio"];
+  const keys = ["name", "x_min", "x_max", "y_min", "y_max", "end_trim", "peaks", "peak_ratio"];
   const schema = { properties: Object.fromEntries(keys.map((k) => [k, def.properties[k]])) };
   host.innerHTML = `<p class="sub">A project can have several sections, e.g. Section 01a and Section 02. Each section has its own
     Plaxis workbook, elements, load multipliers and results. Materials and design settings are shared. A new section
@@ -3299,7 +3299,8 @@ function alerts(res) {
   // From the run itself, so the alert matches the results shown (older runs: the section as saved).
   const s = state?.project ? sec() : null;
   const zone = res.working_zone ?? (s && [s.x_min, s.x_max, s.y_min, s.y_max].some((v) => v != null));
-  if (s && res.run_at && !zone)
+  const trimmed = res.end_trim ?? null;
+  if (s && res.run_at && !zone && !trimmed)
     add("limit", s.name, "no working zone set, so results up to the model's boundaries are included: set it on the Sections tab");
   const rank = { unsafe: 0, limit: 1, safe: 2 };
   return out.sort((a, b) => rank[a.level] - rank[b.level]);

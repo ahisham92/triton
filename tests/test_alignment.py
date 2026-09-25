@@ -19,6 +19,8 @@ from triton.alignment import (
     rotate_points,
     rotate_tensor,
     rotate_vector,
+    stations,
+    trim_ends,
     turn_frame,
 )
 from triton.design.runner import run_section
@@ -273,3 +275,69 @@ def test_a_corner_takes_every_ultimate_sheet():
     for a, b in zip(out["slabs"] + out["beams"], ref["slabs"] + ref["beams"], strict=True):
         assert summary(a) == summary(b)
     assert {d["shear"]["governing"]["combination"] for d in out["beams"]} == {"PT-B-Yard"}
+
+
+# --- The FE edges: results near the model's ends are left out, never at a corner --------------------
+
+
+def test_stations_run_round_a_corner_and_past_the_ends():
+    pts = [[0.0, -10.0], [0.0, 0.0], [10.0, 10.0]]
+    x = np.array([0.5, -0.5, 0.0, 3.0, 12.0])
+    y = np.array([-12.0, -5.0, 0.0, 3.0, 12.0])
+    st = stations(pts, "Y", x, y)
+    diag = math.hypot(10, 10)
+    assert st == pytest.approx([-2.0, 5.0, 10.0, 10 + math.hypot(3, 3), 10 + diag + math.hypot(2, 2)])
+    assert stations(None, "Y", x, y) == pytest.approx(y)
+
+
+def test_trim_leaves_out_each_elements_ends_but_not_the_corner_or_piles():
+    wb = berth()
+    corner = turn_workbook(wb, -25.0, where=lambda x, y: y >= 0)
+    elements = corner.elements()
+    pts = [[0.0, -8.0], [0.0, 0.0], turned(np.array([[0.0, 8.0]]), -25.0)[0].tolist()]
+    out, info = trim_ends(elements, pts, "Y", 2.0, keep={"Pile(1)"})
+    assert info["corner"] and set(info["ends_m"]) == {"Deck", "Front Beam"}
+    for name, (lo, hi) in info["ends_m"].items():
+        for combo, sh in out[name].items():
+            before = elements[name][combo].frame
+            st = stations(pts, "Y", sh.frame["X"].to_numpy(), sh.frame["Y"].to_numpy())
+            assert st.min() >= lo + 2.0 - 1e-6 and st.max() <= hi - 2.0 + 1e-6
+            # Round the corner (8 m in from the start) nothing is lost.
+            all_st = stations(pts, "Y", before["X"].to_numpy(), before["Y"].to_numpy())
+            assert len(sh.frame) == int(((all_st >= lo + 2.0 - 1e-6) & (all_st <= hi - 2.0 + 1e-6)).sum())
+            assert (np.abs(all_st - 8.0) < 1.0).sum() == (np.abs(st - 8.0) < 1.0).sum() > 0
+    assert out["Pile(1)"] == elements["Pile(1)"]
+    assert trim_ends(elements, pts, "Y", 0.0) == (elements, None)
+
+
+def test_a_trimmed_corner_keeps_its_parts_and_designs_without_the_ends():
+    corner = turn_workbook(berth(), -25.0, where=lambda x, y: y >= 0)
+    whole = run_section(DesignSettings(), section(), corner, only=ONLY)
+    cut = run_section(DesignSettings(), section(end_trim=2.0), corner, only=ONLY)
+    assert cut["end_trim"]["trim_m"] == 2.0 and whole["end_trim"] is None
+    assert [p["rotation_deg"] for p in cut["alignment"]["parts"]] == pytest.approx([0.0, 25.0], abs=1e-6)
+    for a, b in zip(whole["beams"], cut["beams"], strict=True):
+        assert b["end_m"] - b["start_m"] < a["end_m"] - a["start_m"]
+        assert any("2 m of the model's two ends" in n for n in b["notes"])
+
+
+def test_new_sections_start_with_the_office_trim_and_saved_ones_keep_none():
+    from fastapi.testclient import TestClient
+
+    from triton.api import app
+    from triton.fresh import fingerprint
+    from triton.project import Project
+
+    c = TestClient(app)
+    p = c.post("/api/projects", json={"info": {"name": "Trim"}}).json()
+    assert p["sections"][0]["end_trim"] == 2.0
+    p = c.post(f"/api/projects/{p['id']}/sections", json={"name": "Blank"}).json()
+    assert p["sections"][-1]["end_trim"] == 2.0
+    saved = Section.model_validate({"name": "Old"})
+    assert saved.end_trim == 0.0
+    project = Project(sections=[saved])
+    before = fingerprint(project, saved, None)["working zone and peaks"]
+    old = Section.model_validate({k: v for k, v in saved.model_dump(mode="json").items() if k != "end_trim"})
+    assert fingerprint(project, old, None)["working zone and peaks"] == before
+    trimmed = saved.model_copy(update={"end_trim": 2.0})
+    assert fingerprint(project, trimmed, None)["working zone and peaks"] != before
