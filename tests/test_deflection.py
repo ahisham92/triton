@@ -169,8 +169,12 @@ def test_fingerprint_of_projects_saved_before_is_unchanged():
     """A project saved before the estimate existed keeps its fingerprint (the hash is the one the code
     gave before), and changing the estimate's settings changes nothing either."""
     p = Project.model_validate(SAVED)
+    # The 2 m left out at each end (the default since 2026-09-25) asks for one redesign; without it the
+    # hash is the one the code gave before.
+    trimmed = fresh.fingerprint(p, p.sections[0], WORKBOOK)["working zone and peaks"]
+    p.sections[0].end_trim = 0.0
     before = fresh.fingerprint(p, p.sections[0], WORKBOOK)
-    assert before["working zone and peaks"] == "9bb977fc731c"
+    assert before["working zone and peaks"] == "9bb977fc731c" != trimmed
     s = p.sections[0]
     s.deflection = DeflectionSettings(
         toe="firm_soil", firm_soil_level=-12, stiffness="cracked", long_term=True

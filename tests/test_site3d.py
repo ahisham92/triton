@@ -89,8 +89,12 @@ def test_the_first_assumed_seabed_becomes_this_projects_dredge_level():
 
 def test_fingerprint_unchanged_by_the_site():
     p = Project.model_validate(SAVED)
+    # The 2 m left out at each end (the default since 2026-09-25) asks for one redesign; without it the
+    # hash is the one the code gave before.
+    trimmed = fresh.fingerprint(p, p.sections[0], WORKBOOK)["working zone and peaks"]
+    p.sections[0].end_trim = 0.0
     before = fresh.fingerprint(p, p.sections[0], WORKBOOK)
-    assert before["working zone and peaks"] == "9bb977fc731c"
+    assert before["working zone and peaks"] == "9bb977fc731c" != trimmed
     p.sections[0].site = SiteView(seabed_level=-20, water_level=2, soil="hidden", water=False)
     assert fresh.fingerprint(p, p.sections[0], WORKBOOK) == before
 

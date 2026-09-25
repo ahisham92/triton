@@ -985,7 +985,7 @@ const KIND_LABEL = { pile: "Pile", combi_wall: "Combi wall", sheet_pile_wall: "S
 function renderSections(host) {
   const p = state.project;
   const def = SCHEMA.$defs.Section;
-  const keys = ["name", "x_min", "x_max", "y_min", "y_max", "end_trim", "peaks", "peak_ratio"];
+  const keys = ["name", "end_trim", "side_trim", "peaks", "peak_ratio"];
   const schema = { properties: Object.fromEntries(keys.map((k) => [k, def.properties[k]])) };
   host.innerHTML = `<p class="sub">A project can have several sections, e.g. Section 01a and Section 02. Each section has its own
     Plaxis workbook, elements, load multipliers and results. Materials and design settings are shared. A new section
@@ -1044,6 +1044,7 @@ function renderSections(host) {
     fs.style.border = "0";
     fs.style.padding = "0";
     card.append(fs);
+    card.append(edgesSketch(s));
     const combos = document.createElement("div");
     combos.className = "field full";
     combos.innerHTML = `<label>Load combinations</label><div class="hint">${esc(def.properties.combinations.description)}</div>`;
@@ -1065,6 +1066,40 @@ function renderSections(host) {
     card.append(jointsEditor(p, s));
     host.append(card);
   });
+}
+
+// Which edges "along the berth" and "across the quay" leave out, drawn on a plan of the deck; and an
+// older section's working zone (X/Y limits), which still applies until it is cleared.
+function edgesSketch(s) {
+  const box = document.createElement("div");
+  box.className = "field full";
+  const end = Number(s.end_trim ?? 0), side = Number(s.side_trim ?? 0);
+  const ew = end > 0 ? 18 : 0, sw = side > 0 ? 10 : 0;
+  box.innerHTML = `<div class="hint">What is left out, in plan (the berth runs left to right; on a corner it follows the berth's line round it, and only the two outer ends are cut):</div>
+    <svg viewBox="0 0 320 110" width="320" height="110" role="img" aria-label="Plan of the deck with the edges left out">
+      <rect x="30" y="20" width="260" height="60" fill="none" stroke="currentColor" stroke-opacity=".5"/>
+      ${ew ? `<rect x="30" y="20" width="${ew}" height="60" fill="currentColor" fill-opacity=".18"/><rect x="${290 - ew}" y="20" width="${ew}" height="60" fill="currentColor" fill-opacity=".18"/>` : ""}
+      ${sw ? `<rect x="30" y="20" width="260" height="${sw}" fill="currentColor" fill-opacity=".12"/><rect x="30" y="${80 - sw}" width="260" height="${sw}" fill="currentColor" fill-opacity=".12"/>` : ""}
+      <text x="160" y="14" text-anchor="middle" font-size="10" fill="currentColor">land side</text>
+      <text x="160" y="96" text-anchor="middle" font-size="10" fill="currentColor">sea side (front beam)</text>
+      <text x="30" y="108" font-size="10" fill="currentColor">${end > 0 ? `${fmt(end, 1)} m` : "0"}</text>
+      <text x="290" y="108" text-anchor="end" font-size="10" fill="currentColor">${end > 0 ? `${fmt(end, 1)} m` : "0"}</text>
+      <text x="160" y="54" text-anchor="middle" font-size="10" fill="currentColor">along the berth: each end · across the quay: ${side > 0 ? `${fmt(side, 1)} m` : "0"} each side</text>
+    </svg>`;
+  const zone = [s.x_min, s.x_max, s.y_min, s.y_max];
+  if (zone.some((v) => v != null)) {
+    const f = (v) => (v == null ? "open" : `${fmt(v, 2)} m`);
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.innerHTML = `This section also has an older working zone (X ${f(s.x_min)} to ${f(s.x_max)}, Y ${f(s.y_min)} to ${f(s.y_max)}), which still applies. <button class="quiet" data-clear-zone>Clear it</button>`;
+    p.querySelector("[data-clear-zone]").onclick = () => {
+      s.x_min = s.x_max = s.y_min = s.y_max = null;
+      markDirty();
+      route();
+    };
+    box.append(p);
+  }
+  return box;
 }
 
 // A corner berth: the quay's line in plan, found from the front beam or given by hand

@@ -38,7 +38,7 @@ def test_standard_gives_the_same_verdict_and_steel_quicker():
     assert pq["steel"]["kg_per_m3"] == pytest.approx(p["steel"]["kg_per_m3"], rel=0.15)
     # A slab: one mesh spacing, not both.
     (sq,) = quick["slabs"]
-    assert "mesh_choice" not in sq and "Standard design" in sq["notes"][1]
+    assert "mesh_choice" not in sq and any("Standard design" in n for n in sq["notes"])
     with pytest.raises(ValueError):
         run_section(DesignSettings(), deck_section(), wb, mode="rough")
 

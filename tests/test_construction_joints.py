@@ -97,7 +97,7 @@ def _deck_section(**joints):
         "Deck": SlabInput(thickness=800, construction_joints=joints.get("slab", [])),
         "Pile(1)": PileInput(head_level=2.7, construction_joints=joints.get("pile", [])),
     }
-    return Section(name="S1", elements=els)
+    return Section(name="S1", elements=els, end_trim=0.0)  # the small model whole
 
 
 def test_pile_and_slab_joints_in_the_design_report_and_drawings():
