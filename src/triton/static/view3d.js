@@ -269,12 +269,17 @@ export class View3D {
     const stat = this.host.querySelector("[data-defstat]");
     this.def = null;
     if (combo && this.loadDeformed) {
-      stat.textContent = "Working out…";
+      const began = Date.now();
+      const tick = () => (stat.textContent = `Working out the deformed shape… ${Math.round((Date.now() - began) / 1000)} s`);
+      tick();
+      const timer = setInterval(tick, 1000);
       try {
         this.def = await this.loadDeformed(combo);
         stat.textContent = "";
       } catch (e) {
         stat.textContent = e.message;
+      } finally {
+        clearInterval(timer);
       }
     } else stat.textContent = "";
     this._defControls();

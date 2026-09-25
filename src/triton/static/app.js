@@ -518,15 +518,15 @@ async function projectPage(id, tab, sectionId) {
   else if (tab === "method") renderMethodTab(host);
   else if (tab === "ve")
     renderValueEngineering(host, {
-      api, again, esc, fmt, secUrl, ROOT,
+      api, again, esc, fmt, secUrl, ROOT, tabData,
       project: () => state.project,
       sectionId: () => sec().id,
       costingHash: tabHash("costing"),
     });
-  else if (tab === "clashes") renderClashes(host, { api, again, esc, fmt, secUrl });
+  else if (tab === "clashes") renderClashes(host, { api, again, esc, fmt, secUrl, tabData });
   else if (tab === "moved")
     renderMovedPiles(host, {
-      api, again, esc, fmt, secUrl, ROOT,
+      api, again, esc, fmt, secUrl, ROOT, tabData,
       project: () => state.project,
       sectionId: () => sec().id,
     });
@@ -540,7 +540,7 @@ async function projectPage(id, tab, sectionId) {
     });
   else if (tab === "compare")
     renderTrials(host, {
-      api, again, esc, fmt, secUrl, ROOT, barDiagrams,
+      api, again, esc, fmt, secUrl, ROOT, barDiagrams, tabData,
       project: () => state.project,
       sectionId: () => sec().id,
       costingHash: tabHash("costing"),
@@ -548,6 +548,7 @@ async function projectPage(id, tab, sectionId) {
         mergeInto(state.project, res.project);
         state.dirty = false;
         applyLock();
+        prepareTabs(state.project.id, sec()); // new results: the 3D view and Clashes again
       },
     });
   showSaveState();
@@ -1651,7 +1652,6 @@ async function renderWorkbookTab(host) {
     renderMapping(data, refresh);
     renderCombos(data, refresh);
     renderReview(data, refresh, url);
-    if (state.geometry?.uploaded !== data.uploaded_at) state.geometry = { uploaded: data.uploaded_at };
     const missing = data.elements.filter((e) => !(e in sec().elements));
     const box = document.getElementById("add-found");
     if (!missing.length) {
@@ -2761,7 +2761,9 @@ async function renderDesignTab(host) {
     return;
   }
   try {
-    const res = await api(`${url}/design`);
+    const res = await tabData("design", { box: out, title: "Loading the results" });
+    if (!out.isConnected) return;
+    out.innerHTML = "";
     stale = res.stale || [];
     quick = [...new Set(RESULT_KINDS.flatMap((k) => (res[k] || []).filter(isStandard).map((e) => e.element)))];
     drawPick();
@@ -2868,6 +2870,7 @@ async function designJob(section, chosen, onResults, mode = "detailed") {
     if (state?.project.id === pid) {
       state.project.locked = true;
       if (location.hash.startsWith(`#/project/${pid}/`)) route();
+      prepareTabs(pid, section); // the 3D view and Clashes, while you look at the results
     }
   } catch (e) {
     const on = job.steps.find((s) => s.state === "running");
@@ -2882,6 +2885,7 @@ async function designJob(section, chosen, onResults, mode = "detailed") {
       if (n && state?.project.id === pid) {
         state.project.locked = true;
         if (location.hash.startsWith(`#/project/${pid}/`)) route();
+        prepareTabs(pid, section);
       }
     } else jobDone(job, "failed", `Failed: ${why}`);
   } finally {
@@ -3149,34 +3153,206 @@ function v3dSlot(name) {
     <div class="v3d-slot" data-element="${esc(name)}"></div></details>`;
 }
 
-async function sectionGeometry() {
-  // Cached per section; a new workbook upload clears it.
-  if (state.geometry?.section !== sec().id) {
-    let data = null;
-    try {
-      data = await api(`${secUrl()}/geometry`);
-    } catch {
-      /* no workbook yet */
-    }
-    state.geometry = { section: sec().id, data };
+// ---------------------------------------------------------------- tab data
+// What a tab loaded is kept in the page per section and shown again at once when you come back, as
+// long as nothing was written on the server since (the section's stamp: the project, its workbook and
+// its results). The server keeps the slow ones too (3D, Clashes), so another visit is quick even after
+// a reload. A load already under way (the preparation after a design) is shared, not started again,
+// and while one runs the tab shows a bar with the time spent (and how long it took last time).
+const KEPT = new Map(); // url -> { stamp, data }
+const LOADING = new Map(); // url -> { promise, began, step, fraction }
+
+async function sectionStamp(url) {
+  try {
+    return (await api(`${url}/stamp`)).stamp;
+  } catch {
+    return null;
   }
-  return state.geometry.data;
 }
 
-// The site round the structure (seabed, water, soil, furniture, crane): fetched again after any edit,
-// since the Furniture tab and the section's site settings change it.
-async function sectionSite() {
-  const key = `${sec().id}:${state.edits || 0}`;
-  if (state.site?.key !== key) {
-    let data = null;
-    try {
-      data = await api(`${secUrl()}/site`);
-    } catch {
-      /* no workbook yet */
-    }
-    state.site = { key, data };
+// How long each kind of load took last time on this section, kept in this browser.
+const loadName = (full) => full.replace(/\/api\/projects\/[a-f0-9]+/, "").split("?")[0];
+function lastTime(full) {
+  try {
+    return JSON.parse(localStorage.getItem("triton-load-times") || "{}")[loadName(full)] ?? null;
+  } catch {
+    return null;
   }
-  return state.site.data;
+}
+function keepTime(full, ms) {
+  try {
+    const all = JSON.parse(localStorage.getItem("triton-load-times") || "{}");
+    all[loadName(full)] = ms;
+    localStorage.setItem("triton-load-times", JSON.stringify(all));
+  } catch {
+    /* private window */
+  }
+}
+
+function startLoad(full, stamp, progress) {
+  const run = { began: Date.now(), step: "", fraction: null, stamp };
+  const key = progress ? `view-${Math.random().toString(36).slice(2, 12)}` : null;
+  const poll = key
+    ? setInterval(async () => {
+        try {
+          const p = await api(`${ROOT}/api/progress/${key}`);
+          Object.assign(run, { step: p.step, fraction: p.fraction });
+        } catch {
+          /* not started yet, or done */
+        }
+      }, 1000)
+    : null;
+  const url = key ? `${full}${full.includes("?") ? "&" : "?"}progress=${key}` : full;
+  run.promise = again(() => api(url))
+    .then((data) => {
+      if (stamp) KEPT.set(full, { stamp, data });
+      const took = Date.now() - run.began;
+      if (took > 1500) keepTime(full, took);
+      return data;
+    })
+    .finally(() => {
+      clearInterval(poll);
+      if (LOADING.get(full) === run) LOADING.delete(full);
+    });
+  LOADING.set(full, run);
+  return run;
+}
+
+// A bar with the time spent while a load runs: the server's own step when it says one, else an
+// estimate from last time.
+function loadingCard(box, title, run, full) {
+  box.innerHTML = `<div class="job running loading-card"><div class="job-head"><span class="job-title">${esc(title)}</span>
+    <span class="job-pct"></span></div><div class="bar big"><i></i></div><div class="job-sub"><span></span></div></div>`;
+  const pct = box.querySelector(".job-pct");
+  const bar = box.querySelector(".bar.big i");
+  const sub = box.querySelector(".job-sub span");
+  const last = lastTime(full);
+  const tick = () => {
+    if (!document.body.contains(bar)) return clearInterval(timer);
+    const spent = (Date.now() - run.began) / 1000;
+    const f = run.fraction ?? (last ? Math.min(spent / (last / 1000), 0.95) : null);
+    pct.textContent = f == null ? "" : `${Math.round(f * 100)}%`;
+    bar.style.width = `${f == null ? 100 : Math.max(f * 100, 2)}%`;
+    const took = (s) => (s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
+    sub.textContent = [run.step || "Working", took(spent), last ? `about ${took(last / 1000)} last time` : ""].filter(Boolean).join(" · ");
+  };
+  const timer = setInterval(tick, 500);
+  tick();
+  return { stop: () => clearInterval(timer) };
+}
+
+// A tab's data from ``path`` under the section's URL: kept in the page (``keep``) while the section's
+// stamp stays the same; ``box`` shows the progress meanwhile; ``progress`` asks the server for its steps.
+async function tabData(path, { box = null, title = "Loading", keep = true, progress = false, url = secUrl() } = {}) {
+  const full = `${url}/${path}`;
+  if (state?.dirty) await save(); // what was just typed counts
+  else if (saving) await saving;
+  const stamp = keep ? await sectionStamp(url) : null;
+  const kept = KEPT.get(full);
+  // A copy each time: tabs change what they are given.
+  if (stamp && kept?.stamp === stamp) return structuredClone(kept.data);
+  let run = LOADING.get(full);
+  if (!run || (stamp && run.stamp && run.stamp !== stamp)) run = startLoad(full, stamp, progress);
+  // The bar only when it takes a moment, so a quick answer does not flash it.
+  const quick = await Promise.race([run.promise.then(() => true, () => true), new Promise((r) => setTimeout(() => r(false), 150))]);
+  const card = !quick && box?.isConnected ? loadingCard(box, title, run, full) : null;
+  try {
+    return structuredClone(await run.promise);
+  } finally {
+    card?.stop();
+  }
+}
+
+// Several of the section's loads under one bar in ``box``, named ``name`` for the time kept.
+async function tabLoads(box, title, name, loads) {
+  const run = { began: Date.now(), step: "", fraction: null };
+  const left = new Map(Object.entries(loads).map(([k, [label]]) => [k, label]));
+  const done = {};
+  const all = Object.entries(loads).map(async ([k, [, fn]]) => {
+    try {
+      done[k] = await fn();
+    } catch {
+      done[k] = null;
+    }
+    left.delete(k);
+    run.fraction = left.size ? 1 - left.size / Object.keys(loads).length : 1;
+    run.step = left.size ? `Waiting for ${[...left.values()].join(", ")}` : "";
+  });
+  run.step = `Waiting for ${[...left.values()].join(", ")}`;
+  const cached = await Promise.race([Promise.all(all).then(() => true), new Promise((r) => setTimeout(() => r(false), 150))]);
+  const card = cached || !box?.isConnected ? null : loadingCard(box, title, run, name);
+  await Promise.all(all);
+  card?.stop();
+  if (!cached && Date.now() - run.began > 1500) keepTime(name, Date.now() - run.began);
+  return done;
+}
+
+async function sectionGeometry(box) {
+  try {
+    return await tabData("geometry", { box, title: "Loading the elements" });
+  } catch {
+    return null; // no workbook yet
+  }
+}
+
+// The site round the structure (seabed, water, soil, furniture, crane): its switches and the Furniture
+// tab change it, and so the stamp.
+async function sectionSite(box) {
+  try {
+    return await tabData("site", { box, title: "Loading the seabed, water, soil and furniture" });
+  } catch {
+    return null; // no workbook yet
+  }
+}
+
+// After a design: the 3D view's and the Clashes tab's data worked out and fetched while you carry on,
+// so those tabs open at once. Shown as a job in the dock; a new design starts it again.
+const PRELOAD_TIPS = { view3d: "3D view", clashes: "Clashes" };
+async function prepareTabs(pid, section) {
+  if (state?.project.id !== pid) return;
+  const url = `${ROOT}/api/projects/${pid}/sections/${section.id}`;
+  for (const old of JOBS.filter((j) => j.slot === `prepare-${section.id}` && j.state === "running")) old.stopped = true;
+  const deformedCombo = View3D.prefs?.defCombo;
+  const loads = [
+    { tab: "view3d", label: "3D view: elements", path: "geometry" },
+    { tab: "view3d", label: "3D view: results", path: "design" },
+    { tab: "view3d", label: "3D view: seabed, water, furniture", path: "site" },
+    ...(deformedCombo ? [{ tab: "view3d", label: "3D view: deformed shape", path: `deformed?combination=${encodeURIComponent(deformedCombo)}` }] : []),
+    { tab: "clashes", label: "Clashes", path: "clashes", progress: true },
+  ];
+  const job = newJob({
+    kind: "prepare",
+    title: `Preparing 3D and Clashes: ${section.name}`,
+    slot: `prepare-${section.id}`,
+    home: `#/project/${pid}/clashes/${section.id}`,
+    steps: loads.map((l) => ({ label: l.label, state: "waiting" })),
+  });
+  job.stop = () => {
+    job.stopped = true;
+  };
+  for (const [i, l] of loads.entries()) {
+    const s = job.steps[i];
+    if (job.stopped) break;
+    s.state = "running";
+    drawJobs();
+    const full = `${url}/${l.path}`;
+    const watch = setInterval(() => {
+      const run = LOADING.get(full);
+      if (run?.fraction != null) s.fraction = run.fraction;
+      if (run?.step) s.detail = `${l.label}: ${run.step}`;
+    }, 1000);
+    try {
+      await tabData(l.path, { url, progress: l.progress });
+      Object.assign(s, { state: "done", fraction: 1, note: "Ready" });
+    } catch (e) {
+      Object.assign(s, { state: "done", fraction: 1, note: e.status === 409 ? "Not needed" : "Opens when you go there" });
+    } finally {
+      clearInterval(watch);
+    }
+  }
+  if (job.stopped) jobDone(job, "stopped", "Stopped. The tabs load when you open them.");
+  else jobDone(job, "done", `${[...new Set(loads.map((l) => PRELOAD_TIPS[l.tab]))].join(" and ")} ready.`);
+  setTimeout(() => dismissJob(job), 8000);
 }
 
 // A switch flipped in a 3D view is kept on the section (never a design input, so open while locked).
@@ -3636,23 +3812,24 @@ async function renderCostingTab(host) {
 async function renderView3dTab(host) {
   host.innerHTML = `<div class="v3d-layout"><div><div class="panel" id="v3d-main"></div></div>
     <div class="panel v3d-side" id="v3d-side"><p class="status">Loading…</p></div></div>`;
-  const geo = await sectionGeometry();
+  const main = document.getElementById("v3d-main");
+  const got = await tabLoads(main, "Loading the 3D view", `${secUrl()}/3d-tab`, {
+    geo: ["the elements", () => sectionGeometry()],
+    res: ["the results", () => tabData("design")],
+    site: ["the seabed, water and furniture", () => sectionSite()],
+  });
+  if (!main.isConnected) return; // another tab opened meanwhile
+  const { geo, res, site } = got;
   if (!geo) {
     document.getElementById("v3d-main").innerHTML = '<p class="status">Upload this section\'s workbook on the Workbook tab first.</p>';
     document.getElementById("v3d-side").innerHTML = "";
     return;
   }
-  let res = null;
-  try {
-    res = await api(`${secUrl()}/design`);
-  } catch {
-    /* not designed yet */
-  }
-  const site = await sectionSite();
+  document.getElementById("v3d-main").innerHTML = "";
   const view = new View3D(document.getElementById("v3d-main"), {
     height: 560,
     onSite: saveSite,
-    deformed: (combo) => api(`${secUrl()}/deformed?combination=${encodeURIComponent(combo || "")}`),
+    deformed: (combo) => tabData(`deformed?combination=${encodeURIComponent(combo || "")}`),
   });
   const bands = resultBands(res);
   const tension = resultTension(res);

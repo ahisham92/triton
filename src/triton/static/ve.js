@@ -9,11 +9,11 @@ export async function renderValueEngineering(host, h) {
   host.innerHTML = `<p class="sub">Ideas to bring the cost down (or check that a heavier option pays), each designed with the whole section and
       costed per metre of berth against the section as set. Tick ideas, add them on their own or as a mix, then design and cost them.
       Nothing here changes your design. Prices and the berth length are on the Project and <a href="${h.costingHash}">Costing</a> tabs.</p>
-    <div id="ve-out"><p class="status">Loading…</p></div>`;
+    <div id="ve-out"></div>`;
   const out = host.querySelector("#ve-out");
   let data;
   try {
-    data = await api(`${secUrl()}/value-engineering`);
+    data = h.tabData ? await h.tabData("value-engineering", { box: out, title: "Loading the value engineering ideas", keep: false }) : await api(`${secUrl()}/value-engineering`);
   } catch (e) {
     out.innerHTML = `<p class="status">${esc(e.message)}</p>`;
     return;
