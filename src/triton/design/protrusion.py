@@ -9,7 +9,11 @@ Loads (ULS, per block): the fender's rated reaction R × its load factor, pressi
 beam at the fender centre z below the cope; the panel's friction μR at the block's sea face, down,
 up or along the quay; the panel weight (× the fender load factor) at the sea face; the block's own
 weight (γG 1.35, or 1.0 where it helps) at a/2. A case without the reaction (self weight and panel
-only) is checked too, since friction comes only with the reaction.
+only) is checked too, since friction comes only with the reaction. With a bollard on the block (as on
+drawing SC-502-1) its pull F = factor × capacity × g is checked on its own (mooring, not with
+berthing): off the quay level (the joint in tension, the top pulled open by F at the line height
+above the cope), off the quay at the steepest line angle (with its uplift) and along the quay. A
+joint pulled open has no cohesion and σn < 0 (6.2.5(1)); dowels are added across it until it passes.
 
 Section at the joint (EN 1992-1-1 6.1, the rectangular section of ``rect``): b = L, h = the joined
 depth, under N = R (compression), Mv = −(ΣV·lever) − R·(z − h/2) about the joint's centre (the
@@ -54,7 +58,7 @@ from typing import Any
 
 import numpy as np
 
-from ..furniture_inputs import Fenders
+from ..furniture_inputs import Bollards, Fenders
 from ..materials import concrete
 from ..protrusion_inputs import FenderProtrusion, StsCrane
 from .rect import Bars, RectSection, rect_laws
@@ -93,9 +97,14 @@ def _flange_below(fenders: Fenders | None, z: float, level: float) -> tuple[floa
     return float(part / total), cz
 
 
-def cases(p: FenderProtrusion, fenders: Fenders | None) -> tuple[list[dict[str, float]], float]:
-    """ULS loads on one block (kN, m): vertical loads down (+) with their levers from the beam face,
-    along-the-quay friction, and the reaction."""
+def cases(
+    p: FenderProtrusion, fenders: Fenders | None, bollards: Bollards | None = None
+) -> tuple[list[dict[str, float]], float]:
+    """ULS loads on one block (kN, m). R: the fender reaction pressing the block on; W: its weight at
+    a/2; P: panel weight and friction down at the sea face; H: friction along the quay at the sea
+    face. With a bollard on the block: Bh its pull off the quay, Bu its uplift and Ba its pull along
+    the quay, at eb from the beam face and the line height above the cope (berthing and mooring are
+    not taken together)."""
     a = p.projection / 1000
     w = p.density * a * p.depth / 1000 * p.length / 1000
     r = fenders.load_factor * fenders.reaction if fenders else 0.0
@@ -107,10 +116,28 @@ def cases(p: FenderProtrusion, fenders: Fenders | None) -> tuple[list[dict[str, 
         {"case": "Friction along the quay", "R": r, "W": GAMMA_G * w, "P": wp, "H": fr},
         {"case": "No reaction (own weight)", "R": 0.0, "W": GAMMA_G * w, "P": wp, "H": 0.0},
     ]
+    if p.bollard_on_block and bollards is not None:
+        f = bollards.load_factor * bollards.capacity * 9.81
+        steep = math.radians(bollards.max_vertical_angle)
+        out += [
+            {"case": "Bollard pull off the quay", "W": GAMMA_G * w, "Bh": f},
+            {
+                "case": f"Bollard pull off the quay at {bollards.max_vertical_angle:g}°",
+                "W": GAMMA_G_FAV * w,
+                "Bh": f * math.cos(steep),
+                "Bu": f * math.sin(steep),
+            },
+            {"case": "Bollard pull along the quay", "W": GAMMA_G * w, "Ba": f},
+        ]
+    eb = max(a - bollards.centre_from_face, 0.0) if bollards else 0.0
+    lh = bollards.line_height if bollards else 0.0
     for c in out:
-        c["V"] = c["W"] + c["P"]
-        # Moment of the vertical loads about the beam face (kNm), the block's weight at a/2, the panel at a.
-        c["Mv_face"] = c["W"] * a / 2 + c["P"] * a
+        for k in ("R", "P", "H", "Bh", "Bu", "Ba"):
+            c.setdefault(k, 0.0)
+        c["eb"], c["lh"] = eb, lh
+        c["V"] = c["W"] + c["P"] - c["Bu"]
+        # Moment of the vertical loads about the beam face (kNm): weight at a/2, panel at a, uplift at eb.
+        c["Mv_face"] = c["W"] * a / 2 + c["P"] * a - c["Bu"] * eb
     return out, w
 
 
@@ -124,8 +151,10 @@ def block(
     gamma_c: float = 1.5,
     gamma_s: float = 1.15,
     alpha_cc: float = 1.0,
+    bollards: Bollards | None = None,
 ) -> dict[str, Any]:
-    """Design of one fender block and its joint to the front beam (all mm, kN)."""
+    """Design of one fender block and its joint to the front beam (all mm, kN). ``bollards``: the
+    project's bollard, pulling on the block when ``p.bollard_on_block``."""
     grade = p.concrete or beam_concrete
     conc = concrete(grade)
     fcd = alpha_cc * conc.fck / gamma_c
@@ -135,7 +164,7 @@ def block(
     a, D, L = p.projection, p.depth, p.length
     h = min(D, beam_depth)  # joined depth
     z = (p.fender_centre_below_cope * 1000) if p.fender_centre_below_cope else D / 2
-    loads, w_block = cases(p, fenders)
+    loads, w_block = cases(p, fenders, bollards)
     notes: list[str] = []
     if fenders is None:
         notes.append("No fenders in the Furniture items: the block carries only its own weight.")
@@ -162,10 +191,11 @@ def block(
             groups.append(Bars(g.u, g.v + (v_top + v_bot) / 2, g.area))
         return RectSection(float(L), float(h), Bars.join(*groups), *laws, strips=100)
 
-    N = np.array([c["R"] for c in loads])
+    N = np.array([c["R"] - c["Bh"] for c in loads])
     lever_R = (z - h / 2) / 1000  # m, below the joint's centre
-    Mv = np.array([-(c["Mv_face"]) - c["R"] * lever_R for c in loads])
-    Mh = np.array([c["H"] * a / 1000 for c in loads])
+    # The bollard's pull off the quay acts at the line height above the cope: the top in tension.
+    Mv = np.array([-(c["Mv_face"]) - c["R"] * lever_R - c["Bh"] * (h / 2000 + c["lh"]) for c in loads])
+    Mh = np.array([c["H"] * a / 1000 + c["Ba"] * c["eb"] for c in loads])
     V = np.array([c["V"] for c in loads])
 
     # Annex J.3 tie (the worst downward case), z0 = 0.8d.
@@ -233,36 +263,46 @@ def block(
     crossing = sec.bars.total
     c_coef, mu = JOINTS[p.joint]
     joint = None
+    dowels = 0
     if c_coef is not None:
         area = L * h
         fctd = 1.0 * 0.7 * conc.fctm / gamma_c
         ip = L * h * (L * L + h * h) / 12
         r_max = math.hypot(L, h) / 2
         load_factor = fenders.load_factor if fenders else 1.0
-        rows = []
-        for c in loads:
-            twist = c["H"] * 1e3 * (z - h / 2)  # Nmm: along friction about the joint centre
-            v_ed = math.hypot(c["V"], c["H"]) * 1e3 / area + abs(twist) * r_max / ip
-            sig_n = min(c["R"] / load_factor * 1e3 / area, 0.6 * fcd)
-            rho = crossing / area
-            v_rd = min(0.5 * c_coef * fctd + mu * sig_n + rho * fyd * mu, 0.5 * nu * fcd)
-            rows.append({"case": c["case"], "v_Edi": v_ed, "v_Rdi": v_rd, "sigma_n": sig_n})
-        jw = max(rows, key=lambda r: r["v_Edi"] / r["v_Rdi"])
-        u_joint = jw["v_Edi"] / jw["v_Rdi"]
-        # Extra dowels if the section's bars are not enough.
-        need_rho = max(
-            0.0,
-            (jw["v_Edi"] - 0.5 * c_coef * fctd - mu * jw["sigma_n"]) / (fyd * mu),
-        )
-        extra = max(0.0, need_rho * area - crossing)
-        dowels = math.ceil(extra / _bar(phs)) if extra > 0 else 0
+
+        def joint_rows(crossing_mm2: float) -> list[dict[str, Any]]:
+            rows = []
+            for c in loads:
+                # Nmm: along friction at the fender centre, the bollard's pull along at its line height.
+                twist = c["H"] * 1e3 * (z - h / 2) + c["Ba"] * 1e3 * (h / 2 + c["lh"] * 1000)
+                along = c["H"] + c["Ba"]
+                v_ed = math.hypot(c["V"], along) * 1e3 / area + abs(twist) * r_max / ip
+                if c["Bh"] > 0:
+                    # The joint pulled open: tension across it (σn < 0) and no cohesion (6.2.5(1)).
+                    sig_n, c_eff = -c["Bh"] * 1e3 / area, 0.0
+                else:
+                    sig_n, c_eff = min(c["R"] / load_factor * 1e3 / area, 0.6 * fcd), 0.5 * c_coef
+                rho = crossing_mm2 / area
+                v_rd = max(min(c_eff * fctd + mu * sig_n + rho * fyd * mu, 0.5 * nu * fcd), 1e-6)
+                rows.append({"case": c["case"], "v_Edi": v_ed, "v_Rdi": v_rd, "sigma_n": sig_n, "c": c_eff})
+            return rows
+
+        # Dowels (the side bar size) across the joint, added until it passes.
+        while True:
+            rows = joint_rows(crossing + dowels * _bar(phs))
+            jw = max(rows, key=lambda r: r["v_Edi"] / r["v_Rdi"])
+            u_joint = jw["v_Edi"] / jw["v_Rdi"]
+            if u_joint <= 1.0 or dowels >= 400:
+                break
+            dowels += 1
         joint = {
             "surface": p.joint,
             "c": c_coef,
-            "c_used": 0.5 * c_coef,
+            "c_used": jw["c"],
             "mu": mu,
             "area_m2": round(area / 1e6, 3),
-            "crossing_mm2": round(crossing),
+            "crossing_mm2": round(crossing + dowels * _bar(phs)),
             "governing_case": jw["case"],
             "v_Edi_MPa": round(jw["v_Edi"], 3),
             "v_Rdi_MPa": round(jw["v_Rdi"], 3),
@@ -272,9 +312,9 @@ def block(
             "extra_dowels": f"{dowels} Ø{phs}" if dowels else "",
             "clause": "EN 1992-1-1 6.2.5 (c halved for the dynamic load, 6.2.5(5))",
         }
-        if dowels and u_joint > 1.0:
+        if u_joint > 1.0:
             notes.append(
-                f"The joint needs {dowels} more Ø{phs} dowels across it (or an indented surface, or cast with the beam)."
+                "The joint cannot pass on dowels alone (6.2.5 upper limit): an indented surface, or cast with the beam."
             )
 
     # --- Downstand below the beam's soffit.
@@ -332,6 +372,8 @@ def block(
             c["W"] * (B / 2 + a / 2) / 1000
             + c["P"] * (B / 2 + a) / 1000
             + c["R"] * (z - beam_depth / 2) / 1000
+            + c["Bh"] * (beam_depth / 2000 + c["lh"])
+            - c["Bu"] * (B / 2000 + c["eb"])
         )
         tors.append(t)
     t_ed = max(abs(t) for t in tors)
@@ -364,6 +406,7 @@ def block(
         + n_bot * _bar(phs) * (a - cover + LAP * phs)
         + 2 * n_side * _bar(phs) * (a - cover + LAP * phs)
         + link_sets * legs * _bar(phl) * 2 * (h + a)
+        + dowels * _bar(phs) * 2 * LAP * phs
         + 2 * (a * D + a * L + D * L) / 1e6 * (as_face * 2)  # face mesh both ways on every face, per m²
     )
     kg = steel_mm3 / 1e9 * STEEL_KG_M3
@@ -395,6 +438,7 @@ def block(
             "R_Ed_kN": round(loads[0]["R"], 1),
             "friction_kN": round(fenders.friction * loads[0]["R"], 1) if fenders else 0.0,
             "block_weight_kN": round(w_block, 1),
+            "bollard_pull_kN": round(max((c["Bh"] + c["Ba"] for c in loads), default=0.0), 1),
             "fender_centre_below_cope_m": round(z / 1000, 3),
         },
         "geometry": {
@@ -433,6 +477,7 @@ def block(
             "bottom": f"{n_bot} Ø{phs}",
             "sides": f"{n_side} Ø{phs} each side" if n_side else "none",
             "links": f"{link_sets} sets of {legs}-leg Ø{phl} ({link_rule})",
+            "dowels": f"{dowels} Ø{phs} across the joint, {LAP}Ø each side" if dowels else "none",
             "face_mesh": f"Ø{phf} at {s_face} mm both ways on every face ({as_face:.0f} mm²/m, EN 1992-1-1 7.3.2)",
         },
         "quantities": {

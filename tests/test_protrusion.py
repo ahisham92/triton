@@ -21,7 +21,7 @@ def block(**kw):
 
 def test_the_loads_on_the_block_by_hand():
     r = block()
-    w = 25 * 1.5 * 2.5 * 2.5
+    w = 25 * 1.5 * 2.5 * 3.0
     assert r["loads"]["block_weight_kN"] == pytest.approx(w, abs=0.1)
     down = next(c for c in r["load_cases"] if c["case"] == "Friction down")
     # 1.35 W at a/2, 0.3 × 1.5 × 1100 at a, and the reaction 0.25 m below the joint's centre.
@@ -38,9 +38,7 @@ def test_the_short_cantilever_tie_and_the_bars_carry_it():
     r = block()
     s = r["section"]
     # Ftd = V·ac / z0 for the worst downward case.
-    assert s["tie_Ftd_kN"] == pytest.approx(
-        (1.35 * 234.375 + 495) * s["ac_m"] / (s["z0_mm"] / 1000), rel=2e-3
-    )
+    assert s["tie_Ftd_kN"] == pytest.approx((1.35 * 281.25 + 495) * s["ac_m"] / (s["z0_mm"] / 1000), rel=2e-3)
     assert r["bars"]["top_As_mm2"] >= s["tie_As_mm2"]
     assert "U-bars" in r["bars"]["top_ties"]
 
@@ -99,8 +97,8 @@ def test_the_furniture_designs_the_blocks_and_checks_the_crane():
     lay = res["layout"]
     assert lay["counts"]["fender_blocks"] == lay["counts"]["fenders"]
     for it in lay["items"]["fenders"]:
-        assert it["to_m"] - it["from_m"] == pytest.approx(2.5)
-        assert all(abs(it["s_m"] - j) >= 1.25 + 1.0 - 0.01 for j in lay["joints_m"])
+        assert it["to_m"] - it["from_m"] == pytest.approx(3.0)
+        assert all(abs(it["s_m"] - j) >= 1.5 + 1.0 - 0.01 for j in lay["joints_m"])
     # The front rail from the arrangement (over the 2 m beam's centre).
     sts = next(i for i in res["items"] if i["item"] == "sts_clearance")
     assert sts["standoff"]["rail_from_face_m"] == pytest.approx(1.0)
@@ -147,3 +145,28 @@ def test_the_ship_and_panel_come_from_the_design_report():
     assert old.ship_beam == 43.2 and old.panel_thickness == 0.25
     mine = StsCrane.model_validate({"ship_beam": 61.5, "panel_thickness": 0.4})
     assert mine.ship_beam == 61.5 and mine.panel_thickness == 0.4
+
+
+def test_a_bollard_on_the_block_pulls_the_joint_open():
+    from triton.furniture_inputs import Bollards
+
+    plain = block()
+    moored = P.block(FenderProtrusion(), Fenders(), 4500, 2000, "C40/50", 50, bollards=Bollards())
+    f = 1.5 * 150 * 9.81
+    off = next(c for c in moored["load_cases"] if c["case"] == "Bollard pull off the quay")
+    assert off["N_kN"] == pytest.approx(-f, abs=0.1)
+    # The pull 0.35 m above the cope, 1.35 m above the 2 m joint's centre, and the block's weight.
+    assert off["Mv_kNm"] == pytest.approx(-(1.35 * 25 * 1.5 * 2.5 * 3.0 * 0.75) - f * 1.35, abs=0.5)
+    assert moored["bars"]["top_As_mm2"] > plain["bars"]["top_As_mm2"]
+    assert moored["passed"] and moored["joint"]["passed"]
+    assert moored["loads"]["bollard_pull_kN"] == pytest.approx(f, abs=0.1)
+    # Without the bollard on the block, the mooring cases go.
+    off_block = P.block(
+        FenderProtrusion(bollard_on_block=False), Fenders(), 4500, 2000, "C40/50", 50, bollards=Bollards()
+    )
+    assert not any("Bollard" in c["case"] for c in off_block["load_cases"])
+
+
+def test_the_block_follows_drawing_sc502():
+    p = FenderProtrusion()
+    assert (p.projection, p.depth, p.length, p.bollard_on_block) == (1500, 2500, 3000, True)
