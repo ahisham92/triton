@@ -16,9 +16,9 @@ Triton works out every line here, so the AutoCAD file and the Revit code only co
   family placed at ``at`` with its ``params`` set). ``dim`` and ``family`` carry ``fallback``: the
   same thing as plain items, drawn by AutoCAD, and by Revit when the family or dimension cannot be made.
 
-Slab plans are one per face and direction (bottom and top, M11 bars along X and M22 along Y): the mesh is in the caption only
-(drawn by hand to suit the plan), the additional bars of each zone are the office's RFT_ADD family (bars
-along X and along Y) with L, spacing, diameter and distribution length set.
+Slab plans are one per face and direction (bottom and top, M11 bars along X and M22 along Y): the
+mesh is in the caption only (drawn by hand to suit the plan), the additional bars of each zone are the
+office's RFT_ADD family (bars along X and along Y) with L, spacing, diameter and distribution length set.
 """
 
 from __future__ import annotations
