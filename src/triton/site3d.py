@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import furniture
 from .project import CombiWallInput, Project, Section, SheetPileInput, SlabInput
 
 SEA = 20.0  # m of sea bed drawn in front of the wall
@@ -189,7 +190,7 @@ def _furniture(
     s1: float,
     water: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
-    f = project.furniture
+    f = furniture.for_section(project.furniture, section.furniture)
     if not result or not result.get("use", True) or not result.get("layout"):
         return [], [], None
     lay = result["layout"]

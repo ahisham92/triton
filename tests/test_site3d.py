@@ -142,3 +142,15 @@ def test_the_deformed_shape_of_every_pile_by_combination(tmp_path, monkeypatch):
     after = client.get(f"{url}/deformed").json()
     assert after["combinations"] == ["QP"] and any("movement after PT-B-Apron" in n for n in after["notes"])
     assert after["max_mm"] == pytest.approx(2 * own["max_mm"], rel=1e-3)  # QP − 3 × QP
+
+
+def test_a_section_without_sts_cranes_draws_none(api):
+    client, pid, base = api
+    page = client.get(f"/api/projects/{pid}").json()
+    page["sections"][0]["furniture"]["sts_crane"] = False
+    page["sections"][0]["furniture"]["protrusion"] = True
+    r = client.put(f"/api/projects/{pid}", json=page)  # open while locked: never a design input
+    assert r.status_code == 200, r.text
+    out = client.get(base + "/site").json()
+    assert out["crane"] is None
+    assert any(i["kind"] == "fender_blocks" for i in out["furniture"])

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import math
 import zipfile
 
 import pytest
@@ -75,27 +76,66 @@ def test_a_heavier_fender_needs_more_ties():
 
 
 def test_the_crane_stand_off_by_hand():
-    c = P.clearance(StsCrane(), HAND, FenderProtrusion(), 2.25)
+    c = P.clearance(StsCrane(), HAND, FenderProtrusion(), 2.25, cope=3.5)
     assert c["standoff"]["free_m"] == pytest.approx(1.5 + 1.0 + 0.25)
     assert c["standoff"]["compressed_m"] == pytest.approx(1.5 + 0.28 + 0.25)
     assert c["reach"]["needed_m"] == pytest.approx(2.25 + 2.75 + 43.2 - 1.5)
-    assert c["legs"]["clearance_m"] == pytest.approx(2.25 - 1.0 + 2.03 - 2.0)
+    # The flare from the ship: deck edge at 0.945 + 19.12 - 12.75, fender contact 1.25 m below the 3.5 cope.
+    h = 0.945 + 19.12 - 12.75 - (3.5 - 1.25)
+    flare = h * (math.tan(math.radians(10)) + math.sin(math.radians(3)))
+    assert c["flare"]["overhang_m"] == pytest.approx(flare, abs=1e-3) and c["flare"]["from"] == "the ship"
+    assert c["legs"]["clearance_m"] == pytest.approx(2.25 - 1.0 + 2.03 - flare, abs=1e-3)
     assert c["passed"]
     lo, hi = c["projection_range_m"]
-    assert lo == pytest.approx(3.0 + 1.0 - 2.25 - 0.28 - 0.25) and hi == pytest.approx(
+    assert lo == pytest.approx(flare + 1.0 + 1.0 - 2.25 - 0.28 - 0.25, abs=0.01) and hi == pytest.approx(
         70 - 2.25 - 43.2 + 1.5 - 1.25
     )
     # Without the block the ship's flare reaches the crane's legs: the reason for the protrusion.
-    bare = P.clearance(StsCrane(), HAND, None, 2.25)
+    bare = P.clearance(StsCrane(), Fenders(), None, 2.25)
     assert not bare["passed"] and bare["parts"][1]["passed"] is False
     # Too far out and the crane cannot reach the far row.
     far = P.clearance(StsCrane(), HAND, FenderProtrusion(projection=30000), 2.25)
     assert not far["parts"][0]["passed"] and any("outside the range" in n for n in far["notes"])
 
 
+def test_a_typed_flare_is_used_and_the_old_assumed_one_is_worked_out():
+    typed = P.clearance(StsCrane(flare_overhang=2.5, flare_angle=10), HAND, FenderProtrusion(), 2.25)
+    assert typed["legs"]["flare_m"] == 2.5 and typed["flare"]["from"] == "typed in"
+    # Projects saved with the first assumed 2.0 m take the ship's flare.
+    assert StsCrane.model_validate({"flare_overhang": 2.0}).flare_overhang is None
+    # A higher cope puts the contact line nearer the deck: less flare.
+    low = P.clearance(StsCrane(), HAND, FenderProtrusion(), 2.25, cope=3.5)
+    high = P.clearance(StsCrane(), HAND, FenderProtrusion(), 2.25, cope=5.0)
+    assert high["flare"]["overhang_m"] < low["flare"]["overhang_m"]
+
+
+def test_each_section_ticks_its_own_block_and_crane():
+    from triton.project import Project
+
+    p = project()
+    p.sections[0].furniture.protrusion = True
+    p.sections[0].furniture.sts_crane = False
+    res = F.design(p, p.sections[0], geometry())
+    kinds = [i["item"] for i in res["items"]]
+    assert "fender_blocks" in kinds and "sts_clearance" not in kinds
+    assert not any("STS crane" in a for a in res["assumptions"])
+    # Saved when the ticks were the project's: an unticked one is unticked on every section, sizes kept.
+    old = p.model_dump(mode="json")
+    old["furniture"]["protrusion"] = None
+    old["furniture"]["sts_crane"] = None
+    for s in old["sections"]:
+        s["furniture"].pop("protrusion")
+        s["furniture"].pop("sts_crane")
+    back = Project.model_validate(old)
+    assert back.furniture.protrusion.projection == 1500 and back.furniture.sts_crane.outreach == 70
+    assert all(not s.furniture.protrusion and not s.furniture.sts_crane for s in back.sections)
+    fresh = Project()
+    assert fresh.sections[0].furniture.protrusion and fresh.sections[0].furniture.sts_crane
+
+
 def test_the_furniture_designs_the_blocks_and_checks_the_crane():
     p = project()
-    p.furniture.protrusion = FenderProtrusion()
+    p.sections[0].furniture.protrusion = True
     res = F.design(p, p.sections[0], geometry())
     kinds = [i["item"] for i in res["items"]]
     assert "fender_blocks" in kinds and "sts_clearance" in kinds
@@ -105,15 +145,15 @@ def test_the_furniture_designs_the_blocks_and_checks_the_crane():
     lay = res["layout"]
     assert lay["counts"]["fender_blocks"] == lay["counts"]["fenders"]
     for it in lay["items"]["fenders"]:
-        assert it["to_m"] - it["from_m"] == pytest.approx(3.0)
+        assert it["status"] != "clash"  # the bolts clear the king piles; the block only keeps off the joints
         assert all(abs(it["s_m"] - j) >= 1.5 + 1.0 - 0.01 for j in lay["joints_m"])
     # The front rail from the arrangement (over the 2 m beam's centre).
     sts = next(i for i in res["items"] if i["item"] == "sts_clearance")
     assert sts["standoff"]["rail_from_face_m"] == pytest.approx(1.0)
     assert furniture_report.plan_png(res).startswith(b"\x89PNG")
-    # No STS crane, no block: neither item.
-    p.furniture.protrusion = None
-    p.furniture.sts_crane = None
+    # A section without STS cranes or blocks: neither item.
+    p.sections[0].furniture.protrusion = False
+    p.sections[0].furniture.sts_crane = False
     kinds = [i["item"] for i in F.design(p, p.sections[0], geometry())["items"]]
     assert "fender_blocks" not in kinds and "sts_clearance" not in kinds
 
@@ -121,8 +161,8 @@ def test_the_furniture_designs_the_blocks_and_checks_the_crane():
 def test_the_calculation_carries_the_block(api):  # noqa: F811
     client, pid, base = api
     page = client.get(f"/api/projects/{pid}").json()
-    assert page["furniture"]["protrusion"] is None and page["furniture"]["sts_crane"]["outreach"] == 70
-    page["furniture"]["protrusion"] = FenderProtrusion().model_dump(mode="json")
+    assert page["furniture"]["sts_crane"]["outreach"] == 70
+    page["sections"][0]["furniture"]["protrusion"] = True
     assert client.put(f"/api/projects/{pid}", json=page).status_code == 200
     out = client.get(base + "/furniture").json()
     assert any(i["item"] == "fender_blocks" for i in out["items"]) and out["protrusion"]["projection"] == 1500
@@ -136,7 +176,7 @@ def test_the_calculation_carries_the_block(api):  # noqa: F811
 
 def test_the_drawings_show_the_block():
     p = project()
-    p.furniture.protrusion = FenderProtrusion()
+    p.sections[0].furniture.protrusion = True
     res = F.design(p, p.sections[0], geometry())
     views = furniture_report.views(res)
     assert views[1]["name"] == "Fender protrusion"
@@ -178,3 +218,11 @@ def test_a_bollard_on_the_block_pulls_the_joint_open():
 def test_the_block_follows_drawing_sc502():
     p = FenderProtrusion()
     assert (p.projection, p.depth, p.length, p.bollard_on_block) == (1500, 2500, 3000, True)
+
+
+def test_a_new_project_has_the_block_and_says_so_when_it_is_removed():
+    from triton.project import Project
+
+    assert Project().sections[0].furniture.protrusion
+    c = P.clearance(StsCrane(), Fenders(), None, 2.25)
+    assert not c["passed"] and "tick" in c["notes"][0]
