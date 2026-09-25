@@ -112,12 +112,16 @@ def curtail(
     qp: pd.DataFrame | None = None,
     head_may_fail: bool = False,
     head_couplers: bool = False,
+    max_cages: int | None = None,
+    length_step: float = LENGTH_STEP,
 ) -> dict:
     """Runs from the head down, the head one with ``top_cage``.
 
     ``head_may_fail``: the head cage is taken as it is where it does not carry the loads (a cage set
     by the user, or the strongest there is), and the zones below are still designed.
     ``head_couplers``: the head cage is spliced with couplers, whatever the project's splices.
+    ``max_cages`` and ``length_step`` (m): fewer cages and coarser run lengths, for a quicker search
+    (Standard design).
     """
     pr = settings.piles
     # The design may run up to a face inside the slab (see ``design_top``); the bars run on into the
@@ -144,12 +148,25 @@ def curtail(
         band_util[c] = (strength, crack)
         ok[c] = np.concatenate([[0], np.cumsum(worst > 1.0 + 1e-9)])  # failing bands before each index
     cages = _prune(cages, ok)
+    if max_cages is not None and len(cages) > max_cages:
+        cages = _spread(cages, top_cage, max_cages)
 
     def fits(c: Arrangement, p: int, e: int) -> bool:
         return (head_may_fail and p == 0 and c == top_cage) or ok[c][e] - ok[c][p] == 0
 
     coupled = {top_cage} if head_couplers else set()
-    runs = _search(pr, settings, cages, fits, n_bands, head, ac, coupled=coupled, into_slab=into_slab)
+    runs = _search(
+        pr,
+        settings,
+        cages,
+        fits,
+        n_bands,
+        head,
+        ac,
+        coupled=coupled,
+        into_slab=into_slab,
+        length_step=length_step,
+    )
     unified = _search(
         pr, settings, [top_cage], fits, n_bands, head, ac, least=True, coupled=coupled, into_slab=into_slab
     )
@@ -189,6 +206,16 @@ def curtail(
     }
 
 
+def _spread(cages: list[Arrangement], top_cage: Arrangement, n: int) -> list[Arrangement]:
+    """At most ``n`` cages, the head cage among them, spread evenly over the steel areas (lightest
+    first): fewer steps down the pile, found much sooner (Standard design)."""
+    rest = sorted((c for c in cages if c != top_cage), key=lambda a: (a.area, a.rows))
+    if len(rest) >= n:
+        picks = np.linspace(0, len(rest) - 1, n - 1).round().astype(int)
+        rest = [rest[i] for i in sorted(set(picks.tolist()))]
+    return rest + ([top_cage] if top_cage in cages else [])
+
+
 def _prune(cages: list[Arrangement], ok: dict) -> list[Arrangement]:
     """Drop cages that are heavier than another cage that works everywhere they do."""
     keep = []
@@ -209,12 +236,22 @@ def _prune(cages: list[Arrangement], ok: dict) -> list[Arrangement]:
 
 
 def _search(
-    pr, settings, cages, fits, n_bands, head, ac, least=False, coupled=frozenset(), into_slab=0.0
+    pr,
+    settings,
+    cages,
+    fits,
+    n_bands,
+    head,
+    ac,
+    least=False,
+    coupled=frozenset(),
+    into_slab=0.0,
+    length_step=LENGTH_STEP,
 ) -> list[Run] | None:
     """Best sequence of runs from the head (index 0) to the toe (index n_bands)."""
     standard_mode = pr.curtailment == "standard_lengths" and not least
     min_q = max(1, round(pr.min_zone_length / STEP))
-    q_step = round(LENGTH_STEP / STEP)
+    q_step = round(length_step / STEP)
     max_len = pr.max_bar_length
     lap_limit = MAX_RATIO_AT_LAPS * ac * (1 + 1e-9)
     # best[(p, cage)] = (penalty, weight, previous state, run)

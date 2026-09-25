@@ -1622,14 +1622,31 @@ def design_slab_meshes(
     pile_sheets: dict[str, dict[str, SheetData]],
     choices: SlabStrips | None = None,
     sign: dict[str, Any] | None = None,
+    standard: bool = False,
 ) -> dict[str, Any]:
     """The slab designed with each mesh spacing of Design settings on its own (150 and 200 mm by
     default): the one picked (``choices.spacing``, else the lighter whose bars are enough) is the slab's
     result,
-    and ``mesh_choice`` gives every spacing's steel so the user can switch."""
+    and ``mesh_choice`` gives every spacing's steel so the user can switch. ``standard``: the quick
+    overview (Standard design), with one spacing only: the one picked, else the first in Design
+    settings."""
     r = settings.reinforcement
     spacings = sorted({float(v) for v in r.slab_spacings})
     args = (sheets, geometry, elements, axes, pile_sheets, choices, sign)
+    if standard and len(spacings) > 1:
+        want = choices.spacing if choices is not None else None
+        if want is None and choices is not None and choices.bars:
+            want = _spacing_of_bars(choices.bars.values(), spacings)
+        first = float(r.slab_spacings[0])
+        sp = next((v for v in spacings if want is not None and abs(v - want) < 1e-6), first)
+        one = settings.model_copy(update={"reinforcement": r.model_copy(update={"slab_spacings": [sp]})})
+        d = design_slab(name, slab, one, *args)
+        others = ", ".join(f"{v:g}" for v in spacings if v != sp)
+        d["notes"].insert(
+            0,
+            f"Meshes at {sp:g} mm only (Standard design; {others} mm is compared in a Detailed design).",
+        )
+        return _with_openings(d, slab, settings, sheets, axes, sign)
     if len(spacings) < 2:
         return _with_openings(design_slab(name, slab, settings, *args), slab, settings, sheets, axes, sign)
     runs = {}

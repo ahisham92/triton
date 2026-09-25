@@ -12,6 +12,7 @@ from typing import Any
 
 from . import clock
 from .alignment import named_parts
+from .design import standard
 from .figures import deflected_shape, slab_bars, slab_stations
 from .materials import STEEL_DENSITY
 from .project import DesignSettings, Project, Section
@@ -136,7 +137,12 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
         )
     _introduction(r, project, section, results, detail)
     _criteria(r, project.design, section, results)
-    _sections(r, section, results)
+    # Elements designed in Standard mode: their overview only, not the bars behind it.
+    full = results
+    results, _ = standard.detailed_only(results, ("piles", "combi_walls", "beams", "slabs"))
+    _standard_overview(r, full)
+    if any(results.get(k) for k in ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls")):
+        _sections(r, section, results)
     _displacements(r, section)
     for a in results.get("approach_slabs", []):
         _approach_summary(r, a)
@@ -362,6 +368,39 @@ def build_matrix_report(project: Project, section: Section, view: dict, designs:
         for w in dk.get("ductility") or []:
             r.note(f"Over-reinforced: {w}")
     return r
+
+
+def _standard_overview(r: Report, res: dict) -> None:
+    """The elements designed in Standard mode: workable or not, utilisation, steel, what fails."""
+    rows, why = [], []
+    for kind in ("piles", "combi_walls", "beams", "slabs"):
+        for e in res.get(kind) or []:
+            if not standard.is_standard(e):
+                continue
+            o = e.get("standard") or standard.summary(kind, e)
+            rows.append(
+                [
+                    e["element"],
+                    "Yes" if o["workable"] else "NO",
+                    _fmt(o["utilisation"]),
+                    o["governs"] or "–",
+                    "–" if o["kg_per_m3"] is None else f"{o['kg_per_m3']:.0f}",
+                    "–" if o["ratio_pct"] is None else f"{o['ratio_pct']:.2f}",
+                ]
+            )
+            why += [f"{e['element']}: {w}" for w in o["why"]]
+    if not rows:
+        return
+    r.h(1, "Standard design (overview)")
+    r.p(
+        "These elements were designed in Standard mode: the same checks and forces as a Detailed design "
+        "(N–M, shear, QP crack widths, punching, the steel tube and casing), giving whether each element "
+        "works, its utilisation and its steel ratio. The steel is an estimate; the bar layout, cages, "
+        "drawings and AdSec files come with a Detailed design."
+    )
+    r.table(["Element", "Workable", "Utilisation", "Governed by", "Steel kg/m³", "Steel %"], rows)
+    if why:
+        r.p("Not workable: " + " ".join(why))
 
 
 CHECK_STATUS = {

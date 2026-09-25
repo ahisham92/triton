@@ -517,6 +517,11 @@ def crack_candidates(qp: pd.DataFrame, z: float, k: int = 8) -> pd.DataFrame:
     return qp.loc[sorted(keep)]
 
 
+def transverse_crack_candidates(qp: pd.DataFrame, z: float, k: int = 8) -> pd.DataFrame:
+    """crack_candidates for the transverse moments per metre (columns N and M)."""
+    return crack_candidates(qp.rename(columns={"M": "Mv"}), z, k).rename(columns={"Mv": "M"})
+
+
 def crack_check(sec, g, cage: Cage, qp: pd.DataFrame, e_eff: float, conc) -> dict[str, dict]:
     """Worst QP crack width at the top and bottom faces over the QP stations."""
     worst: dict[str, dict] = {}
@@ -893,11 +898,14 @@ def design_beam(
     sign: dict[str, Any] | None = None,
     joint_lengths: list[float] | None = None,
     ledge: dict[str, Any] | None = None,
+    standard: bool = False,
 ) -> dict[str, Any]:
     """Choose the beam's longitudinal bars, or check the ones the user set (``user_cage``).
     ``joint_lengths``: the lengths of the berth's segments between expansion joints the beam runs
     through; the restraint crack width is also given for each of them. ``ledge``: the approach
-    slab's ledge on a rear beam, whose load and torque are added (``approach``)."""
+    slab's ledge on a rear beam, whose load and torque are added (``approach``). ``standard``: the
+    quick overview (Standard design): the transverse bars' crack widths from the QP nodes that can
+    give the widest crack only."""
     beam = with_project_grades(beam, settings.materials, settings.durability)
     lay = layout(sheets, axes)
     sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
@@ -1189,6 +1197,8 @@ def design_beam(
     # plate moments are point peaks at the pile or king pile head, whatever the setting for the beam.
     t_keep = transverse_nodes(t_uls, supports, 0.0)
     t_qp_keep = t_qp[transverse_nodes(t_qp, supports, 0.0)] if len(t_qp) else t_qp
+    if standard:
+        t_qp_keep = transverse_crack_candidates(t_qp_keep, g.h * 0.8 / 1000)
     t_shear = t_uls[transverse_nodes(t_uls, supports, dv)]
     trans = transverse_design(beam, settings, g, cage, t_uls[t_keep], t_qp_keep)
     asl = float(
