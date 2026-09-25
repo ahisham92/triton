@@ -110,7 +110,11 @@ def test_beam_section_bars():
     assert rects[0]["a"] == [-b["width_mm"] / 2, -b["depth_mm"] / 2] and rects[1]["layer"] == "bar-16"
     link = next(i for i in v["items"] if i["type"] == "family")
     assert link["family"] == "DET_Rebar_51_Dar 1: Rebar_51" and link["align"] == "center"
-    ab = {x["names"]: x["mm"] for x in link["params"]}
+    ab = {x["names"]: x.get("mm", x.get("n")) for x in link["params"]}
+    assert ab["T16"] == 1 and ab["T25"] == 0  # the office family's size switch for the link
+    # 5 legs: the outer link and one closed link inside it (the office family both), a tie in the middle.
+    fams = [i for i in v["items"] if i["type"] == "family"]
+    assert len(fams) == 2 and fams[1]["expect_mm"][0] < fams[0]["expect_mm"][0]
     assert (
         ab["DAR_A"] == b["width_mm"] - 2 * b["cover_mm"] and ab["DAR_B"] == b["depth_mm"] - 2 * b["cover_mm"]
     )
