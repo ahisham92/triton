@@ -793,7 +793,10 @@ export class View3D {
       const a = Math.max(0.16, 0.3 - 0.05 * i);
       quad([c0, c1, c2, c3].map((c) => up(c, w)), `rgba(56,132,200,${a})`, -3e6 + i, [c0, c1, c2, c3].map(dz), `${wl.name}: ${w} m`);
       items.push({ kind: "line", a: up(c0, w), b: up(c1, w), color: "rgba(30,90,160,0.8)", width: 1.5, site: true, tip: `${wl.name}: ${w} m` });
-      if (shown.length > 1) items.push({ kind: "label", at: up(c0, w), text: `${wl.name} ${w} m`, site: true });
+      // Tidal levels lie close together: their labels spread along the sea edge so they do not overlap.
+      const f = shown.length > 1 ? i / shown.length : 0;
+      const spot = [c0[0] + f * (c1[0] - c0[0]), c0[1] + f * (c1[1] - c0[1])];
+      if (shown.length > 1) items.push({ kind: "label", at: up(spot, w), text: `${wl.name} ${w} m`, site: true });
       if (i) return;
       const bed = L.seabed;
       for (const [p, q] of [[c0, c1], [c3, c0], [c1, c2]])
