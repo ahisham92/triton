@@ -442,6 +442,22 @@ if (!cancelled)
     System.Action<string> note = delegate (string line)
     { if (noted.Add(line)) paramNotes.Add(line); };
 
+    // Whether a parameter's values are lengths in mm (length, bar diameter, reinforcement spacing,
+    // cover...): its spec can be shown in millimetres.
+    System.Func<Autodesk.Revit.DB.Parameter, bool> inMm = delegate (Autodesk.Revit.DB.Parameter p)
+    {
+        try
+        {
+            Autodesk.Revit.DB.ForgeTypeId spec = p.Definition.GetDataType();
+            if (spec == Autodesk.Revit.DB.SpecTypeId.Length) return true;
+            if (!Autodesk.Revit.DB.UnitUtils.IsMeasurableSpec(spec)) return false;
+            foreach (Autodesk.Revit.DB.ForgeTypeId u in Autodesk.Revit.DB.UnitUtils.GetValidUnits(spec))
+                if (u == Autodesk.Revit.DB.UnitTypeId.Millimeters) return true;
+            return false;
+        }
+        catch { return true; }
+    };
+
     System.Func<Autodesk.Revit.DB.Element, object, bool> setParam = delegate (Autodesk.Revit.DB.Element el, object prm)
     {
         foreach (string n in str(prm, "names").Split('|'))
@@ -456,11 +472,11 @@ if (!cancelled)
                 if (onlyYesNo && p.StorageType != Autodesk.Revit.DB.StorageType.Integer) return true;
                 if (p.StorageType == Autodesk.Revit.DB.StorageType.Double)
                 {
-                    bool length = true;
-                    try { length = p.Definition.GetDataType() == Autodesk.Revit.DB.SpecTypeId.Length; } catch { }
-                    if (hasMm) p.Set(length ? mm / FT : mm);
-                    else if (hasN) p.Set(length ? cnt / FT : cnt);
-                    else continue;
+                    // Any spec measured in millimetres (length, bar diameter, bar spacing, cover...)
+                    // goes to Revit in its internal units (feet); a number goes as it is.
+                    if (!hasMm && !hasN) continue;
+                    double val = hasMm ? mm : cnt;
+                    p.Set(inMm(p) ? Autodesk.Revit.DB.UnitUtils.ConvertToInternalUnits(val, Autodesk.Revit.DB.UnitTypeId.Millimeters) : val);
                 }
                 else if (p.StorageType == Autodesk.Revit.DB.StorageType.Integer)
                 {
@@ -498,6 +514,14 @@ if (!cancelled)
 
     // Values on type parameters need a type of their own: one per set of
     // values, named after them, made from the family's type the first time.
+    System.Func<Autodesk.Revit.DB.FamilySymbol, System.Collections.Generic.List<object>, bool> hasTypeParam =
+        delegate (Autodesk.Revit.DB.FamilySymbol sym, System.Collections.Generic.List<object> prms)
+        {
+            foreach (object prm in prms)
+                foreach (string n in str(prm, "names").Split('|'))
+                    if (sym.LookupParameter(n.Trim()) != null) return true;
+            return false;
+        };
     System.Func<Autodesk.Revit.DB.FamilySymbol, System.Collections.Generic.List<object>, string> typeKey =
         delegate (Autodesk.Revit.DB.FamilySymbol sym, System.Collections.Generic.List<object> prms)
         {
@@ -510,36 +534,34 @@ if (!cancelled)
                     string val = get(prm, "text") != null ? str(prm, "text")
                         : get(prm, "n") != null ? ((int)num(prm, "n")).ToString(inv)
                         : num(prm, "mm").ToString("0", inv);
-                    key.Add(n.Trim().Replace("DAR_", "") + " " + val);
+                    // A size switch that is off is set on the type but left out of its name.
+                    if (!(str(prm, "only") == "yesno" && val == "0"))
+                        key.Add(n.Trim().Replace("DAR_", "") + " " + val);
+                    else key.Add("");
                     break;
                 }
             }
-            return string.Join(" ", key);
+            key.RemoveAll(delegate (string k) { return k == ""; });
+            return key.Count == 0 && hasTypeParam(sym, prms) ? "defaults" : string.Join(" ", key);
         };
     System.Func<Autodesk.Revit.DB.FamilySymbol, System.Collections.Generic.List<object>, Autodesk.Revit.DB.FamilySymbol> makeType =
         delegate (Autodesk.Revit.DB.FamilySymbol sym, System.Collections.Generic.List<object> prms)
         {
             var onType = new System.Collections.Generic.List<object>();
-            var key = new System.Collections.Generic.List<string>();
             foreach (object prm in prms)
-            {
                 foreach (string n in str(prm, "names").Split('|'))
-                {
-                    if (sym.LookupParameter(n.Trim()) == null) continue;
-                    onType.Add(prm);
-                    string val = get(prm, "text") != null ? str(prm, "text")
-                        : get(prm, "n") != null ? ((int)num(prm, "n")).ToString(inv)
-                        : num(prm, "mm").ToString("0", inv);
-                    key.Add(n.Trim().Replace("DAR_", "") + " " + val);
-                    break;
-                }
-            }
+                    if (sym.LookupParameter(n.Trim()) != null) { onType.Add(prm); break; }
             if (onType.Count == 0) return sym;
-            string name = sym.Name + " - Triton " + string.Join(" ", key);
+            string name = sym.Name + " - Triton " + typeKey(sym, prms);
             foreach (Autodesk.Revit.DB.ElementId id in sym.Family.GetFamilySymbolIds())
             {
                 var t = theDoc.GetElement(id) as Autodesk.Revit.DB.FamilySymbol;
-                if (t != null && t.Name == name) { if (!t.IsActive) t.Activate(); return t; }
+                if (t != null && t.Name == name)
+                {
+                    foreach (object prm in onType) setParam(t, prm);   // made by an older run: values again
+                    if (!t.IsActive) t.Activate();
+                    return t;
+                }
             }
             var dup = sym.Duplicate(name) as Autodesk.Revit.DB.FamilySymbol;
             foreach (object prm in onType) setParam(dup, prm);
@@ -622,17 +644,31 @@ if (!cancelled)
             typeCache[cacheKey] = result;
             return result;
         };
+    // The office's bar families show their size by switches T8, T10 ... T32 (Yes/No): the one for
+    // the bar on, the others off. The size parameter is set too where the family has one.
+    int[] SIZES = { 8, 10, 12, 16, 20, 25, 28, 32 };
     System.Func<double, System.Collections.Generic.List<object>> sizeParams = delegate (double dMm)
     {
         var size = new System.Collections.Generic.Dictionary<string, object>();
         size["names"] = string.IsNullOrWhiteSpace(str(data, "bar_param")) ? "DAR_BAR DIAMETER" : str(data, "bar_param");
         size["mm"] = dMm;
-        return new System.Collections.Generic.List<object> { size };
+        var outList = new System.Collections.Generic.List<object> { size };
+        foreach (int t in SIZES)
+        {
+            var sw = new System.Collections.Generic.Dictionary<string, object>();
+            sw["names"] = "T" + t.ToString(inv);
+            sw["n"] = (double)(System.Math.Abs(t - dMm) < 0.5 ? 1 : 0);
+            sw["only"] = "yesno";
+            outList.Add(sw);
+        }
+        return outList;
     };
 
     // Places a family item; false when it could not (the caller draws its fallback).
     // What was placed, to draw with lines anything Revit removes when the drawing is committed.
     Autodesk.Revit.DB.ElementId lastPlaced = null;
+    int turned = 0;
+    var turnOf = new System.Collections.Generic.Dictionary<string, bool>();   // per type: comes out turned
     var placedList = new System.Collections.Generic.List<object[]>();
     System.Func<object, string> values = delegate (object it)
     {
@@ -665,9 +701,17 @@ if (!cancelled)
                 bool onType = false;
                 foreach (string n in str(prm, "names").Split('|'))
                     if (typed.LookupParameter(n.Trim()) != null) onType = true;
-                if (!onType)
-                    note(sym.FamilyName + ": no parameter " + str(prm, "names").Replace("|", " or ")
-                        + ". It has: " + paramList(inst));
+                if (onType) continue;
+                if (str(prm, "only") == "yesno")
+                {
+                    if (num(prm, "n") <= 0) continue;   // a size switch the family does not have, left off
+                    // The family has no switch for this size: it cannot show the bar, lines instead.
+                    note(sym.FamilyName + ": no size switch " + str(prm, "names") + ", drawn with lines instead");
+                    theDoc.Delete(inst.Id);
+                    return false;
+                }
+                note(sym.FamilyName + ": no parameter " + str(prm, "names").Replace("|", " or ")
+                    + ". It has: " + paramList(inst));
             }
             double rot = num(it, "rot");
             if (System.Math.Abs(rot) > 1e-6)
@@ -686,6 +730,42 @@ if (!cancelled)
                         Autodesk.Revit.DB.ElementTransformUtils.MoveElement(theDoc, inst.Id, move);
                 }
             }
+            // The drawing says how big the family should come out across and up the view ("expect_mm"):
+            // one that comes out turned (a bar family drawing its bar the other way) is turned back.
+            // Only where the view's right is along a model axis (a drafting view, an unrotated plan):
+            // Revit's box round an element is along the model axes. A type turned once is turned
+            // every time, also where its box is near square and cannot tell.
+            bool axisView = System.Math.Abs(view.RightDirection.X) > 0.999 || System.Math.Abs(view.RightDirection.Y) > 0.999
+                || System.Math.Abs(view.RightDirection.Z) > 0.999;
+            if (get(it, "expect_mm") != null && axisView)
+            {
+                theDoc.Regenerate();
+                var bb = inst.get_BoundingBox(view);
+                bool turn = false, known = turnOf.TryGetValue(typed.Id.ToString(), out turn);
+                if (bb != null)
+                {
+                    var d = bb.Max - bb.Min;
+                    double w = System.Math.Abs(d.DotProduct(view.RightDirection)) * FT;
+                    double h = System.Math.Abs(d.DotProduct(view.UpDirection)) * FT;
+                    double ex = coord(it, "expect_mm", 0), ey = coord(it, "expect_mm", 1);
+                    double straight = System.Math.Abs(w - ex) + System.Math.Abs(h - ey);
+                    double across = System.Math.Abs(w - ey) + System.Math.Abs(h - ex);
+                    if (System.Math.Abs(ex - ey) > 0.25 * System.Math.Max(ex, ey)
+                        && System.Math.Min(straight, across) < 0.5 * System.Math.Max(straight, across))
+                    {
+                        turn = across < straight;
+                        known = true;
+                        turnOf[typed.Id.ToString()] = turn;
+                    }
+                    if (known && turn)
+                    {
+                        var c = (bb.Min + bb.Max) * 0.5;
+                        Autodesk.Revit.DB.ElementTransformUtils.RotateElement(theDoc, inst.Id,
+                            Autodesk.Revit.DB.Line.CreateBound(c, c + view.ViewDirection), System.Math.PI / 2);
+                        turned++;
+                    }
+                }
+            }
             lastPlaced = inst.Id;
             return true;
         }
@@ -702,6 +782,13 @@ if (!cancelled)
         {
             bars++;
             var fam = symbol(layerName(key, "revit_section_type"));
+            bool hasSwitch = false;
+            foreach (int t in SIZES) if (System.Math.Abs(t - dMm) < 0.5) hasSwitch = true;
+            if (fam != null && !hasSwitch)
+            {
+                note(fam.FamilyName + ": no size switch T" + dMm.ToString("0", inv) + ", filled dots drawn instead");
+                fam = null;
+            }
             if (fam != null)
             {
                 try
@@ -712,8 +799,15 @@ if (!cancelled)
                     {
                         if (!typed.IsActive) typed.Activate();
                         var inst = theDoc.Create.NewFamilyInstance(c, typed, view);
-                        if (!setParam(inst, prms[0]) && typeKey(fam, prms) == "")
-                            note(fam.FamilyName + ": no parameter " + str(prms[0], "names").Replace("|", " or ") + ". It has: " + paramList(inst));
+                        bool sized = false;
+                        foreach (object prm in prms)
+                        {
+                            bool isSwitch = str(prm, "only") == "yesno";
+                            if (setParam(inst, prm) && (!isSwitch || num(prm, "n") > 0)) sized = true;
+                        }
+                        if (!sized && !hasTypeParam(fam, prms))
+                            note(fam.FamilyName + ": no size parameter (" + str(prms[0], "names").Replace("|", " or ")
+                                + " or T8...T32). It has: " + paramList(inst));
                         return;
                     }
                 }
@@ -907,6 +1001,22 @@ if (!cancelled)
         topY = System.Math.Max(topY, coord(chosen[i], "box", 3) + offsets[i][1]);
     }
 
+    System.Action<System.Collections.Generic.List<object>, System.Collections.Generic.SortedSet<string>> collectFamilies = null;
+    collectFamilies = delegate (System.Collections.Generic.List<object> items, System.Collections.Generic.SortedSet<string> into)
+    {
+        foreach (object it in items)
+        {
+            string type = str(it, "type");
+            if (type == "family" && !string.IsNullOrWhiteSpace(str(it, "family"))) into.Add(str(it, "family"));
+            else if (type == "bar")
+            {
+                string sec = layerName(str(it, "layer"), "revit_section_type");
+                if (!string.IsNullOrWhiteSpace(sec)) into.Add(sec);
+            }
+            if (get(it, "fallback") != null) collectFamilies(list(it, "fallback"), into);
+        }
+    };
+
     string firstViewName = "";
     theDoc.Application.FailuresProcessing += onFailures;
 
@@ -928,12 +1038,56 @@ if (!cancelled)
                 else if (type == "bar")
                 {
                     var fam = symbol(layerName(str(it, "layer"), "revit_section_type"));
-                    if (fam != null) typeFor(fam, sizeParams(num(it, "d")));
+                    bool known = false;
+                    foreach (int sz in SIZES) if (System.Math.Abs(sz - num(it, "d")) < 0.5) known = true;
+                    if (fam != null && known) typeFor(fam, sizeParams(num(it, "d")));
                 }
             }
         };
         try { foreach (object v in chosen) prepare(list(v, "items")); }
         catch (System.Exception ex) { note("Trying the family types: " + ex.Message); }
+    }
+
+    // A report of the office families as they are inside (each parameter: type or instance, its
+    // kind, its formula, its value), written next to the .crm file, for Triton to read when a family
+    // does not come out right. Only when no transaction is open (Revit opens families then only).
+    string familyReport = "";
+    if (!theDoc.IsModifiable)
+    {
+        var rep = new System.Text.StringBuilder();
+        var famNames = new System.Collections.Generic.SortedSet<string>();
+        foreach (object v in chosen) collectFamilies(list(v, "items"), famNames);
+        foreach (string fname in famNames)
+        {
+            var sym = symbol(fname);
+            if (sym == null) continue;
+            Autodesk.Revit.DB.Document famDoc = null;
+            try
+            {
+                famDoc = theDoc.EditFamily(sym.Family);
+                var fm = famDoc.FamilyManager;
+                rep.AppendLine("== " + fname + " (types in the family: " + fm.Types.Size + ")");
+                foreach (Autodesk.Revit.DB.FamilyParameter fp in fm.Parameters)
+                {
+                    string kind = "";
+                    try { kind = fp.Definition.GetDataType().TypeId; } catch { }
+                    string val = "";
+                    try { if (fm.CurrentType != null && fm.CurrentType.HasValue(fp)) val = fm.CurrentType.AsValueString(fp); } catch { }
+                    rep.AppendLine(string.Format(inv, "{0} | {1}{2} | {3} | {4} | {5}",
+                        fp.Definition.Name, fp.IsInstance ? "instance" : "type", fp.IsShared ? ", shared" : "",
+                        kind, fp.Formula ?? "", val));
+                }
+            }
+            catch (System.Exception ex) { rep.AppendLine("== " + fname + ": could not be opened (" + ex.Message + ")"); }
+            finally { if (famDoc != null) try { famDoc.Close(false); } catch { } }
+        }
+        try
+        {
+            familyReport = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(crmPath),
+                System.IO.Path.GetFileNameWithoutExtension(crmPath) + " - families.txt");
+            System.IO.File.WriteAllText(familyReport, rep.ToString());
+        }
+        catch { familyReport = ""; }
     }
 
     // Your runner may already have a transaction open; if not, this opens one.
@@ -1053,6 +1207,10 @@ if (!cancelled)
         var content = new System.Text.StringBuilder();
         content.AppendLine(string.Format(inv, "{0} lines, {1} cut bars, {2} texts, {3} dimensions, {4} office families ({5} drawn with lines instead).",
             lines, bars, texts, dims, families, fallbacks));
+        if (familyReport != "")
+            content.AppendLine("\nIf a family does not come out right, send Triton this file: " + familyReport);
+        if (turned > 0)
+            content.AppendLine(string.Format(inv, "\n{0} office families came out turned and were turned back.", turned));
         if (made.Count > 0)
             content.AppendLine("\nLine styles made (not in the model yet): " + string.Join(", ", made.ToArray()));
         if (missing.Count > 0)

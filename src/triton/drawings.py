@@ -16,9 +16,10 @@ Triton works out every line here, so the AutoCAD file and the Revit code only co
   family placed at ``at`` with its ``params`` set). ``dim`` and ``family`` carry ``fallback``: the
   same thing as plain items, drawn by AutoCAD, and by Revit when the family or dimension cannot be made.
 
-Slab plans are one per face and direction (bottom and top, M11 bars along X and M22 along Y): the
-mesh is in the caption only (drawn by hand to suit the plan), the additional bars of each zone are the
-office's RFT_ADD family (bars along X and along Y) with L, spacing, diameter and distribution length set.
+Slab plans are one per face and direction (bottom and top, M11 bars along X and M22 along Y): the mesh
+is in the caption only (drawn by hand to suit the plan); the additional bars are the office's RFT_ADD
+family, one per column strip and field strip (or per zone where the slab has no strips), with L,
+spacing, diameter and distribution set and no hooks.
 """
 
 from __future__ import annotations
@@ -47,6 +48,20 @@ def _f(v: float | None, n: int = 2) -> str:
 
 def _mm(v: float) -> str:
     return f"{v:.0f}"
+
+
+SIZES = (8, 10, 12, 16, 20, 25, 28, 32)  # the office bar families' size switches T8 ... T32
+
+
+HOOKS = ("Hook", "Hook2", "Hook_Top", "Hook2_Top", "Hook_Bottom", "Hook2_Bottom")  # RFT_ADD's hook switches
+
+
+def switches(d: float) -> list[dict[str, Any]] | None:
+    """The size switches of the office's bar families (T8, T10 ... Yes/No): the one for ``d`` on. None:
+    the families have no switch for that size (the drawing is then made with lines)."""
+    if not any(abs(t - d) < 0.5 for t in SIZES):
+        return None
+    return [{**P(f"T{t}", n=1 if abs(t - d) < 0.5 else 0), "only": "yesno"} for t in SIZES]
 
 
 def P(
@@ -136,9 +151,11 @@ class View:
         fallback: View,
         align: str = "origin",
         rot: float = 0.0,
+        expect: tuple[float, float] | None = None,
     ) -> None:
         """An office detail family at ``at`` (its origin there, or with align "center" its extents centred
-        there), ``params`` set; ``fallback`` holds the same as plain items. No family named: the items."""
+        there), ``params`` set; ``fallback`` holds the same as plain items. No family named: the items.
+        ``expect``: its size across and up the view (mm); Revit turns one that comes out the other way."""
         if not family:
             self.items += fallback.items
             return
@@ -152,6 +169,7 @@ class View:
                 "align": align,
                 "params": params,
                 "fallback": fallback.items,
+                **({"expect_mm": [round(expect[0], 1), round(expect[1], 1)]} if expect else {}),
             }
         )
 
@@ -407,6 +425,8 @@ def _pile_section(
         ]
         if pitch:
             params.append(P("DAR_STIRRUPS SPACING", mm=pitch))
+        sw = switches(r0["diameter_mm"])
+        params += sw or []
         for k in (2, 3, 4):
             row = rows[k - 1] if len(rows) >= k else None
             # LAYER<k>: the ring's bar count (or, if the family has it as Yes/No, whether it is there).
@@ -416,7 +436,7 @@ def _pile_section(
                 params.append({**P(f"LAYER{k}", n=0), "only": "yesno"})
             if row:
                 params.append(P(f"Layer{k}_BarDiameter", mm=row["diameter_mm"]))
-        v.family(st.pile_section_family, c, params, fb)
+        v.family(st.pile_section_family if sw is not None else "", c, params, fb)
     else:
         v.items += fb.items
     for hoop in run["inner_link_hoops_mm"]:
@@ -647,26 +667,30 @@ def _beam_views(b: dict[str, Any], st: DrawingSettings) -> list[View]:
     v.rect("concrete", (-W / 2, -H / 2), (W / 2, H / 2))
     links = b.get("links") or {}
     phi = links.get("diameter_mm")
+    legs = int(links.get("legs") or 2)
     if phi:
+        # The legs evenly across the beam: the outer link on the outer two, a closed link (the office's
+        # Rebar_51) on each further pair inside it, and a single tie on a middle leg left over.
         e = cover + phi / 2
-        fb = v.sub()
-        fb.rect(bar_key(phi), (-W / 2 + e, -H / 2 + e), (W / 2 - e, H / 2 - e))
-        params = [
-            P("DAR_A", mm=W - 2 * cover),
-            P("DAR_B", mm=H - 2 * cover),
-            P("DAR_BAR DIAMETER", mm=phi),
-        ]
-        v.family(st.stirrup_family, (0.0, 0.0), params, fb, align="center")
+        n = max(legs, 2)
+        xs = [-W / 2 + e + i * (W - 2 * e) / (n - 1) for i in range(n)]
+        sw = switches(phi)
+        for j in range(n // 2):
+            x0, x1 = xs[j], xs[n - 1 - j]
+            a, bb = x1 - x0 + phi, H - 2 * cover  # every closed link round the top and bottom bars
+            fb = v.sub()
+            fb.rect(bar_key(phi), (x0, -H / 2 + e), (x1, H / 2 - e))
+            params = [P("DAR_A", mm=a), P("DAR_B", mm=bb), P("DAR_BAR DIAMETER", mm=phi), *(sw or [])]
+            fam = st.stirrup_family if sw is not None else ""  # no switch for the size: lines
+            v.family(fam, ((x0 + x1) / 2, 0.0), params, fb, align="center", expect=(a, bb))
+        if n % 2:
+            x = xs[n // 2]
+            v.line(bar_key(phi), (x, -H / 2 + e), (x, H / 2 - e))
     for bar in b["bars"]:
         v.bar(bar["diameter_mm"], (bar["y_mm"], bar["z_mm"]))
     sc = v.scale
     if phi:
-        # The inner legs as single ties across the depth, evenly between the outer link's legs.
         e = cover + phi / 2
-        legs = int(links.get("legs") or 2)
-        for k in range(1, max(legs - 1, 1)):
-            x = -W / 2 + e + k * (W - 2 * e) / (legs - 1)
-            v.line(bar_key(phi), (x, -H / 2 + e), (x, H / 2 - e))
         words = f"ø{_mm(phi)} @ {_mm(links.get('spacing_mm') or 0)} ({legs} LEGS)"
         v.leader(
             (-W / 2 + e, -H / 2 + H * 0.3),
@@ -972,12 +996,37 @@ def _slab_views(
                 face,
                 along,
             )
-            for z in f["zones"]:
+            # With column and field strips, only the strips' bars (and any punching bars over the heads):
+            # the strips' widths dimensioned along the plan's edge, "C.S." / "F.S." beside them.
+            zones = f["zones"]
+            if any(z.get("strip") for z in zones):
+                zones = [z for z in zones if z.get("strip") or z.get("punching")]
+                strips = sorted(
+                    {
+                        (tuple(z["y_m"] if along == "X" else z["x_m"]), z["strip"])
+                        for z in zones
+                        if z.get("strip")
+                    }
+                )
+                for (t0, t1), kind in strips:
+                    a, b = t0 * 1000, t1 * 1000
+                    tag = "C.S." if kind == "column" else "F.S."
+                    if along == "X":
+                        v.dim((X0, b), (X0, a), -14 * v.scale, _mm(b - a))
+                        v.text((X0 - 30 * v.scale, (a + b) / 2), tag, 0.8)
+                    else:
+                        v.dim((a, Y1), (b, Y1), 14 * v.scale, _mm(b - a))
+                        v.text(((a + b) / 2, Y1 + 20 * v.scale), tag, 0.8)
+            for z in zones:
                 zx0, zx1 = (x * 1000 for x in z["x_m"])
                 zy0, zy1 = (y * 1000 for y in z["y_m"])
                 span = (zx0, zx1) if along == "X" else (zy0, zy1)
                 across = (zy0, zy1) if along == "X" else (zx0, zx1)
+                strip = {"column": " C.S.", "field": " F.S."}.get(z.get("strip") or "", "")
                 k = 0
+                shown = sum(
+                    1 for lay in z["layers"] for b in lay["bars"] if lay["layer"] > 1 or b["kind"] != "mesh"
+                )
                 for lay in z["layers"]:
                     for b in lay["bars"]:
                         if lay["layer"] == 1 and b["kind"] == "mesh":
@@ -993,9 +1042,10 @@ def _slab_views(
                         # zone, the width it is spread over with ticks, "ø25 @150 L=4000 (ADD.)".
                         fb = v.sub()
                         cx, cy = (zx0 + zx1) / 2, (zy0 + zy1) / 2
-                        k_off = (k - (len(z["layers"]) - 1) / 2) * 3 * v.scale
+                        # Bars sharing a zone sit 6 mm apart on paper, so their labels do not overlap.
+                        k_off = (k - (shown - 1) / 2) * 6 * v.scale
                         w1 = f"ø{_mm(phi)} @{_mm(sp)}" + ("" if lay["layer"] == 1 else f" {name}")
-                        w2 = f"L={_mm(length)} (ADD.)"
+                        w2 = f"L={_mm(length)} (ADD.){strip}"
                         tw = 0.8 * TEXT_MM * 0.7 * v.scale * max(len(w1), len(w2))
                         th = TEXT_MM * 0.7 * v.scale
                         if along == "X":
@@ -1024,9 +1074,18 @@ def _slab_views(
                             P("Distribution|Distribution Length", mm=across[1] - across[0]),
                             P("Top No.", n=lay["layer"]),
                             P("TOP REINF.", n=1 if face == "top" else 0),
-                            P("Comments", text=f"{count} bars, {name}"),
+                            P("Comments", text=f"{count} bars, {name}{strip}"),
+                            *({**P(h, n=0), "only": "yesno"} for h in HOOKS),
                         ]
-                        v.family(fam, ((zx0 + zx1) / 2, (zy0 + zy1) / 2), params, fb, align="center")
+                        dist = across[1] - across[0]
+                        v.family(
+                            fam,
+                            (cx, cy + k_off) if along == "X" else (cx + k_off, cy),
+                            params,
+                            fb,
+                            align="center",
+                            expect=(length, dist) if along == "X" else (dist, length),
+                        )
             for j in d.get("construction_joints") or []:
                 ln = j.get("line") or {}
                 if ln.get("along") != along or ln.get("at_m") is None or not ln.get("range_m"):
@@ -1170,16 +1229,13 @@ def _slab_pile_section(d: dict[str, Any], piles: list[dict[str, Any]], st: Drawi
         z1 = max(z for _, _, z in top)
         lk = links[0]
         phi, sx = lk.get("diameter_mm") or 12, lk.get("sx_mm") or 300.0
-        hook = 6 * phi
         for sgn in (-1, 1):
             k = 1
             while x_crank + run + (k - 0.5) * sx < half - 100 and k <= 6:
                 x = sgn * (x_crank + run + (k - 0.5) * sx)  # past the crank, round the bottom bars
                 k += 1
-                v.line(bar_key(phi), (x, z0), (x, z1))
-                v.line(bar_key(phi), (x, z1), (x + sgn * hook, z1))
-                v.line(bar_key(phi), (x, z0), (x - sgn * hook, z0))
-        v.caption.append(f"Shear links Ø{phi} @ {_mm(sx)} drawn as lines round the pile head")
+                v.line(bar_key(phi), (x, z0), (x, z1))  # straight, no hooks drawn
+        v.caption.append(f"Shear links Ø{phi} @ {_mm(sx)} drawn as straight lines round the pile head")
     if shift > 0:
         v.caption.append(
             f"Pile head {_mm(into)} into the slab: bottom bars cranked up {_mm(shift)} over it "
