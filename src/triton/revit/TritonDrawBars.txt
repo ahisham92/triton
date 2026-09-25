@@ -556,7 +556,12 @@ if (!cancelled)
             foreach (Autodesk.Revit.DB.ElementId id in sym.Family.GetFamilySymbolIds())
             {
                 var t = theDoc.GetElement(id) as Autodesk.Revit.DB.FamilySymbol;
-                if (t != null && t.Name == name) { if (!t.IsActive) t.Activate(); return t; }
+                if (t != null && t.Name == name)
+                {
+                    foreach (object prm in onType) setParam(t, prm);   // made by an older run: values again
+                    if (!t.IsActive) t.Activate();
+                    return t;
+                }
             }
             var dup = sym.Duplicate(name) as Autodesk.Revit.DB.FamilySymbol;
             foreach (object prm in onType) setParam(dup, prm);
@@ -641,7 +646,7 @@ if (!cancelled)
         };
     // The office's bar families show their size by switches T8, T10 ... T32 (Yes/No): the one for
     // the bar on, the others off. The size parameter is set too where the family has one.
-    int[] SIZES = { 8, 10, 12, 16, 20, 25, 28, 32, 40 };
+    int[] SIZES = { 8, 10, 12, 16, 20, 25, 28, 32 };
     System.Func<double, System.Collections.Generic.List<object>> sizeParams = delegate (double dMm)
     {
         var size = new System.Collections.Generic.Dictionary<string, object>();
@@ -663,6 +668,7 @@ if (!cancelled)
     // What was placed, to draw with lines anything Revit removes when the drawing is committed.
     Autodesk.Revit.DB.ElementId lastPlaced = null;
     int turned = 0;
+    var turnOf = new System.Collections.Generic.Dictionary<string, bool>();   // per type: comes out turned
     var placedList = new System.Collections.Generic.List<object[]>();
     System.Func<object, string> values = delegate (object it)
     {
@@ -695,9 +701,17 @@ if (!cancelled)
                 bool onType = false;
                 foreach (string n in str(prm, "names").Split('|'))
                     if (typed.LookupParameter(n.Trim()) != null) onType = true;
-                if (!onType)
-                    note(sym.FamilyName + ": no parameter " + str(prm, "names").Replace("|", " or ")
-                        + ". It has: " + paramList(inst));
+                if (onType) continue;
+                if (str(prm, "only") == "yesno")
+                {
+                    if (num(prm, "n") <= 0) continue;   // a size switch the family does not have, left off
+                    // The family has no switch for this size: it cannot show the bar, lines instead.
+                    note(sym.FamilyName + ": no size switch " + str(prm, "names") + ", drawn with lines instead");
+                    theDoc.Delete(inst.Id);
+                    return false;
+                }
+                note(sym.FamilyName + ": no parameter " + str(prm, "names").Replace("|", " or ")
+                    + ". It has: " + paramList(inst));
             }
             double rot = num(it, "rot");
             if (System.Math.Abs(rot) > 1e-6)
@@ -718,10 +732,16 @@ if (!cancelled)
             }
             // The drawing says how big the family should come out across and up the view ("expect_mm"):
             // one that comes out turned (a bar family drawing its bar the other way) is turned back.
-            if (get(it, "expect_mm") != null)
+            // Only where the view's right is along a model axis (a drafting view, an unrotated plan):
+            // Revit's box round an element is along the model axes. A type turned once is turned
+            // every time, also where its box is near square and cannot tell.
+            bool axisView = System.Math.Abs(view.RightDirection.X) > 0.999 || System.Math.Abs(view.RightDirection.Y) > 0.999
+                || System.Math.Abs(view.RightDirection.Z) > 0.999;
+            if (get(it, "expect_mm") != null && axisView)
             {
                 theDoc.Regenerate();
                 var bb = inst.get_BoundingBox(view);
+                bool turn = false, known = turnOf.TryGetValue(typed.Id.ToString(), out turn);
                 if (bb != null)
                 {
                     var d = bb.Max - bb.Min;
@@ -730,7 +750,14 @@ if (!cancelled)
                     double ex = coord(it, "expect_mm", 0), ey = coord(it, "expect_mm", 1);
                     double straight = System.Math.Abs(w - ex) + System.Math.Abs(h - ey);
                     double across = System.Math.Abs(w - ey) + System.Math.Abs(h - ex);
-                    if (across < 0.5 * straight)
+                    if (System.Math.Abs(ex - ey) > 0.25 * System.Math.Max(ex, ey)
+                        && System.Math.Min(straight, across) < 0.5 * System.Math.Max(straight, across))
+                    {
+                        turn = across < straight;
+                        known = true;
+                        turnOf[typed.Id.ToString()] = turn;
+                    }
+                    if (known && turn)
                     {
                         var c = (bb.Min + bb.Max) * 0.5;
                         Autodesk.Revit.DB.ElementTransformUtils.RotateElement(theDoc, inst.Id,
@@ -755,6 +782,13 @@ if (!cancelled)
         {
             bars++;
             var fam = symbol(layerName(key, "revit_section_type"));
+            bool hasSwitch = false;
+            foreach (int t in SIZES) if (System.Math.Abs(t - dMm) < 0.5) hasSwitch = true;
+            if (fam != null && !hasSwitch)
+            {
+                note(fam.FamilyName + ": no size switch T" + dMm.ToString("0", inv) + ", filled dots drawn instead");
+                fam = null;
+            }
             if (fam != null)
             {
                 try
@@ -1004,7 +1038,9 @@ if (!cancelled)
                 else if (type == "bar")
                 {
                     var fam = symbol(layerName(str(it, "layer"), "revit_section_type"));
-                    if (fam != null) typeFor(fam, sizeParams(num(it, "d")));
+                    bool known = false;
+                    foreach (int sz in SIZES) if (System.Math.Abs(sz - num(it, "d")) < 0.5) known = true;
+                    if (fam != null && known) typeFor(fam, sizeParams(num(it, "d")));
                 }
             }
         };

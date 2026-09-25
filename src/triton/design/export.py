@@ -436,8 +436,8 @@ def _strip_zones(d: dict[str, Any]) -> dict[str, list[dict]]:
         if not r.get("additional_bars"):
             continue  # the mesh alone
         entry = {"label": r["bars"], "layers": r.get("bar_layers") or [], "row": r.get("key")}
-        if r.get("strip"):
-            entry["strip"] = r["strip"]  # "column" or "field"
+        if r.get("strip") in ("column", "field"):
+            entry["strip"] = r["strip"]
         if r.get("zone"):
             (x0, x1), (y0, y1) = r["zone"]
             out[layer].append({"x_m": [x0, x1], "y_m": [y0, y1], **entry})

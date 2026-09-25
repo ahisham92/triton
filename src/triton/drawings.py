@@ -50,14 +50,17 @@ def _mm(v: float) -> str:
     return f"{v:.0f}"
 
 
-SIZES = (8, 10, 12, 16, 20, 25, 28, 32, 40)  # the office bar families' size switches T8 ... T40
+SIZES = (8, 10, 12, 16, 20, 25, 28, 32)  # the office bar families' size switches T8 ... T32
 
 
 HOOKS = ("Hook", "Hook2", "Hook_Top", "Hook2_Top", "Hook_Bottom", "Hook2_Bottom")  # RFT_ADD's hook switches
 
 
-def switches(d: float) -> list[dict[str, Any]]:
-    """The size switches of the office's bar families (T8, T10 ... Yes/No): the one for ``d`` on."""
+def switches(d: float) -> list[dict[str, Any]] | None:
+    """The size switches of the office's bar families (T8, T10 ... Yes/No): the one for ``d`` on. None:
+    the families have no switch for that size (the drawing is then made with lines)."""
+    if not any(abs(t - d) < 0.5 for t in SIZES):
+        return None
     return [{**P(f"T{t}", n=1 if abs(t - d) < 0.5 else 0), "only": "yesno"} for t in SIZES]
 
 
@@ -422,7 +425,8 @@ def _pile_section(
         ]
         if pitch:
             params.append(P("DAR_STIRRUPS SPACING", mm=pitch))
-        params += switches(r0["diameter_mm"])
+        sw = switches(r0["diameter_mm"])
+        params += sw or []
         for k in (2, 3, 4):
             row = rows[k - 1] if len(rows) >= k else None
             # LAYER<k>: the ring's bar count (or, if the family has it as Yes/No, whether it is there).
@@ -432,7 +436,7 @@ def _pile_section(
                 params.append({**P(f"LAYER{k}", n=0), "only": "yesno"})
             if row:
                 params.append(P(f"Layer{k}_BarDiameter", mm=row["diameter_mm"]))
-        v.family(st.pile_section_family, c, params, fb)
+        v.family(st.pile_section_family if sw is not None else "", c, params, fb)
     else:
         v.items += fb.items
     for hoop in run["inner_link_hoops_mm"]:
@@ -670,14 +674,15 @@ def _beam_views(b: dict[str, Any], st: DrawingSettings) -> list[View]:
         e = cover + phi / 2
         n = max(legs, 2)
         xs = [-W / 2 + e + i * (W - 2 * e) / (n - 1) for i in range(n)]
+        sw = switches(phi)
         for j in range(n // 2):
             x0, x1 = xs[j], xs[n - 1 - j]
-            inset = j * 2 * phi  # each inner link just inside the one round it
-            a, bb = x1 - x0 + phi, H - 2 * cover - 2 * inset
+            a, bb = x1 - x0 + phi, H - 2 * cover  # every closed link round the top and bottom bars
             fb = v.sub()
-            fb.rect(bar_key(phi), (x0, -H / 2 + e + inset), (x1, H / 2 - e - inset))
-            params = [P("DAR_A", mm=a), P("DAR_B", mm=bb), P("DAR_BAR DIAMETER", mm=phi), *switches(phi)]
-            v.family(st.stirrup_family, ((x0 + x1) / 2, 0.0), params, fb, align="center", expect=(a, bb))
+            fb.rect(bar_key(phi), (x0, -H / 2 + e), (x1, H / 2 - e))
+            params = [P("DAR_A", mm=a), P("DAR_B", mm=bb), P("DAR_BAR DIAMETER", mm=phi), *(sw or [])]
+            fam = st.stirrup_family if sw is not None else ""  # no switch for the size: lines
+            v.family(fam, ((x0 + x1) / 2, 0.0), params, fb, align="center", expect=(a, bb))
         if n % 2:
             x = xs[n // 2]
             v.line(bar_key(phi), (x, -H / 2 + e), (x, H / 2 - e))
@@ -1019,6 +1024,9 @@ def _slab_views(
                 across = (zy0, zy1) if along == "X" else (zx0, zx1)
                 strip = {"column": " C.S.", "field": " F.S."}.get(z.get("strip") or "", "")
                 k = 0
+                shown = sum(
+                    1 for lay in z["layers"] for b in lay["bars"] if lay["layer"] > 1 or b["kind"] != "mesh"
+                )
                 for lay in z["layers"]:
                     for b in lay["bars"]:
                         if lay["layer"] == 1 and b["kind"] == "mesh":
@@ -1034,7 +1042,8 @@ def _slab_views(
                         # zone, the width it is spread over with ticks, "ø25 @150 L=4000 (ADD.)".
                         fb = v.sub()
                         cx, cy = (zx0 + zx1) / 2, (zy0 + zy1) / 2
-                        k_off = (k - (len(z["layers"]) - 1) / 2) * 3 * v.scale
+                        # Bars sharing a zone sit 6 mm apart on paper, so their labels do not overlap.
+                        k_off = (k - (shown - 1) / 2) * 6 * v.scale
                         w1 = f"ø{_mm(phi)} @{_mm(sp)}" + ("" if lay["layer"] == 1 else f" {name}")
                         w2 = f"L={_mm(length)} (ADD.){strip}"
                         tw = 0.8 * TEXT_MM * 0.7 * v.scale * max(len(w1), len(w2))
@@ -1071,7 +1080,7 @@ def _slab_views(
                         dist = across[1] - across[0]
                         v.family(
                             fam,
-                            ((zx0 + zx1) / 2, (zy0 + zy1) / 2),
+                            (cx, cy + k_off) if along == "X" else (cx + k_off, cy),
                             params,
                             fb,
                             align="center",

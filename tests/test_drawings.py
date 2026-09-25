@@ -408,3 +408,38 @@ def test_pile_sheet_draws_top_bars_from_the_connection():
     assert any(i["a"][1] == i["b"][1] and abs(i["b"][0]) > abs(i["a"][0]) for i in tops)  # the L legs
     texts = {i["text"] for i in v["items"] if i["type"] == "text"}
     assert "L= 9400 (L-BAR, LEG 1200)" in texts and "DECK (SEE ITS PLAN)" in texts
+
+
+def test_slab_strips_only_with_widths_tags_and_no_hooks():
+    data = json.loads(json.dumps(SAMPLE))
+    face = next(f for f in data["slabs"][0]["faces"] if f["face"] == "bottom" and f["bars_along"] == "X")
+    z = face["zones"][0]
+    y0, y1 = z["y_m"]
+    face["zones"] = [
+        {**z, "y_m": [y0, y0 + 2.2], "strip": "column"},
+        {**z, "y_m": [y0 + 2.2, y0 + 4.2], "strip": "field"},
+        {**z, "y_m": [y0 + 5, y0 + 6]},  # a cell zone: left out where the slab has strips
+    ]
+    v = view(from_cages(data, DrawingSettings()), "Deck - bottom plan M11")
+    fams = [i for i in v["items"] if i["type"] == "family"]
+    assert len(fams) == 2
+    texts = [i["text"] for i in v["items"] if i["type"] == "text"]
+    assert texts.count("C.S.") == 1 and texts.count("F.S.") == 1
+    dims = [i["text"] for i in v["items"] if i["type"] == "dim"]
+    assert "2200" in dims and "2000" in dims
+    for f in fams:
+        p = {x["names"]: x for x in f["params"]}
+        assert all(
+            p[h]["n"] == 0 and p[h]["only"] == "yesno" for h in ("Hook", "Hook2", "Hook_Top", "Hook_Bottom")
+        )
+        assert f["expect_mm"][0] == p["L"]["mm"]  # bars along X: the bar's length across the view
+    words = [i["text"] for f in fams for i in f["fallback"] if i["type"] == "text"]
+    assert any(w.endswith("(ADD.) C.S.") for w in words) and any(w.endswith("(ADD.) F.S.") for w in words)
+
+
+def test_a_size_the_office_families_have_no_switch_for_is_drawn_with_lines():
+    data = json.loads(json.dumps(SAMPLE))
+    data["beams"][0]["links"]["diameter_mm"] = 14.0
+    v = view(from_cages(data, DrawingSettings()), "Front Beam - section")
+    assert not [i for i in v["items"] if i["type"] == "family"]
+    assert [i for i in v["items"] if i["type"] == "rect" and i["layer"] == "bar-14"]
