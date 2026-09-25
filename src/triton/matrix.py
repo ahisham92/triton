@@ -39,8 +39,9 @@ def _numbers(values: Any, what: str, lo: float, hi: float) -> list[float]:
     return out
 
 
-def clean_spec(spec: dict[str, Any], section: Section) -> dict[str, Any]:
-    """The lists the user gave, checked: an empty list keeps the deck's own value."""
+def clean_spec(spec: dict[str, Any], section: Section, spacings: list[float] | None = None) -> dict[str, Any]:
+    """The lists the user gave, checked: an empty list, or one switched off in ``use``, keeps the deck's
+    own value. ``spacings``: the mesh spacings the slabs are designed with (Design settings)."""
     name = spec.get("element")
     element = section.elements.get(name) if name else None
     if not isinstance(element, SlabInput):
@@ -70,31 +71,47 @@ def clean_spec(spec: dict[str, Any], section: Section) -> dict[str, Any]:
         if item not in decks:
             decks.append(item)
     out["decks"] = decks
+    out["mesh"] = _numbers(spec.get("mesh"), "A mesh spacing (mm)", 75, 400)
+    if spacings and any(m not in [float(x) for x in spacings] for m in out["mesh"]):
+        raise ValueError(
+            f"The slab is designed with meshes at {', '.join(f'{x:g}' for x in spacings)} mm only."
+        )
+    punching = [p for p in spec.get("punching_per") or [] if p]
+    bad = [p for p in punching if p not in trials.PUNCHING]
+    if bad:
+        raise ValueError(f"No punching design '{bad[0]}'.")
+    out["punching_per"] = list(dict.fromkeys(punching))
+    use = spec.get("use") or {}
+    out["use"] = {k: bool(use.get(k, True)) for k in AXES}
     n = len(options(out, section))
     if n > MAX_OPTIONS:
         raise ValueError(f"That is {n} combinations; Triton designs at most {MAX_OPTIONS} at a time.")
     return out
 
 
+# Each list the matrix combines, with the key an option carries its value under. A list switched off
+# ("use") is left out: the deck keeps its own value for it.
+AXES = {
+    "thickness": "thickness",
+    "crack_width_limit": "crack_width_limit",
+    "peaks": "peaks",
+    "decks": "deck",
+    "mesh": "mesh",
+    "punching_per": "punching_per",
+}
+
+
 def options(spec: dict[str, Any], section: Section) -> list[dict[str, Any]]:
     """Every combination, as the values it sets (None: the deck's own)."""
     element = section.elements[spec["element"]]
-    axes = [
-        spec.get("thickness") or [None],
-        spec.get("crack_width_limit") or [None],
-        spec.get("peaks") or [None],
-        spec.get("decks") or [None],
-    ]
+    use = spec.get("use") or {}
+    axes = [(spec.get(k) if use.get(k, True) else None) or [None] for k in AXES]
     out = []
-    for t, wk, peaks, deck in product(*axes):
-        out.append(
-            {
-                "thickness": t if t is not None else element.thickness,
-                "crack_width_limit": wk,
-                "peaks": peaks,
-                "deck": deck,
-            }
-        )
+    for values in product(*axes):
+        o = dict(zip(AXES.values(), values, strict=True))
+        if o["thickness"] is None:
+            o["thickness"] = element.thickness
+        out.append(o)
     return out
 
 
@@ -112,6 +129,10 @@ def option_label(o: dict[str, Any], element: SlabInput) -> str:
     else:
         bits.append(f"wk {element.crack_width_limit:g}")
     bits.append(trials.PEAKS.get(o.get("peaks") or element.peaks, str(element.peaks)))
+    if o.get("mesh"):
+        bits.append(f"mesh @ {o['mesh']:g}")
+    if o.get("punching_per"):
+        bits.append(trials.PUNCHING[o["punching_per"]])
     return ", ".join(bits)
 
 
@@ -123,6 +144,9 @@ def variant_of(o: dict[str, Any], spec: dict[str, Any], section: Section) -> dic
         c["crack_width_limit"] = o["crack_width_limit"]
     if o.get("peaks"):
         c["peaks"] = o["peaks"]
+    for k in ("mesh", "punching_per"):
+        if o.get(k):
+            c[k] = o[k]
     deck = o.get("deck")
     if deck:
         c["deck"] = deck["type"]
@@ -167,6 +191,16 @@ def default_spec(section: Section) -> dict[str, Any] | None:
         "crack_width_limit": [0.2, 0.3],
         "peaks": ["peak", "face_mean"],
         "decks": decks,
+        "mesh": [150.0, 200.0],
+        "punching_per": ["type", "head"],
+        "use": {
+            "thickness": True,
+            "crack_width_limit": True,
+            "peaks": True,
+            "decks": True,
+            "mesh": False,
+            "punching_per": False,
+        },
     }
 
 
@@ -336,7 +370,11 @@ def view(
             "crack_width_limit_bottom": getattr(element, "crack_width_limit_bottom", None),
             "peaks": element.peaks,
             "voids": element.voids.model_dump() if element.voids is not None else None,
+            "punching_per": element.punching_per,
+            "mesh": (section.slab_strips.get(name).spacing if section.slab_strips.get(name) else None),
         },
+        "spacings": project.design.reinforcement.slab_spacings,
+        "punching": trials.PUNCHING,
         "count": len(options(spec, section)),
         "max": MAX_OPTIONS,
         "peaks": trials.PEAKS,

@@ -497,6 +497,10 @@ def variant_label(variant: dict[str, Any], section: Section | None = None) -> st
             bits.append(DECKS[c["deck"]])
         if c.get("peaks"):
             bits.append(PEAKS.get(c["peaks"], c["peaks"]))
+        if c.get("mesh"):
+            bits.append(f"mesh @ {c['mesh']:g}")
+        if c.get("punching_per"):
+            bits.append(PUNCHING[c["punching_per"]])
         if c.get("crack_width_limit"):
             bits.append(f"wk {c['crack_width_limit']:g}")
         parts.append(f"{name} {', '.join(bits)}")
@@ -512,6 +516,7 @@ APPROACH_KEYS = {
     "ledge_projection": ("ledge projection", " mm", 150.0, 1500.0),
     "crack_width_limit": ("crack width limit", " mm", 0.05, 0.5),
 }
+PUNCHING = {"type": "punching per pile type", "head": "punching per head"}
 PEAKS = {
     "peak": "peaks as they are",
     "face_mean": "face mean",
@@ -553,6 +558,17 @@ def clean_variant(variant: dict[str, Any], section: Section | None = None) -> di
             if not isinstance(element, SlabInput) or c["peaks"] not in PEAKS:
                 raise ValueError(f"{name}: no pile-face method '{c['peaks']}'.")
             mine["peaks"] = c["peaks"]
+        if c.get("mesh") not in (None, ""):
+            if not isinstance(element, SlabInput):
+                raise ValueError(f"{name}: only a slab has a mesh spacing to pick.")
+            mesh = float(c["mesh"])
+            if not 75 <= mesh <= 400:
+                raise ValueError(f"{name}: a mesh at {mesh:g} mm is not one Triton can design.")
+            mine["mesh"] = mesh
+        if c.get("punching_per"):
+            if not isinstance(element, SlabInput) or c["punching_per"] not in PUNCHING:
+                raise ValueError(f"{name}: no punching design '{c['punching_per']}'.")
+            mine["punching_per"] = c["punching_per"]
         if c.get("crack_width_limit") not in (None, ""):
             if not hasattr(element, "crack_width_limit"):
                 raise ValueError(f"{name} has no crack width limit.")
@@ -619,12 +635,19 @@ def variant_section(section: Section, variant: dict[str, Any]) -> Section:
             update |= {f: c["crack_width_limit"] for f in CRACK_FIELDS if hasattr(e, f)}
         if c.get("peaks"):
             update["peaks"] = c["peaks"]
+        if c.get("punching_per"):
+            update["punching_per"] = c["punching_per"]
         e = with_deck(e, c.get("deck"))
         size = {k: v for k, v in c.items() if k in SIZE_KEYS}
         if size:
             e = with_size(e, size)
         elements[name] = e.model_copy(update=update) if update else e
     strips = {k: v.model_copy(update={"bars": {}, "spacing": None}) for k, v in section.slab_strips.items()}
+    for name, c in per.items():  # the mesh spacing a variant picks for a slab
+        if c.get("mesh"):
+            from .project import SlabStrips
+
+            strips[name] = (strips.get(name) or SlabStrips()).model_copy(update={"spacing": c["mesh"]})
     return section.model_copy(
         update={"elements": elements, "user_cages": {}, "beam_cages": {}, "slab_strips": strips}
     )

@@ -176,3 +176,42 @@ def test_the_matrix_runs_costs_and_reports(tmp_path, monkeypatch):
     assert any(b.kind == "image" for b in rep.blocks)
     for render in (to_docx, to_pdf, to_xlsx):
         assert len(render(rep)) > 1000
+
+
+def test_lists_can_be_left_out_and_mesh_and_punching_compared():
+    p, s = section()
+    spec = matrix.clean_spec(
+        {**SPEC, "mesh": [150, 200], "punching_per": ["type", "head"], "use": {"crack_width_limit": False}},
+        s,
+        [150.0, 200.0],
+    )
+    options = matrix.options(spec, s)
+    assert len(options) == 2 * 1 * 2 * 2 * 2  # thickness x peaks x decks x mesh x punching; no wk
+    assert all(o["crack_width_limit"] is None for o in options)
+    v = next(
+        v
+        for v in matrix.variants(spec, s)
+        if "mesh @ 200" in v["label"] and "punching per head" in v["label"]
+    )
+    vs = trials.variant_section(s, v)
+    assert vs.slab_strips["Deck"].spacing == 200 and vs.elements["Deck"].punching_per == "head"
+    with pytest.raises(ValueError, match="meshes at 150, 200"):
+        matrix.clean_spec({**SPEC, "mesh": [175]}, s, [150.0, 200.0])
+
+
+def test_comparisons_have_their_own_export(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from triton.api import app
+
+    monkeypatch.setenv("TRITON_DATA_DIR", str(tmp_path))
+    c = TestClient(app)
+    p = c.post("/api/projects", json={"element_names": ["Deck", "Pile(1)"]}).json()
+    pid, sid = p["id"], p["sections"][0]["id"]
+    base = f"/api/projects/{pid}/sections/{sid}/comparisons/report"
+    for f in ("docx", "pdf", "xlsx"):
+        r = c.get(f"{base}.{f}", params={"what": "element", "element": "Deck"})
+        assert r.status_code == 200 and len(r.content) > 1000
+        assert c.get(f"{base}.{f}", params={"what": "all"}).status_code == 200
+    assert c.get(f"{base}.docx", params={"what": "ve"}).status_code == 200
+    assert c.get(f"{base}.docx", params={"what": "element", "element": "Nope"}).status_code == 404

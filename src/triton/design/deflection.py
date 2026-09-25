@@ -49,7 +49,7 @@ a Plaxis displacement result.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -201,6 +201,7 @@ class _Member:
     z: np.ndarray
     k: dict[str, np.ndarray]
     firm: float | None  # the firm soil level for it, if any
+    xy: tuple[float, float] = (0.0, 0.0)  # plan position (a wall strip: its centre)
 
 
 @dataclass
@@ -212,6 +213,15 @@ class _Tall:
     pile: bool
     members: list[_Member]
     labels: dict[str, str]
+    glob: dict[str, str] = field(default_factory=dict)  # direction key -> the global axis it moves along
+
+
+def _global(axes: dict[str, Any] | None) -> dict[str, str]:
+    """The global axis each pile direction moves along: M3 bends it along its local 2 axis, M2 along 3."""
+    local = (axes or {}).get("local") if isinstance(axes, dict) else axes
+    local = local or {}
+    two = local.get("2") if local.get("2") in ("X", "Y") else "X"
+    return {"M_3": two, "M_2": "Y" if two == "X" else "X"}
 
 
 def _thin(s: np.ndarray, w: np.ndarray) -> list[list[float]]:
@@ -471,7 +481,9 @@ def _pile(
                 zb = gb["Z"].to_numpy(float)
                 b3, b2 = kappa(*(np.interp(z, zb, gb[c].to_numpy(float)) for c in ("N", "M_2", "M_3")), z)
                 k3, k2 = k3 - b3, k2 - b2
-        out.append(_Member(f"pile at X {x:g}, Y {y:g} m", z, {"M_3": k3, "M_2": k2}, ds.firm_soil_level))
+        out.append(
+            _Member(f"pile at X {x:g}, Y {y:g} m", z, {"M_3": k3, "M_2": k2}, ds.firm_soil_level, (x, y))
+        )
     stiff = f"Gross concrete circle Ø{d:g} mm, {e_words}: EI {ei:,.0f} kN·m² (any steel casing left out)."
     if cracked:
         stiff += (
@@ -494,6 +506,7 @@ def _pile(
         True,
         out,
         {"M_3": across, "M_2": along},
+        _global(axes),
     )
 
 
@@ -544,7 +557,8 @@ def _combi(
                 zb = gb["Z"].to_numpy(float)
                 m3 = m3 - np.interp(z, zb, gb["M_3"].to_numpy(float))
                 m2 = m2 - np.interp(z, zb, gb["M_2"].to_numpy(float))
-        out.append(_Member(f"king pile at X {x:g}, Y {y:g} m", z, {"M_3": m3 * per, "M_2": m2 * per}, firm))
+        k = {"M_3": m3 * per, "M_2": m2 * per}
+        out.append(_Member(f"king pile at X {x:g}, Y {y:g} m", z, k, firm, (x, y)))
     infill = f"{'0.6 × ' if ke != 1 else ''}{e_words}"
     stiff = (
         f"Tube Ø{wall.tube_diameter:g} × {wall.tube_thickness:g} mm with {wall.corrosion_loss:g} mm "
@@ -569,6 +583,7 @@ def _combi(
         False,
         out,
         {"M_3": across, "M_2": along},
+        _global(axes),
     )
 
 
@@ -622,7 +637,10 @@ def _spw(
                 lost += 1
             else:
                 m = m - np.interp(z, gb.index.to_numpy(float), gb.to_numpy(float))
-        out.append(_Member(f"1 m strip at {along} {(strip + 0.5) * STRIP:g} m", z, {"M_11": m / ei}, firm))
+        centre = (strip + 0.5) * STRIP
+        line = float(f["Y" if along == "X" else "X"].mean())
+        xy = (centre, line) if along == "X" else (line, centre)
+        out.append(_Member(f"1 m strip at {along} {centre:g} m", z, {"M_11": m / ei}, firm, xy))
     if not out:
         return None
     return _Tall(
@@ -643,6 +661,7 @@ def _spw(
         False,
         out,
         {"M_11": "across the wall (from M11)"},
+        {"M_11": "Y" if along == "X" else "X"},
     )
 
 
@@ -896,17 +915,16 @@ def _plate(
 # --- Section ------------------------------------------------------------------------------------------
 
 
-def estimate(
+def _collect(
     settings: DesignSettings,
     section: Section,
     workbook: ImportResult,
-    results: dict | None = None,
-    phases: ImportResult | None = None,
-) -> dict[str, Any]:
-    """Estimated displacements of every pile, combi wall, sheet pile wall, beam and slab of a section
-    from its workbook (the working zone applied, load multipliers not). ``results``: the stored
-    design, whose pile cages the cracked stiffness uses. ``phases``: every sheet of the workbook, the
-    section's load combinations or not, where the phase the movement is measured from is looked for."""
+    results: dict | None,
+    phases: ImportResult | None,
+    plates: bool = True,
+) -> tuple[list[_Tall], list[dict[str, Any]], list[str]]:
+    """Every pile and wall element before its boundary conditions (signs made one way), the slab and
+    beam strip estimates, and what was skipped."""
     ds = section.deflection
     plain = section.model_copy(update={"load_factors": []})
     sheets = factored_elements(plain, workbook)
@@ -919,7 +937,6 @@ def estimate(
     axes = {a["element"]: a for a in getattr(workbook, "axes", None) or []}
     designed = {p["element"]: p for p in (results or {}).get("piles") or []}
     out, skipped = [], []
-
     king = []
     for name, el in section.elements.items():
         if isinstance(el, CombiWallInput) and name in sheets:
@@ -946,6 +963,8 @@ def estimate(
             elif isinstance(el, SheetPileInput):
                 tall = _spw(name, el, ds, own, king)
             elif isinstance(el, SlabInput | BeamInput):
+                if not plates:
+                    continue
                 entry = _plate(name, el, settings, ds, own, axes.get(name), supports)
                 if entry is None:
                     skipped.append(
@@ -965,22 +984,82 @@ def estimate(
         else:
             talls.append(tall)
     _same_way(talls)
+    return talls, out, skipped
+
+
+def _deck_json(deck: dict[str, Any] | None) -> dict[str, Any] | None:
+    if deck is None:
+        return None
+    return {
+        "level": round(deck["top"], 2),
+        "piles": deck["count"],
+        "move_mm": {w: round(v * 1e3, 2) for w, v in deck["move"].items()},
+        "spread_mm": {w: [round(a * 1e3, 2), round(b * 1e3, 2)] for w, (a, b) in deck["spread"].items()},
+        "words": _deck_words(deck),
+    }
+
+
+def estimate(
+    settings: DesignSettings,
+    section: Section,
+    workbook: ImportResult,
+    results: dict | None = None,
+    phases: ImportResult | None = None,
+) -> dict[str, Any]:
+    """Estimated displacements of every pile, combi wall, sheet pile wall, beam and slab of a section
+    from its workbook (the working zone applied, load multipliers not). ``results``: the stored
+    design, whose pile cages the cracked stiffness uses. ``phases``: every sheet of the workbook, the
+    section's load combinations or not, where the phase the movement is measured from is looked for."""
+    ds = section.deflection
+    talls, plates, skipped = _collect(settings, section, workbook, results, phases)
     deck = _deck(talls, ds)
     order = {n: i for i, n in enumerate(section.elements)}
-    out = sorted([_settle(t, ds, deck) for t in talls] + out, key=lambda e: order[e["element"]])
+    out = sorted([_settle(t, ds, deck) for t in talls] + plates, key=lambda e: order[e["element"]])
     return {
         "estimate": True,
         "note": ESTIMATE,
         "settings": ds.model_dump(mode="json"),
-        "deck": None
-        if deck is None
-        else {
-            "level": round(deck["top"], 2),
-            "piles": deck["count"],
-            "move_mm": {w: round(v * 1e3, 2) for w, v in deck["move"].items()},
-            "spread_mm": {w: [round(a * 1e3, 2), round(b * 1e3, 2)] for w, (a, b) in deck["spread"].items()},
-            "words": _deck_words(deck),
-        },
+        "deck": _deck_json(deck),
         "elements": out,
         "skipped": skipped,
     }
+
+
+def estimate_shapes(
+    settings: DesignSettings,
+    section: Section,
+    workbook: ImportResult,
+    combination: str = "",
+    results: dict | None = None,
+    phases: ImportResult | None = None,
+) -> dict[str, Any]:
+    """The deflected shape of every pile, king pile and sheet pile strip of a section for one
+    combination (empty: as the Design tab picks), with the Design tab's boundary conditions, stiffness
+    and 'Movement from'; for drawing the whole system in 3D. Each member: its element, kind, plan
+    position and points [z, ux, uy] (m, mm, mm) in global X and Y. Signs follow the members' local
+    axes as the estimate does."""
+    ds = section.deflection.model_copy(update={"combination": combination})
+    section = section.model_copy(update={"deflection": ds})
+    talls, _, skipped = _collect(settings, section, workbook, results, phases, plates=False)
+    deck = _deck(talls, ds)
+    members = []
+    for t in talls:
+        for m in t.members:
+            u = {"X": np.zeros(len(m.z)), "Y": np.zeros(len(m.z))}
+            for key in m.k:
+                w, _ = _shape(m, key, ds, deck)
+                u[t.glob.get(key, "X")] = u[t.glob.get(key, "X")] + w
+            members.append(
+                {
+                    "element": t.entry["element"],
+                    "kind": t.entry["kind"],
+                    "combination": t.entry["combination"],
+                    "x": round(m.xy[0], 3),
+                    "y": round(m.xy[1], 3),
+                    "points": [
+                        [round(float(z), 3), round(float(a) * 1e3, 2), round(float(b) * 1e3, 2)]
+                        for z, a, b in zip(m.z, u["X"], u["Y"], strict=True)
+                    ],
+                }
+            )
+    return {"estimate": True, "deck": _deck_json(deck), "members": members, "skipped": skipped}

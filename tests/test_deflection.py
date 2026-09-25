@@ -293,3 +293,27 @@ def test_movement_from_the_end_of_construction(client):
     client.put(f"/api/projects/{p['id']}", json=page)
     missing = client.get(f"{url}/deflections").json()["elements"][0]
     assert missing["head_mm"] == total["head_mm"] and "so the total movement" in missing["baseline_note"]
+
+
+def test_shapes_of_every_member_for_any_combination():
+    """For the 3D view: every pile position, in global X and Y, for the combination asked for."""
+    from triton.design.deflection import estimate_shapes
+    from triton.validation import import_sheets
+
+    p = Project.model_validate(
+        {"id": "0123456789ab", "info": {"name": "Q"}, "sections": [{"id": "abcdef12", "name": "S"}]}
+    )
+    s = p.sections[0]
+    s.elements = {"Pile(1)": Project.model_validate(SAVED).sections[0].elements["Pile(1)"]}
+    s.elements["Pile(1)"].head_level = None
+    wb = import_sheets(
+        {"Pile(1)-QP": pile_sheet(scale=1000.0), "Pile(1)-PT-B-Apron": pile_sheet(scale=3000.0)}
+    )
+    qp = estimate_shapes(p.design, s, wb)
+    uls = estimate_shapes(p.design, s, wb, "PT-B-Apron")
+    assert {m["combination"] for m in qp["members"]} == {"QP"}
+    assert {m["combination"] for m in uls["members"]} == {"PT-B-Apron"}
+    assert len(qp["members"]) >= 1 and all(len(m["points"][0]) == 3 for m in qp["members"])
+    head_qp, head_uls = qp["members"][0]["points"][-1], uls["members"][0]["points"][-1]
+    assert head_uls[1] == pytest.approx(3 * head_qp[1], abs=0.02) and head_qp[1] != 0
+    assert qp["deck"]["move_mm"]["across"] == pytest.approx(head_qp[1], abs=0.01)

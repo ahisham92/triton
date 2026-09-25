@@ -49,6 +49,7 @@ export async function renderClashes(host, h) {
   };
 
   const groupsHtml = () => `<div class="panel"><h2>Connections</h2>
+    ${data.standard?.length ? `<p class="status">Not checked: ${esc(data.standard.join(", "))} ${data.standard.length === 1 ? "was" : "were"} designed in Standard mode, which has no bar layout. Design ${data.standard.length === 1 ? "it" : "them"} in Detailed mode to check clashes.</p>` : ""}
     <p class="status">${data.heads_checked} pile heads checked, ${data.heads_clear} clear. Pick a row to see its heads, drawings and solutions.</p>
     <div class="scroll"><table><thead><tr><th>Pile into</th><th>Connection</th><th class="num">Heads</th><th class="num">With clashes</th>
       <th class="num">Bars overlapping</th><th class="num">Too close</th><th class="num">Punching links</th><th>Recommended</th><th>Solution to use</th></tr></thead><tbody>

@@ -444,6 +444,25 @@ def crack_utilisation(
     return crack_widths(pile, a, settings, qp)["wk"].to_numpy() / pile.crack_width_limit
 
 
+STANDARD_ZONE_CAGES = 6  # cages the zones down the pile choose from in a Standard design
+STANDARD_ZONE_STEP = 1.0  # m, the zone lengths tried in a Standard design (0.25 m in a Detailed one)
+
+
+def crack_candidates(qp: pd.DataFrame, diameter: float, k: int = 3) -> pd.DataFrame:
+    """At each level (5 cm), the QP rows that can give the widest crack there: the largest moments,
+    the largest tensions and the largest steel force estimate M/z − N/2 (N compression positive,
+    z = 0.6 D). The crack width grows with each, so the worst row is among them (Standard design)."""
+    if len(qp) <= 3 * k:
+        return qp
+    z = 0.6 * diameter / 1000
+    m = qp["M"].abs()
+    level = (qp["Z"] / 0.05).round()
+    keep = set()
+    for score in (m, -qp["N"], m / z - qp["N"] / 2):
+        keep.update(score.groupby(level).nlargest(k).index.get_level_values(-1))
+    return qp.loc[sorted(keep)]
+
+
 class _Checker:
     """Maximum utilisation of a cage over all loads, using only the hull points of each load group.
 
@@ -482,8 +501,10 @@ def design_pile(
     settings: DesignSettings,
     sheets: dict[str, SheetData],
     cage: UserCage | None = None,
+    standard: bool = False,
 ) -> PileDesign:
-    """Choose the pile's cage, or check the one the user set (``cage``)."""
+    """Choose the pile's cage, or check the one the user set (``cage``). ``standard``: the quick
+    overview (Standard design): no alternatives or AdSec sets."""
     pile = with_project_grades(pile, settings.materials, settings.durability)
     above = settings.results_into_connection / 1e3
     full_loads = None
@@ -587,6 +608,8 @@ def design_pile(
         )
 
     qp = crack_loads(pile, qp_loads(sheets, pile.head_level, above), settings)
+    if standard:
+        qp = crack_candidates(qp, pile.diameter)
     check = _Checker(pile, settings, loads, qp)
     strength = _Checker(pile, settings, loads)
     passing = [a for fam in families if (a := _fewest(fam, check))]
@@ -657,6 +680,8 @@ def design_pile(
             qp,
             head_may_fail=not passed,
             head_couplers=head_couplers,
+            max_cages=STANDARD_ZONE_CAGES if standard else None,
+            **({"length_step": STANDARD_ZONE_STEP} if standard else {}),
         )
     shear, steel = _shear_and_steel(pile, settings, loads, chosen, curtailment, geom)
     positions = (
@@ -692,7 +717,11 @@ def design_pile(
     stations = [(r["top"], r["bottom"], r["cage"]) for r in runs] or [
         (geom["head_level_m"], geom["toe_level_m"], chosen.to_dict())
     ]
-    governing_sets = station_sets(pile, settings, loads, qp_loads(sheets, pile.head_level, above), stations)
+    governing_sets = (
+        []
+        if standard
+        else station_sets(pile, settings, loads, qp_loads(sheets, pile.head_level, above), stations)
+    )
     cracks = crack_summary(pile, settings, qp, stations)
     if casing_check is not None and not casing_check["tube"]["passed"]:
         passed = False
@@ -713,7 +742,7 @@ def design_pile(
             "steel_ratio_kg_m3": round(a.area / ac * STEEL_DENSITY, 1),
             "chosen": a == chosen,
         }
-        for a in _alternatives(chosen, passing, key)
+        for a in ([] if standard else _alternatives(chosen, passing, key))
     ]
     return PileDesign(
         name,

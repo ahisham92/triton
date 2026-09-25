@@ -94,6 +94,7 @@ def design_combi_wall(
     settings: DesignSettings,
     sheets: dict[str, SheetData],
     cage: UserCage | None = None,
+    standard: bool = False,
 ) -> dict[str, Any]:
     wall = with_project_grades(wall, settings.materials, settings.durability)
     sec = combi_section(wall)
@@ -106,7 +107,7 @@ def design_combi_wall(
         f = f[f["Z"] >= bottom - 1e-9]
         if not f.empty:
             infill_sheets[combo] = replace(sheet, frame=scale_forces(f, 1 - share))
-    infill = design_pile(name, infill_as_pile(wall), settings, infill_sheets, cage).to_dict()
+    infill = design_pile(name, infill_as_pile(wall), settings, infill_sheets, cage, standard).to_dict()
     infill["notes"] = [
         n.replace("into the slab", "into the front beam")
         for n in infill["notes"]
