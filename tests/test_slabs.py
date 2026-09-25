@@ -540,9 +540,11 @@ def test_least_spacing_of_additional_bars():
 
     assert "Ø32 @ 150 in 2 layers + Ø32 behind the mesh bars" in labels()  # the bars @ 75
     kept = labels(slab_min_bar_spacing=150)
-    assert "Ø32 @ 300" in kept and "Ø32 @ 150 in 2 layers" in kept
-    assert not any("behind" in t for t in kept) and not any("3 layers" in t for t in kept)
-    assert "Ø32 @ 150 in 3 layers" in labels(slab_min_bar_spacing=150, max_layers=3)
+    assert "Ø32 @ 300" in kept and "Ø32 @ 150 in 2 layers" in kept and "Ø32 @ 150 in 3 layers" in kept
+    assert not any("behind" in t for t in kept)
+    # As many layers as the design needs, whatever Maximum bar layers says, up to mid-depth.
+    deep = additional_options(mesh, DesignSettings(), room=250)[2]
+    assert "Ø32 @ 150 in 4 layers" in deep and "Ø32 @ 150 in 5 layers" not in deep
     assert all(t == "Ø20 @ 150" or t.endswith("@ 300") for t in labels(slab_min_bar_spacing=300))
 
 

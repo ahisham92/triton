@@ -117,7 +117,7 @@ class ReinforcementSettings(_Model):
         gt=0,
         description="Each set of additional bars in a slab is at this spacing or wider: 150 on a 150 mm "
         "mesh keeps Ø @ 150 (every gap) and Ø @ 300 (every second gap) and drops the bars @ 75 behind "
-        "the mesh bars; a third layer @ 150 takes their place when 3 layers are allowed. Empty: no limit.",
+        "the mesh bars; more layers @ 150 take their place. Empty: no limit.",
     )
     max_spacing: float = _mm("Maximum bar spacing (slabs and beams)", 250.0, gt=0)
     spacing_step: float = _mm("Spacing increment (slabs and beams)", 25.0, gt=0)
@@ -128,7 +128,13 @@ class ReinforcementSettings(_Model):
         "Empty: from the maximum spacing down in the spacing increment.",
         json_schema_extra={"unit": "mm"},
     )
-    max_layers: int = Field(2, title="Maximum bar layers per face (slabs and beams)", ge=1, le=3)
+    max_layers: int = Field(
+        2,
+        title="Maximum bar layers per face (beams, slab meshes)",
+        ge=1,
+        le=3,
+        description="Slab additional bars take as many layers as the design needs, up to mid-depth.",
+    )
     objective: Literal["min_steel", "min_cost"] = Field(
         "min_steel", title="Choose arrangement by", description="Least steel ratio or lowest cost"
     )
