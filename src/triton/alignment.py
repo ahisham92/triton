@@ -651,6 +651,8 @@ def combine_parts(results: dict[str, Any]) -> dict[str, Any]:
             # Links are counted zone by zone and pile by pile: every part's.
             if isinstance(d.get("punching"), list):
                 m["punching"] = [*(m.get("punching") or []), *d["punching"]]
+            if isinstance(d.get("punching_types"), list):
+                m["punching_types"] = [*(m.get("punching_types") or []), *d["punching_types"]]
             if isinstance(d.get("shear"), dict) and isinstance(d["shear"].get("links"), list):
                 sm = dict(m.get("shear") or {})
                 sm["links"] = [*(sm.get("links") or []), *d["shear"]["links"]]

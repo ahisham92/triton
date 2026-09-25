@@ -195,8 +195,8 @@ def test_designs_without_joints_keep_their_fingerprint():
     before = fresh.fingerprint(project, section, None)
     # The element's own hash does not see the empty list, so designs made before joints stay current.
     own = section.elements["Deck"].model_dump(mode="json")
-    for key in ("construction_joints", "manholes", "channels"):
-        own.pop(key, None)
+    for key in ("construction_joints", "manholes", "channels", "punching_piles", "punching_per"):
+        own.pop(key, None)  # punching: empty and the default "type" are left out too
     assert before["Deck"] == fresh._hash(own)
     with_joint = _deck_section(slab=[SlabJoint(at=-2.0)])
     assert fresh.fingerprint(Project(sections=[with_joint]), with_joint, None)["Deck"] != before["Deck"]

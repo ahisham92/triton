@@ -302,10 +302,23 @@ class ProjectStore:
 
     def load_results(self, project_id: str, section_id: str) -> dict[str, Any] | None:
         path = self._dir(project_id, section_id) / "results.json"
-        return json.loads(path.read_text("utf-8")) if path.exists() else None
+        return _upgrade(json.loads(path.read_text("utf-8"))) if path.exists() else None
 
     @staticmethod
     def _write_json(path: Path, data: Any) -> None:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, default=str), "utf-8")
         tmp.replace(path)
+
+
+def _upgrade(results: Any) -> Any:
+    """Results saved by an older Triton, read as the current one gives them: slabs designed before
+    punching was unified per pile type get their heads unified (the default), without a redesign."""
+    if not isinstance(results, dict):
+        return results
+    from .design.slabs import unify_punching
+
+    for d in results.get("slabs") or []:
+        if isinstance(d, dict) and isinstance(d.get("punching"), list) and "punching_types" not in d:
+            d["punching"], d["punching_types"] = unify_punching(d["punching"])
+    return results

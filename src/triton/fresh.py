@@ -113,9 +113,11 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
     for name, element in section.elements.items():
         cage = section.user_cages.get(name) or section.beam_cages.get(name) or section.slab_strips.get(name)
         own = element.model_dump(mode="json")
-        for key in ("rooms", "manholes", "channels", "construction_joints"):
+        for key in ("rooms", "manholes", "channels", "construction_joints", "punching_piles"):
             if not own.get(key):
                 own.pop(key, None)  # none: the fingerprint it had before these existed
+        if own.get("punching_per") == "type":
+            own.pop("punching_per")  # the default: older results are unified when read (store)
         # A corner berth's parts keep their own bars and stations ("Deck · Part 2").
         each = {
             k: v.model_dump(mode="json")

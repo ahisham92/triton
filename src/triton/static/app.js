@@ -799,6 +799,21 @@ function renderField(obj, key, prop, inner, nullable, path) {
     return f;
   }
 
+  if (key === "punching_piles") {
+    // The section's pile types: none ticked = every pile type under the slab.
+    const piles = Object.entries(sec()?.elements || {}).filter(([, e]) => e.kind === "pile").map(([n]) => n);
+    const on = new Set(value || []);
+    f.classList.add("full");
+    f.innerHTML = `<label>${esc(title)}</label><div class="checks">${piles
+      .map((n) => `<label><input type="checkbox" value="${esc(n)}" ${on.has(n) ? "checked" : ""}> ${esc(n)}</label>`)
+      .join("") || '<span class="status">No piles in this section.</span>'}</div>${hint}`;
+    f.querySelectorAll("input").forEach((c) => (c.onchange = () => {
+      obj[key] = [...f.querySelectorAll("input:checked")].map((x) => x.value);
+      markDirty();
+    }));
+    return f;
+  }
+
   if (inner.type === "array" && resolve(inner.items)?.properties) {
     // A list of small records, e.g. crane areas: one table row each.
     f.classList.add("full");
@@ -947,7 +962,7 @@ function prettyOption(o) {
   const map = { crack_only: "No: it only removes the crack width check", structural: "Yes: designed with the concrete (E·I share)", min_steel: "Least steel",
     lap: "Lapped", raw: "Raw values", average: "Average with neighbours", unified: "Unified", zoned: "Zoned", coupler: "Couplers", least_steel: "Least steel", standard_lengths: "Standard cut lengths",
     min_cost: "Lowest cost", en1992: "EN 1992-1-1 (Table 4.4N)", en1993_5: "EN 1993-5 (Table 4.2)", bs6349: "BS 6349-1-4 (maritime)", uniform: "Uniform slab", column_and_field: "Column and field strips",
-    office: "Office sheets", ec2: "EN 1992-1-1", ec3: "EN 1993 (plastic filled, shell buckling empty)", ei_split: "E·I split where filled", all: "All actions on the tube",
+    office: "Office sheets", ec2: "EN 1992-1-1", type: "One per pile type", head: "Each head its own", ec3: "EN 1993 (plastic filled, shell buckling empty)", ei_split: "E·I split where filled", all: "All actions on the tube",
     feltham: "Feltham", two_legs: "Two legs per hoop", peak: "Peak (as they are)", face_mean: "Face mean (each face on its own)",
     ring_mean: "Ring mean (all round the pile)", envelope_face_mean: "Envelope, then face mean",
     midway: "Mid-way between pile rows", at_row: "At a pile row (doubled row)", anywhere: "Anywhere" };
@@ -3105,12 +3120,17 @@ function alerts(res) {
     for (const [k, l] of Object.entries(d.layers || {})) {
       if (l.utilisation > 1) add("unsafe", (d.key || d.element), `${k.replace("_", " bars along ")}: ${fmt(l.utilisation, 2)} of the steel needed`);
     }
-    const where = (q) => `${q.pile} (X ${fmt(q.plan_x ?? q.x, 1)}, Y ${fmt(q.plan_y ?? q.y, 1)})`;
-    for (const q of d.punching || []) {
+    const where = (q) => q._type ? `${q.pile} X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)})` : `${q.pile} (X ${fmt(q.plan_x ?? q.x, 1)}, Y ${fmt(q.plan_y ?? q.y, 1)})`;
+    // Unified per pile type: one line per type (from its governing head), not one per head.
+    const punchRows = d.punching_types?.length && d.punching_types[0].unified
+      ? d.punching_types.map((t) => ({ ...t, x: t.governing_x, y: t.governing_y, pile: `${t.pile} (${t.heads} heads, worst at`, _type: true }))
+      : d.punching || [];
+    for (const q of punchRows) {
       if (!q.passed) add("unsafe", (d.key || d.element), `punching at ${where(q)}: ${q.vEd_face_MPa > q.vRd_max_MPa ? "crushes at the pile face" : `needs more than links can give (${fmt(q.kmax_ratio, 2)} × 1.5·vRd,c)`}${punchFix(q) ? `. Fix: ${punchFix(q)}` : ""}`);
     }
-    const links = (d.punching || []).filter((q) => q.passed && q.needs_reinforcement);
-    if (links.length === 1) add("limit", (d.key || d.element), `punching links needed at ${where(links[0])}, ${links[0].perimeters} perimeters`);
+    const links = punchRows.filter((q) => q.passed && q.needs_reinforcement);
+    if (links.length && links[0]._type) add("limit", (d.key || d.element), `punching links needed for ${links.map((t) => `${t.pile.split(" (")[0]} (${t.perimeters} perimeters on all ${t.heads} heads)`).join(", ")}`);
+    else if (links.length === 1) add("limit", (d.key || d.element), `punching links needed at ${where(links[0])}, ${links[0].perimeters} perimeters`);
     else if (links.length) {
       const by = {};
       for (const q of links) by[q.pile] = (by[q.pile] || 0) + 1;
@@ -4052,6 +4072,9 @@ function slabCard(d) {
   const st = d.steel || {};
   const punch = d.punching || [];
   const needs = punch.filter((q) => q.needs_reinforcement);
+  // One design per pile type (the default): each type's row, its worst head's design.
+  const types = (d.punching_types || []).filter((t) => t.unified);
+  const govOf = (t) => punch.findIndex((q) => q.pile === t.pile && q.governing);
   const sh = d.shear || {};
   const layers = d.layers || {};
   card.innerHTML = `<div class="element-head"><h3>${esc(d.key || d.element)}<span class="type">${partText(d)}Slab, ${fmt(d.thickness_mm)} mm, ${esc(d.concrete || "")}, covers ${fmt(d.cover_top_mm)} top / ${fmt(d.cover_bottom_mm)} bottom, ${d.strips === "column_and_field" ? "column and field strips" : "uniform"}</span></h3>${ok(d.passed)}</div>
@@ -4062,7 +4085,7 @@ function slabCard(d) {
       <div class="count"><b>${fmt(st.kg_per_m3)}</b>kg/m³ (${fmt(st.kg_per_m2, 1)} kg/m², links not included)</div>
       <div class="count"><b>${fmt(overallRatio(st), 2)}%</b>overall ρ</div>
       <div class="count"><b>${fmt(st.total_t, 1)} t</b>bars over ${fmt(st.area_m2)} m²</div>
-      <div class="count"><b>${needs.length} of ${punch.length}</b>piles need punching links</div>
+      ${types.length ? `<div class="count"><b>${types.filter((t) => t.needs_reinforcement).length} of ${types.length}</b>pile types need punching links</div>` : `<div class="count"><b>${needs.length} of ${punch.length}</b>piles need punching links</div>`}
       <div class="count"><b>${sh.cells_needing_links ?? 0}</b>${fmt(d.zone_size_m, 1)} m cells need shear links</div>
     </div>
     ${d.frame_note ? `<p class="status">${esc(d.frame_note)}</p>` : ""}
@@ -4087,7 +4110,22 @@ function slabCard(d) {
     <div class="row" style="margin:10px 0 4px">${Object.keys(layers).map((k, i) => `<button class="quiet${i ? "" : " on"}" data-layer="${k}">${esc(LAYER_NAME[k] || k)}</button>`).join("")}${sh.links?.length ? `<button class="quiet" data-layer="shear">Shear links</button>` : ""}</div>
     <div class="chart wide" data-kind="plan"></div>
     <h3 style="margin-top:18px">Punching at the piles</h3>
-    ${punch.length ? `<p class="status">Click a pile to see its control perimeters. Change a pile's thickness for a slope, then save and design again.</p>
+    ${types.length ? `<p class="status">One design per pile type, as detailed on site: every head of a type takes the design of its worst head, with links enough for all of them. Click a type to see its worst head's control perimeters. (Slab setting "Punching design" can give each head its own.)</p>
+      <div class="scroll"><table class="punch"><tr><th>Pile type</th><th>Heads</th><th>Worst head (X, Y)</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Links on every head</th><th></th></tr>
+      ${types.map((t) => { const g = punch[govOf(t)] || t; return `<tr class="link" data-punch="${govOf(t)}"><td><b>${esc(t.pile)}</b></td><td>${fmt(t.heads)}${t.heads_needing_links_alone ? `<br><span class="status">${fmt(t.heads_needing_links_alone)} alone need links</span>` : ""}</td><td>${fmt(g.plan_x ?? t.governing_x, 1)}, ${fmt(g.plan_y ?? t.governing_y, 1)}</td>
+        <td>${fmt(t.thickness_mm)} mm</td><td>${fmt(t.V_kN)} kN, ${esc(t.direction)}<br><span class="status">${esc(t.combination)}</span></td><td>${fmt(t.beta, 2)}</td>
+        <td>${fmt(t.vEd_MPa, 3)} / ${fmt(t.vRd_c_MPa, 3)}</td><td>${fmt(t.vEd_face_MPa, 2)} / ${fmt(t.vRd_max_MPa, 2)}</td>
+        <td>${t.needs_reinforcement ? (t.perimeters ? `${t.perimeters} perimeters @ ${fmt(t.radial_spacing_mm)} mm, ${fmt(t.asw_mm2_per_perimeter)} mm² each, to ${fmt(t.reinforced_to_mm)} mm from the face` : t.fix ? `Links alone cannot: ${esc(punchFix(t))}` : "–") : "none"}</td><td>${ok(t.passed)}</td></tr>`; }).join("")}
+      </table></div><div class="charts" data-kind="punch"></div>
+      <details style="margin-top:8px"><summary>Each pile head's own check (${punch.length} heads)</summary>
+      <p class="status">For checking only: what each head would need on its own. Change a head's thickness for a slope, then save and design again.</p>
+      <div class="scroll"><table class="punch"><tr><th>Pile</th><th>X, Y</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Utilisation</th><th>Links on its own</th></tr>
+      ${punch.map((q, i) => { const o = q.own || q; return `<tr><td>${esc(q.pile)}${q.governing ? " <b>(worst)</b>" : ""}</td><td>${fmt(q.plan_x ?? q.x, 1)}, ${fmt(q.plan_y ?? q.y, 1)}</td>
+        <td><input type="number" step="any" data-depth="${i}" value="${q.thickness_mm}" style="width:80px" title="${esc(q.thickness_from)}"> mm</td><td>${fmt(o.V_kN)} kN<br><span class="status">${esc(o.combination)}</span></td><td>${fmt(o.beta, 2)}</td>
+        <td>${fmt(o.vEd_MPa, 3)} / ${fmt(o.vRd_c_MPa, 3)}</td><td>${fmt(o.vEd_face_MPa, 2)} / ${fmt(o.vRd_max_MPa, 2)}</td><td>${fmt(o.utilisation, 2)}</td>
+        <td>${o.needs_reinforcement ? (o.perimeters ? `${o.perimeters} perimeters, ${fmt(o.asw_mm2_per_perimeter)} mm² each` : o.passed ? "–" : "fails") : "none"}</td></tr>`; }).join("")}
+      </table></div></details>
+    <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d); nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : punch.length ? `<p class="status">Click a pile to see its control perimeters. Change a pile's thickness for a slope, then save and design again.</p>
       <div class="scroll"><table class="punch"><tr><th>Pile</th><th>X, Y</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Links</th><th></th></tr>
       ${punch.map((q, i) => `<tr class="link" data-punch="${i}"><td>${esc(q.pile)}</td><td>${fmt(q.plan_x ?? q.x, 1)}, ${fmt(q.plan_y ?? q.y, 1)}</td>
         <td><input type="number" step="any" data-depth="${i}" value="${q.thickness_mm}" style="width:80px" title="${esc(q.thickness_from)}"> mm</td><td>${fmt(q.V_kN)} kN, ${esc(q.direction)}<br><span class="status">${esc(q.combination)}</span></td><td>${fmt(q.beta, 2)}</td>
@@ -4143,7 +4181,7 @@ function slabCard(d) {
     markDirty();
   }));
   if (punch.length) {
-    const worst = punch.reduce((b, q, i) => ((q.utilisation ?? 0) > (punch[b].utilisation ?? 0) ? i : b), 0);
+    const worst = punch.reduce((b, q, i) => (((q.own || q).utilisation ?? 0) > ((punch[b].own || punch[b]).utilisation ?? 0) ? i : b), 0);
     showPunch(worst);
   }
   return card;
