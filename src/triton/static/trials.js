@@ -19,7 +19,7 @@ const MATRIX = "*matrix*"; // the option matrix of a deck (matrix.js)
 
 export async function renderTrials(host, h) {
   const { api, again, esc, fmt, secUrl, ROOT } = h;
-  host.innerHTML = `<p class="sub">Design one element at several sizes and compare its reinforcement, links and cost per metre of berth.
+  host.innerHTML = `<p class="sub">Pick an element. A deck opens on its option matrix: thickness, crack width, pile-face method, deck type, mesh and punching compared together (tick the ones you want). Beams and piles are tried at several sizes. Each option shows its reinforcement, links and cost per metre of berth.
       Trials never change the design; <strong>Use this size</strong> does. Costs use the unit prices on the Project tab and the berth
       length and spacings on the <a href="${h.costingHash}">Costing tab</a>.</p>
     <div id="tr-out"><p class="status">Loading…</p></div>`;
@@ -43,8 +43,29 @@ export async function renderTrials(host, h) {
   } catch {
     /* no storage */
   }
-  if (picked !== ALL && picked !== MATRIX && !data.elements.some((e) => e.element === picked)) picked = (data.elements.find((e) => e.kind === "slabs") || data.elements[0]).element;
+  if (picked === MATRIX) picked = data.elements.find((e) => e.kind === "slabs")?.element ?? null; // the old matrix entry
+  if (picked !== ALL && !data.elements.some((e) => e.element === picked)) picked = (data.elements.find((e) => e.kind === "slabs") || data.elements[0]).element;
   let sizes = null; // the list being edited, for the picked element
+  // A slab opens on its option matrix (several things compared at once); "sizes" is thickness alone.
+  const modeKey = `triton-trials-slab-mode-${pid}`;
+  let slabMode = "matrix";
+  try {
+    slabMode = localStorage.getItem(modeKey) || "matrix";
+  } catch {
+    /* no storage */
+  }
+  const modeSwitch = () => `<div class="row mx-switch" style="margin:8px 0 0">
+      <button class="quiet${slabMode === "matrix" ? " on" : ""}" data-mode="matrix">Several options at once: thickness, crack width, pile faces, deck type, mesh, punching</button>
+      <button class="quiet${slabMode === "sizes" ? " on" : ""}" data-mode="sizes">Thickness only</button></div>`;
+  const wireMode = () => out.querySelectorAll("[data-mode]").forEach((b) => (b.onclick = () => {
+    slabMode = b.dataset.mode;
+    try {
+      localStorage.setItem(modeKey, slabMode);
+    } catch {
+      /* no storage */
+    }
+    draw();
+  }));
   let running = null;
 
   const cur = data.currency || "";
@@ -55,7 +76,7 @@ export async function renderTrials(host, h) {
   // Which element (or all of them) the tab is on.
   const picker = () => `<div class="row"><label>Element <select id="tr-el">
       <option value="${ALL}" ${picked === ALL ? "selected" : ""}>All elements (the whole section, a change on every element)</option>
-      ${data.elements.some((e) => e.kind === "slabs") ? `<option value="${MATRIX}" ${picked === MATRIX ? "selected" : ""}>Deck option matrix (thicknesses × crack widths × pile-face methods × deck types)</option>` : ""}${data.elements
+      ${data.elements
         .map((e) => `<option value="${esc(e.element)}" ${e.element === picked ? "selected" : ""}>${esc(e.element)} (${KIND[e.kind]}, now ${esc(e.current_label)})</option>`)
         .join("")}</select></label></div>`;
   const wirePicker = () => {
@@ -73,8 +94,9 @@ export async function renderTrials(host, h) {
 
   const draw = () => {
     if (picked === ALL) return drawAll();
-    if (picked === MATRIX) return renderMatrix(out, { ...h, picker, wirePicker });
     const el = data.elements.find((e) => e.element === picked);
+    if (el.kind === "slabs" && slabMode === "matrix")
+      return renderMatrix(out, { ...h, element: el.element, picker: () => picker() + modeSwitch(), wirePicker: () => { wirePicker(); wireMode(); } });
     sizes ??= el.sizes.map((s) => ({ ...s }));
     const fields = fieldsOf(el);
     const slab = el.kind === "slabs";
@@ -92,7 +114,7 @@ export async function renderTrials(host, h) {
       .map((r) => {
         const tags = `${r.current ? ' <span class="chip small-chip">current</span>' : ""}${r.best ? ' <span class="chip small-chip trial-best">cheapest safe</span>' : ""}`;
         if (r.state !== "done") {
-          const why = r.state === "error" ? esc(r.error) : r.state === "out of date" ? "Inputs changed since this trial: run it again." : "Not run yet.";
+          const why = r.state === "error" ? esc(r.error) : r.state === "out of date" ? "Inputs or Triton's design changed since this trial: run it again." : "Not run yet.";
           return `<tr class="trial-idle"><td>${esc(r.label)}${tags}</td><td colspan="${(slab ? 11 : pile ? 10 : 9) + (data.berth_length_m ? 1 : 0)}" class="status">${why}</td></tr>`;
         }
         const punch = slab
@@ -122,7 +144,7 @@ export async function renderTrials(host, h) {
       )
       .join(" ");
     out.innerHTML = `<div class="panel">
-        ${picker()}
+        ${picker()}${slab ? modeSwitch() : ""}
         <p class="status" style="margin-bottom:4px">Sizes to try (mm)${el.kind === "beams" ? ", width × depth" : el.voided ? ", slab thickness with the voids' diameter and spacing" : ""}:</p>
         <div class="row" style="flex-wrap:wrap;gap:6px">${editor}
           <button class="small" id="tr-add">Add a size</button><button class="small" id="tr-reset">Around the current size</button></div>
@@ -139,6 +161,7 @@ export async function renderTrials(host, h) {
       ${done.length && !done.some((r) => r.passed) ? '<p class="status flag-bad">None of the trials run is safe.</p>' : ""}`;
 
     wirePicker();
+    wireMode();
     out.querySelectorAll("[data-i]").forEach((inp) => {
       inp.onchange = () => {
         sizes[+inp.dataset.i][inp.dataset.k] = inp.value === "" ? null : Number(inp.value);

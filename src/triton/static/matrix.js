@@ -13,6 +13,7 @@ export async function renderMatrix(out, h) {
   const load = async () => {
     data = await api(`${secUrl()}/matrix`);
     form ??= fromSpec(data.spec);
+    if (h.element && form.element !== h.element) form.element = h.element; // the deck picked above
   };
   const fromSpec = (s) => ({
     element: s?.element || data.slabs[0],
@@ -71,7 +72,7 @@ export async function renderMatrix(out, h) {
     const off = (k) => (form.use[k] ? "" : " mx-off");
     const cur_ = data.current || {};
     return `<div class="matrix-form">
-      <label>Deck <select data-f="element">${data.slabs.map((n) => `<option ${n === form.element ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>
+      ${h.element ? "" : `<label>Deck <select data-f="element">${data.slabs.map((n) => `<option ${n === form.element ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>`}
       <div class="mx-axis${off("thickness")}"><label class="check">${use("thickness")} <b>Thicknesses (mm)</b></label><br><input data-f="thickness" value="${esc(form.thickness)}" placeholder="e.g. 650, 700, 750" style="width:12em" ${form.use.thickness ? "" : "disabled"}></div>
       <div class="mx-axis${off("crack_width_limit")}"><label class="check">${use("crack_width_limit")} <b>Crack width limits (mm)</b></label><br><input data-f="wk" value="${esc(form.wk)}" placeholder="e.g. 0.2, 0.3" style="width:8em" ${form.use.crack_width_limit ? "" : "disabled"}></div>
       <div class="mx-axis${off("peaks")}"><label class="check">${use("peaks")} <b>Moments at the pile faces</b></label><br>${Object.entries(data.peaks)
