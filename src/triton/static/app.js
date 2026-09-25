@@ -1053,6 +1053,14 @@ function renderSections(host) {
     const site = renderObject(def.properties.site, s.site, `sections.${i}.site`, "Site in the 3D views");
     site.dataset.free = ""; // seabed, water and soil as drawn: never a design input, open while locked
     card.append(site);
+    // Whether this section's berth has fender protrusions and STS cranes (their sizes: Furniture tab).
+    s.furniture ??= {};
+    const fdef = SCHEMA.$defs.SectionFurniture;
+    const quay = renderObject(
+      { properties: { protrusion: fdef.properties.protrusion, sts_crane: fdef.properties.sts_crane } },
+      s.furniture, `sections.${i}.furniture`, "Quay furniture on this section");
+    quay.dataset.free = ""; // the furniture is never in the element designs: open while locked
+    card.append(quay);
     card.append(alignmentEditor(p, s));
     card.append(jointsEditor(p, s));
     host.append(card);

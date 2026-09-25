@@ -8,9 +8,9 @@ for a container berth, not from a catalogue or drawing of this project: replace 
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .protrusion_inputs import FenderProtrusion, StsCrane
 
@@ -355,19 +355,28 @@ class QuayFurniture(_Model):
         description="Untick where the section has no tie rods.",
     )
     rules: FurnitureRules = Field(default_factory=FurnitureRules, title="Arrangement rules")
-    protrusion: FenderProtrusion | None = Field(
+    protrusion: FenderProtrusion = Field(
         default_factory=FenderProtrusion,
-        title="Front beam protrusion at each fender",
+        title="Front beam protrusion at each fender (typical sizes)",
         description="A block on the beam's sea face at every fender, flush with the cope (drawing SC-502-1). "
-        "With an SCN 1600 and an STS crane it keeps the ship's flare clear of the crane's legs; untick where "
-        "there is none.",
+        "Each section says whether it has them (Sections tab: "
+        '"Front beam protrusion at each fender").',
     )
-    sts_crane: StsCrane | None = Field(
+    sts_crane: StsCrane = Field(
         default_factory=StsCrane,
-        title="STS cranes on this quay",
+        title="STS crane and design ship",
         description="Checks the ship's stand-off from the quay face against the crane's outreach and legs. "
-        "Untick where there is no ship-to-shore crane.",
+        'Each section says whether it has STS cranes (Sections tab: "STS cranes on this section").',
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _typical_sizes(cls, data: Any) -> Any:
+        """The protrusion and the crane were project ticks (null = none); the ticks are the sections'
+        now (Project moves a saved null onto them), so here a null takes the typical values."""
+        if isinstance(data, dict) and any(data.get(k, 0) is None for k in ("protrusion", "sts_crane")):
+            data = {k: v for k, v in data.items() if not (k in ("protrusion", "sts_crane") and v is None)}
+        return data
 
 
 class SectionFurniture(_Model):
@@ -386,3 +395,16 @@ class SectionFurniture(_Model):
         json_schema_extra={"unit": "m"},
     )
     no_tie_rods: bool = Field(False, title="No tie rods in this section")
+    protrusion: bool = Field(
+        True,
+        title="Front beam protrusion at each fender",
+        description="A block on the front beam's sea face at every fender (sizes on the Furniture tab). With "
+        "an SCN 1600 and STS cranes it keeps the ship's flare clear of the crane's legs; untick where there "
+        "is none.",
+    )
+    sts_crane: bool = Field(
+        True,
+        title="STS cranes on this section",
+        description="Checks the ship's stand-off against the crane (Furniture tab) and draws it in 3D. "
+        "Untick where no ship-to-shore crane works this berth.",
+    )

@@ -49,6 +49,12 @@ crane must reach its far row: rail from the face + s (not compressed) + ship bea
 the outreach. The ship's flare must clear the crane's seaside legs: rail from the face − the legs'
 reach seaward of the rail + s (compressed) ≥ flare + clearance. Neither has a code value: both come
 from the crane and the design ship.
+
+The flare, unless typed in, is worked out from the design ship: the lightest ship (ballast draft) at
+high water stands highest, its deck edge at HW + depth − ballast draft; over the height H from the
+fender contact line (cope − fender centre) to the deck edge its side leans out by the hull's flare
+and the list towards the quay: flare = H·(tan flare angle + sin list). Deck cargo is taken inside
+the hull line. Each section ticks whether it has the blocks and STS cranes.
 """
 
 from __future__ import annotations
@@ -535,8 +541,19 @@ def clearance(
     fenders: Fenders | None,
     protrusion: FenderProtrusion | None,
     rail_from_face: float,
+    cope: float = 3.5,
+    contact_below_cope: float | None = None,
 ) -> dict[str, Any]:
-    """The ship's stand-off from the quay face against the STS crane's outreach and legs (m)."""
+    """The ship's stand-off from the quay face against the STS crane's outreach and legs (m). ``cope``:
+    the cope level (m CD); ``contact_below_cope``: the fender centre below it (empty: the block's or the
+    fender's)."""
+    if contact_below_cope is None:
+        if protrusion:
+            contact_below_cope = protrusion.fender_centre_below_cope or protrusion.depth / 2000
+        else:
+            contact_below_cope = fenders.centre_below_cope if fenders else 0.0
+    fl = flare(sts, cope - contact_below_cope)
+    sts = sts.model_copy(update={"flare_overhang": fl["overhang_m"]})
     a = protrusion.projection / 1000 if protrusion else 0.0
     fh = fenders.height if fenders else 0.0
     panel = sts.panel_thickness if fenders else 0.0
@@ -562,7 +579,8 @@ def clearance(
         if u_legs > 1.0:
             notes.append(
                 "Without a protrusion the ship's flare reaches the crane's seaside legs: tick \"Front beam "
-                f'protrusion at each fender" with at least {min_projection:.2f} m projection.'
+                f"protrusion at each fender\" in this section's furniture settings, at least {min_projection:.2f} m "
+                "projection."
             )
         else:
             notes.append("No fender protrusion: the stand-off is the fender and panel only.")
@@ -597,6 +615,7 @@ def clearance(
             "outreach_m": sts.outreach,
             "largest_standoff_m": round(allowed_standoff, 2),
         },
+        "flare": fl,
         "legs": {
             "available_m": round(avail, 3),
             "flare_m": sts.flare_overhang,
@@ -628,7 +647,41 @@ def clearance(
                     ["Projection the crane allows, from", round(min_projection, 2)],
                     ["to", round(max_projection, 2)],
                 ],
-            }
+            },
+            {
+                "title": "The ship's flare towards the crane",
+                "headers": ["Quantity", "Value"],
+                "rows": fl["rows"],
+            },
         ],
         "notes": notes,
+    }
+
+
+def flare(sts: StsCrane, contact_level: float) -> dict[str, Any]:
+    """How far the ship's hull stands out beyond its fender contact line at the deck edge (m): the
+    lightest ship (ballast draft) at high water stands highest; its side leans out by the flare and by
+    the list towards the quay. Deck cargo is taken inside the hull line."""
+    deck = sts.high_water + sts.ship_depth - sts.ballast_draft
+    height = max(0.0, deck - contact_level)
+    lean = math.tan(math.radians(sts.flare_angle)) + math.sin(math.radians(sts.list_angle))
+    derived = height * lean
+    given = sts.flare_overhang is not None
+    overhang = sts.flare_overhang if given else derived
+    rows = [
+        ["Deck edge: high water + depth − ballast draft (m CD)", round(deck, 3)],
+        ["Fender contact line (m CD)", round(contact_level, 3)],
+        ["Height of the deck edge above the contact line (m)", round(height, 3)],
+        [f"tan {sts.flare_angle:g}° flare + sin {sts.list_angle:g}° list", round(lean, 4)],
+        ["Overhang worked out (m)", round(derived, 3)],
+    ]
+    if given:
+        rows.append(["Overhang typed in, used (m)", overhang])
+    return {
+        "deck_level_m": round(deck, 3),
+        "contact_level_m": round(contact_level, 3),
+        "height_m": round(height, 3),
+        "overhang_m": round(overhang, 3),
+        "from": "typed in" if given else "the ship",
+        "rows": rows,
     }
