@@ -562,7 +562,7 @@ def clearance(
         if u_legs > 1.0:
             notes.append(
                 "Without a protrusion the ship's flare reaches the crane's seaside legs: tick \"Front beam "
-                f"protrusion at each fender\" with at least {min_projection:.2f} m projection."
+                f'protrusion at each fender" with at least {min_projection:.2f} m projection.'
             )
         else:
             notes.append("No fender protrusion: the stand-off is the fender and panel only.")
