@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from . import alignment, clashes, joints, trials
+from . import alignment, clashes, joints, matrix, trials
 from . import furniture as furniture_layout
 from .design import (
     anchors,
@@ -102,6 +102,7 @@ GENERAL = [
     ("Expansion joints along the berth", joints),
     ("Construction joints (piles, beams, slabs)", construction_joints),
     ("Comparisons (trial sizes)", trials),
+    ("Comparisons (a deck's option matrix)", matrix),
     ("Over-reinforced sections (slabs and beams)", ductility),
     ("Reinforcement clashes at the pile heads", clashes),
     ("AdSec load sets and signs", governing),

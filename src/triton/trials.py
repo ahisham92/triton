@@ -115,6 +115,22 @@ def with_size(element: Any, size: dict[str, float]) -> Any:
     return element.model_copy(update=update)
 
 
+DECKS = {"solid": "solid", "voided": "with voids"}
+
+
+def with_deck(element: Any, deck: str | None) -> Any:
+    """A slab made solid, or given voids (its own, or the default PVC voids when it has none)."""
+    if not deck or not isinstance(element, SlabInput):
+        return element
+    if deck == "solid":
+        return element.model_copy(update={"voids": None}) if element.voids is not None else element
+    if element.voids is not None:
+        return element
+    from .project import SlabVoids
+
+    return element.model_copy(update={"voids": SlabVoids()})
+
+
 def trial_section(section: Section, name: str, size: dict[str, float]) -> Section:
     """The section with the element at the trial size and without the bars set for its current size."""
     element = with_size(section.elements[name], size)
@@ -429,7 +445,7 @@ def view(
 CRACK_FIELDS = ("crack_width_limit", "crack_width_limit_bottom")
 
 
-META = ("label", "ideas")
+META = ("label", "ideas", "option")
 
 
 def change_of(variant: dict[str, Any]) -> dict[str, Any]:
@@ -477,6 +493,8 @@ def variant_label(variant: dict[str, Any], section: Section | None = None) -> st
                         ".0", ""
                     )
                 )
+        if c.get("deck") == "solid" or (c.get("deck") and "void_diameter" not in size):
+            bits.append(DECKS[c["deck"]])
         if c.get("peaks"):
             bits.append(PEAKS.get(c["peaks"], c["peaks"]))
         if c.get("crack_width_limit"):
@@ -520,6 +538,11 @@ def clean_variant(variant: dict[str, Any], section: Section | None = None) -> di
             raise ValueError(f"{name} is not an element of this section.")
         element = section.elements[name]
         mine: dict[str, Any] = {}
+        if c.get("deck"):
+            if not isinstance(element, SlabInput) or c["deck"] not in DECKS:
+                raise ValueError(f"{name}: no deck type '{c['deck']}'.")
+            mine["deck"] = c["deck"]
+            element = with_deck(element, c["deck"])
         size = {k: v for k, v in c.items() if k in SIZE_KEYS and v not in (None, "")}
         if size:
             if kind_of(element) is None:
@@ -596,6 +619,7 @@ def variant_section(section: Section, variant: dict[str, Any]) -> Section:
             update |= {f: c["crack_width_limit"] for f in CRACK_FIELDS if hasattr(e, f)}
         if c.get("peaks"):
             update["peaks"] = c["peaks"]
+        e = with_deck(e, c.get("deck"))
         size = {k: v for k, v in c.items() if k in SIZE_KEYS}
         if size:
             e = with_size(e, size)
@@ -616,8 +640,9 @@ def _designable(section: Section, project: Project | None = None) -> list[str]:
     return out + ([fresh.APPROACH] if project is not None and project.approach is not None else [])
 
 
-# Two sets of whole-section runs: "scenarios" (Comparisons, all elements) and "ve" (Value engineering).
-SETS = ("scenarios", "ve")
+# Sets of whole-section runs: "scenarios" (Comparisons, all elements), "ve" (Value engineering) and
+# "matrix" (Comparisons, a deck's option matrix).
+SETS = ("scenarios", "ve", "matrix")
 
 
 def _scenario_file(d: Path, which: str) -> Path:

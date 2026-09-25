@@ -3,6 +3,8 @@
 // section; "Use this size" does. app.js passes its helpers in: api, again, esc, fmt, secUrl, ROOT,
 // project(), costingHash, and used(answer) after a size was taken.
 
+import { renderMatrix } from "./matrix.js";
+
 const KIND = { slabs: "slab", beams: "beam", piles: "pile" };
 const FIELDS = {
   slabs: [["thickness", "Thickness"]],
@@ -13,6 +15,7 @@ const VOIDS = [["thickness", "Thickness"], ["void_diameter", "Voids Ø"], ["void
 const MAIN = { slabs: "thickness", piles: "diameter", beams: "depth" };
 const fieldsOf = (el) => (el.kind === "slabs" && el.voided ? VOIDS : FIELDS[el.kind]);
 const ALL = "*all*"; // the "All elements" choice: a change on every element of the section
+const MATRIX = "*matrix*"; // the option matrix of a deck (matrix.js)
 
 export async function renderTrials(host, h) {
   const { api, again, esc, fmt, secUrl, ROOT } = h;
@@ -40,7 +43,7 @@ export async function renderTrials(host, h) {
   } catch {
     /* no storage */
   }
-  if (picked !== ALL && !data.elements.some((e) => e.element === picked)) picked = (data.elements.find((e) => e.kind === "slabs") || data.elements[0]).element;
+  if (picked !== ALL && picked !== MATRIX && !data.elements.some((e) => e.element === picked)) picked = (data.elements.find((e) => e.kind === "slabs") || data.elements[0]).element;
   let sizes = null; // the list being edited, for the picked element
   let running = null;
 
@@ -49,7 +52,8 @@ export async function renderTrials(host, h) {
 
   // Which element (or all of them) the tab is on.
   const picker = () => `<div class="row"><label>Element <select id="tr-el">
-      <option value="${ALL}" ${picked === ALL ? "selected" : ""}>All elements (the whole section, a change on every element)</option>${data.elements
+      <option value="${ALL}" ${picked === ALL ? "selected" : ""}>All elements (the whole section, a change on every element)</option>
+      ${data.elements.some((e) => e.kind === "slabs") ? `<option value="${MATRIX}" ${picked === MATRIX ? "selected" : ""}>Deck option matrix (thicknesses × crack widths × pile-face methods × deck types)</option>` : ""}${data.elements
         .map((e) => `<option value="${esc(e.element)}" ${e.element === picked ? "selected" : ""}>${esc(e.element)} (${KIND[e.kind]}, now ${esc(e.current_label)})</option>`)
         .join("")}</select></label></div>`;
   const wirePicker = () => {
@@ -67,6 +71,7 @@ export async function renderTrials(host, h) {
 
   const draw = () => {
     if (picked === ALL) return drawAll();
+    if (picked === MATRIX) return renderMatrix(out, { ...h, picker, wirePicker });
     const el = data.elements.find((e) => e.element === picked);
     sizes ??= el.sizes.map((s) => ({ ...s }));
     const fields = fieldsOf(el);

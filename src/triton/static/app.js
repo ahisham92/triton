@@ -531,7 +531,7 @@ async function projectPage(id, tab, sectionId) {
     });
   else if (tab === "compare")
     renderTrials(host, {
-      api, again, esc, fmt, secUrl, ROOT,
+      api, again, esc, fmt, secUrl, ROOT, barDiagrams,
       project: () => state.project,
       sectionId: () => sec().id,
       costingHash: tabHash("costing"),

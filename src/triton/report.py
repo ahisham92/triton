@@ -12,7 +12,7 @@ from typing import Any
 
 from . import clock
 from .alignment import named_parts
-from .figures import deflected_shape, slab_stations
+from .figures import deflected_shape, slab_bars, slab_stations
 from .materials import STEEL_DENSITY
 from .project import DesignSettings, Project, Section
 
@@ -159,6 +159,208 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             _spw(r, w)
         for a in results.get("approach_slabs", []):
             _approach(r, a)
+    return r
+
+
+def build_matrix_report(project: Project, section: Section, view: dict, designs: dict[str, dict]) -> Report:
+    """A deck's options compared (Comparisons tab, option matrix): the options set, a summary of every
+    option, then each option's bars (as the design page draws them), governing sections, shear and
+    punching. ``designs`` maps an option's key to its deck design."""
+    info = project.info
+    name = view["element"]
+    cur = view.get("currency") or ""
+    r = Report(f"{info.name}: {section.name}", f"{name}: options compared")
+    spec = view["spec"]
+    r.kv(
+        [
+            ("Project", info.name),
+            ("Section", section.name),
+            ("Deck", name),
+            ("Thicknesses (mm)", ", ".join(f"{t:g}" for t in spec.get("thickness") or []) or "as set"),
+            (
+                "Crack width limits (mm)",
+                ", ".join(f"{t:g}" for t in spec.get("crack_width_limit") or []) or "as set",
+            ),
+            (
+                "Moments at the pile faces",
+                ", ".join(view["peaks"].get(p, p) for p in spec.get("peaks") or []) or "as set",
+            ),
+            (
+                "Deck types",
+                ", ".join(
+                    "solid" if d["type"] == "solid" else f"voids Ø{d['diameter']:g} @ {d['spacing']:g}"
+                    for d in spec.get("decks") or []
+                )
+                or "as set",
+            ),
+            ("Berth length", f"{view['berth_length_m']:g} m" if view.get("berth_length_m") else None),
+            ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
+        ]
+    )
+    r.p(
+        "Every option is the whole section designed with the deck changed as listed: the crack width "
+        "limit is the deck's own (top and bottom), bars set by hand are left out so each option picks "
+        "its own, and the beams are designed with the deck's thickness. Costs are per metre of berth, "
+        "at the unit prices on the Project tab, for the whole section and for the deck alone."
+    )
+    options = [o for o in view["options"] if o["key"] in designs]
+    r.h(1, "1 Summary")
+    rows = []
+    for o in options:
+        dk = o.get("deck") or {}
+        punch = dk.get("punching") or []
+        need = [p for p in punch if p["needs_links"]]
+        rows.append(
+            [
+                o["label"] + (" (cheapest safe)" if o.get("best") else ""),
+                "yes" if dk.get("passed") else "no",
+                dk.get("utilisation"),
+                dk.get("kg_per_m3"),
+                dk.get("kg_per_m3_with_links"),
+                (
+                    ", ".join(f"{p['pile']} ({p['heads']})" for p in need)
+                    if need
+                    else ("none" if punch else "–")
+                ),
+                (dk.get("shear") or {}).get("cells_needing_links"),
+                o.get("concrete_m3_per_m"),
+                o.get("rebar_t_per_m"),
+                o.get("deck_cost_per_m"),
+                o.get("cost_per_m"),
+                o.get("over_best_per_m"),
+            ]
+        )
+    r.table(
+        [
+            "Option",
+            "Deck safe",
+            "Utilisation",
+            "Bars kg/m³",
+            "With links kg/m³",
+            "Punching links (heads)",
+            "Shear link cells",
+            "Concrete m³/m",
+            "Rebar t/m",
+            f"Deck {cur}/m",
+            f"Section {cur}/m",
+            f"Over the cheapest safe, {cur}/m",
+        ],
+        rows,
+    )
+    best = next((o for o in options if o.get("best")), None)
+    if best:
+        r.p(
+            f"Cheapest option with a safe deck: {best['label']}, {_fmt(best['cost_per_m'])} {cur}/m of berth."
+        )
+    unsafe = [o for o in options if not (o.get("deck") or {}).get("passed")]
+    for o in unsafe:
+        r.note(f"{o['label']}: not safe. {(o.get('deck') or {}).get('why') or ''}")
+    others: dict[tuple, list[str]] = {}
+    for o in options:
+        if o.get("others_unsafe"):
+            others.setdefault(tuple(o["others_unsafe"]), []).append(o["label"])
+    for names, labels in others.items():
+        who = "every option" if len(labels) == len(options) else ", ".join(labels)
+        r.note(f"Other elements not safe with {who}: {', '.join(names)}.")
+    r.h(2, "Bars of each option")
+    r.table(
+        ["Option", "Top X", "Bottom X", "Top Y", "Bottom Y", "Heaviest additional bars"],
+        [
+            [
+                o["label"],
+                *[
+                    ((o.get("deck") or {}).get("meshes") or {}).get(k)
+                    for k in ("top_x", "bottom_x", "top_y", "bottom_y")
+                ],
+                "; ".join(
+                    f"{g['name']}: {g['heaviest_bars']}"
+                    for g in (o.get("deck") or {}).get("governing") or []
+                    if g.get("heaviest_as_mm2_per_m")
+                    and g["heaviest_bars"] != ((o.get("deck") or {}).get("meshes") or {}).get(g["layer"])
+                ),
+            ]
+            for o in options
+        ],
+    )
+    r.h(1, "2 Each option")
+    for n, o in enumerate(options, start=1):
+        design = designs[o["key"]]
+        dk = o.get("deck") or {}
+        r.h(2, f"2.{n} {o['label']}")
+        r.kv(
+            [
+                ("Deck", "safe" if dk.get("passed") else f"not safe: {dk.get('why') or ''}"),
+                ("Utilisation (bending, cracks and shear)", dk.get("utilisation")),
+                ("Bars", f"{_fmt(dk.get('kg_per_m3'))} kg/m³ ({_fmt(dk.get('bars_kg_per_m2'))} kg/m²)"),
+                ("With shear and punching links", f"{_fmt(dk.get('kg_per_m3_with_links'))} kg/m³"),
+                ("Mesh spacing", f"{_fmt(dk.get('mesh_mm'))} mm" if dk.get("mesh_mm") else None),
+                (
+                    "Cost of the deck",
+                    f"{_fmt(o.get('deck_cost_per_m'))} {cur}/m" if o.get("deck_cost_per_m") else None,
+                ),
+                (
+                    "Cost of the section",
+                    f"{_fmt(o.get('cost_per_m'))} {cur}/m" if o.get("cost_per_m") else None,
+                ),
+            ]
+        )
+        for view_ in ("along", "across"):
+            png = slab_bars(design, view_)
+            if png:
+                r.image(
+                    png,
+                    f"Figure 2.{n}{'a' if view_ == 'along' else 'b'}: {o['label']}, bars along "
+                    f"{'the strips' if view_ == 'along' else 'the quay'}",
+                )
+        gov = dk.get("governing") or []
+        if gov:
+            r.p("Governing sections, per face and direction:")
+            r.table(
+                ["Face", "Where", "Bars", "M (kNm/m)", "Combination", "MEd/MRd", "wk / limit (mm)", "Set by"],
+                [
+                    [
+                        g["name"],
+                        g["where"],
+                        g["bars"],
+                        g["M_kNm_per_m"],
+                        g["combination"],
+                        g["ratio"],
+                        f"{_fmt(g['wk_mm'])} / {_fmt(g['wk_limit_mm'])}"
+                        if g.get("wk_mm") is not None
+                        else "–",
+                        g["set_by"],
+                    ]
+                    for g in gov
+                ],
+            )
+        sh = dk.get("shear") or {}
+        r.kv(
+            [
+                ("Shear utilisation", sh.get("utilisation")),
+                ("Cells that need shear links", sh.get("cells_needing_links")),
+                ("Heaviest shear links", sh.get("heaviest")),
+                ("Governing shear", sh.get("governing")),
+            ]
+        )
+        punch = dk.get("punching") or []
+        if punch:
+            r.p("Punching at the piles (one design per pile type, its worst head):")
+            r.table(
+                ["Pile type", "Heads", "Utilisation without links", "Links needed", "Links", "Passes"],
+                [
+                    [
+                        p["pile"],
+                        p["heads"],
+                        p["utilisation"],
+                        "yes" if p["needs_links"] else "no",
+                        p["links"] or ("links alone cannot" if p["needs_links"] and not p["passed"] else "–"),
+                        "yes" if p["passed"] else "no",
+                    ]
+                    for p in punch
+                ],
+            )
+        for w in dk.get("ductility") or []:
+            r.note(f"Over-reinforced: {w}")
     return r
 
 

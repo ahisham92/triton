@@ -30,6 +30,7 @@ from . import (
     dxf,
     fresh,
     furniture_report,
+    matrix,
     method,
     package,
     revit,
@@ -66,7 +67,7 @@ from .project import (
     with_project_grades,
 )
 from .reader import UnsupportedWorkbook
-from .report import RENDERERS, build_report
+from .report import RENDERERS, build_matrix_report, build_report
 from .review import choices
 from .stepped import assemble, is_read, read_step
 from .store import UPLOAD_ID, ProjectNotFound, ProjectStore, housekeeping
@@ -1582,6 +1583,96 @@ def run_value_engineering(project_id: str, section_id: str, body: ScenarioReques
     """Design the whole section for each idea or mix of ideas, in steps, and cost it against the
     section as set. The section and its results do not change."""
     return _run_scenarios(project_id, section_id, body, "ve")
+
+
+class MatrixRequest(BaseModel):
+    spec: dict | None = Field(
+        None,
+        description="The deck and the lists to combine: thickness, crack_width_limit, peaks, decks "
+        "([{type: solid}, {type: voided, diameter, spacing}]). Empty: the matrix saved last.",
+    )
+    budget_s: float | None = Field(
+        None, gt=0, description="Start no element after this long; what is left comes back in 'left'."
+    )
+
+
+def _matrix(project_id: str, section_id: str) -> dict:
+    project = _get(project_id)
+    section = _section(project, section_id)
+    d = store()._dir(project_id, section_id)
+    summary = store().workbook_summary(project_id, section_id)
+    return matrix.view(project, section, summary, store().load_results(project_id, section_id), d)
+
+
+@app.get(SECTION + "/matrix")
+def section_matrix(project_id: str, section_id: str) -> dict:
+    """A deck's option matrix (thicknesses x crack width limits x pile-face methods x deck types) and
+    each combination designed so far."""
+    return _matrix(project_id, section_id)
+
+
+@app.post(SECTION + "/matrix")
+def run_matrix(project_id: str, section_id: str, body: MatrixRequest) -> dict:
+    """Save the matrix and design every combination with the whole section, in steps. The section and
+    its results do not change."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    d = store()._dir(project_id, section_id)
+    try:
+        spec = matrix.clean_spec(
+            body.spec or matrix.load_spec(d) or matrix.default_spec(section) or {}, section
+        )
+        variants = matrix.variants(spec, section)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    matrix.save_spec(d, spec)
+    workbook = _workbook(project_id, section)
+    if workbook is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+    deadline = time.monotonic() + body.budget_s if body.budget_s else None
+    summary = store().workbook_summary(project_id, section_id)
+    with _Progress(f"trials-{project_id}-{section_id}") as tell:
+        done = trials.run_scenarios(
+            project, section, workbook, summary, d, variants, deadline, tell, "matrix"
+        )
+    return {**_matrix(project_id, section_id), **done}
+
+
+@app.get(SECTION + "/matrix/design/{key}")
+def matrix_design(project_id: str, section_id: str, key: str) -> dict:
+    """One option's deck design, for its bar figures."""
+    _section(_get(project_id), section_id)
+    design = matrix.design_of(store()._dir(project_id, section_id), key)
+    if design is None:
+        raise HTTPException(404, "That option is not designed (or its inputs changed): design it again.")
+    return design
+
+
+@app.get(SECTION + "/matrix/report.{fmt}")
+def matrix_report(project_id: str, section_id: str, fmt: str, keys: str | None = None) -> Response:
+    """The options compared, as Word, PDF or Excel: the summary, then each option's bars (figures as in
+    the design), governing sections, shear and punching. ``keys``: the options to put in (all)."""
+    if fmt not in RENDERERS:
+        raise HTTPException(404, "Reports are Word (.docx), PDF (.pdf) or Excel (.xlsx).")
+    project = _get(project_id)
+    section = _section(project, section_id)
+    d = store()._dir(project_id, section_id)
+    v = _matrix(project_id, section_id)
+    wanted = set(keys.split(",")) if keys else None
+    designs = {}
+    for o in v["options"]:
+        if o.get("design_key") and not o.get("base") and (wanted is None or o["key"] in wanted):
+            designs[o["key"]] = matrix.design_of(d, o["design_key"])
+    if not designs:
+        raise HTTPException(409, "Design the options first.")
+    rep = build_matrix_report(project, section, v, designs)
+    name = _file_name(project.info.name, section.name, "deck options")
+    render, media = RENDERERS[fmt]
+    return Response(
+        render(rep),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'},
+    )
 
 
 class MovedRun(BaseModel):
