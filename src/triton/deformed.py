@@ -18,7 +18,6 @@ not in it.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 import numpy as np
@@ -29,20 +28,15 @@ from .design import deflection as D
 from .design.runner import factored_elements
 from .project import (
     BeamInput,
-    CombiWallInput,
     DeflectionSettings,
     DesignSettings,
-    PileInput,
     Section,
-    SheetPileInput,
     SlabInput,
     with_project_grades,
 )
 from .validation import ImportResult
 
 MAX_POINTS = 60  # per member curve sent to the page
-_AT = re.compile(r"X (-?[0-9.e+-]+), Y (-?[0-9.e+-]+) m")
-_STRIP = re.compile(r"strip at ([XY]) (-?[0-9.e+-]+) m")
 
 
 def _thin(rows: list[list[float]]) -> list[list[float]]:
@@ -80,15 +74,6 @@ def combinations(section: Section, workbook: ImportResult) -> list[str]:
     return order + sorted(seen - set(order))
 
 
-def _global(axes: dict | None) -> tuple[str, str]:
-    """Global axes of a beam element's local 2 and 3 (X, Y when not found)."""
-    local = (axes or {}).get("local") or {}
-    two, three = local.get("2"), local.get("3")
-    if two in ("X", "Y") and three in ("X", "Y") and two != three:
-        return two, three
-    return "X", "Y"
-
-
 def shapes(
     settings: DesignSettings,
     section: Section,
@@ -98,100 +83,34 @@ def shapes(
     phases: ImportResult | None = None,
 ) -> dict[str, Any]:
     ds: DeflectionSettings = section.deflection.model_copy(update={"combination": combination})
+    est = D.estimate_shapes(settings, section, workbook, combination, results, phases)
+    missing: list[str] = []
+    members = []
+    for m in est["members"]:
+        if m["combination"] != combination:
+            # Not in this combination: the estimate fell back to another one for it.
+            if m["element"] not in missing:
+                missing.append(m["element"])
+            continue
+        members.append({k: m[k] for k in ("element", "kind", "x", "y")} | {"points": _thin(m["points"])})
+    notes = [f"{s}" for s in est.get("skipped") or []]
+    if ds.baseline.strip():
+        notes.append(f"The movement after {ds.baseline.strip()}: its moments taken off first.")
+    deck = est.get("deck")
+    if deck:
+        notes.append(deck["words"])
+    # The deck moves sideways with the pile heads (tied: all the same), else their mean.
+    heads = [m["points"][-1] for m in members if m["kind"] == "pile"] or [m["points"][-1] for m in members]
+    shift = (
+        [float(np.mean([h[1] for h in heads])), float(np.mean([h[2] for h in heads]))] if heads else [0, 0]
+    )
     sheets = _sheets(section, workbook, phases, ds.baseline)
     axes = {a["element"]: a for a in getattr(workbook, "axes", None) or []}
-    designed = {p["element"]: p for p in (results or {}).get("piles") or []}
-    missing: list[str] = []
-
-    def own(name: str) -> dict:
-        return {c: s for c, s in (sheets.get(name) or {}).items() if not s.frame.empty}
-
-    king = []
-    for name, el in section.elements.items():
-        if isinstance(el, CombiWallInput) and (o := own(name)):
-            f = next(iter(o.values())).frame
-            king += [
-                (x, y, el.tube_diameter / 2000)
-                for x, y in f[["X", "Y"]].round(2).drop_duplicates().to_numpy()
-            ]
-    talls = []
-    for name, el in section.elements.items():
-        o = own(name)
-        if not isinstance(el, PileInput | CombiWallInput | SheetPileInput):
-            continue
-        if combination not in o:
-            missing.append(name)
-            continue
-        try:
-            if isinstance(el, PileInput):
-                t = D._pile(name, el, settings, ds, o, axes.get(name), designed.get(name))
-            elif isinstance(el, CombiWallInput):
-                t = D._combi(name, el, settings, ds, o, axes.get(name))
-            else:
-                t = D._spw(name, el, ds, o, king)
-        except ValueError:
-            t = None
-        if t is None or t.entry["combination"] != combination:
-            missing.append(name)
-        else:
-            talls.append(t)
-    D._same_way(talls)
-    deck = D._deck(talls, ds)
-    # Global axes of "across" (M3, M11) and "along" (M2): the piles' local 2 and 3.
-    ref = next((axes.get(t.entry["element"]) for t in talls if t.entry["kind"] != "sheet_pile_wall"), None)
-    two, three = _global(ref)
-    members: list[dict[str, Any]] = []
-    walls: list[dict[str, Any]] = []
-    notes: list[str] = []
-    for t in talls:
-        name = t.entry["element"]
-        notes += [f"{name}: {n}" for n in t.entry.get("notes") or []]
-        if t.entry.get("baseline"):
-            notes.append(f"{name}: {t.entry['baseline_note']}.")
-        if t.entry["kind"] == "sheet_pile_wall":
-            w = _wall(name, t, ds, deck, sheets[name][combination].frame, two)
-            if w:
-                walls.append(w)
-            continue
-        own_two, _ = _global(axes.get(name))
-        for m in t.members:
-            at = _AT.search(m.where)
-            if at is None:
-                continue
-            w3 = D._shape(m, "M_3", ds, deck)[0] if "M_3" in m.k else np.zeros(len(m.z))
-            w2 = D._shape(m, "M_2", ds, deck)[0] if "M_2" in m.k else np.zeros(len(m.z))
-            ux, uy = (w3, w2) if own_two == "X" else (w2, w3)
-            rows = [
-                [round(float(z), 3), round(float(a) * 1e3, 2), round(float(b) * 1e3, 2)]
-                for z, a, b in zip(m.z, ux, uy, strict=True)
-            ]
-            members.append(
-                {
-                    "element": name,
-                    "kind": t.entry["kind"],
-                    "x": float(at.group(1)),
-                    "y": float(at.group(2)),
-                    "points": _thin(rows),
-                }
-            )
-    # The deck moves sideways with the pile heads: the tied movement, else their mean.
-    if deck is not None:
-        move = deck["move"]
-        by = {two: move.get("across", 0.0) * 1e3, three: move.get("along", 0.0) * 1e3}
-        shift = [by.get("X", 0.0), by.get("Y", 0.0)]
-        notes.append(D._deck_words(deck))
-    else:
-        heads = [m["points"][-1] for m in members]
-        shift = (
-            [float(np.mean([h[1] for h in heads])), float(np.mean([h[2] for h in heads]))]
-            if heads
-            else [0, 0]
-        )
     supports = D._supports(sheets, section)
     plates = []
     for name, el in section.elements.items():
         if isinstance(el, SlabInput | BeamInput):
-            o = own(name)
+            o = {c: s for c, s in (sheets.get(name) or {}).items() if not s.frame.empty}
             if combination not in o:
                 missing.append(name)
                 continue
@@ -200,7 +119,6 @@ def shapes(
                 plates.append(p)
     peak = max(
         [abs(v) for m in members for p in m["points"] for v in p[1:]]
-        + [abs(p[1]) for w in walls for st in w["strips"] for p in st["points"]]
         + [abs(p[1]) for pl in plates for st in pl["strips"] for p in st["points"]]
         + [abs(v) for v in shift]
         + [0.0]
@@ -211,37 +129,12 @@ def shapes(
         "combination": combination,
         "settings": ds.model_dump(mode="json"),
         "members": members,
-        "walls": walls,
+        "walls": [],
         "plates": plates,
         "deck_shift_mm": [round(float(v), 2) for v in shift],
         "max_mm": round(peak, 2),
         "missing": missing,
         "notes": notes,
-    }
-
-
-def _wall(name, t, ds, deck, frame: pd.DataFrame, two: str) -> dict[str, Any] | None:
-    """The sheet pile wall's strips, each [z, mm] across the wall (in the piles' across axis)."""
-    f = frame[["X", "Y"]].dropna()
-    along = "X" if np.ptp(f["X"].to_numpy(float)) > np.ptp(f["Y"].to_numpy(float)) else "Y"
-    across = "Y" if along == "X" else "X"
-    strips = []
-    for m in t.members:
-        at = _STRIP.search(m.where)
-        if at is None:
-            continue
-        w = D._shape(m, "M_11", ds, deck)[0]
-        rows = [[round(float(z), 3), round(float(u) * 1e3, 2)] for z, u in zip(m.z, w, strict=True)]
-        strips.append({"at": float(at.group(2)), "points": _thin(rows)})
-    if not strips:
-        return None
-    return {
-        "element": name,
-        "along": along,
-        # Tied, the wall's M11 has the piles' M3 sign, so it moves in their across axis.
-        "across": two if two != along else across,
-        "position": round(float(f[across].median()), 3),
-        "strips": strips,
     }
 
 

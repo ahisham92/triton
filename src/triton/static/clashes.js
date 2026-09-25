@@ -8,7 +8,7 @@ const COL = {
   pile: "#7a4696", bottom: "#7b818c", top: "#2a5fae", punch: "#008c96", link: "#9aa0aa",
   trim: "#2e8b4a", clash: "#c62828", gone: "#b8bcc4", pick: "#e08a00", concrete: "rgba(160,160,150,0.13)",
 };
-const SOL_ORDER = ["rotate", "shift", "rotate_shift", "crank", "cut_trim", "cut"];
+const SOL_ORDER = ["set_out", "rotate", "shift", "rotate_shift", "crank", "cut_trim", "cut"];
 
 export async function renderClashes(host, h) {
   const { api, again, esc, fmt, secUrl } = h;
@@ -32,7 +32,7 @@ export async function renderClashes(host, h) {
   const f1 = (v) => fmt(v, 1);
   const f3 = (v) => (v == null ? "–" : fmt(v, 3));
   const yes = (ok) => `<span class="${ok ? "flag-ok" : "flag-bad"}">${ok ? "passes" : "fails"}</span>`;
-  const solTitle = (id) => ({ rotate: "Turn the cage", shift: "Move the bars", rotate_shift: "Turn and move", crank: "Crank the pile bars", cut_trim: "Cut and add trimmers", cut: "Cut the bars" })[id] || id;
+  const solTitle = (id) => ({ set_out: "Set the bars out through the cage", rotate: "Turn the cage", shift: "Move the bars", rotate_shift: "Turn and move", crank: "Crank the pile bars", cut_trim: "Cut and add trimmers", cut: "Cut the bars" })[id] || id;
   const calcUrl = (fmtx, q) => `${secUrl()}/clashes/calc.${fmtx}?${new URLSearchParams(q)}`;
 
   const settingsHtml = () => {
@@ -44,6 +44,10 @@ export async function renderClashes(host, h) {
       <label>Fixing tolerance <input id="cl-tol" type="number" min="0" max="50" step="1" value="${s.fixing_tolerance}" style="width:5em"> mm</label>
       <label>Plaxis plates at the element's <select id="cl-plate"><option value="mid" ${s.plate_level === "mid" ? "selected" : ""}>mid-depth</option>
         <option value="top" ${s.plate_level === "top" ? "selected" : ""}>top</option></select></label>
+      <label>Pile bars into a beam <select id="cl-beam"><option value="straight" ${s.beam_bars !== "l" ? "selected" : ""}>straight, under the top bars (as drawing SC-401)</option>
+        <option value="l" ${s.beam_bars === "l" ? "selected" : ""}>L, outwards under the top bars</option></select></label>
+      <label>Combi bars welded to the tube: fillet leg <input id="cl-leg" type="number" min="1" step="1" value="${s.weld?.leg ?? 16}" style="width:4em"> mm,
+        filler fu <input id="cl-fu" type="number" min="1" step="0.1" value="${s.weld?.filler_fu ?? 482.6}" style="width:5em"> MPa (E70XX)</label>
       <button id="cl-save">Find again</button></div>
       <ul class="status">${data.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></details>`;
   };
@@ -74,7 +78,8 @@ export async function renderClashes(host, h) {
   const draw = () => {
     out.innerHTML = settingsHtml() + groupsHtml() + whatifsHtml() + `<div id="cl-head"></div>`;
     out.querySelector("#cl-save").onclick = async () => {
-      const body = { rule: out.querySelector("#cl-rule").value, fixing_tolerance: Number(out.querySelector("#cl-tol").value), plate_level: out.querySelector("#cl-plate").value };
+      const body = { rule: out.querySelector("#cl-rule").value, fixing_tolerance: Number(out.querySelector("#cl-tol").value), plate_level: out.querySelector("#cl-plate").value, beam_bars: out.querySelector("#cl-beam").value,
+        weld: { ...(data.settings.weld || {}), leg: Number(out.querySelector("#cl-leg").value), filler_fu: Number(out.querySelector("#cl-fu").value) } };
       out.querySelector("#cl-save").disabled = true;
       await api(`${secUrl()}/clashes/settings`, { method: "PUT", body: JSON.stringify(body) });
       out.innerHTML = '<p class="status">Finding the clashes again…</p>';
@@ -356,6 +361,8 @@ export async function renderClashes(host, h) {
     box.innerHTML = `<div class="panel"><h2>${esc(g.pile)} into ${esc(g.host)}: head <select id="cl-idx">${g.heads.map((x) => `<option value="${x.index}" ${x.index === st.index ? "selected" : ""}>
         ${x.index + 1} at x ${fmt(x.x, 2)}, y ${fmt(x.y, 2)} (${x.count.clash} overlapping, ${x.count.pairs - x.count.clash} close${x.punch_count.pairs ? `, ${x.punch_count.pairs} punching` : ""})</option>`).join("")}</select></h2>
       <p><strong>Connection.</strong> ${esc(sc.connection.text)}.</p>
+      ${e.weld ? `<p><strong>Bars welded to the tube.</strong> ${e.weld.leg_mm} mm fillet (throat ${e.weld.throat_mm} mm), fvw,d ${e.weld.fvw_mpa} MPa:
+        ${e.weld.rows.map((r) => `row ${r.row} ${esc(r.bars)} needs <strong>${r.length_mm} mm</strong> of weld per bar (${fmt(r.force_kN, 1)} kN)`).join("; ")}.</p>` : ""}
       <p class="status">Calculation of this head: <a href="${calcUrl("docx", q)}">Word</a> · <a href="${calcUrl("pdf", q)}">PDF</a> · <a href="${calcUrl("xlsx", q)}">Excel</a></p>
       <div class="row"><label>Show <select id="cl-view">${views.map(([k, t]) => `<option value="${k}" ${k === st.view ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label>
         <span class="chip" style="background:${COL.clash};color:#fff">clash</span><span class="chip" style="background:${COL.pile};color:#fff">pile bars</span>

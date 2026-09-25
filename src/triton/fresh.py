@@ -49,7 +49,7 @@ def _furniture_spots(project: Project, section: Section) -> list | None:
 
 
 # Costing items added to the defaults with the Furniture tab.
-_NEW = {"Ladders", "Storm pins", "Crane stoppers"}
+_NEW = {"Ladders", "Storm pins", "Crane stoppers", "Crane tie-downs"}
 
 
 def _hash(value: Any) -> str:
@@ -71,7 +71,7 @@ def _rear_beam(section: Section) -> Any:
 def _settings_left_out(project: Project) -> dict:
     """Design settings the fingerprint leaves out: joints (their own part), and settings added later
     while they are empty, so designs run before they existed stay fresh."""
-    out: dict = {"joints": True}
+    out: dict = {"joints": True, "construction_joints": True}  # the latter in the elements' own parts
     if project.design.reinforcement.slab_min_bar_spacing is None:
         out["reinforcement"] = {"slab_min_bar_spacing"}
     return out
@@ -117,6 +117,8 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         for key in ("rooms", "manholes", "channels", "construction_joints", "punching_piles"):
             if not own.get(key):
                 own.pop(key, None)  # none: the fingerprint it had before these existed
+        if own.get("construction_joints"):
+            own["construction_joint_rules"] = project.design.construction_joints.model_dump(mode="json")
         if own.get("punching_per") == "type":
             own.pop("punching_per")  # the default: older results are unified when read (store)
         # A corner berth's parts keep their own bars and stations ("Deck · Part 2").

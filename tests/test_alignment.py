@@ -243,3 +243,33 @@ def test_turn_frame_moves_beam_elements_only():
     deck = next(s for s in wb.sheets if s.name == "Deck-PT-B-Apron")
     g = turn_frame(deck.frame, part, deck.parsed.spec.kind)
     assert "M_11_min" not in g and np.allclose(g["M_11"] + g["M_22"], deck.frame["M_11"] + deck.frame["M_22"])
+
+
+def test_a_corner_takes_every_ultimate_sheet():
+    # A second, larger ultimate case: every part is designed for both and the larger one governs,
+    # the same as designing the corner with that case alone.
+    wb = berth()
+    big = {
+        "Deck-PT-B-Yard": ("Deck-PT-B-Apron", 1.5),
+        "Front Beam-PT-B-Yard": ("Front Beam-PT-B-Apron", 1.5),
+        "Pile(1)-PT-B-Yard": ("Pile(1)-PT-B-Apron", 1.0),
+    }
+    both = copy.copy(wb)
+    both.sheets = list(wb.sheets)
+    for name, (src, k) in big.items():
+        sh = next(s for s in wb.sheets if s.name == src)
+        f = sh.frame.copy()
+        cols = [c for c in f.columns if c not in ("X", "Y", "Z", "Node", "Element")]
+        f[cols] = f[cols].apply(lambda c, k=k: c * k if c.dtype.kind == "f" else c)
+        both.sheets.append(
+            replace(sh, name=name, frame=f, parsed=replace(sh.parsed, combination="PT-B-Yard"))
+        )
+    corner = turn_workbook(both, -25.0, where=lambda x, y: y >= 0)
+    out = run_section(DesignSettings(), section(), corner, only=ONLY)
+    alone = copy.copy(corner)
+    alone.sheets = [s for s in corner.sheets if s.parsed is None or s.parsed.combination != "PT-B-Apron"]
+    ref = run_section(DesignSettings(), section(), alone, only=ONLY)
+    assert len(out["slabs"]) == len(out["beams"]) == 2
+    for a, b in zip(out["slabs"] + out["beams"], ref["slabs"] + ref["beams"], strict=True):
+        assert summary(a) == summary(b)
+    assert {d["shear"]["governing"]["combination"] for d in out["beams"]} == {"PT-B-Yard"}

@@ -182,8 +182,20 @@ def test_the_rail_single_wheel_moment_matches_the_closed_form():
     assert out["M_max_kNm"] == pytest.approx(500e3 / (4 * beta) / 1e6, abs=0.1)
 
 
+# A 1.0 m cone fender: small enough to sit between the king piles on the bare 1.6 m deep face.
+SMALL = dict(
+    name="1.0 m cone",
+    reaction=1100.0,
+    height=1.0,
+    flange=1400.0,
+    spacing=20.0,
+    anchors=dict(pattern="circle", count=6, circle_diameter=1100, diameter=36, embedment=500),
+)
+
+
 def test_the_berth_frame_and_arrangement():
     p = project()
+    p.furniture.fenders = Fenders(**SMALL)
     res = F.design(p, p.sections[0], geometry())
     fr = res["frame"]
     assert fr["along"] == "Y" and fr["inland"] == -1 and fr["face"] == 1 and fr["cope_m"] == 3.5
@@ -198,10 +210,11 @@ def test_the_berth_frame_and_arrangement():
     for it in lay["items"]["fenders"]:
         assert it["status"] != "clash"
         assert all(abs(it["s_m"] - j) >= 1.0 for j in lay["joints_m"])
-        # Its bolts (to 0.55 m in from the face) clear every king pile head (radius 0.813 m + 0.1 m).
+        # Its flange (to 0.55 m in from the face) clear every king pile head (radius 0.813 m + 0.1 m).
         half, depth = it["to_m"] - it["s_m"], it["across_m"][1]
         assert all(
-            math.hypot(max(abs(it["s_m"] - k["s"]) - half, 0), k["d"] - depth) >= 0.913 - 1e-6 for k in kings
+            math.hypot(max(abs(it["s_m"] - k["s"]) - half, 0), k["d"] - depth) >= 0.913 - 0.01
+            for k in kings  # positions are rounded to 10 mm
         )
     # With the rail over the 2 m front beam's centre there is no room for the bollards.
     assert all("crane rail" in " ".join(b["clashes"]) for b in lay["items"]["bollards"])
@@ -245,7 +258,7 @@ def api(tmp_path, monkeypatch):
 def test_the_furniture_routes(api):
     client, pid, base = api
     out = client.get(base + "/furniture").json()
-    assert out["layout"]["counts"]["fenders"] == 16 and out["items"]
+    assert out["layout"]["counts"]["fenders"] == 18 and out["items"]  # SCN 1600 every 18 m
     for fmt in ("docx", "pdf", "xlsx"):
         r = client.get(base + f"/furniture/calc.{fmt}")
         assert r.status_code == 200, r.text
@@ -324,3 +337,35 @@ def test_bollard_extra_beam_bars_and_the_thickening_step():
         {"beams": [{"element": "Front Beam", "width_mm": 2000, "depth_mm": 1600, "bollard": r}]}
     )
     assert views and any(it["type"] == "bar" for it in views[0]["items"])
+
+
+def test_the_report_fender_and_the_tie_downs():
+    p = project()
+    f = p.furniture
+    # The design report's fender and steel appendix loads (10 kN/t, as the report).
+    assert (f.fenders.reaction, f.fenders.energy, f.fenders.height, f.fenders.spacing) == (
+        2012,
+        1867,
+        1.6,
+        18,
+    )
+    assert (f.crane_stoppers.force, f.storm_pins.force, f.tie_downs.force) == (1500, 1800, 1650)
+    res = F.design(p, p.sections[0], geometry())
+    lay = res["layout"]
+    # On the bare 1.6 m deep face its 1365 mm bolt circle cannot miss the king piles at 3.2 m.
+    assert all(it["status"] == "clash" for it in lay["items"]["fenders"])
+    # A set at each leg of each stowed crane, on both rails.
+    assert lay["counts"]["tie_downs"] == 4 * f.storm_pins.cranes
+    td = next(i for i in res["items"] if i["item"] == "tie_downs")
+    # One plate of a set: 1.5 x 1650 / 2 = 1237.5 kN (the report's 1240 kN), 225 mm off centre.
+    assert td["loads"]["N_Ed_kN"] == pytest.approx(1237.5)
+    # Rigid plate: 1237.5 / 6 + 1237.5 x 0.225 x 425 / (4 x 425^2) on the end bolts.
+    assert td["anchors"]["N_max_kN"] == pytest.approx(1237.5 / 6 + 1237.5 * 0.225 / (4 * 0.425), rel=1e-3)
+    assert td["passed"]
+    assert F.counts_for_costing(res)["Crane tie-downs"] == lay["counts"]["tie_downs"]
+    # On a protrusion block the fender bolts stay in the block, clear of the pile heads.
+    from triton.protrusion_inputs import FenderProtrusion
+
+    f.protrusion = FenderProtrusion()
+    lay = F.design(p, p.sections[0], geometry())["layout"]
+    assert not any("Combi Wall" in " ".join(it["clashes"]) for it in lay["items"]["fenders"])

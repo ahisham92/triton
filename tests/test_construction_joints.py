@@ -113,12 +113,13 @@ def test_pile_and_slab_joints_in_the_design_report_and_drawings():
     (pile,) = res["piles"]
     top, far = pile["construction_joints"]
     assert top["note"] == "pile top" and top["crossing"]["area_mm2"] == pile["arrangement"]["area_mm2"]
-    assert top["needed_mm2"] == top["tension_mm2"] + top["shear_mm2"]
+    # As the office report: the joint bars are the shear-friction steel; tension is shown only.
+    assert top["needed_mm2"] == top["shear_mm2"] and top["tension_added"] is False
     assert top["passed"] == (top["needed_mm2"] <= top["provided_mm2"])
     assert "not checked" in far["status"] and far["passed"] is None
     (slab,) = res["slabs"]
     at_x, at_y, face = slab["construction_joints"]
-    assert at_x["bars_along"] == "X" and at_x["line"]["at_m"] == -6.0 and at_x["averaged_over_m"] > 0
+    assert at_x["bars_along"] == "X" and at_x["line"]["at_m"] == -6.0 and "averaged_over_m" not in at_x
     assert at_x["provided_mm2_per_m"] > 0 and at_x["v_Edi_MPa"] > 0
     assert at_y["bars_along"] == "Y" and at_y["surface"] == "very smooth"
     assert "no beam named" in face["status"]
@@ -200,3 +201,54 @@ def test_designs_without_joints_keep_their_fingerprint():
     assert before["Deck"] == fresh._hash(own)
     with_joint = _deck_section(slab=[SlabJoint(at=-2.0)])
     assert fresh.fingerprint(Project(sections=[with_joint]), with_joint, None)["Deck"] != before["Deck"]
+
+
+def test_the_office_report_joint_checks_come_out_the_same():
+    """Final Design Report Appendix 18: front beam joint VEd 1294 kN/m, NEd 640 kN/m tension, rear beam
+    920 and 72 kN/m; h 700, d = 700 − 50, z = 0.8 d, keyed (μ 0.9), c fctd = 0: 6040 and 3343 mm²/m."""
+    s = DesignSettings()
+    laws = CJ.Laws("C40/50", s)
+    r = s.construction_joints
+    assert (r.lever_arm, r.effective_depth, r.sigma_n_area, r.actions, r.tension) == (
+        0.8,
+        "cover",
+        "d",
+        "peak",
+        "separate",
+    )
+    assert SlabJoint().surface == PileJoint().surface == BeamJoint().surface == "indented"
+    h, d = 700.0, 650.0
+    for v, n, office in ((1294.0, -640.0, 6040), (920.0, -72.0, 3343)):
+        v_edi = v * 1e3 / (r.lever_arm * d * 1000)
+        sigma = n * 1e3 / (1000 * d)
+        a = CJ.shear_steel(np.array([v_edi]), np.array([sigma]), "indented", laws)[0] * 1000 * h
+        assert a == pytest.approx(office, rel=0.005)
+
+
+def test_a_slab_joint_as_the_office_report_through_the_design():
+    # A uniform slab in tension: V 1294 kN/m across X = -2, N 640 kN/m tension, 700 thick with 50 covers.
+    def forces(x, y):
+        return [640.0, 0.0, 0.0, 0.0, 1294.0, 10.0, 10.0, 0.0]  # N_1 + is tension (sign flipped to design)
+
+    wb = import_sheets(
+        {
+            "Deck-PT-B-Apron": deck_rows(forces),
+            "Deck-QP": deck_rows(lambda x, y: [0.0] * 5 + [10.0, 10.0, 0.0]),
+            "Pile(1)-PT-B-Apron": piles_at([(-6.0, 0.0)]),
+            "Pile(1)-QP": piles_at([(-6.0, 0.0)], 1000.0),
+        }
+    )
+    els = {
+        "Deck": SlabInput(thickness=700, construction_joints=[SlabJoint(line="at X", at=-2.0)]),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
+    (j,) = run_section(DesignSettings(), Section(elements=els), wb)["slabs"][0]["construction_joints"]
+    assert j["forces"]["V_kN_per_m"] == pytest.approx(1294, abs=1)
+    assert j["forces"]["N_kN_per_m"] == pytest.approx(-640, abs=1)
+    assert j["shear_mm2_per_m"] == pytest.approx(6040, rel=0.005)
+    assert j["needed_mm2_per_m"] == j["shear_mm2_per_m"]
+    # The conservative rules: z = 0.9 d and the tension steel added on top.
+    rules = {"lever_arm": 0.9, "tension": "add"}
+    own = DesignSettings(construction_joints=rules)
+    (k,) = run_section(own, Section(elements=els), wb)["slabs"][0]["construction_joints"]
+    assert k["shear_mm2_per_m"] < j["shear_mm2_per_m"] and k["needed_mm2_per_m"] > k["shear_mm2_per_m"]

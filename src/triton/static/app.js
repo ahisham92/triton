@@ -446,17 +446,19 @@ async function projectPage(id, tab, sectionId) {
           .join("")}</select>
         <span class="status">Elements, workbook, load multipliers and results below are for this section.</span></div>`
     : "";
+  // Download, Duplicate and Delete sit on the Project tab only, so moving between tabs never
+  // leaves Delete under the pointer.
+  const projectButtons = `<a class="quiet-link" id="download-project" href="${ROOT}/api/projects/${esc(p.id)}/project.trt"
+        title="Settings, sections, workbooks, results and trials in one file, to send to someone or keep">Download project (.trt)</a>
+      <button class="quiet" id="duplicate" title="A new project with all of this one's settings, sections, workbooks, results and trials">Duplicate project</button>
+      <button class="danger" id="delete">Delete project</button>`;
   $app.innerHTML = `<h1>${esc(p.info.name)}</h1>
     <p class="sub">${esc([p.info.number, p.sections.length > 1 ? `${p.sections.length} sections` : sec().name].filter(Boolean).join(" · "))}</p>
     <div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${t}</button>`).join("")}</div>
     <div id="lockbar"></div>
     ${picker}<div id="tab"></div>
     <div class="savebar"><span class="save-state" id="save-status"></span>
-      <span style="flex:1"></span>
-      <a class="quiet-link" id="download-project" href="${ROOT}/api/projects/${esc(p.id)}/project.trt"
-        title="Settings, sections, workbooks, results and trials in one file, to send to someone or keep">Download project (.trt)</a>
-      <button class="quiet" id="duplicate" title="A new project with all of this one's settings, sections, workbooks, results and trials">Duplicate project</button>
-      <button class="danger" id="delete">Delete project</button></div>
+      <span style="flex:1"></span>${tab === "info" ? projectButtons : ""}</div>
     <ul class="errors" id="errors"></ul>`;
   $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab))));
   const pick = document.getElementById("section-pick");
@@ -465,26 +467,28 @@ async function projectPage(id, tab, sectionId) {
       state.sectionId = pick.value;
       location.hash = tabHash(tab);
     };
-  document.getElementById("delete").onclick = async () => {
-    if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
-    await api(`${ROOT}/api/projects/${id}`, { method: "DELETE" });
-    state = null;
-    location.hash = "#/";
-  };
-  document.getElementById("duplicate").onclick = async () => {
-    const name = prompt("Name of the copy", `${p.info.name} copy`);
-    if (name === null) return;
-    if (state.dirty) await save(); // what was just typed goes into the copy too
-    const copy = await api(`${ROOT}/api/projects/${id}/duplicate`, { method: "POST", body: JSON.stringify({ name }) });
-    state = null;
-    location.hash = `#/project/${copy.id}/info`;
-  };
-  document.getElementById("download-project").onclick = async (e) => {
-    if (!state.dirty) return;
-    e.preventDefault(); // what was just typed goes into the file too
-    await save();
-    location.href = e.target.href;
-  };
+  if (tab === "info") {
+    document.getElementById("delete").onclick = async () => {
+      if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
+      await api(`${ROOT}/api/projects/${id}`, { method: "DELETE" });
+      state = null;
+      location.hash = "#/";
+    };
+    document.getElementById("duplicate").onclick = async () => {
+      const name = prompt("Name of the copy", `${p.info.name} copy`);
+      if (name === null) return;
+      if (state.dirty) await save(); // what was just typed goes into the copy too
+      const copy = await api(`${ROOT}/api/projects/${id}/duplicate`, { method: "POST", body: JSON.stringify({ name }) });
+      state = null;
+      location.hash = `#/project/${copy.id}/info`;
+    };
+    document.getElementById("download-project").onclick = async (e) => {
+      if (!state.dirty) return;
+      e.preventDefault(); // what was just typed goes into the file too
+      await save();
+      location.href = e.target.href;
+    };
+  }
   const host = document.getElementById("tab");
   if (tab === "info") {
     const info = renderObject(SCHEMA.properties.info, p.info, "info", "Project");
@@ -5444,17 +5448,17 @@ function jointsBlock(list) {
     return parts.length ? parts.map((t) => `<b>${t}</b>`).join("<br>") : "";
   };
   return `<h3 style="margin-top:18px">Construction joints</h3>
-    <div class="scroll"><table><tr><th>Joint</th><th>Surface</th><th>Bars crossing</th><th>v<sub>Edi</sub> / v<sub>Rdi</sub></th><th>Needed (tension + shear)</th><th>Utilisation</th><th>Additional bars at this joint</th><th></th></tr>
+    <div class="scroll"><table><tr><th>Joint</th><th>Surface</th><th>Bars crossing</th><th>v<sub>Edi</sub> / v<sub>Rdi</sub></th><th>Needed</th><th>Utilisation</th><th>Additional bars at this joint</th><th></th></tr>
     ${list.map((j) => `<tr><td>${esc(j.where)}${j.note ? `<br><span class="status">${esc(j.note)}</span>` : ""}</td>
       <td>${esc(j.surface)} (c ${fmt(j.c, 3)}, μ ${fmt(j.mu, 2)})</td>
       <td>${j.crossing ? `${esc(j.crossing.label)}<br>${fmt(val(j, "provided"))} ${pm(j)}` : "–"}</td>
       <td>${j.v_Edi_MPa != null ? `${fmt(j.v_Edi_MPa, 2)} / ${fmt(j.v_Rdi_MPa, 2)} MPa (max ${fmt(j.v_Rdi_max_MPa, 2)})` : "–"}</td>
-      <td>${val(j, "needed") != null ? `${fmt(val(j, "tension"))} + ${fmt(val(j, "shear"))} = ${fmt(val(j, "needed"))} ${pm(j)}` : "–"}</td>
+      <td>${val(j, "needed") == null ? "–" : j.tension_added === false ? `${fmt(val(j, "needed"))} ${pm(j)} shear friction<br><span class="status">tension for N with M ${fmt(val(j, "tension"))}, checked in the element design</span>` : `${fmt(val(j, "tension"))} tension + ${fmt(val(j, "shear"))} shear = ${fmt(val(j, "needed"))} ${pm(j)}`}</td>
       <td>${j.utilisation != null ? `<b class="${j.utilisation > 1 ? "bad" : ""}">${fmt(j.utilisation, 2)}</b>` : "–"}</td>
       <td>${extra(j) || esc(j.status || "")}${(j.laps || []).map((w) => `<br><span class="status">${esc(w)}</span>`).join("")}</td>
       <td>${j.passed == null ? "" : j.passed ? '<span class="sev ok">OK</span>' : '<span class="sev error">more bars</span>'}</td></tr>`).join("")}
     </table></div>
-    <p class="status">EN 1992-1-1 6.2.5 at each joint with the Plaxis actions there (ULS): the bars crossing it carry the tension of N with M, and the shear friction steel on top of it. Details of each check in the report.</p>`;
+    <p class="status">EN 1992-1-1 6.2.5 at each joint with the Plaxis actions there (ULS): v<sub>Edi</sub> = V / (z b<sub>i</sub>), σ<sub>n</sub> from N, c f<sub>ctd</sub> = 0 in tension; z, d, σ<sub>n</sub> and whether the tension steel is added are in Design settings (the office report by default). Details of each check in the report.</p>`;
 }
 
 function curtailmentBlock(c) {

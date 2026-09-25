@@ -65,6 +65,7 @@ from .project import (
     ProjectInfo,
     Section,
     SheetPileInput,
+    WeldSettings,
     WhatIf,
     _now,
     with_project_grades,
@@ -1966,6 +1967,8 @@ class ClashSettingsIn(BaseModel):
     rule: Literal["touch", "ec2"] | None = None
     fixing_tolerance: float | None = Field(None, ge=0, le=50)
     plate_level: Literal["mid", "top"] | None = None
+    beam_bars: Literal["straight", "l"] | None = None
+    weld: WeldSettings | None = None
     top_levels: dict[str, float] | None = None
     mesh_start: dict[str, float] | None = None
     choices: dict[str, str] | None = None

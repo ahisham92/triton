@@ -32,15 +32,19 @@ def test_the_site_round_section_01a(api):
     client, pid, base = api
     out = client.get(base + "/site").json()
     lv = out["levels"]
-    # Defaults: seabed -16, water 0, soil behind the wall up to the deck's underside (700 mm slab at 2.7).
-    assert lv["seabed"] == -16.0 and lv["water"] == 0.0 and lv["ground"] == pytest.approx(2.35)
+    # Defaults: seabed -16.12, the tidal bar, soil up to the deck's underside (700 mm slab at 2.7).
+    assert (
+        lv["seabed"] == -16.12
+        and lv["water"] == [0.945, 0.701, 0.38, 0.213, 0.091, 0.0]
+        and lv["ground"] == pytest.approx(2.35)
+    )
     assert lv["bottom"] == -42.0  # 3 m below the combi wall's toe
     assert out["wall"] == {"element": "Combi Wall", "d": 1.0}
     sea, land = out["soil"]
     # The quay face is at X 1, inland towards -X: the sea block runs 20 m out from the wall at X 0.
     xs = sorted({c[0] for c in sea["corners"]})
     assert xs == [0.0, 20.0] and land["top"] == pytest.approx(2.35)
-    assert out["water"]["level"] == 0.0
+    assert [w["name"] for w in out["water"]] == ["MHWS", "MHWN", "MSL", "MLWN", "MLWS", "LAT"]
     kinds = {i["kind"] for i in out["furniture"]}
     assert {"fenders", "bollards"} <= kinds
     # Fenders stand out of the face (X > 1) inside the model's 33.6 m.
@@ -59,6 +63,28 @@ def test_site_settings_are_open_while_locked_and_never_stale_a_design(api):
     assert r.status_code == 200, r.text
     out = client.get(base + "/site").json()
     assert out["levels"]["seabed"] == -18.5 and out["site"]["soil"] == "full"
+    # Saved with one water level (the first version): it becomes the list.
+    assert out["site"]["water_levels"] == [{"name": "Water level", "level": 1.2}]
+    # Several named levels, highest first; one below the seabed has nothing to draw.
+    page = client.get(f"/api/projects/{pid}").json()
+    page["sections"][0]["site"]["water_levels"] = [
+        {"name": "LAT", "level": 0.0},
+        {"name": "HAT", "level": 1.9},
+        {"name": "Dry dock", "level": -30.0},
+    ]
+    page["sections"][0]["site"]["water_hidden"] = ["LAT"]
+    assert client.put(f"/api/projects/{pid}", json=page).status_code == 200
+    out = client.get(base + "/site").json()
+    assert [w["name"] for w in out["water"]] == ["HAT", "LAT"] and out["site"]["water_hidden"] == ["LAT"]
+
+
+def test_the_first_assumed_seabed_becomes_this_projects_dredge_level():
+    assert SiteView.model_validate({"seabed_level": -16.0}).seabed_level == -16.12
+    assert SiteView.model_validate({"seabed_level": -17.0}).seabed_level == -17.0
+    assert [w.name for w in SiteView().water_levels][0] == "MHWS"
+    # The level assumed before the tidal bar came (0.0 m, saved either way) becomes the tidal bar.
+    for saved in ({"water_level": 0.0}, {"water_levels": [{"name": "Water level", "level": 0.0}]}):
+        assert len(SiteView.model_validate(saved).water_levels) == 6
 
 
 def test_fingerprint_unchanged_by_the_site():

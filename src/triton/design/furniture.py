@@ -48,6 +48,7 @@ from ..furniture_inputs import (
     Fenders,
     Ladders,
     StormPins,
+    TieDowns,
     TieRods,
 )
 from ..materials import concrete
@@ -250,6 +251,31 @@ def stopper(s: CraneStoppers, beam: Beam, rail_from_face: float) -> dict[str, An
         "Crane stoppers",
         [("Anchor bolts", res["utilisation"], res["passed"])],
         loads={"F_Ed_kN": round(f, 1), "lever_m": s.buffer_height},
+        anchors=res,
+        edges={"to_face_mm": round(c_sea), "to_back_mm": round(c_land)},
+        notes=notes,
+    )
+
+
+def tie_down(t: TieDowns, beam: Beam, rail_from_face: float) -> dict[str, Any]:
+    """One plate of a set: its share of the uplift, off its centre by the link's eccentricity, in
+    tension on the anchor group (EN 1992-4). The seaward plate of the set is the one checked, as it
+    is nearer the beam's edge."""
+    vmin, vmax = _spread(t.anchors)
+    centre = (rail_from_face - t.offset_from_rail) * 1000 if t.plates > 1 else rail_from_face * 1000
+    c_sea = centre + vmin
+    c_land = beam.width - centre - vmax
+    g = group(t.anchors, c_land, c_sea, beam.depth, beam.concrete)
+    n = t.load_factor * t.force / t.plates
+    res = check_group(g, n, 0.0, 0.0, 0.0, n * t.eccentricity / 1000)
+    notes = []
+    if c_sea <= 0 or c_land <= 0:
+        notes.append(f"The plate's bolts do not fit across the {beam.name} at the rail.")
+    return _result(
+        "tie_downs",
+        "Crane tie-downs",
+        [("Anchor bolts (one plate)", res["utilisation"], res["passed"])],
+        loads={"N_Ed_kN": round(n, 1), "e_mm": t.eccentricity, "plates_per_set": t.plates},
         anchors=res,
         edges={"to_face_mm": round(c_sea), "to_back_mm": round(c_land)},
         notes=notes,
@@ -481,6 +507,7 @@ __all__ = [
     "bollard",
     "stopper",
     "storm_pin",
+    "tie_down",
     "rail",
     "ladder",
     "tie_rod",
