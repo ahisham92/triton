@@ -712,6 +712,39 @@ def connection(head: Head) -> dict:
     return {"shape": shape, "rows": rows, "text": text}
 
 
+def weld_check(ctx: Ctx, head: Head) -> dict | None:
+    """The weld of each combi wall bar to the king pile's tube: the fillet length that carries the bar's
+    design strength As·fyk/γs, EN 1993-1-8 4.5.3.3 (simplified method): fvw,d = fu / (√3 βw γM2) on a
+    throat a = leg / √2."""
+    w = ctx.rule.weld
+    if head.part != "infill" or not w.welded:
+        return None
+    a = w.leg / math.sqrt(2)
+    fvw = w.filler_fu / (math.sqrt(3) * w.beta_w * w.gamma_m2)
+    rows = []
+    for k, r in enumerate(head.rings):
+        phi = r["diameter_mm"]
+        force = math.pi * phi**2 / 4 * ctx.fyd / 1e3
+        rows.append(
+            {
+                "row": k + 1,
+                "bars": f"{r['count']}Ø{phi:g}",
+                "force_kN": round(force, 1),
+                "length_mm": math.ceil(force * 1e3 / (fvw * a)),
+            }
+        )
+    return {
+        "what": f"{head.pile} bars welded to the tube (EN 1993-1-8 4.5.3.3)",
+        "filler_fu_mpa": w.filler_fu,
+        "leg_mm": w.leg,
+        "throat_mm": round(a, 2),
+        "fvw_mpa": round(fvw, 1),
+        "beta_w": w.beta_w,
+        "gamma_m2": w.gamma_m2,
+        "rows": rows,
+    }
+
+
 # --- Design checks again -------------------------------------------------------------------------------
 
 
@@ -2372,6 +2405,7 @@ class Clashes:
             "x": head.x,
             "y": head.y,
             "count": _count(ph),
+            "weld": weld_check(ctx, head),
             "punch_count": _count(qh),
             "scene": scene(head, hits),
             "what": _what(head, hits),

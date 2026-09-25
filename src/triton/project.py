@@ -2050,6 +2050,24 @@ class WhatIf(_Model):
     note: str = Field("", title="Note", description="e.g. why the bars cannot be placed")
 
 
+class WeldSettings(_Model):
+    """Pile bars welded to the steel tube of a combi wall king pile (the office's report, appendix 2)."""
+
+    welded: bool = Field(True, title="Combi wall bars welded to the tube")
+    filler_fu: float = Field(
+        482.6,
+        title="Filler metal tensile strength",
+        gt=0,
+        json_schema_extra={"unit": "MPa"},
+        description="E70XX: 70 ksi = 482.6 MPa.",
+    )
+    leg: float = _mm("Fillet weld leg", 16.0, gt=0)
+    beta_w: float = Field(
+        0.9, title="Correlation factor βw", gt=0, description="EN 1993-1-8 Table 4.1; 0.9 for S355."
+    )
+    gamma_m2: float = Field(1.25, title="γM2", gt=0)
+
+
 class ClashSettings(_Model):
     """How the Clashes tab finds clashes between the pile bars and the slab and beam bars."""
 
@@ -2081,6 +2099,7 @@ class ClashSettings(_Model):
         description="By 'slab|X' (bars along X) or 'slab|Y': moves where the mesh starts from "
         "the slab's edge.",
     )
+    weld: WeldSettings = Field(default_factory=WeldSettings, title="Bars welded to the tube")
     choices: dict[str, str] = Field(
         default_factory=dict, title="Solution chosen", description="By 'pile|element': the solution used."
     )
