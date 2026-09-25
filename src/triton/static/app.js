@@ -4288,7 +4288,7 @@ function slabCard(d) {
       ${types.map((t) => { const g = punch[govOf(t)] || t; return `<tr class="link" data-punch="${govOf(t)}"><td><b>${esc(t.pile)}</b></td><td>${fmt(t.heads)}${t.heads_needing_links_alone ? `<br><span class="status">${fmt(t.heads_needing_links_alone)} alone need links</span>` : ""}</td><td>${fmt(g.plan_x ?? t.governing_x, 1)}, ${fmt(g.plan_y ?? t.governing_y, 1)}</td>
         <td>${fmt(t.thickness_mm)} mm</td><td>${fmt(t.V_kN)} kN, ${esc(t.direction)}<br><span class="status">${esc(t.combination)}</span></td><td>${fmt(t.beta, 2)}</td>
         <td>${fmt(t.vEd_MPa, 3)} / ${fmt(t.vRd_c_MPa, 3)}</td><td>${fmt(t.vEd_face_MPa, 2)} / ${fmt(t.vRd_max_MPa, 2)}</td>
-        <td>${t.needs_reinforcement ? (t.perimeters ? `${t.perimeters} perimeters @ ${fmt(t.radial_spacing_mm)} mm, ${fmt(t.asw_mm2_per_perimeter)} mm² each, to ${fmt(t.reinforced_to_mm)} mm from the face` : t.fix ? `Links alone cannot: ${esc(punchFix(t))}` : "–") : "none"}</td><td>${ok(t.passed)}</td></tr>`; }).join("")}
+        <td>${t.needs_reinforcement ? (t.perimeters ? `${t.perimeters} perimeters @ ${fmt(t.radial_spacing_mm)} mm, ${fmt(t.asw_mm2_per_perimeter)} mm² each, to ${fmt(t.reinforced_to_mm)} mm from the face` : t.fix ? `Links alone cannot: ${esc(punchFix(t))}` : "–") : "none"}${t.added_bars ? `<br><b>Added:</b> ${esc(t.added_bars)}` : ""}</td><td>${ok(t.passed)}</td></tr>`; }).join("")}
       </table></div><div class="charts" data-kind="punch"></div>
       <details style="margin-top:8px"><summary>Each pile head's own check (${punch.length} heads)</summary>
       <p class="status">For checking only: what each head would need on its own. Change a head's thickness for a slope, then save and design again.</p>
@@ -4298,12 +4298,13 @@ function slabCard(d) {
         <td>${fmt(o.vEd_MPa, 3)} / ${fmt(o.vRd_c_MPa, 3)}</td><td>${fmt(o.vEd_face_MPa, 2)} / ${fmt(o.vRd_max_MPa, 2)}</td><td>${fmt(o.utilisation, 2)}</td>
         <td>${o.needs_reinforcement ? (o.perimeters ? `${o.perimeters} perimeters, ${fmt(o.asw_mm2_per_perimeter)} mm² each` : o.passed ? "–" : "fails") : "none"}</td></tr>`; }).join("")}
       </table></div></details>
+    ${punchBarsNote(d)}
     <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d); nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : punch.length ? `<p class="status">Click a pile to see its control perimeters. Change a pile's thickness for a slope, then save and design again.</p>
       <div class="scroll"><table class="punch"><tr><th>Pile</th><th>X, Y</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Links</th><th></th></tr>
       ${punch.map((q, i) => `<tr class="link" data-punch="${i}"><td>${esc(q.pile)}</td><td>${fmt(q.plan_x ?? q.x, 1)}, ${fmt(q.plan_y ?? q.y, 1)}</td>
         <td><input type="number" step="any" data-depth="${i}" value="${q.thickness_mm}" style="width:80px" title="${esc(q.thickness_from)}"> mm</td><td>${fmt(q.V_kN)} kN, ${esc(q.direction)}<br><span class="status">${esc(q.combination)}</span></td><td>${fmt(q.beta, 2)}</td>
         <td>${fmt(q.vEd_MPa, 3)} / ${fmt(q.vRd_c_MPa, 3)}</td><td>${fmt(q.vEd_face_MPa, 2)} / ${fmt(q.vRd_max_MPa, 2)}</td>
-        <td>${q.needs_reinforcement ? (q.perimeters ? `${q.perimeters} perimeters @ ${fmt(q.radial_spacing_mm)} mm, ${fmt(q.asw_mm2_per_perimeter)} mm² each, to ${fmt(q.reinforced_to_mm)} mm from the face` : q.fix ? `Links alone cannot: ${esc(punchFix(q))}` : "–") : "none"}</td><td>${ok(q.passed)}</td></tr>`).join("")}
+        <td>${q.needs_reinforcement ? (q.perimeters ? `${q.perimeters} perimeters @ ${fmt(q.radial_spacing_mm)} mm, ${fmt(q.asw_mm2_per_perimeter)} mm² each, to ${fmt(q.reinforced_to_mm)} mm from the face` : q.fix ? `Links alone cannot: ${esc(punchFix(q))}` : "–") : "none"}${q.added_bars ? `<br><b>Added:</b> ${esc(q.added_bars)}` : ""}</td><td>${ok(q.passed)}</td></tr>`).join("")}
     </table></div><div class="charts" data-kind="punch"></div>
     <p class="status">EN 1992-1-1 6.4: checked from the pile face (u0, v<sub>Rd,max</sub>) out to u1 at 2d, u1 = π(D + 4d); nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) with the pile moment at the slab soffit, as in the pile design; ρl of the face in tension over the pile. One-way shear starts at 2d from the pile faces. Piles under a beam are left to the beam.</p>` : '<p class="status">No piles under the slab.</p>'}
     <h3 style="margin-top:18px">Shear per metre ${ok(sh.passed !== false)}</h3>
@@ -4923,6 +4924,13 @@ function alongChart(el, rows, title, yLabel, val, limit = null, supports = null,
 
 // The office king pile sheet: one column per corrosion zone, rows grouped as the sheet, checks green
 // when they pass and red when they fail.
+// Bars added over pile heads where links alone cannot carry the punching.
+function punchBarsNote(d) {
+  const bars = d.punching_bars || [];
+  if (!bars.length) return "";
+  return `<p class="status"><b>Bars added for punching</b> (links alone could not carry it: v<sub>Ed</sub> over k<sub>max</sub>·v<sub>Rd,c</sub>). ${bars.map((b) => `${esc(b.pile)}, on ${b.heads.length} head${b.heads.length > 1 ? "s" : ""}: ${esc(b.text)}, over ${fmt(b.width_mm)} mm (D + 6d), raising ρl to ${fmt(100 * b.rho_l_required, 2)}%; ${fmt(b.kg)} kg in all`).join(". ")}. They sit inside the other bars of that face and are drawn as their own zones. A thicker slab at the pile is the other way (slab setting "Punching that links cannot carry").</p>`;
+}
+
 // What makes a failing pile head pass, in words (from the design's punching fix).
 function punchFix(q) {
   const f = q.fix;
