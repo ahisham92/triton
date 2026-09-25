@@ -143,10 +143,11 @@ export function deformedLegendHtml(d) {
     <div class="bar" style="background:linear-gradient(90deg, ${stops})"></div>
     <div class="ticks"><span>0</span><span style="left:45%">${fmt1(d.max_mm / 2)}</span><span style="left:90%">${max} mm</span></div>
     <p>The whole structure moved by the Design tab's estimate (curvature M / EI integrated twice down each pile and wall,
-    and between the supports of each 1 m deck strip), enlarged by the scale shown. The deck moves sideways with the mean
-    of the pile heads (${fmt1(d.deck_shift_mm[0])} mm in X, ${fmt1(d.deck_shift_mm[1])} mm in Y). The soil's face against the
-    wall follows the wall; the soil's own movement is not in the estimate. Not a Plaxis displacement result.
-    Faint: the structure as built.</p>${extra.map((t) => `<p class="grey">${t.replace(/</g, "&lt;")}</p>`).join("")}</div>`;
+    held as set there: ${d.settings?.toe === "tied" ? "tied at the deck" : d.settings?.toe === "firm_soil" ? "held at the toe and the firm soil level" : "fixed at the toe"}),
+    ${d.settings?.baseline ? `the movement after ${d.settings.baseline.replace(/</g, "&lt;")},` : "the total movement,"} enlarged by the scale shown.
+    The deck moves sideways with the pile heads (${fmt1(d.deck_shift_mm[0])} mm in X, ${fmt1(d.deck_shift_mm[1])} mm in Y) and bends
+    between the supports of each 1 m strip. The soil's face against the wall follows the wall; the ground's own movement is not
+    in the estimate. Not a Plaxis displacement result. Faint: the structure as built.</p>${extra.map((t) => `<p class="grey">${t.replace(/</g, "&lt;")}</p>`).join("")}</div>`;
 }
 
 const PRESETS = {

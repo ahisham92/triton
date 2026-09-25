@@ -90,11 +90,29 @@ def test_the_deformed_shape_of_every_pile_by_combination(tmp_path, monkeypatch):
     assert out["estimate"] is True and "not a Plaxis displacement result" in out["note"]
     a, b = sorted(out["members"], key=lambda m: m["x"])
     assert (a["x"], b["x"]) == (0.0, 6.0) and a["points"][0][0] == -5.0 and a["points"][-1][0] == -1.0
-    # The pile that moves most is the Design tab's estimate; the other moves half as much.
-    est = client.get(f"{url}/deflections").json()["elements"][0]
-    head = max(abs(v) for v in a["points"][-1][1:])
-    assert head == pytest.approx(abs(est["head_mm"]), abs=0.02)
-    assert max(abs(v) for v in b["points"][-1][1:]) == pytest.approx(head / 2, abs=0.02)
-    assert out["deck_shift_mm"] and out["max_mm"] == pytest.approx(head, abs=0.02)
+    # Tied at the deck (the default): both heads move with the deck, as the Design tab's estimate says,
+    # by the mean of the two heads each fixed at its toe (the second has half the moments).
+    est = client.get(f"{url}/deflections").json()
+    move = abs(est["deck"]["move_mm"]["across"])
+    heads = [max(abs(v) for v in m["points"][-1][1:]) for m in (a, b)]
+    assert heads == pytest.approx([move, move], abs=0.02)
+    assert abs(est["elements"][0]["head_mm"]) == pytest.approx(move, abs=0.02)
+    assert max(abs(v) for v in out["deck_shift_mm"]) == pytest.approx(move, abs=0.02)
+    head = out["max_mm"]
     uls = client.get(f"{url}/deformed", params={"combination": "PT-B-Apron"}).json()
     assert uls["combination"] == "PT-B-Apron" and uls["max_mm"] == pytest.approx(3 * head, rel=1e-3)
+
+    # Each pile on its own (fixed at the toe): the second moves half as much as the first.
+    page = client.get(f"/api/projects/{p['id']}").json()
+    page["sections"][0]["deflection"]["toe"] = "fixed"
+    assert client.put(f"/api/projects/{p['id']}", json=page).status_code == 200
+    own = client.get(f"{url}/deformed").json()
+    a, b = sorted(own["members"], key=lambda m: m["x"])
+    fa, fb = (max(abs(v) for v in m["points"][-1][1:]) for m in (a, b))
+    assert fb == pytest.approx(fa / 2, abs=0.02) and (fa + fb) / 2 == pytest.approx(move, abs=0.02)
+    # Movement from a phase: its moments come off first, and it is not offered as a shape itself.
+    page["sections"][0]["deflection"]["baseline"] = "PT-B-Apron"
+    assert client.put(f"/api/projects/{p['id']}", json=page).status_code == 200
+    after = client.get(f"{url}/deformed").json()
+    assert after["combinations"] == ["QP"] and any("movement after PT-B-Apron" in n for n in after["notes"])
+    assert after["max_mm"] == pytest.approx(2 * own["max_mm"], rel=1e-3)  # QP − 3 × QP

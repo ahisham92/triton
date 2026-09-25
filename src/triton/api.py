@@ -840,15 +840,20 @@ def _workbook(project_id: str, section: Section) -> ImportResult | None:
     return _view(wb, section)
 
 
+def _phases(project: Project, section: Section) -> ImportResult | None:
+    """Every sheet of the stored workbook when a phase is picked under 'Movement from' (the end of
+    construction): it need not be one of the section's load combinations."""
+    if not section.deflection.baseline.strip():
+        return None
+    raw = store().load_workbook(project.id, section.id)
+    if raw is None:
+        return None
+    return apply_section(raw, _sheet_map(section), None, None, section.review, _sizes(section))
+
+
 def _deflections(project: Project, section: Section, wb: ImportResult, results: dict | None) -> dict:
-    """The estimated displacements; a phase picked under 'Movement from' (the end of construction) is
-    read from the stored workbook even though it is not one of the section's load combinations."""
-    phases = None
-    if section.deflection.baseline.strip():
-        raw = store().load_workbook(project.id, section.id)
-        if raw is not None:
-            phases = apply_section(raw, _sheet_map(section), None, None, section.review, _sizes(section))
-    return estimate_deflections(project.design, section, wb, results, phases)
+    """The estimated displacements, measured from the phase picked under 'Movement from', if any."""
+    return estimate_deflections(project.design, section, wb, results, _phases(project, section))
 
 
 # The checked workbook depends on the stored workbook, the section's reading of it and this code;
@@ -1825,7 +1830,14 @@ def section_deformed(project_id: str, section_id: str, combination: str = "") ->
         wanted = section.deflection.combination.strip().lower()
         qp = [c for c in combos if combination_type(c) is CombinationType.SLS_QP]
         pick = next((c for c in combos if c.lower() == wanted), None) or (qp[0] if qp else combos[0])
-    out = deformed.shapes(project.design, section, wb, pick, store().load_results(project_id, section_id))
+    out = deformed.shapes(
+        project.design,
+        section,
+        wb,
+        pick,
+        store().load_results(project_id, section_id),
+        _phases(project, section),
+    )
     return {**out, "combinations": combos}
 
 
