@@ -39,7 +39,10 @@ Punching at each pile, 6.4: VEd = the pile's axial force at its top, β from the
 head moments (6.4.3(4), β = 1 + 0.6π·e/(D + 4d)), control perimeter u1 = π(D + 4d),
 vRd,c with ρl = √(ρx·ρy) of the face in tension over the pile, and vRd,max = 0.4·ν·fcd on
 u0 = πD. Where vEd > vRd,c, links on perimeters out to u_out,ef = β·VEd/(vRd,c·d) (6.52).
-A sloped slab can use a different depth for punching.
+A sloped slab can use a different depth for punching. By default every pile type gets one
+punching design, as detailed on site: its worst head's (failing, then needing links, then the
+largest utilisation), with links enough for every head of the type; each head's own check is kept
+for checking. The slab can instead give each head its own, and can limit the check to some pile types.
 
 Restraint: as for beams (``crack.restraint_crack``), with the slab thickness as the height.
 """
@@ -921,12 +924,15 @@ def zones_for(
     min_zone: float = 2.5,
     basic: int | None = None,
     labels: list[str] | None = None,
+    gaps: dict[tuple[int, int], tuple[list[tuple[int, int]], str]] | None = None,
 ) -> dict:
     """Basic mesh and zones for one layer.
 
     ``need["idx"]`` is the cheapest option each cell can take and ``ok[cell, option]`` whether
     it can take an option at all. The basic mesh is the option with the least total steel, cells
-    that cannot take it getting their own option at a premium.
+    that cannot take it getting their own option at a premium. ``gaps`` (``gap_cells``): squares with
+    no result of their own, over a pile head or with no Plaxis node; a zone runs on through them with
+    the bars of the zoned squares beside them along the bars, so it has no hole.
     """
     idx = need["idx"].to_numpy(int)
     areas = np.array([o[0] * (1 + LAYER_PREMIUM * (o[3] - 1)) for o in options])
@@ -941,6 +947,20 @@ def zones_for(
         best = basic
     need = need.assign(zoned=~ok[:, best])
     zoned = need[need["zoned"]]
+    if gaps:
+        lvl_of = {
+            (int(i), int(j)): int(v) for i, j, v in zip(zoned["i"], zoned["j"], zoned["idx"], strict=True)
+        }
+        extra = []
+        for i, j in gaps:
+            if (i, j) in lvl_of:
+                continue
+            beside = [(i - 1, j), (i + 1, j)] if along == "X" else [(i, j - 1), (i, j + 1)]
+            lv = [lvl_of[c] for c in beside if c in lvl_of]
+            if lv:
+                extra.append({"i": i, "j": j, "idx": max(lv), "zoned": True})
+        if extra:
+            zoned = pd.concat([zoned, pd.DataFrame(extra)], ignore_index=True)
     zones = []
     # Runs of cells along the bars, split where the bars change, then merged across when they match.
     # Pieces shorter than MIN_ZONE take the heavier neighbour's bars, so bars are not cut too short.
@@ -1391,6 +1411,120 @@ def punching(
     return out
 
 
+# What a pile head's punching design is: taken whole from the type's governing head when unified.
+_PUNCH_DESIGN = (
+    "combination",
+    "V_kN",
+    "direction",
+    "beta",
+    "rho_l",
+    "u1_mm",
+    "vEd_MPa",
+    "vRd_c_MPa",
+    "vEd_face_MPa",
+    "vRd_max_MPa",
+    "utilisation",
+    "r_u1_mm",
+    "needs_reinforcement",
+    "passed",
+    "kmax_ratio",
+    "utilisation_with_links",
+    "asw_mm2_per_perimeter",
+    "radial_spacing_mm",
+    "u_out_mm",
+    "perimeters",
+    "reinforced_to_mm",
+    "r_out_mm",
+    "link_radii_mm",
+    "fix",
+)
+# The head's own check, kept for checking when the type is unified.
+_PUNCH_OWN = (
+    "combination",
+    "V_kN",
+    "direction",
+    "beta",
+    "rho_l",
+    "vEd_MPa",
+    "vRd_c_MPa",
+    "vEd_face_MPa",
+    "vRd_max_MPa",
+    "utilisation",
+    "utilisation_with_links",
+    "needs_reinforcement",
+    "passed",
+    "perimeters",
+    "asw_mm2_per_perimeter",
+)
+
+
+def _punch_rank(q: dict) -> tuple:
+    """Worst first: failing, then needing links, then the largest vEd/vRd,c (or face) ratio."""
+    return (not q.get("passed"), bool(q.get("needs_reinforcement")), q.get("utilisation") or 0.0)
+
+
+def unify_punching(heads: list[dict], per: str = "type") -> tuple[list[dict], list[dict]]:
+    """One punching design per pile type, as detailed on site: every head of a type takes the design of
+    the type's governing head (the worst: failing, needing links, then the largest utilisation), with
+    the links enveloping the type (most perimeters, most Asw per perimeter). Each head keeps its own
+    check under ``own``. ``per="head"`` leaves each head its own design. Returns the heads and one
+    summary row per type."""
+    by: dict[str, list[dict]] = {}
+    for q in heads:
+        by.setdefault(q["pile"], []).append(q)
+    out: list[dict] = []
+    types: list[dict] = []
+    for pile, rows in by.items():
+        gov = max(rows, key=_punch_rank)
+        design = {k: gov[k] for k in _PUNCH_DESIGN if k in gov}
+        linked = [q for q in rows if q.get("needs_reinforcement") and q.get("perimeters")]
+        if per == "type" and design.get("needs_reinforcement") and design.get("perimeters") and linked:
+            # Enough links for every head of the type, on the governing head's perimeters.
+            n = max(q["perimeters"] for q in linked)
+            sr = design["radial_spacing_mm"]
+            first = design["link_radii_mm"][0]
+            design |= {
+                "perimeters": n,
+                "asw_mm2_per_perimeter": max(q["asw_mm2_per_perimeter"] for q in linked),
+                "utilisation_with_links": max(q.get("utilisation_with_links", 0.0) for q in linked),
+                "link_radii_mm": [round(first + i * sr) for i in range(n)],
+                "reinforced_to_mm": round(design["reinforced_to_mm"] + (n - design["perimeters"]) * sr),
+            }
+        thick = sorted({q["thickness_mm"] for q in rows})
+        types.append(
+            {
+                "pile": pile,
+                "heads": len(rows),
+                "D_mm": gov["D_mm"],
+                "governing_x": gov["x"],
+                "governing_y": gov["y"],
+                "thickness_mm": gov["thickness_mm"],
+                "thicknesses_mm": thick,
+                "d_mm": gov["d_mm"],
+                "heads_needing_links_alone": sum(1 for q in rows if q.get("needs_reinforcement")),
+                "heads_failing_alone": sum(1 for q in rows if not q.get("passed")),
+                **design,
+                "passed": all(q.get("passed") for q in rows),
+                "unified": per == "type",
+            }
+        )
+        for q in rows:
+            if per != "type":
+                out.append(q)
+                continue
+            own = {k: q[k] for k in _PUNCH_OWN if k in q}
+            one = {k: v for k, v in q.items() if k not in _PUNCH_DESIGN}
+            one |= design | {
+                "own": own,
+                "unified": True,
+                "governing": q is gov,
+                "passed": types[-1]["passed"],
+            }
+            out.append(one)
+    out.sort(key=lambda q: (q["pile"], q["y"], q["x"]))
+    return out, types
+
+
 def _punching_fix(
     w: dict, h: float, D: float, cover: float, fck: float, fcd: float, nu: float, gc: float
 ) -> dict:
@@ -1766,6 +1900,12 @@ def design_slab(
     vm_q = vd.mask(vlay, qp_m["X"], qp_m["Y"]) if vsec and len(qp_m) else np.zeros(len(qp_m), bool)
     ui, uj = _cells(uls_m["X"].to_numpy(), uls_m["Y"].to_numpy(), x0, y0, size)
     uls_m = uls_m.assign(i=ui, j=uj)
+    # Squares of the grid with no result of their own: over a pile head (the results inside the pile are
+    # left out) or where the Plaxis mesh has no node (its elements are larger than a cell there). The
+    # zones run on through them and the plots show the worst of the squares round them.
+    ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
+    nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
+    gaps = gap_cells(set(zip(ui.tolist(), uj.tolist(), strict=True)), ni, nj, x0, y0, size, box, piles)
     if len(qp_m):
         qi, qj = _cells(qp_m["X"].to_numpy(), qp_m["Y"].to_numpy(), x0, y0, size)
         qp_m = qp_m.assign(i=qi, j=qj)
@@ -2078,6 +2218,7 @@ def design_slab(
                     slab.min_zone_length,
                     0,
                     labels,
+                    gaps,
                 )
             else:
                 z = area_zones(cell, ok_all, opts, labels, size, x0, y0, box, slab.min_zone_length)
@@ -2711,7 +2852,20 @@ def design_slab(
 
     # Punching.
     heads = pile_heads(pile_sheets, elements, box, settings.results_into_connection / 1e3)
-    punch = punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams)
+    in_slab = sorted({hd["pile"] for hd in heads})
+    if slab.punching_piles:
+        heads = [hd for hd in heads if hd["pile"] in slab.punching_piles]
+        left = [p for p in in_slab if p not in slab.punching_piles]
+        if left:
+            notes.append(f'Punching not checked for {", ".join(left)} (slab setting "Punching for").')
+    punch, punch_types = unify_punching(
+        punching(heads, slab, settings, rho_at, conc, max(covers.values()), beams), slab.punching_per
+    )
+    if slab.punching_per == "type" and any(len(t["thicknesses_mm"]) > 1 for t in punch_types):
+        notes.append(
+            "Punching: a pile type has heads with different slab thicknesses; its one design is the "
+            "governing head's, at that head's thickness."
+        )
     unset = sorted({p["pile"] for p in punch if getattr(elements.get(p["pile"]), "head_level", 0) is None})
     if unset:
         notes.append(
@@ -2780,9 +2934,7 @@ def design_slab(
     area_m2 = len(used) * cell_area
     # The squares over the pile heads and those with no Plaxis node carry bars too: the basic mesh, or
     # the zone's bars where a zone covers them.
-    ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
-    nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
-    for i, j in gap_cells({(int(a), int(b)) for a, b in used.index}, ni, nj, x0, y0, size, box, piles):
+    for i, j in gaps:
         cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
         for layer in LAYERS:
             lay = layers[layer]
@@ -2868,17 +3020,11 @@ def design_slab(
         ]
         for (i, j), u in used.items()
     ]
-    # Squares of the grid with no result of their own: over a pile head (the results inside the pile are
-    # left out) or where the Plaxis mesh has no node (its elements are larger than a cell there). They
-    # take the worst of the squares round them, so the plots and the 3D cover the whole slab.
-    ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
-    nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
-    have = {(int(i), int(j)) for i, j in used.index}
-    gaps = gap_cells(have, ni, nj, x0, y0, size, box, piles)
+    # The squares with no result of their own take the worst of the squares round them, so the plots
+    # and the 3D cover the whole slab.
     for (i, j), (donors, why) in gaps.items():
         cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
-        u = max(float(used.loc[d]) for d in donors) if donors else None
-        u = None if u is None else round(u, 3)
+        u = round(max(float(used.loc[d]) for d in donors), 3)
         bands.append([round(cx, 2), round(cy, 2), round(level, 2), u, size, why])
     crack_cells = pd.concat(per_cell.values()).groupby(["i", "j"])["crack"].max().dropna()
     crack_bands = [
@@ -2986,7 +3132,7 @@ def design_slab(
     }
     # Squares with no result of their own: the envelope of the squares round them, marked with why.
     mc_have = {(int(i), int(j)) for i, j in mc.index}
-    for (i, j), (donors, why) in gap_cells(mc_have, ni, nj, x0, y0, size, box, piles).items():
+    for (i, j), (donors, why) in gaps.items():
         d = mc.loc[[c for c in donors if c in mc_have]]
         if len(d):
             moment_cells["cells"].append(
@@ -3015,6 +3161,7 @@ def design_slab(
         "layers": layers,
         "shear": shear,
         "punching": punch,
+        "punching_types": punch_types,
         "restraint": restraint,
         "steel": steel,
         "utilisation": round(

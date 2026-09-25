@@ -558,3 +558,91 @@ def test_an_empty_least_spacing_keeps_stored_designs_fresh():
     assert before == _hash(old)
     p.design.reinforcement.slab_min_bar_spacing = 150
     assert fingerprint(p, Section(), None)["design settings"] != before
+
+
+def test_a_zone_runs_on_through_a_square_with_no_result():
+    import numpy as np
+    import pandas as pd
+
+    from triton.design.slabs import zones_for
+
+    options = [(1000.0, 16, 200, 1), (3000.0, 25, 150, 1)]
+    # One row of 7 squares needing the heavier bars, with no result at i = 3 (over a pile head).
+    need = pd.DataFrame({"i": [0, 1, 2, 4, 5, 6], "j": [0] * 6, "idx": [1] * 6})
+    ok = np.array([[False, True]] * 6)
+    split = zones_for(need, ok, options, 1.0, 0.0, 0.0, "X", 2.5, 0)
+    whole = zones_for(need, ok, options, 1.0, 0.0, 0.0, "X", 2.5, 0, gaps={(3, 0): ([(2, 0)], "pile")})
+    assert [z["x"] for z in split["zones"]] == [[0.0, 3.0], [4.0, 7.0]]
+    assert [z["x"] for z in whole["zones"]] == [[0.0, 7.0]]
+
+
+def _unified_deck(**slab):
+    def forces(x, y):
+        return [0.0, 0.0, 0.0, 20.0, 30.0, -300.0, 80.0, 0.0]
+
+    heavy = piles_at([(-6.0, -2.0)], 4000.0)
+    light = piles_at([(-6.0, 2.0)], 3400.0)[1:]
+    for r in light:
+        r[1] += 100  # its own node numbers
+    other = piles_at([(-2.0, 0.0)], 2000.0)
+    raw = {
+        "Deck-PT-B-Apron": deck_rows(forces),
+        "Deck-QP": deck_rows(lambda x, y: [0.0] * 5 + [100.0, 50.0, 0.0]),
+        "Pile(1)-PT-B-Apron": heavy + light,
+        "Pile(1)-QP": piles_at([(-6.0, -2.0), (-6.0, 2.0)], 1000.0),
+        "Pile(2)-PT-B-Apron": other,
+        "Pile(2)-QP": piles_at([(-2.0, 0.0)], 1000.0),
+    }
+    els = {
+        "Deck": SlabInput(thickness=700, **slab),
+        "Pile(1)": PileInput(head_level=2.7),
+        "Pile(2)": PileInput(head_level=2.7),
+    }
+    (d,) = run_section(DesignSettings(), Section(elements=els), import_sheets(raw))["slabs"]
+    return d
+
+
+def test_punching_is_one_design_per_pile_type():
+    d = _unified_deck()
+    heavy, light = (q for q in d["punching"] if q["pile"] == "Pile(1)")
+    # Each head keeps its own check...
+    assert heavy["own"]["V_kN"] == 4000.0 and light["own"]["V_kN"] == 3400.0
+    assert light["own"]["utilisation"] < heavy["own"]["utilisation"]
+    assert light["own"]["perimeters"] < light["perimeters"] == 3
+    # ... and both carry the governing head's design and links, as detailed on site.
+    for k in (
+        "V_kN",
+        "utilisation",
+        "needs_reinforcement",
+        "perimeters",
+        "asw_mm2_per_perimeter",
+        "link_radii_mm",
+    ):
+        assert light.get(k) == heavy.get(k), k
+    assert heavy["governing"] and not light["governing"]
+    assert (light["x"], light["y"]) == (-6.0, 2.0)
+    types = {t["pile"]: t for t in d["punching_types"]}
+    assert set(types) == {"Pile(1)", "Pile(2)"}
+    assert types["Pile(1)"]["heads"] == 2 and types["Pile(1)"]["V_kN"] == 4000.0
+    assert (types["Pile(1)"]["governing_x"], types["Pile(1)"]["governing_y"]) == (-6.0, -2.0)
+
+    # Per head: each its own design.
+    each = _unified_deck(punching_per="head")
+    h, lt = (q for q in each["punching"] if q["pile"] == "Pile(1)")
+    assert (h["V_kN"], lt["V_kN"]) == (4000.0, 3400.0) and "own" not in lt
+
+    # Only the pile types picked.
+    only = _unified_deck(punching_piles=["Pile(1)"])
+    assert {q["pile"] for q in only["punching"]} == {"Pile(1)"}
+    assert any("not checked for Pile(2)" in n for n in only["notes"])
+
+
+def test_older_results_are_unified_when_read(tmp_path):
+    from triton.store import _upgrade
+
+    d = _unified_deck(punching_per="head")
+    old = {"slabs": [{k: v for k, v in d.items() if k != "punching_types"}]}
+    (s,) = _upgrade(old)["slabs"]
+    assert len(s["punching_types"]) == 2
+    a, b = (q for q in s["punching"] if q["pile"] == "Pile(1)")
+    assert a["V_kN"] == b["V_kN"] == 4000.0
