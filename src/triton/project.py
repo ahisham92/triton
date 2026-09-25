@@ -2381,16 +2381,16 @@ class SiteView(_Model):
         return data
 
 
-NEW_SECTION_END_TRIM = 2.0  # m, the office's trim at each end of a model (Ahmed, 2026-09-25)
-
-
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
     id: str = Field(default_factory=_short_id)
     name: str = Field("Section 1", title="Section name", min_length=1, description="e.g. Section 01a")
     x_min: float | None = _m(
-        "Working zone: X from", None, description="Results outside the working zone are not used (FE edges)."
+        "Working zone: X from",
+        None,
+        description="Older sections only: results outside the working zone are not used. Replaced by the "
+        "edges left out along the berth and across the quay.",
     )
     x_max: float | None = _m("Working zone: X to", None)
     y_min: float | None = _m("Working zone: Y from", None)
@@ -2402,13 +2402,20 @@ class Section(_Model):
         "above and below it.",
     )
     end_trim: float = _m(
-        "Ignore results at the model's ends",
+        "Leave out along the berth, at each end",
+        2.0,
+        ge=0,
+        description="Results this close to each end of every element along the berth are not used (the FE "
+        "edges; the office leaves out 2 m at each end). Along a corner or an inclined deck it is measured "
+        "along the berth's line, so only the berth's two outer ends are cut, never the corner. Piles are not "
+        "cut. 0: every result is used.",
+    )
+    side_trim: float = _m(
+        "Leave out across the quay, at each side",
         0.0,
         ge=0,
-        description="Results within this distance of each element's two ends along the berth are not used "
-        "(the FE edges; the office removes 2 m at each end, and new sections start at 2 m). On a corner "
-        "berth only the berth's outer ends are trimmed, never the corner. Piles are not trimmed. 0: every "
-        "result is used.",
+        description="Results this close to each side of every element across the quay (sea side and land "
+        "side) are not used. 0 (the default): none are left out.",
     )
     peak_ratio: float = Field(
         1.5,

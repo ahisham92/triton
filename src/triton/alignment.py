@@ -689,11 +689,14 @@ def named_parts(results: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def stations(points: list[list[float]] | None, along: str, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+def stations(
+    points: list[list[float]] | None, along: str, x: np.ndarray, y: np.ndarray, across: bool = False
+) -> np.ndarray:
     """Each point's distance (m) along the berth: along the berth's line (``points``, round its corners)
-    or, with no line, its ``along`` coordinate. Points past the line's ends run on beyond them."""
+    or, with no line, its ``along`` coordinate. Points past the line's ends run on beyond them.
+    ``across``: its signed distance from the line instead (or its other coordinate with no line)."""
     if not points or len(points) < 2:
-        return np.asarray(x if along == "X" else y, float)
+        return np.asarray((y if across else x) if along == "X" else (x if across else y), float)
     p = np.asarray(points, float)
     xy = np.column_stack([np.asarray(x, float), np.asarray(y, float)])
     best_d = np.full(len(xy), np.inf)
@@ -713,10 +716,34 @@ def stations(points: list[list[float]] | None, along: str, x: np.ndarray, y: np.
         lo = -np.inf if i == 0 else 0.0
         hi = np.inf if i == last else length
         take = d < best_d - 1e-9
-        out[take] = start + np.clip(t, lo, hi)[take]
+        side = (xy - a) @ np.array([-u[1], u[0]])
+        out[take] = (side if across else start + np.clip(t, lo, hi))[take]
         best_d[take] = d[take]
         start += length
     return out
+
+
+def _end_slope(frames: list[pd.DataFrame], points, along: str, first: bool) -> float:
+    """The slope ds/dv of the model's end edge (the pile rows' direction there), from the deck: its end
+    node in each metre across the quay, fitted with a straight line; 0 (square to the berth) without one."""
+    if not frames:
+        return 0.0
+    f = pd.concat(frames)
+    st = stations(points, along, f["X"].to_numpy(), f["Y"].to_numpy())
+    v = stations(points, along, f["X"].to_numpy(), f["Y"].to_numpy(), across=True)
+    d = pd.DataFrame({"s": st, "v": v, "band": np.floor(v + 1e-6)})
+    counts = d.groupby("band")["s"].size()
+    full = counts[counts >= 0.5 * counts.median()].index  # a band with few nodes is a ragged edge
+    d = d[d["band"].isin(full)]
+    e = d.loc[d.groupby("band")["s"].idxmin() if first else d.groupby("band")["s"].idxmax()]
+    if len(e) < 3 or float(e["v"].max() - e["v"].min()) < 2.0:
+        return 0.0
+    vv, ss = e["v"].to_numpy(float), e["s"].to_numpy(float)
+    b, a = np.polyfit(vv, ss, 1)
+    ok = np.abs(ss - (a + b * vv)) <= 0.5  # a notch in the edge (a node missing there) is left out
+    if ok.sum() >= 3 and not ok.all():
+        b = np.polyfit(vv[ok], ss[ok], 1)[0]
+    return float(b)
 
 
 def trim_ends(
@@ -725,34 +752,107 @@ def trim_ends(
     along: str,
     trim: float,
     keep: set[str] = frozenset(),
+    side: float = 0.0,
 ) -> tuple[dict[str, dict[str, SheetData]], dict[str, Any] | None]:
-    """The results with those within ``trim`` m of each element's two ends along the berth left out (the
-    FE edges), and where each element's ends were. The elements in ``keep`` (the piles) stay whole; a
-    corner is inside the berth and never trimmed."""
-    if trim <= 0:
+    """The results with the FE edges left out, and where the cuts are.
+
+    Along the berth each end of the model is cut on one line for every element, as the office does: the
+    line runs parallel to the model's end edge (the pile rows there, from the deck's end) and lies
+    ``trim`` m inside the element that stops first, so the front beam, the deck and the rear beam keep
+    the same length of one structural system. Along a corner the distance follows the berth's line, so
+    only the two outer ends are cut. Across the quay each element loses ``side`` m at each of its own
+    sides (an element too narrow to lose both keeps them). The elements in ``keep`` (the piles) stay
+    whole."""
+    if trim <= 0 and side <= 0:
         return elements, None
-    out: dict[str, dict[str, SheetData]] = {}
-    ends: dict[str, list[float]] = {}
-    for n, combos in elements.items():
-        out[n] = dict(combos)
-        if n in keep:
-            continue
-        own = {
-            c: stations(points, along, sh.frame["X"].to_numpy(), sh.frame["Y"].to_numpy())
+    frames = {
+        n: {
+            c: sh.frame
             for c, sh in combos.items()
             if not sh.frame.empty and {"X", "Y"} <= set(sh.frame.columns)
         }
-        if not own:
-            continue
-        lo = min(float(v.min()) for v in own.values())
-        hi = max(float(v.max()) for v in own.values())
-        if hi - lo <= 2 * trim:
-            continue  # too short to lose both ends
-        ends[n] = [round(lo, 2), round(hi, 2)]
-        for c, st in own.items():
-            inside = (st >= lo + trim - 1e-9) & (st <= hi - trim + 1e-9)
-            if not inside.all():
-                out[n][c] = replace(combos[c], frame=combos[c].frame[inside])
-    if not ends:
+        for n, combos in elements.items()
+        if n not in keep
+    }
+    frames = {n: fs for n, fs in frames.items() if fs}
+    if not frames:
         return elements, None
-    return out, {"trim_m": trim, "ends_m": ends, "corner": bool(points and len(points) > 2)}
+    s_of = {
+        n: {c: stations(points, along, f["X"].to_numpy(), f["Y"].to_numpy()) for c, f in fs.items()}
+        for n, fs in frames.items()
+    }
+    v_of = {
+        n: {c: stations(points, along, f["X"].to_numpy(), f["Y"].to_numpy(), True) for c, f in fs.items()}
+        for n, fs in frames.items()
+    }
+    keep_rows = {n: {c: np.ones(len(f), bool) for c, f in fs.items()} for n, fs in frames.items()}
+    info: dict[str, Any] = {"corner": bool(points and len(points) > 2)}
+    if trim > 0:
+        span = {
+            n: (min(float(v.min()) for v in ss.values()), max(float(v.max()) for v in ss.values()))
+            for n, ss in s_of.items()
+        }
+        longest = max(hi - lo for lo, hi in span.values())
+        # The plates along the berth set the ends: not a transverse beam across it, nor a combi wall,
+        # whose last king pile stands short of the structure's end.
+        plates = {
+            n
+            for n in frames
+            if any(
+                sh.parsed is not None and sh.parsed.spec.kind is ResultKind.PLATE
+                for sh in elements[n].values()
+            )
+        }
+        runs = [n for n, (lo, hi) in span.items() if hi - lo >= 0.5 * longest and n in plates]
+        runs = runs or [n for n, (lo, hi) in span.items() if hi - lo >= 0.5 * longest]
+        deck = [
+            f
+            for n in runs
+            for c, f in frames[n].items()
+            if (sh := elements[n][c]).parsed is not None and sh.parsed.spec.type is ElementType.SLAB
+        ]
+        b0, b1 = _end_slope(deck, points, along, True), _end_slope(deck, points, along, False)
+
+        def reach(n: str, b: float, first: bool) -> float:
+            vals = [s_of[n][c] - b * v_of[n][c] for c in frames[n]]
+            return min(float(x.min()) for x in vals) if first else max(float(x.max()) for x in vals)
+
+        start = max(reach(n, b0, True) for n in runs)
+        end = min(reach(n, b1, False) for n in runs)
+        if end - start > 2 * trim:
+            for n in frames:
+                for c in frames[n]:
+                    s, v = s_of[n][c], v_of[n][c]
+                    keep_rows[n][c] &= (s - b0 * v >= start + trim - 1e-6) & (s - b1 * v <= end - trim + 1e-6)
+            info |= {
+                "trim_m": trim,
+                "cut_m": [round(start + trim, 2), round(end - trim, 2)],
+                "ends_m": {n: [round(lo, 2), round(hi, 2)] for n, (lo, hi) in span.items()},
+                "set_by": sorted(
+                    {
+                        max(runs, key=lambda n: reach(n, b0, True)),
+                        min(runs, key=lambda n: reach(n, b1, False)),
+                    }
+                ),
+                "skew_deg": [round(math.degrees(math.atan(b)), 1) for b in (b0, b1)],
+            }
+    if side > 0:
+        sides = {}
+        for n in frames:
+            lo = min(float(x.min()) for x in v_of[n].values())
+            hi = max(float(x.max()) for x in v_of[n].values())
+            if hi - lo <= 2 * side:
+                continue  # too narrow to lose both sides
+            sides[n] = [round(lo, 2), round(hi, 2)]
+            for c, v in v_of[n].items():
+                keep_rows[n][c] &= (v >= lo + side - 1e-6) & (v <= hi - side + 1e-6)
+        if sides:
+            info |= {"side_m": side, "sides_m": sides}
+    if "trim_m" not in info and "side_m" not in info:
+        return elements, None
+    out: dict[str, dict[str, SheetData]] = {n: dict(combos) for n, combos in elements.items()}
+    for n, fs in frames.items():
+        for c, rows in keep_rows[n].items():
+            if not rows.all():
+                out[n][c] = replace(elements[n][c], frame=fs[c][rows])
+    return out, info

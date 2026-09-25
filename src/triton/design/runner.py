@@ -88,12 +88,12 @@ def _multiplier_note(section: Section, sheets: dict[str, SheetData]) -> str | No
 
 
 def _zone_note(section: Section, trimmed: bool = True) -> str | None:
-    trim = (
-        f"Results within {section.end_trim:g} m of the model's two ends along the berth are not used "
-        "(FE edges; Sections tab)."
-        if trimmed and section.end_trim > 0
-        else None
-    )
+    cut = []
+    if trimmed and section.end_trim > 0:
+        cut.append(f"{section.end_trim:g} m at each end along the berth")
+    if trimmed and section.side_trim > 0:
+        cut.append(f"{section.side_trim:g} m at each side across the quay")
+    trim = f"Results within {' and '.join(cut)} are not used (FE edges; Sections tab)." if cut else None
     if not section.has_zone:
         return trim
     parts = []
@@ -251,11 +251,17 @@ def _design(
     sheets = factored_elements(section, workbook)
     # The berth's line and parts from the whole model, before its ends are trimmed.
     line = section_alignment(section, sheets)
-    if section.end_trim > 0:
-        # The FE edges: results near the model's two ends along the berth (round a corner) are left out.
+    if section.end_trim > 0 or section.side_trim > 0:
+        # The FE edges: results near each element's ends along the berth (round a corner) and its sides
+        # across the quay are left out.
         pile_names = {n for n, e in section.elements.items() if isinstance(e, PileInput)}
         sheets, trimmed = trim_ends(
-            sheets, line[1].get("points"), along_axis(section), section.end_trim, pile_names
+            sheets,
+            line[1].get("points"),
+            along_axis(section),
+            section.end_trim,
+            pile_names,
+            section.side_trim,
         )
         found_so_far["end_trim"] = trimmed
     known = {s.name for s in workbook.sheets}
