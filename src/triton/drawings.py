@@ -23,6 +23,7 @@ from collections.abc import Collection
 from typing import Any
 
 from .design.export import pile_cages
+from .design.slabs import layer_name
 from .project import DrawingSettings
 
 FORMAT = "triton.drawings/1"
@@ -385,7 +386,7 @@ def _slab_views(d: dict[str, Any]) -> list[View]:
                     (a0, a1),
                     (lo, hi),
                 )
-            mesh_text.append(f"L{lay['layer']} {lay['text']}")
+            mesh_text.append(f"{layer_name(lay['layer']).capitalize()} {lay['text']}")
         for z in f["zones"]:
             zx0, zx1 = (x * 1000 for x in z["x_m"])
             zy0, zy1 = (y * 1000 for y in z["y_m"])
@@ -401,7 +402,8 @@ def _slab_views(d: dict[str, Any]) -> list[View]:
                     if lay["layer"] > 1:
                         off += 2 * b["diameter_mm"]  # beside the layer under it, to be seen
                     draw(b["diameter_mm"], b["spacing_mm"], off, span, across)
-                    parts.append(f"L{lay['layer']} Ø{b['diameter_mm']} @ {_mm(b['spacing_mm'])}")
+                    name = layer_name(lay["layer"]).capitalize()
+                    parts.append(f"{name} Ø{b['diameter_mm']} @ {_mm(b['spacing_mm'])}")
             if parts:
                 v.text((zx0 + 2 * v.scale, zy0 + 2 * v.scale), " + ".join(parts), 0.8)
         for j in d.get("construction_joints") or []:

@@ -60,7 +60,7 @@ import numpy as np
 from .design.circular import CircularSection, ConcreteLaw, Ring, SteelLaw
 from .design.export import pile_cages
 from .design.rect import Bars, RectSection
-from .design.slabs import crack_widths, strip_mrd
+from .design.slabs import crack_widths, layer_name, strip_mrd
 from .materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from .project import ClashSettings, DesignSettings, Project, Section, WhatIf, with_project_grades
 
@@ -363,7 +363,7 @@ def _slab_bars(host: Host, rule: ClashSettings, x: float, y: float, reach: float
                             round(at, 4),
                             round(z, 4),
                             b["diameter_mm"],
-                            f"{d['element']} {lay['face']} bars along {along}, layer {layer['layer']} "
+                            f"{d['element']} {lay['face']} bars along {along}, {layer_name(layer['layer'])} "
                             f"(Ø{b['diameter_mm']:g} @ {b['spacing_mm']:g}, {KIND_WORDS.get(b['kind'], b['kind'])})",
                             f"slab|{key}|{layer['layer']}",
                             kind,

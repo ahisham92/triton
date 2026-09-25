@@ -360,7 +360,7 @@ def test_bar_layers_set_by_the_user_and_the_mesh_across():
     # Layer 1: the mesh with Ø32 between its bars, at the cover; layer 2 under it, deeper in.
     assert [x["layer"] for x in lay] == [1, 2] and "Ø32 @ 150" in lay[0]["text"]
     assert lay[0]["from_face_mm"] == 50 + 16 and lay[1]["from_face_mm"] > lay[0]["from_face_mm"] + 32
-    assert got["bars"]["top"].endswith("Ø32 @ 150 between the mesh bars + Ø25 @ 150 layer 2")
+    assert got["bars"]["top"].endswith("Ø32 @ 150 between the mesh bars + Ø25 @ 150 in L1")
     assert got["ratio"] < row["ratio"]
     assert mine["layers"]["top_y"]["basic"]["label"] == "Ø20 @ 150"
     whole = next(r for r in mine["strip_design"]["table"] if r["label"] == "Whole deck, basic mesh")

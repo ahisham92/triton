@@ -851,12 +851,18 @@ def parse_layers(text: str) -> list[tuple[float, float] | None] | None:
     return out
 
 
+def layer_name(n: int) -> str:
+    """A layer as the office numbers it: the mesh and the bars between its bars are at mesh level, L1 is
+    the first layer inside the mesh (above the bottom mesh, below the top one), then L2, L3..."""
+    return "mesh level" if n == 1 else f"L{n - 1}"
+
+
 def layers_text(spec: list) -> str:
     parts = []
     for k, p in enumerate(spec):
         if p is None:
             continue
-        where = "between the mesh bars" if k == 0 else f"layer {k + 1}"
+        where = "between the mesh bars" if k == 0 else f"in {layer_name(k + 1)}"
         parts.append(f"Ø{p[0]:g} @ {p[1]:g} {where}")
     return " + ".join(parts) if parts else "mesh only"
 
