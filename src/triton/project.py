@@ -2167,6 +2167,18 @@ class WaterLevel(_Model):
     level: float = _m("Level", 0.0)
 
 
+# The project's tidal bar (Ahmed, 2026-09-25): its only water levels.
+TIDES = [
+    ("MHWS", 0.945),
+    ("MHWN", 0.701),
+    ("MSL", 0.380),
+    ("MLWN", 0.213),
+    ("MLWS", 0.091),
+    ("LAT", 0.0),
+]
+_ASSUMED_WATER = [{"name": "Water level", "level": 0.0}]
+
+
 class SiteView(_Model):
     """The site round the structure in the 3D views: seabed, water, soil, quay furniture and the STS
     crane. Only what is drawn: it never changes the design, so it is open while the model is locked."""
@@ -2177,10 +2189,10 @@ class SiteView(_Model):
         description="The dredged level at the quay face.",
     )
     water_levels: list[WaterLevel] = Field(
-        default_factory=lambda: [WaterLevel()],
+        default_factory=lambda: [WaterLevel(name=n, level=v) for n, v in TIDES],
         title="Water levels",
         description="Each drawn as its own see-through plane on the sea side, switched on and off in the 3D "
-        "view. Assumed one level at 0.0 m until the levels are set.",
+        "view. By default the project's tidal bar (MHWS to LAT).",
     )
     soil_level: float | None = _m(
         "Soil level behind the front wall",
@@ -2205,14 +2217,18 @@ class SiteView(_Model):
     @model_validator(mode="before")
     @classmethod
     def _one_water_level(cls, data: Any) -> Any:
-        """Saved with one water level (the first version): it becomes the list. The seabed's first
-        assumed default (-16.0) becomes this project's dredge level, -16.12 m."""
+        """Saved with one water level (the first version): it becomes the list, and the assumed 0.0 m
+        the tidal bar. The seabed's first assumed default (-16.0) becomes this project's dredge level,
+        -16.12 m."""
         if not isinstance(data, dict):
             return data
         data = dict(data)
         if "water_level" in data:
             level = data.pop("water_level")
             data.setdefault("water_levels", [{"name": "Water level", "level": level}])
+        if data.get("water_levels") == _ASSUMED_WATER:
+            # The level assumed before the tidal bar came: the tidal bar's levels.
+            data.pop("water_levels")
         if data.get("seabed_level") == -16.0:
             data["seabed_level"] = -16.12
         return data
