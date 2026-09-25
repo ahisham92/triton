@@ -355,3 +355,48 @@ def test_devkit_code_is_statements_only():
     assert not any(x.startswith(("using ", "namespace ")) for x in lines)
     assert f'"{FORMAT}"' in code and "*.crm" in code
     assert "Autodesk.Revit.DB.Document theDoc = doc;" in code
+
+
+def test_pile_sheet_draws_top_bars_from_the_connection():
+    data = json.loads(json.dumps(SAMPLE))
+    p = data["piles"][0]
+    rows = [
+        {
+            **r,
+            "anchor_top_m": r["bar_top_m"],
+            "bar_top_m": 2.952,
+            "up_m": 0.25,
+            "leg_m": 1.2,
+            "short_m": 0.0,
+            "bar_length_m": 9.4,
+        }
+        for r in p["runs"][0]["rows"]
+    ]
+    conn = {
+        "host": "Deck",
+        "host_kind": "slab",
+        "host_top_m": 3.05,
+        "host_soffit_m": 2.35,
+        "shape": "L",
+        "rows": rows,
+    }
+    for q in p["positions"]:
+        q["connection"] = conn
+    p["connections"] = [
+        {
+            "host": "Deck",
+            "host_kind": "slab",
+            "shape": "L",
+            "count": len(p["positions"]),
+            "positions": list(range(len(p["positions"]))),
+            "rows": rows,
+        }
+    ]
+    v = view(from_cages(data, DrawingSettings()), "Pile(1) - pile sheet")
+    k = f"bar-{rows[0]['diameter_mm']}"
+    tops = [
+        i for i in v["items"] if i["type"] == "line" and i["layer"] == k and i["b"][1] == pytest.approx(2952)
+    ]
+    assert any(i["a"][1] == i["b"][1] and abs(i["b"][0]) > abs(i["a"][0]) for i in tops)  # the L legs
+    texts = {i["text"] for i in v["items"] if i["type"] == "text"}
+    assert "L= 9400 (L-BAR, LEG 1200)" in texts and "DECK (SEE ITS PLAN)" in texts

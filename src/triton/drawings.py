@@ -109,7 +109,7 @@ class View:
         s = self.scale
         self.text(at, words, 1.6)
         length = 0.8 * TEXT_MM * 1.6 * s * len(words)
-        self.line("text", (at[0], at[1] - 0.8 * s), (at[0] + length, at[1] - 0.8 * s))
+        self.line("dims", (at[0], at[1] - 0.8 * s), (at[0] + length, at[1] - 0.8 * s))
         self.text((at[0], at[1] - 3.2 * s), f"SCALE: 1 : {scale or s}", 0.7)
 
     def leader(
@@ -120,8 +120,8 @@ class View:
         width = 0.8 * TEXT_MM * size * s * len(words)
         y = at[1] - 0.4 * s
         near = (at[0] + width, y) if tip[0] > at[0] + width / 2 else (at[0], y)
-        self.line("text", (at[0], y), (at[0] + width, y))
-        self.line("text", near, tip)
+        self.line("dims", (at[0], y), (at[0] + width, y))
+        self.line("dims", near, tip)
         self.text(at, words, size)
 
     def merge(self, other: View, dx: float, dy: float) -> None:
@@ -410,7 +410,10 @@ def _pile_section(
         for k in (2, 3, 4):
             row = rows[k - 1] if len(rows) >= k else None
             # LAYER<k>: the ring's bar count (or, if the family has it as Yes/No, whether it is there).
-            params.append(P(f"LAYER{k}", n=row["count"] if row else 0))
+            if row:
+                params.append(P(f"LAYER{k}", n=row["count"]))
+            else:  # not there: only a Yes/No LAYER<k> is set (a count of 0 would break the family)
+                params.append({**P(f"LAYER{k}", n=0), "only": "yesno"})
             if row:
                 params.append(P(f"Layer{k}_BarDiameter", mm=row["diameter_mm"]))
         v.family(st.pile_section_family, c, params, fb)
@@ -435,6 +438,25 @@ def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
     D, cover, link = p["diameter_mm"], p["cover_mm"], p["link_diameter_mm"]
     head, toe = p["head_level_m"], p["toe_level_m"]
     runs = p["runs"]
+    # Where the top bars really end (the Clashes thread's connection to the slab or beam over the head):
+    # drawn and marked from it, the first group of positions if they differ.
+    groups = p.get("connections") or []
+    conn = None
+    if groups and groups[0].get("positions"):
+        conn = (p["positions"][groups[0]["positions"][0]] or {}).get("connection")
+    if conn and runs and len(conn.get("rows") or []) == len(runs[0]["rows"]):
+        top_rows = [
+            {
+                **r,
+                "bar_top_m": c["bar_top_m"],
+                "bar_length_m": c["bar_length_m"],
+                "leg_m": c.get("leg_m") or 0.0,
+            }
+            for r, c in zip(runs[0]["rows"], conn["rows"], strict=True)
+        ]
+        runs = [{**runs[0], "rows": top_rows}] + runs[1:]
+    else:
+        conn = None
     bar_top = max((r["bar_top_m"] for run in runs for r in run["rows"]), default=head)
     tops = [r["top_m"] for r in runs] + [head, bar_top]
     top = max(t for t in tops if t is not None)
@@ -452,6 +474,10 @@ def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
     # The cap the pile is built into, broken off at the sides.
     soffit = y_head - st.pile_into_slab
     cap_top = max(bar_top * 1000 + 150, soffit + 1500)
+    host = "CAPPING BEAM / DECK (SEE ITS SECTION)"
+    if conn and conn.get("host_soffit_m") is not None and conn.get("host_top_m") is not None:
+        soffit, cap_top = conn["host_soffit_m"] * 1000, conn["host_top_m"] * 1000
+        host = f"{conn['host'].upper()} (SEE ITS {'PLAN' if conn.get('host_kind') == 'slab' else 'SECTION'})"
     w = D / 2 + 900
     v.line("concrete", (-w, soffit), (-D / 2, soffit))
     v.line("concrete", (D / 2, soffit), (w, soffit))
@@ -464,7 +490,7 @@ def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
         v.line("concrete", (x + sx * 120, ym - 50), (x - sx * 120, ym + 50))
         v.line("concrete", (x - sx * 120, ym + 50), (x, ym + 150))
         v.line("concrete", (x, ym + 150), (x, cap_top))
-    v.text((-w, cap_top + 1.0 * s), "CAPPING BEAM / DECK (SEE ITS SECTION)", 0.7)
+    v.text((-w, cap_top + 1.0 * s), host, 0.7)
     # The pile.
     v.line("concrete", (-D / 2, bottom * 1000), (-D / 2, soffit))
     v.line("concrete", (D / 2, bottom * 1000), (D / 2, soffit))
@@ -484,10 +510,13 @@ def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
                     for i in range(row["count"])
                 }
             )
+            leg = (row.get("leg_m") or 0.0) * 1000
+            rr = row["radius_mm"] - shift
             for x in xs:
-                v.line(
-                    bar_key(row["diameter_mm"]), (x, row["bar_bottom_m"] * 1000), (x, row["bar_top_m"] * 1000)
-                )
+                yt = row["bar_top_m"] * 1000
+                v.line(bar_key(row["diameter_mm"]), (x, row["bar_bottom_m"] * 1000), (x, yt))
+                if leg and rr > 0:  # the L leg turned outwards, as seen: its length x cos of the bar's angle
+                    v.line(bar_key(row["diameter_mm"]), (x, yt), (x * (1 + leg / rr), yt))
         # The run of each size of bar, as the office marks it: a line over its length, "26ø32 L= 8000".
         by_d: dict[float, list[dict[str, Any]]] = {}
         for row in run["rows"]:
@@ -499,7 +528,9 @@ def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
             n = sum(r["count"] for r in rs)
             length = max(r["bar_length_m"] for r in rs) * 1000
             v.text((x - 0.4 * s, (y0 + y1) / 2 - 8 * s), f"{n}ø{_mm(d)}", 0.7, 90)
-            v.text((x + 2.2 * s, (y0 + y1) / 2 - 8 * s), f"L= {_mm(length)}", 0.7, 90)
+            legs = max((r.get("leg_m") or 0.0) for r in rs) * 1000
+            words = f"L= {_mm(length)}" + (f" (L-BAR, LEG {_mm(legs)})" if legs else "")
+            v.text((x + 2.2 * s, (y0 + y1) / 2 - 8 * s), words, 0.7, 90)
     # The spiral: a zigzag across the cage at the pitch of each link zone.
     r = D / 2 - cover - link / 2
     lines = 0
@@ -528,7 +559,7 @@ def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
         if level is None:
             continue
         y = level * 1000
-        x = -D / 2 - 3 * s
+        x = -w - 3 * s  # clear of the host drawn round the head
         v.line("zones", (x - 14 * s, y), (-D / 2, y))
         v.line("zones", (x, y), (x - 0.8 * s, y + 1.2 * s))
         v.line("zones", (x - 0.8 * s, y + 1.2 * s), (x + 0.8 * s, y + 1.2 * s))
@@ -586,6 +617,17 @@ def _pile_views(p: dict[str, Any], st: DrawingSettings) -> list[View]:
         f"{n} No. ø{_mm(D)} piles, head {_f(head)}, toe {_f(toe)}, cover {_mm(cover)}",
         "Bars drawn at their levels, laps side by side; sections are at their marks on the elevation",
     ]
+    if conn:
+        v.caption.append(
+            f"Top bars into the {conn['host']}: "
+            + ("L bars, legs turned outwards under its top bars" if conn.get("shape") == "L" else "straight")
+            + (f" ({groups[0]['count']} of the piles)" if len(groups) > 1 else "")
+        )
+        for g in groups[1:]:
+            ls = ", ".join(
+                f"{r['count']}ø{r['diameter_mm']} L={_mm(r['bar_length_m'] * 1000)}" for r in g["rows"]
+            )
+            v.caption.append(f"{g['count']} piles into the {g['host']} ({g['shape']}): top bars {ls}")
     return [v]
 
 

@@ -449,9 +449,11 @@ if (!cancelled)
             Autodesk.Revit.DB.Parameter p = el.LookupParameter(n.Trim());
             if (p == null || p.IsReadOnly) continue;
             bool hasMm = get(prm, "mm") != null, hasN = get(prm, "n") != null;
+            bool onlyYesNo = str(prm, "only") == "yesno";   // e.g. a ring that is not there: only a Yes/No is set
             double mm = num(prm, "mm"), cnt = num(prm, "n");
             try
             {
+                if (onlyYesNo && p.StorageType != Autodesk.Revit.DB.StorageType.Integer) return true;
                 if (p.StorageType == Autodesk.Revit.DB.StorageType.Double)
                 {
                     bool length = true;
@@ -465,6 +467,7 @@ if (!cancelled)
                     bool yesNo = false;
                     try { yesNo = p.Definition.GetDataType() == Autodesk.Revit.DB.SpecTypeId.Boolean.YesNo; } catch { }
                     if (yesNo) p.Set((hasN ? cnt : mm) > 0 ? 1 : 0);   // a count of 0: not there
+                    else if (onlyYesNo) return true;
                     else if (hasN) p.Set((int)System.Math.Round(cnt));
                     else if (hasMm) p.Set((int)System.Math.Round(mm));
                     else continue;
@@ -628,6 +631,21 @@ if (!cancelled)
     };
 
     // Places a family item; false when it could not (the caller draws its fallback).
+    // What was placed, to draw with lines anything Revit removes when the drawing is committed.
+    Autodesk.Revit.DB.ElementId lastPlaced = null;
+    var placedList = new System.Collections.Generic.List<object[]>();
+    System.Func<object, string> values = delegate (object it)
+    {
+        var parts = new System.Collections.Generic.List<string>();
+        foreach (object prm in list(it, "params"))
+        {
+            string val = get(prm, "text") != null ? str(prm, "text")
+                : get(prm, "n") != null ? ((int)num(prm, "n")).ToString(inv)
+                : num(prm, "mm").ToString("0", inv);
+            parts.Add(str(prm, "names").Split('|')[0] + "=" + val);
+        }
+        return string.Join(", ", parts.ToArray());
+    };
     System.Func<Autodesk.Revit.DB.View, object, bool> placeFamily = delegate (Autodesk.Revit.DB.View view, object it)
     {
         var sym = symbol(str(it, "family"));
@@ -668,6 +686,7 @@ if (!cancelled)
                         Autodesk.Revit.DB.ElementTransformUtils.MoveElement(theDoc, inst.Id, move);
                 }
             }
+            lastPlaced = inst.Id;
             return true;
         }
         catch (System.Exception ex)
@@ -769,7 +788,11 @@ if (!cancelled)
             string type = str(it, "type"), key = str(it, "layer");
             if (type == "family")
             {
-                if (placeFamily(view, it)) families++;
+                if (placeFamily(view, it))
+                {
+                    families++;
+                    placedList.Add(new object[] { lastPlaced, view.Id, it, dx, dy });
+                }
                 else { fallbacks++; drawItems(view, list(it, "fallback")); }
             }
             else if (type == "dim")
@@ -977,7 +1000,31 @@ if (!cancelled)
         if (tx != null && tx.Commit() != Autodesk.Revit.DB.TransactionStatus.Committed)
             failures.Add("Revit undid the drawing: " + string.Join("; ", failTexts.ToArray()));
         else if (failTexts.Count > 0)
+        {
             note("Revit removed what it could not make: " + string.Join("; ", failTexts.ToArray()));
+            var gone = new System.Collections.Generic.List<object[]>();
+            foreach (object[] pl in placedList)
+                if (theDoc.GetElement((Autodesk.Revit.DB.ElementId)pl[0]) == null) gone.Add(pl);
+            foreach (object[] pl in gone)
+                note(str(pl[2], "family") + " could not be made with " + values(pl[2]));
+            if (gone.Count > 0 && tx != null)
+            {
+                failTexts.Clear();
+                var t2 = new Autodesk.Revit.DB.Transaction(theDoc, "Triton drawings, lines for what Revit removed");
+                t2.Start();
+                foreach (object[] pl in gone)
+                {
+                    var v2 = theDoc.GetElement((Autodesk.Revit.DB.ElementId)pl[1]) as Autodesk.Revit.DB.View;
+                    if (v2 == null) continue;
+                    dx = (double)pl[3];
+                    dy = (double)pl[4];
+                    drawItems(v2, list(pl[2], "fallback"));
+                    families--;
+                    fallbacks++;
+                }
+                t2.Commit();
+            }
+        }
     }
     catch (System.Exception ex)
     {
