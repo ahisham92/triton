@@ -921,12 +921,15 @@ def zones_for(
     min_zone: float = 2.5,
     basic: int | None = None,
     labels: list[str] | None = None,
+    gaps: dict[tuple[int, int], tuple[list[tuple[int, int]], str]] | None = None,
 ) -> dict:
     """Basic mesh and zones for one layer.
 
     ``need["idx"]`` is the cheapest option each cell can take and ``ok[cell, option]`` whether
     it can take an option at all. The basic mesh is the option with the least total steel, cells
-    that cannot take it getting their own option at a premium.
+    that cannot take it getting their own option at a premium. ``gaps`` (``gap_cells``): squares with
+    no result of their own, over a pile head or with no Plaxis node; a zone runs on through them with
+    the bars of the zoned squares beside them along the bars, so it has no hole.
     """
     idx = need["idx"].to_numpy(int)
     areas = np.array([o[0] * (1 + LAYER_PREMIUM * (o[3] - 1)) for o in options])
@@ -941,6 +944,20 @@ def zones_for(
         best = basic
     need = need.assign(zoned=~ok[:, best])
     zoned = need[need["zoned"]]
+    if gaps:
+        lvl_of = {
+            (int(i), int(j)): int(v) for i, j, v in zip(zoned["i"], zoned["j"], zoned["idx"], strict=True)
+        }
+        extra = []
+        for i, j in gaps:
+            if (i, j) in lvl_of:
+                continue
+            beside = [(i - 1, j), (i + 1, j)] if along == "X" else [(i, j - 1), (i, j + 1)]
+            lv = [lvl_of[c] for c in beside if c in lvl_of]
+            if lv:
+                extra.append({"i": i, "j": j, "idx": max(lv), "zoned": True})
+        if extra:
+            zoned = pd.concat([zoned, pd.DataFrame(extra)], ignore_index=True)
     zones = []
     # Runs of cells along the bars, split where the bars change, then merged across when they match.
     # Pieces shorter than MIN_ZONE take the heavier neighbour's bars, so bars are not cut too short.
@@ -1766,6 +1783,12 @@ def design_slab(
     vm_q = vd.mask(vlay, qp_m["X"], qp_m["Y"]) if vsec and len(qp_m) else np.zeros(len(qp_m), bool)
     ui, uj = _cells(uls_m["X"].to_numpy(), uls_m["Y"].to_numpy(), x0, y0, size)
     uls_m = uls_m.assign(i=ui, j=uj)
+    # Squares of the grid with no result of their own: over a pile head (the results inside the pile are
+    # left out) or where the Plaxis mesh has no node (its elements are larger than a cell there). The
+    # zones run on through them and the plots show the worst of the squares round them.
+    ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
+    nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
+    gaps = gap_cells(set(zip(ui.tolist(), uj.tolist(), strict=True)), ni, nj, x0, y0, size, box, piles)
     if len(qp_m):
         qi, qj = _cells(qp_m["X"].to_numpy(), qp_m["Y"].to_numpy(), x0, y0, size)
         qp_m = qp_m.assign(i=qi, j=qj)
@@ -2078,6 +2101,7 @@ def design_slab(
                     slab.min_zone_length,
                     0,
                     labels,
+                    gaps,
                 )
             else:
                 z = area_zones(cell, ok_all, opts, labels, size, x0, y0, box, slab.min_zone_length)
@@ -2780,9 +2804,7 @@ def design_slab(
     area_m2 = len(used) * cell_area
     # The squares over the pile heads and those with no Plaxis node carry bars too: the basic mesh, or
     # the zone's bars where a zone covers them.
-    ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
-    nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
-    for i, j in gap_cells({(int(a), int(b)) for a, b in used.index}, ni, nj, x0, y0, size, box, piles):
+    for i, j in gaps:
         cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
         for layer in LAYERS:
             lay = layers[layer]
@@ -2868,17 +2890,11 @@ def design_slab(
         ]
         for (i, j), u in used.items()
     ]
-    # Squares of the grid with no result of their own: over a pile head (the results inside the pile are
-    # left out) or where the Plaxis mesh has no node (its elements are larger than a cell there). They
-    # take the worst of the squares round them, so the plots and the 3D cover the whole slab.
-    ni = int(math.floor((box["X"][1] - x0) / size + 1e-9)) + 1
-    nj = int(math.floor((box["Y"][1] - y0) / size + 1e-9)) + 1
-    have = {(int(i), int(j)) for i, j in used.index}
-    gaps = gap_cells(have, ni, nj, x0, y0, size, box, piles)
+    # The squares with no result of their own take the worst of the squares round them, so the plots
+    # and the 3D cover the whole slab.
     for (i, j), (donors, why) in gaps.items():
         cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
-        u = max(float(used.loc[d]) for d in donors) if donors else None
-        u = None if u is None else round(u, 3)
+        u = round(max(float(used.loc[d]) for d in donors), 3)
         bands.append([round(cx, 2), round(cy, 2), round(level, 2), u, size, why])
     crack_cells = pd.concat(per_cell.values()).groupby(["i", "j"])["crack"].max().dropna()
     crack_bands = [
@@ -2986,7 +3002,7 @@ def design_slab(
     }
     # Squares with no result of their own: the envelope of the squares round them, marked with why.
     mc_have = {(int(i), int(j)) for i, j in mc.index}
-    for (i, j), (donors, why) in gap_cells(mc_have, ni, nj, x0, y0, size, box, piles).items():
+    for (i, j), (donors, why) in gaps.items():
         d = mc.loc[[c for c in donors if c in mc_have]]
         if len(d):
             moment_cells["cells"].append(

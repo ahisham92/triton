@@ -558,3 +558,19 @@ def test_an_empty_least_spacing_keeps_stored_designs_fresh():
     assert before == _hash(old)
     p.design.reinforcement.slab_min_bar_spacing = 150
     assert fingerprint(p, Section(), None)["design settings"] != before
+
+
+def test_a_zone_runs_on_through_a_square_with_no_result():
+    import numpy as np
+    import pandas as pd
+
+    from triton.design.slabs import zones_for
+
+    options = [(1000.0, 16, 200, 1), (3000.0, 25, 150, 1)]
+    # One row of 7 squares needing the heavier bars, with no result at i = 3 (over a pile head).
+    need = pd.DataFrame({"i": [0, 1, 2, 4, 5, 6], "j": [0] * 6, "idx": [1] * 6})
+    ok = np.array([[False, True]] * 6)
+    split = zones_for(need, ok, options, 1.0, 0.0, 0.0, "X", 2.5, 0)
+    whole = zones_for(need, ok, options, 1.0, 0.0, 0.0, "X", 2.5, 0, gaps={(3, 0): ([(2, 0)], "pile")})
+    assert [z["x"] for z in split["zones"]] == [[0.0, 3.0], [4.0, 7.0]]
+    assert [z["x"] for z in whole["zones"]] == [[0.0, 7.0]]
