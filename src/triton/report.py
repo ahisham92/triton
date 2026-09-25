@@ -737,10 +737,27 @@ def _shear_summary(r: Report, res: dict) -> None:
         )
 
 
+def _punch_rows(s: dict) -> list[tuple[str, dict]]:
+    """A slab's punching designs with their labels: one per pile type when unified (its worst head's
+    design, used on every head of the type), else one per head."""
+    types = [t for t in s.get("punching_types") or [] if t.get("unified")]
+    if types:
+        return [
+            (
+                f"{t['pile']}, all {t['heads']} heads (worst at {t['governing_x']:g}, {t['governing_y']:g})",
+                t,
+            )
+            for t in types
+        ]
+    return [(f"{q['pile']} ({q['x']:g}, {q['y']:g})", q) for q in s.get("punching") or []]
+
+
 def _punching_summary(r: Report, res: dict) -> None:
     rows = []
+    unified = False
     for s in res.get("slabs", []):
-        for q in s.get("punching") or []:
+        unified = unified or any(t.get("unified") for t in s.get("punching_types") or [])
+        for label, q in _punch_rows(s):
             face = q["vEd_face_MPa"] / q["vRd_max_MPa"]
             if face > 1:
                 links = f"FAILS at the pile face: vEd,0 {q['vEd_face_MPa']:.2f} > vRd,max {q['vRd_max_MPa']:.2f} MPa"
@@ -752,7 +769,7 @@ def _punching_summary(r: Report, res: dict) -> None:
                 links = "NO NEED FOR R.F.T"
             rows.append(
                 [
-                    f"{q['pile']} ({q['x']:g}, {q['y']:g})",
+                    label,
                     q.get("utilisation"),
                     q.get("utilisation_with_links")
                     if q.get("perimeters")
@@ -764,6 +781,11 @@ def _punching_summary(r: Report, res: dict) -> None:
     if rows:
         r.h(2, "3.3 Punching")
         r.caption("Table 3-5: Punching of the slab over the piles (EN 1992-1-1 6.4)")
+        if unified:
+            r.p(
+                "One punching design per pile type, as detailed on site: every head of a type takes the "
+                "design of its worst head, with links enough for all of them."
+            )
         r.table(
             [
                 "Pile (X, Y)",
@@ -1920,8 +1942,47 @@ def _slab(r: Report, s: dict) -> None:
                 ],
             )
     punch = s.get("punching") or []
+    unified = [t for t in s.get("punching_types") or [] if t.get("unified")]
+    if unified:
+        r.h(3, "Punching (EN 1992-1-1 6.4), one design per pile type")
+        r.p(
+            "Every head of a pile type takes the design of its worst head, with links enough for all of "
+            "them; each head's own check follows."
+        )
+        r.table(
+            [
+                "Pile type",
+                "Heads",
+                "Worst head X, Y",
+                "h mm",
+                "VEd kN",
+                "β",
+                "vEd / vRd,c MPa",
+                "Face / vRd,max MPa",
+                "Links on every head",
+                "Result",
+            ],
+            [
+                [
+                    t["pile"],
+                    t["heads"],
+                    f"{t['governing_x']:g}, {t['governing_y']:g}",
+                    t.get("thickness_mm"),
+                    t.get("V_kN"),
+                    t.get("beta"),
+                    f"{t['vEd_MPa']:.3f} / {t['vRd_c_MPa']:.3f}",
+                    f"{t['vEd_face_MPa']:.2f} / {t['vRd_max_MPa']:.2f}",
+                    f"{t['perimeters']} perimeters @ {t['radial_spacing_mm']} mm, {t['asw_mm2_per_perimeter']} mm² each"
+                    if t.get("perimeters")
+                    else ("needed" if t.get("needs_reinforcement") else "none"),
+                    _ok(t.get("passed")),
+                ]
+                for t in unified
+            ],
+        )
+        punch = [{**q, **q.get("own", {})} for q in punch]
     if punch:
-        r.h(3, "Punching (EN 1992-1-1 6.4)")
+        r.h(3, "Punching (EN 1992-1-1 6.4)" + (", each head on its own" if unified else ""))
         r.table(
             [
                 "Pile",

@@ -1140,6 +1140,18 @@ class SlabInput(_ConcreteSection):
         description="Sloped slab: the depth at the piles when it differs (e.g. 720 mm with 700 mm for "
         "bending). Empty: the slab thickness. Single piles can be set in the punching results.",
     )
+    punching_piles: list[str] = Field(
+        default_factory=list,
+        title="Punching for",
+        description="The pile types checked for punching. Empty: every pile type with heads under the slab "
+        "(not under a beam).",
+    )
+    punching_per: Literal["type", "head"] = Field(
+        "type",
+        title="Punching design",
+        description="One per pile type: every head of a type gets the design of its worst head, as detailed "
+        "on site (each head's own check is still shown). Per head: each head its own links.",
+    )
     punching_depths: list[PunchingDepth] = Field(
         default_factory=list,
         title="Slab thickness at single piles",
