@@ -2366,6 +2366,9 @@ class SiteView(_Model):
         return data
 
 
+NEW_SECTION_END_TRIM = 2.0  # m, the office's trim at each end of a model (Ahmed, 2026-09-25)
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
@@ -2382,6 +2385,15 @@ class Section(_Model):
         title="Isolated peaks",
         description="Raw: use the values as they are. Average: replace a peak by the mean of the nodes "
         "above and below it.",
+    )
+    end_trim: float = _m(
+        "Ignore results at the model's ends",
+        0.0,
+        ge=0,
+        description="Results within this distance of each element's two ends along the berth are not used "
+        "(the FE edges; the office removes 2 m at each end, and new sections start at 2 m). On a corner "
+        "berth only the berth's outer ends are trimmed, never the corner. Piles are not trimmed. 0: every "
+        "result is used.",
     )
     peak_ratio: float = Field(
         1.5,

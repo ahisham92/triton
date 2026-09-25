@@ -7,7 +7,7 @@ from collections.abc import Callable, Collection
 from dataclasses import replace
 from typing import Any
 
-from ..alignment import element_in_part, part_elements, section_parts, tag_part
+from ..alignment import element_in_part, part_elements, section_parts, tag_part, trim_ends
 from ..axes import infer_axes
 from ..elements import ElementType
 from ..forces import scale_forces
@@ -87,16 +87,23 @@ def _multiplier_note(section: Section, sheets: dict[str, SheetData]) -> str | No
     return "Load multipliers applied: " + ", ".join(factored) + "." if factored else None
 
 
-def _zone_note(section: Section) -> str | None:
+def _zone_note(section: Section, trimmed: bool = True) -> str | None:
+    trim = (
+        f"Results within {section.end_trim:g} m of the model's two ends along the berth are not used "
+        "(FE edges; Sections tab)."
+        if trimmed and section.end_trim > 0
+        else None
+    )
     if not section.has_zone:
-        return None
+        return trim
     parts = []
     for axis, lo, hi in (("X", section.x_min, section.x_max), ("Y", section.y_min, section.y_max)):
         if lo is not None or hi is not None:
             lo_s = "−∞" if lo is None else f"{lo:g}"
             hi_s = "∞" if hi is None else f"{hi:g}"
             parts.append(f"{axis} {lo_s} to {hi_s} m")
-    return f"Working zone {', '.join(parts)}: results outside it are not used."
+    zone = f"Working zone {', '.join(parts)}: results outside it are not used."
+    return zone if trim is None else f"{zone} {trim}"
 
 
 def _peak_note(section: Section, peaks: list[dict]) -> str | None:
@@ -181,7 +188,7 @@ def run_section(
         return True
 
     out: dict[str, Any] = {k: [] for k in (*RESULT_KINDS, "skipped")}
-    out |= {"alignment": None, "joints": None}
+    out |= {"alignment": None, "joints": None, "end_trim": None}
     stopped = False
     section, heads = assumed_heads(section, workbook)
     try:
@@ -210,6 +217,7 @@ def run_section(
         **{k: out[k] for k in RESULT_KINDS},
         "alignment": out["alignment"] or {"parts": [], "points": []},
         "joints": out["joints"],
+        "end_trim": out["end_trim"],
         "skipped": out["skipped"],
         "designed": handled,
         "left": left,
@@ -241,6 +249,15 @@ def _design(
     """run_section's work, element by element, into ``found_so_far`` as it goes (a Stop keeps it)."""
     raw = workbook.elements()
     sheets = factored_elements(section, workbook)
+    # The berth's line and parts from the whole model, before its ends are trimmed.
+    line = section_alignment(section, sheets)
+    if section.end_trim > 0:
+        # The FE edges: results near the model's two ends along the berth (round a corner) are left out.
+        pile_names = {n for n, e in section.elements.items() if isinstance(e, PileInput)}
+        sheets, trimmed = trim_ends(
+            sheets, line[1].get("points"), along_axis(section), section.end_trim, pile_names
+        )
+        found_so_far["end_trim"] = trimmed
     known = {s.name for s in workbook.sheets}
     missing = sorted({n for r in section.load_factors for n in r.sheets} - known)
     excluded = set(section.excluded_peaks)
@@ -257,7 +274,8 @@ def _design(
             top += settings.results_into_connection / 1e3
         tick(name)
         own, peaks = treat_peaks(name, sheets[name], section.peaks, section.peak_ratio, excluded, top)
-        notes = [_multiplier_note(section, own), _zone_note(section), _peak_note(section, peaks)]
+        zone = _zone_note(section, trimmed=isinstance(element, CombiWallInput))
+        notes = [_multiplier_note(section, own), zone, _peak_note(section, peaks)]
         notes = [n for n in notes if n]
         positions = _positions(raw.get(name, {}))
         count = element.count or len(positions) or 1
@@ -341,7 +359,7 @@ def _design(
         found = infer_axes(workbook.elements())[0]  # read before Triton read the sign
     axes = {a["element"]: a.get("local") for a in found}
     signs = {a["element"]: a for a in found if a["kind"] == "plate"}
-    parts, alignment = section_alignment(section, sheets) if plates else ([], {"parts": [], "points": []})
+    parts, alignment = line if plates else ([], {"parts": [], "points": []})
     joints = (
         section_joints(settings, section, raw, parts, along_axis(section), furniture_at) if plates else None
     )
