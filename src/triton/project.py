@@ -2160,6 +2160,38 @@ class ElementCheck(_Model):
     )
 
 
+class SiteView(_Model):
+    """The site round the structure in the 3D views: seabed, water, soil, quay furniture and the STS
+    crane. Only what is drawn: it never changes the design, so it is open while the model is locked."""
+
+    seabed_level: float = _m(
+        "Seabed level in front of the wall",
+        -16.0,
+        description="The dredged level at the quay face. Assumed -16.0 m until set.",
+    )
+    water_level: float = _m(
+        "Water level",
+        0.0,
+        description="Drawn as a see-through surface on the sea side. Assumed 0.0 m until set.",
+    )
+    soil_level: float | None = _m(
+        "Soil level behind the front wall",
+        None,
+        description="Empty: up to the underside of the deck.",
+    )
+    soil: Literal["hidden", "half", "full"] = Field(
+        "half",
+        title="Soil",
+        description="Hidden, 50% see-through, or full (the parts of the piles and walls in the ground are "
+        "then drawn faint).",
+    )
+    water: bool = Field(True, title="Show the water")
+    furniture: bool = Field(True, title="Show the fenders, bollards and crane rails")
+    crane: bool = Field(
+        True, title="Show the STS crane", description="Where the project has STS cranes (Furniture tab)."
+    )
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
@@ -2200,6 +2232,11 @@ class Section(_Model):
         description="The items are the project's (Furniture tab); this is only where this berth differs.",
     )
     joints: SectionJoints = Field(default_factory=SectionJoints, title="Expansion joints")
+    site: SiteView = Field(
+        default_factory=SiteView,
+        title="Site in the 3D views",
+        description="Seabed, water, soil, furniture and crane as drawn in 3D; never a design input.",
+    )
     user_cages: dict[str, UserCage] = Field(
         default_factory=dict,
         title="Cages set by the user",

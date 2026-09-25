@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from . import alignment, clashes, joints, matrix, trials
+from . import alignment, clashes, deformed, joints, matrix, site3d, trials
 from . import furniture as furniture_layout
 from .design import (
     anchors,
@@ -110,6 +110,8 @@ GENERAL = [
     ("Quay furniture: design of each item", furniture),
     ("Anchor bolts cast into the beams (EN 1992-4)", anchors),
     ("Estimated displacements from the straining actions", deflection),
+    ("3D views: the whole structure's deformed shape", deformed),
+    ("3D views: seabed, water, soil, furniture and the STS crane", site3d),
     ("Fender protrusion on the front beam, and the STS crane's stand-off", protrusion),
 ]
 

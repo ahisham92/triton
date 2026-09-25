@@ -34,6 +34,7 @@ _SECTION_OWN = {
     "displacements",
     "deflection",
     "joints",
+    "site",
 }
 
 

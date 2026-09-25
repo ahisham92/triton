@@ -970,7 +970,7 @@ function prettyOption(o) {
     office: "Office sheets", ec2: "EN 1992-1-1", type: "One per pile type", head: "Each head its own", ec3: "EN 1993 (plastic filled, shell buckling empty)", ei_split: "E·I split where filled", all: "All actions on the tube",
     feltham: "Feltham", two_legs: "Two legs per hoop", peak: "Peak (as they are)", face_mean: "Face mean (each face on its own)",
     ring_mean: "Ring mean (all round the pile)", envelope_face_mean: "Envelope, then face mean",
-    midway: "Mid-way between pile rows", at_row: "At a pile row (doubled row)", anywhere: "Anywhere" };
+    hidden: "Hidden", half: "50% see-through", full: "Full (parts in the ground drawn faint)", midway: "Mid-way between pile rows", at_row: "At a pile row (doubled row)", anywhere: "Anywhere" };
   return map[o] || o;
 }
 
@@ -1045,6 +1045,10 @@ function renderSections(host) {
     combos.innerHTML = `<label>Load combinations</label><div class="hint">${esc(def.properties.combinations.description)}</div>`;
     combos.append(comboListEditor(s));
     card.append(combos);
+    s.site ??= {};
+    const site = renderObject(def.properties.site, s.site, `sections.${i}.site`, "Site in the 3D views");
+    site.dataset.free = ""; // seabed, water and soil as drawn: never a design input, open while locked
+    card.append(site);
     card.append(alignmentEditor(p, s));
     card.append(jointsEditor(p, s));
     host.append(card);
@@ -3111,6 +3115,29 @@ async function sectionGeometry() {
   return state.geometry.data;
 }
 
+// The site round the structure (seabed, water, soil, furniture, crane): fetched again after any edit,
+// since the Furniture tab and the section's site settings change it.
+async function sectionSite() {
+  const key = `${sec().id}:${state.edits || 0}`;
+  if (state.site?.key !== key) {
+    let data = null;
+    try {
+      data = await api(`${secUrl()}/site`);
+    } catch {
+      /* no workbook yet */
+    }
+    state.site = { key, data };
+  }
+  return state.site.data;
+}
+
+// A switch flipped in a 3D view is kept on the section (never a design input, so open while locked).
+function saveSite(change) {
+  const s = sec();
+  s.site = { ...(s.site || {}), ...change };
+  markDirty();
+}
+
 function resultTension(res) {
   const out = {};
   for (const k of ["piles", "combi_walls", "beams", "slabs"]) {
@@ -3157,12 +3184,13 @@ async function mountElementViews(res) {
   const bands = resultBands(res);
   const tension = resultTension(res);
   const crack = resultCracks(res);
+  const site = await sectionSite();
   for (const slot of slots) {
     if (!document.body.contains(slot)) continue; // redrawn meanwhile (a design run's new results)
     const name = slot.dataset.element;
     const el = geo.elements.find((e) => e.element === name);
-    const view = new View3D(slot, { height: 380, compact: true });
-    view.setScene({ elements: geo.elements, bands, tension, crack, selected: name, focus: name,
+    const view = new View3D(slot, { height: 380, compact: true, onSite: saveSite });
+    view.setScene({ elements: geo.elements, bands, tension, crack, selected: name, focus: name, site,
       arrows: directionArrows(el, geo.axes.find((a) => a.element === name)) });
   }
 }
@@ -3571,7 +3599,12 @@ async function renderView3dTab(host) {
   } catch {
     /* not designed yet */
   }
-  const view = new View3D(document.getElementById("v3d-main"), { height: 560 });
+  const site = await sectionSite();
+  const view = new View3D(document.getElementById("v3d-main"), {
+    height: 560,
+    onSite: saveSite,
+    deformed: (combo) => api(`${secUrl()}/deformed?combination=${encodeURIComponent(combo || "")}`),
+  });
   const bands = resultBands(res);
   const tension = resultTension(res);
   const crack = resultCracks(res);
@@ -3585,7 +3618,7 @@ async function renderView3dTab(host) {
   state.pick3d = null;
   const show = () => {
     const el = geo.elements.find((e) => e.element === selected);
-    view.setScene({ elements: geo.elements, bands, tension, crack, selected,
+    view.setScene({ elements: geo.elements, bands, tension, crack, selected, site,
       arrows: selected ? directionArrows(el, geo.axes.find((a) => a.element === selected)) : [] });
     side.querySelectorAll("[data-pick]").forEach((b) => b.classList.toggle("on", b.dataset.pick === selected));
   };
