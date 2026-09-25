@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .stop import checkpoint
+
 E_S = 200_000.0  # MPa
 
 
@@ -144,6 +146,7 @@ class CircularSection:
 
     def _resultants(self, eps_top: np.ndarray, curvature: np.ndarray, rotation: float) -> tuple:
         """N (N) and M about the centroid (Nmm) for strain eps(y) = eps_top - curvature * y."""
+        checkpoint()
         y, a = self._strips()
         eps_c = eps_top[:, None] - curvature[:, None] * y[None, :]
         sc = self.concrete.stress(eps_c)

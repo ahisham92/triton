@@ -2713,7 +2713,8 @@ async function designJob(section, chosen, onResults) {
     drawJobs();
     for (;;) {
       if (job.stopped) throw new Error("Stopped.");
-      res = await again(() => api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3 }) }));
+      // Not sent again after Stop, even when the host cut the request off.
+      res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3 }) })));
       const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"].flatMap((k) => res[k] || []);
       for (const n of res.designed) {
         const s = step(n);
@@ -2732,6 +2733,7 @@ async function designJob(section, chosen, onResults) {
       const next = res.left.find((n) => step(n).state !== "done");
       if (next) step(next).state = "running";
       drawJobs();
+      if (res.stopped) throw new Error("Stopped.");
       if (!res.left.length) break;
       ask = res.left;
     }
@@ -2746,7 +2748,17 @@ async function designJob(section, chosen, onResults) {
     const on = job.steps.find((s) => s.state === "running");
     const cut = GATEWAY.includes(e.status) || e instanceof TypeError;
     const why = cut && on ? `The server stopped answering while designing ${on.label}; it may take longer than the host allows. Try designing it on its own.` : e.message;
-    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped. Elements already designed keep their new results." : `Failed: ${why}`);
+    if (job.stopped) {
+      // Only what the server said it designed was kept; the one under way when Stop came was not.
+      clearInterval(poll);
+      for (const s of job.steps) if (s.state !== "waiting" && !done.has(s.name)) Object.assign(s, { state: "waiting", fraction: 0 });
+      const n = done.size;
+      jobDone(job, "stopped", `Stopped. ${n ? `${n} element${n === 1 ? "" : "s"} designed in this run keep${n === 1 ? "s" : ""} the new results; ` : ""}the others keep their earlier results.`);
+      if (n && state?.project.id === pid) {
+        state.project.locked = true;
+        if (location.hash.startsWith(`#/project/${pid}/`)) route();
+      }
+    } else jobDone(job, "failed", `Failed: ${why}`);
   } finally {
     clearInterval(poll);
   }

@@ -37,6 +37,7 @@ from .peaks import treat_peaks
 from .piles import design_pile
 from .slabs import design_slab_meshes
 from .spw_design import design_spw
+from .stop import Stopped
 
 
 def king_piles(section: Section, geometry: list[dict[str, Any]]) -> list[tuple[float, float, float]]:
@@ -151,14 +152,17 @@ def run_section(
     started: list[str] = []
     handled: list[str] = []
     left: list[str] = []
+    on: list[str] = []  # the element being designed, if any
 
     def tick(name: str) -> None:
+        on.clear()
         if progress:
             progress(
                 len(started) / max(len(only) if only is not None else len(section.elements), 1),
                 f"Designing {name}",
             )
         started.append(name)
+        on.append(name)
 
     def take(name: str) -> bool:
         if only is not None and name not in only:
@@ -169,12 +173,61 @@ def run_section(
         handled.append(name)
         return True
 
+    out: dict[str, Any] = {k: [] for k in (*RESULT_KINDS, "skipped")}
+    out |= {"alignment": None, "joints": None}
+    stopped = False
+    try:
+        _design(settings, section, workbook, approach, furniture_at, tick, take, out)
+        on.clear()
+    except Stopped:
+        # Stop pressed: the elements finished so far keep their results; the one under way is dropped.
+        stopped = True
+        for kind in RESULT_KINDS:
+            out[kind] = [e for e in out[kind] if e.get("element") not in on]
+        found = {e.get("element") for kind in RESULT_KINDS for e in out[kind]}
+        said = {m.split(":")[0] for m in out["skipped"]}
+        unfinished = [n for n in handled if n in on or not (n in started or n in found or n in said)]
+        handled[:] = [n for n in handled if n not in unfinished]
+        left[:0] = unfinished
+    result = {
+        "run_at": _now(),
+        **{k: out[k] for k in RESULT_KINDS},
+        "alignment": out["alignment"] or {"parts": [], "points": []},
+        "joints": out["joints"],
+        "skipped": out["skipped"],
+        "designed": handled,
+        "left": left,
+        "working_zone": any(
+            v is not None for v in (section.x_min, section.x_max, section.y_min, section.y_max)
+        ),
+    }
+    if stopped:
+        result["stopped"] = True
+        if out["alignment"] is None:  # not reached: the earlier layout stays
+            del result["alignment"], result["joints"]
+    return result
+
+
+RESULT_KINDS = ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs")
+
+
+def _design(
+    settings: DesignSettings,
+    section: Section,
+    workbook: ImportResult,
+    approach: ApproachSlabInput | None,
+    furniture_at: Callable[[float], list[dict[str, Any]]] | None,
+    tick: Callable[[str], None],
+    take: Callable[[str], bool],
+    found_so_far: dict[str, Any],
+) -> None:
+    """run_section's work, element by element, into ``found_so_far`` as it goes (a Stop keeps it)."""
     raw = workbook.elements()
     sheets = factored_elements(section, workbook)
     known = {s.name for s in workbook.sheets}
     missing = sorted({n for r in section.load_factors for n in r.sheets} - known)
     excluded = set(section.excluded_peaks)
-    piles, walls, skipped = [], [], []
+    piles, walls, skipped = found_so_far["piles"], found_so_far["combi_walls"], found_so_far["skipped"]
     for name, element in section.elements.items():
         if not isinstance(element, PileInput | CombiWallInput) or not take(name):
             continue
@@ -225,7 +278,7 @@ def run_section(
         if steel.get("total_kg") is not None:
             out["steel"]["element_total_t"] = round(steel["total_kg"] * count / 1000, 2)
         piles.append(out)
-    spws = []
+    spws = found_so_far["sheet_pile_walls"]
     geometry = None
     for name, combos in sheets.items():
         if not any(s.parsed and s.parsed.spec.type is ElementType.SHEET_PILE_WALL for s in combos.values()):
@@ -261,7 +314,7 @@ def run_section(
     for name, element in section.elements.items():
         if isinstance(element, SheetPileInput) and name not in sheets and take(name):
             skipped.append(f"{name}: no usable results in the workbook.")
-    beams = []
+    beams = found_so_far["beams"]
     found = getattr(workbook, "axes", None) or []
     plates = [n for n, e in section.elements.items() if isinstance(e, (BeamInput, SlabInput)) and take(n)]
     if settings.plate_positive_moment == "auto" and any(
@@ -274,6 +327,7 @@ def run_section(
     joints = (
         section_joints(settings, section, raw, parts, along_axis(section), furniture_at) if plates else None
     )
+    found_so_far["alignment"], found_so_far["joints"] = alignment, joints
     use_joints = bool(joints and joints.get("segments") and settings.joints.use_in_restraint)
 
     def with_joints(element: Any, part: Any) -> tuple[Any, list[float]]:
@@ -366,7 +420,7 @@ def run_section(
                     )
                 )
             beams.append(b if part is None else tag_part(b, part, parts))
-    slabs = []
+    slabs = found_so_far["slabs"]
     for name, element in section.elements.items():
         if not isinstance(element, SlabInput) or not take(name):
             continue
@@ -405,26 +459,9 @@ def run_section(
                 if isinstance(d.get("restraint"), dict):
                     d["restraint"]["length_from"] = "expansion joints"
             slabs.append(d if part is None else tag_part(d, part, parts))
-    approach_slabs = []
+    approach_slabs = found_so_far["approach_slabs"]
     if approach_design is not None and take(APPROACH):
         tick(APPROACH)
         approach_slabs.append(approach_design)
     if missing:
         skipped.append(f"Load multiplier sheets not in the workbook: {', '.join(missing)}.")
-    return {
-        "run_at": _now(),
-        "piles": piles,
-        "combi_walls": walls,
-        "sheet_pile_walls": spws,
-        "beams": beams,
-        "slabs": slabs,
-        "approach_slabs": approach_slabs,
-        "alignment": alignment,
-        "joints": joints,
-        "skipped": skipped,
-        "designed": handled,
-        "left": left,
-        "working_zone": any(
-            v is not None for v in (section.x_min, section.x_max, section.y_min, section.y_max)
-        ),
-    }

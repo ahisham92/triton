@@ -373,3 +373,18 @@ def test_beam_top_and_bottom_crack_limits():
     limits = {f: c["limit"] for f, c in d["cracks"].items()}
     assert limits.get("bottom", 0.1) == 0.1 and limits.get("top", 0.3) == 0.3
     assert all(c["wk"] <= c["limit"] + 1e-9 for c in d["cracks"].values())
+
+
+def test_stop_reaches_inside_a_beam_design():
+    from triton.design.stop import Stopped, watching
+
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=150.0, q23=80.0, m11=300.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=100.0, m11=200.0)),
+    }
+    wb = import_sheets(raw)
+    els = {"Front Beam": BeamInput(depth=1500)}
+    with watching(lambda: True), pytest.raises(Stopped):
+        design_beam(
+            "Front Beam", els["Front Beam"], DesignSettings(), wb.elements()["Front Beam"], [], els, None
+        )

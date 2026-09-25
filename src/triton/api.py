@@ -40,11 +40,13 @@ from . import moved as moved_piles
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, assumptions, find_clashes
 from .costing import cost_project
+from .design import stop as stop_mod
 from .design.deflection import estimate as estimate_deflections
 from .design.export import pile_cages
 from .design.governing import workbook as governing_workbook
 from .design.runner import along_axis, factored_elements, run_section, section_alignment
 from .design.spw import workbook as spw_workbook
+from .design.stop import Stopped
 from .elements import ElementType
 from .geometry import section_geometry
 from .importer import is_header
@@ -502,10 +504,6 @@ def _progress_path(key: str) -> Path:
     return root / f"{key}.json"
 
 
-class Stopped(Exception):
-    """The user pressed Stop; raised at the next sheet or element."""
-
-
 @app.exception_handler(Stopped)
 def _stopped(_request: Request, _exc: Stopped) -> JSONResponse:
     return JSONResponse({"detail": "Stopped."}, status_code=409)
@@ -516,10 +514,15 @@ class _Progress:
         self.path, self.started, self.written = _progress_path(key), time.time(), 0.0
         self.stop = self.path.with_suffix(".stop")
         self.stop.unlink(missing_ok=True)  # a Stop pressed on an earlier run
+        self.stoppable = True
         self(0.0, "Starting")
 
+    def asked(self) -> bool:
+        """Whether Stop was pressed on this step."""
+        return self.stoppable and self.stop.exists()
+
     def __call__(self, fraction: float, step: str) -> None:
-        if self.stop.exists():
+        if self.asked():
             raise Stopped
         now = time.time()
         if now - self.written < 0.5 and 0 < fraction < 1:
@@ -1109,7 +1112,7 @@ def _merge(
     other elements keep theirs."""
     old = old or {}
     done, kept = set(handled), set(section.elements if names is None else names)
-    out = {**old, **{k: v for k, v in new.items() if k not in ("designed", "left")}}
+    out = {**old, **{k: v for k, v in new.items() if k not in ("designed", "left", "stopped")}}
     for kind in fresh.KINDS:
         earlier = [e for e in old.get(kind) or [] if e["element"] not in done]
         # Elements no longer in the section drop out (a sheet pile wall need not be one).
@@ -1135,22 +1138,24 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
     only = None if body.elements is None else [n for n in body.elements if n]
     deadline = time.monotonic() + body.budget_s if body.budget_s else None
     with _Progress(f"design-{project_id}-{section_id}") as tell:
-        new = run_section(
-            project.design,
-            section,
-            workbook,
-            tell,
-            only=only,
-            deadline=deadline,
-            approach=project.approach,
-            furniture_at=furniture_mod.positions_for(project, section),
-        )
+        with stop_mod.watching(tell.asked):
+            new = run_section(
+                project.design,
+                section,
+                workbook,
+                tell,
+                only=only,
+                deadline=deadline,
+                approach=project.approach,
+                furniture_at=furniture_mod.positions_for(project, section),
+            )
+        tell.stoppable = False  # what was designed is kept, even if Stop comes now
         every = fresh.names(project, section)
         summary = store().workbook_summary(project_id, section_id)
         now = fresh.fingerprint(project, section, summary)
         old = store().load_results(project_id, section_id)
         handled = new["designed"]
-        if only is None and not new["left"]:
+        if only is None and not new["left"] and not new.get("stopped"):
             old = None  # everything designed again: nothing earlier stays
         results = _merge(old, new, handled, section, every)
         spws = {e["element"] for e in results["sheet_pile_walls"]}
@@ -1173,6 +1178,7 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
         "designed": handled,
         "left": new["left"],
         "locked": True,
+        **({"stopped": True} if new.get("stopped") else {}),
     }
 
 

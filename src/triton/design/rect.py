@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .circular import ConcreteLaw, SteelLaw
+from .stop import checkpoint
 
 
 @dataclass(frozen=True)
@@ -105,6 +106,7 @@ class RectSection:
         return self.b, self.h, self.b / 2 - sign * self.bars.u
 
     def _resultants(self, axis: str, sign: int, eps_top: np.ndarray, curvature: np.ndarray):
+        checkpoint()
         H, B, yb = self._frame(axis, sign)
         y = (np.arange(self.strips) + 0.5) * H / self.strips
         a = self._strip_areas(axis, sign)
@@ -222,6 +224,7 @@ class RectSection:
         compressed face (0 when all in tension, h when all in compression) and the strains
         at the top and bottom faces.
         """
+        checkpoint()
         sign = 1 if m >= 0 else -1
         H, B, yb = self._frame("v", sign)
         y = (np.arange(self.strips) + 0.5) * H / self.strips

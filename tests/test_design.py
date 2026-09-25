@@ -1,5 +1,6 @@
 import io
 import math
+import time
 
 import numpy as np
 import pytest
@@ -511,3 +512,39 @@ def test_delete_some_or_all_tabs(client):
 
     assert client.delete(f"{url}/workbook").status_code == 204
     assert client.get(f"{url}/workbook").status_code == 404
+
+
+def test_stop_during_an_element_keeps_the_finished_ones(client, monkeypatch):
+    from triton.design import runner
+    from triton.design.stop import checkpoint
+
+    names = ["Pile(1)", "Pile(2)", "Pile(3)"]
+    p = client.post("/api/projects", json={"element_names": names}).json()
+    pid = p["id"]
+    url = f"/api/projects/{pid}/sections/{p['sections'][0]['id']}"
+    sheets = {f"{n}-{c}": pile_sheet() for n in names for c in ("PT-B-Apron", "QP")}
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", xlsx_bytes(sheets))})
+
+    real = runner.design_pile
+
+    def slow(name, *args, **kwargs):
+        if name == "Pile(2)":  # Stop pressed while it is being designed: no need to wait for it
+            assert client.post(f"/api/progress/design-{pid}-{p['sections'][0]['id']}/stop").status_code == 202
+            for _ in range(10_000):
+                checkpoint()
+                time.sleep(0.001)
+            raise AssertionError("should have stopped")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(runner, "design_pile", slow)
+    r = client.post(f"{url}/design", json={"budget_s": 60})
+    assert r.status_code == 200
+    r = r.json()
+    assert r["stopped"] and r["designed"] == ["Pile(1)"] and r["left"] == ["Pile(2)"]
+    kept = client.get(f"{url}/design").json()
+    assert [x["element"] for x in kept["piles"]] == ["Pile(1)"] and "stopped" not in kept
+    # The next run is not stopped by the old press.
+    monkeypatch.setattr(runner, "design_pile", real)
+    r = client.post(f"{url}/design", json={"elements": ["Pile(2)", "Pile(3)"]}).json()
+    assert "stopped" not in r and r["designed"] == ["Pile(2)", "Pile(3)"]
+    assert [x["element"] for x in r["piles"]] == names
