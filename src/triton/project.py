@@ -2354,6 +2354,12 @@ class SiteView(_Model):
         default_factory=list, title="Water levels switched off", json_schema_extra=_HIDDEN
     )
     furniture: bool = Field(True, title="Show the fenders, bollards and crane rails")
+    extrude: bool = Field(
+        True,
+        title="Extrude the elements",
+        description="Draw piles, walls, slabs and beams with their real diameter, thickness and depth; "
+        "off: as the Plaxis plates and lines.",
+    )
     crane: bool = Field(
         True,
         title="Show the STS crane",

@@ -16,7 +16,8 @@ from __future__ import annotations
 from typing import Any
 
 from . import furniture
-from .project import CombiWallInput, Project, Section, SheetPileInput, SlabInput
+from .design import sheet_piles
+from .project import BeamInput, CombiWallInput, PileInput, Project, Section, SheetPileInput, SlabInput
 
 SEA = 20.0  # m of sea bed drawn in front of the wall
 LAND = 5.0  # m of soil drawn beyond the model's landward end
@@ -41,6 +42,37 @@ def _extent(g: dict[str, Any]) -> dict[str, list[float]] | None:
             "Z": [min(ln[3] for ln in g["lines"]), max(ln[2] for ln in g["lines"])],
         }
     return None
+
+
+def sizes(section: Section, geometry: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Each element's real size for drawing it extruded (m): ``round`` for piles and king piles (the
+    diameter), else ``t`` (the thickness or depth across its plate), ``w`` (a beam's width, when given),
+    ``at`` (the Plaxis plate at mid-depth or at the top) and ``top`` (a top of concrete given on the
+    Clashes tab)."""
+    top = section.clashes.plate_level
+    out: dict[str, dict[str, Any]] = {}
+    for g in geometry:
+        name = g["element"]
+        el = section.elements.get(name)
+        if isinstance(el, PileInput):
+            out[name] = {"round": el.diameter / 1000}
+        elif isinstance(el, CombiWallInput):
+            out[name] = {"round": el.tube_diameter / 1000}
+        elif isinstance(el, SheetPileInput):
+            try:
+                h = sheet_piles.section(el.section_name).h / 1000
+            except ValueError:
+                h = 0.45
+            out[name] = {"t": round(h, 3), "at": "mid"}
+        elif isinstance(el, SlabInput | BeamInput):
+            depth = el.thickness if isinstance(el, SlabInput) else el.depth
+            item: dict[str, Any] = {"t": depth / 1000, "at": top}
+            if isinstance(el, BeamInput) and el.width:
+                item["w"] = el.width / 1000
+            if name in section.clashes.top_levels:
+                item["top"] = float(section.clashes.top_levels[name])
+            out[name] = item
+    return out
 
 
 def _soffit(section: Section, geometry: list[dict[str, Any]]) -> float | None:
@@ -69,7 +101,11 @@ def scene(
     notes: list[str] = []
     boxes = [b for g in geometry if (b := _extent(g))]
     if not boxes or frame is None:
-        return {"site": site.model_dump(mode="json"), "notes": ["No element positions in the workbook."]}
+        return {
+            "site": site.model_dump(mode="json"),
+            "sizes": sizes(section, geometry),
+            "notes": ["No element positions in the workbook."],
+        }
     lo = {a: min(b[a][0] for b in boxes) for a in "XYZ"}
     hi = {a: max(b[a][1] for b in boxes) for a in "XYZ"}
     along, across, inland = frame["along"], frame["across"], frame["inland"]
@@ -107,6 +143,7 @@ def scene(
     seabed = min(site.seabed_level, ground)
     out: dict[str, Any] = {
         "site": site.model_dump(mode="json"),
+        "sizes": sizes(section, geometry),
         "frame": {
             "along": along,
             "across": across,
