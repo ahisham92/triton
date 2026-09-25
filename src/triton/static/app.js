@@ -446,17 +446,19 @@ async function projectPage(id, tab, sectionId) {
           .join("")}</select>
         <span class="status">Elements, workbook, load multipliers and results below are for this section.</span></div>`
     : "";
+  // Download, Duplicate and Delete sit on the Project tab only, so moving between tabs never
+  // leaves Delete under the pointer.
+  const projectButtons = `<a class="quiet-link" id="download-project" href="${ROOT}/api/projects/${esc(p.id)}/project.trt"
+        title="Settings, sections, workbooks, results and trials in one file, to send to someone or keep">Download project (.trt)</a>
+      <button class="quiet" id="duplicate" title="A new project with all of this one's settings, sections, workbooks, results and trials">Duplicate project</button>
+      <button class="danger" id="delete">Delete project</button>`;
   $app.innerHTML = `<h1>${esc(p.info.name)}</h1>
     <p class="sub">${esc([p.info.number, p.sections.length > 1 ? `${p.sections.length} sections` : sec().name].filter(Boolean).join(" · "))}</p>
     <div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${t}</button>`).join("")}</div>
     <div id="lockbar"></div>
     ${picker}<div id="tab"></div>
     <div class="savebar"><span class="save-state" id="save-status"></span>
-      <span style="flex:1"></span>
-      <a class="quiet-link" id="download-project" href="${ROOT}/api/projects/${esc(p.id)}/project.trt"
-        title="Settings, sections, workbooks, results and trials in one file, to send to someone or keep">Download project (.trt)</a>
-      <button class="quiet" id="duplicate" title="A new project with all of this one's settings, sections, workbooks, results and trials">Duplicate project</button>
-      <button class="danger" id="delete">Delete project</button></div>
+      <span style="flex:1"></span>${tab === "info" ? projectButtons : ""}</div>
     <ul class="errors" id="errors"></ul>`;
   $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab))));
   const pick = document.getElementById("section-pick");
@@ -465,26 +467,28 @@ async function projectPage(id, tab, sectionId) {
       state.sectionId = pick.value;
       location.hash = tabHash(tab);
     };
-  document.getElementById("delete").onclick = async () => {
-    if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
-    await api(`${ROOT}/api/projects/${id}`, { method: "DELETE" });
-    state = null;
-    location.hash = "#/";
-  };
-  document.getElementById("duplicate").onclick = async () => {
-    const name = prompt("Name of the copy", `${p.info.name} copy`);
-    if (name === null) return;
-    if (state.dirty) await save(); // what was just typed goes into the copy too
-    const copy = await api(`${ROOT}/api/projects/${id}/duplicate`, { method: "POST", body: JSON.stringify({ name }) });
-    state = null;
-    location.hash = `#/project/${copy.id}/info`;
-  };
-  document.getElementById("download-project").onclick = async (e) => {
-    if (!state.dirty) return;
-    e.preventDefault(); // what was just typed goes into the file too
-    await save();
-    location.href = e.target.href;
-  };
+  if (tab === "info") {
+    document.getElementById("delete").onclick = async () => {
+      if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
+      await api(`${ROOT}/api/projects/${id}`, { method: "DELETE" });
+      state = null;
+      location.hash = "#/";
+    };
+    document.getElementById("duplicate").onclick = async () => {
+      const name = prompt("Name of the copy", `${p.info.name} copy`);
+      if (name === null) return;
+      if (state.dirty) await save(); // what was just typed goes into the copy too
+      const copy = await api(`${ROOT}/api/projects/${id}/duplicate`, { method: "POST", body: JSON.stringify({ name }) });
+      state = null;
+      location.hash = `#/project/${copy.id}/info`;
+    };
+    document.getElementById("download-project").onclick = async (e) => {
+      if (!state.dirty) return;
+      e.preventDefault(); // what was just typed goes into the file too
+      await save();
+      location.href = e.target.href;
+    };
+  }
   const host = document.getElementById("tab");
   if (tab === "info") {
     const info = renderObject(SCHEMA.properties.info, p.info, "info", "Project");
