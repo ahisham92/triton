@@ -48,6 +48,8 @@ export async function renderTrials(host, h) {
   let running = null;
 
   const cur = data.currency || "";
+  // The Comparisons tab's own report (not part of the design report), as Word, PDF or Excel.
+  const exportLinks = (q) => ["docx:Word", "pdf:PDF", "xlsx:Excel"].map((x) => { const [f, t] = x.split(":"); return `<a class="quiet-link" href="${secUrl()}/comparisons/report.${f}?${q}">${t}</a>`; }).join(" ");
   const money = (v) => (v == null ? "–" : fmt(v));
 
   // Which element (or all of them) the tab is on.
@@ -125,7 +127,8 @@ export async function renderTrials(host, h) {
         <div class="row" style="flex-wrap:wrap;gap:6px">${editor}
           <button class="small" id="tr-add">Add a size</button><button class="small" id="tr-reset">Around the current size</button></div>
         <div class="row" style="margin-top:10px"><button id="tr-run">${running ? "Running…" : "Run the trials"}</button>
-          ${running ? '<button id="tr-stop" class="quiet">Stop</button>' : ""}<span class="status" id="tr-status">${running ? esc(running.text) : ""}</span></div>
+          ${running ? '<button id="tr-stop" class="quiet">Stop</button>' : ""}<span class="status" id="tr-status">${running ? esc(running.text) : ""}</span>
+          ${done.length ? `<span style="margin-left:auto">Export: ${exportLinks(`what=element&element=${encodeURIComponent(el.element)}`)}</span>` : ""}</div>
         <p class="status">Each trial is the full design of ${esc(el.element)} at that size${slab ? ": bending with the 150 / 200 mm mesh choice, crack widths, shear links and punching" : el.kind === "beams" ? ": bending, cracks, shear and torsion links" : ": N-M cage, cracks and links"}.
           Bars you set by hand belong to the current size, so each trial picks its own. Sizes already run from the same inputs are not run again.
           ${pile ? "The deck's punching and the beams' supports use the pile diameter; they are not redesigned in a pile trial." : ""}</p>
@@ -206,7 +209,8 @@ export async function renderTrials(host, h) {
           .map((v, i) => `<span class="chip trial-size"><input type="number" min="0.05" max="0.5" step="0.05" data-w="${i}" value="${v ?? ""}" style="width:5em"><button class="small" data-wdrop="${i}" title="Take this off">×</button></span>`)
           .join(" ")}<button class="small" id="sc-add">Add a limit</button></div>
         <div class="row" style="margin-top:10px"><button id="sc-run">${running ? "Running…" : "Design the whole section"}</button>
-          ${running ? '<button id="tr-stop" class="quiet">Stop</button>' : ""}<span class="status" id="tr-status">${running ? esc(running.text) : ""}</span></div>
+          ${running ? '<button id="tr-stop" class="quiet">Stop</button>' : ""}<span class="status" id="tr-status">${running ? esc(running.text) : ""}</span>
+          <span style="margin-left:auto">Export: ${exportLinks("what=all")}</span></div>
         <p class="status">Every element is designed again for the section as set and for each limit, without the bars you set by hand, so the
           columns differ only by the limit. Elements with nothing to change (steel) are designed once. This takes a while: about as long as
           designing the section once per column. Nothing here changes your design; set the limit on the Elements tab to use it.</p>

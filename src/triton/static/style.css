@@ -428,3 +428,5 @@ table.matrix-grid td.mx-safe { background: var(--ok-bg); }
 table.matrix-grid td.mx-unsafe { background: var(--err-bg); }
 table.matrix-grid td.trial-best-row { outline: 2px solid var(--ok); outline-offset: -2px; }
 .matrix-detail { margin-top: 12px; }
+.matrix-form .mx-axis { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.matrix-form .mx-axis.mx-off { opacity: 0.5; }
