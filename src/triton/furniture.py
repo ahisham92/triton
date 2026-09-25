@@ -527,7 +527,9 @@ def assumptions(f: QuayFurniture) -> list[str]:
     out = []
     if f.fenders:
         out.append(
-            f"Fender: {f.fenders.name}, rated reaction {f.fenders.reaction:g} kN, height {f.fenders.height:g} m, "
+            f"Fender: {f.fenders.name}, rated reaction {f.fenders.reaction:g} kN"
+            + (f", energy {f.fenders.energy:g} kNm" if f.fenders.energy else "")
+            + f", height {f.fenders.height:g} m, "
             f"{f.fenders.anchors.count} × M{f.fenders.anchors.diameter} on a {f.fenders.anchors.circle_diameter:g} mm circle, "
             f"every {f.fenders.spacing:g} m."
         )
@@ -537,10 +539,14 @@ def assumptions(f: QuayFurniture) -> list[str]:
             f"{f.bollards.max_vertical_angle:g}°, every {f.bollards.spacing:g} m."
         )
     if f.storm_pins:
-        out.append(f"Storm pin force {f.storm_pins.force:g} kN per pin, {f.storm_pins.cranes} cranes stowed.")
+        out.append(
+            f"Storm pin force {f.storm_pins.force:g} kN per pin (service, × {f.storm_pins.load_factor:g}), "
+            f"{f.storm_pins.cranes} cranes stowed."
+        )
     if f.crane_stoppers:
         out.append(
-            f"Crane stopper buffer force {f.crane_stoppers.force:g} kN at {f.crane_stoppers.buffer_height:g} m."
+            f"Crane stopper buffer force {f.crane_stoppers.force:g} kN (service, × {f.crane_stoppers.load_factor:g}) "
+            f"at {f.crane_stoppers.buffer_height:g} m."
         )
     if f.crane_rails:
         out.append(
