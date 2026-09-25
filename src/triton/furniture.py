@@ -183,6 +183,7 @@ class Item:
     nominal: float = 0.0
     tag: str = ""
     clashes: list[str] = field(default_factory=list)
+    joint_half: float = 0.0  # half the length kept clear of joints, when more than ``half`` (the fender block)
 
     def to_dict(self, n: int) -> dict[str, Any]:
         moved = round(self.s - self.nominal, 2)
@@ -312,7 +313,7 @@ def _conflicts(
 ) -> list[str]:
     out = []
     for j in joints:
-        if abs(j - it.s) < it.half + rules.joint_clearance:
+        if abs(j - it.s) < max(it.half, it.joint_half) + rules.joint_clearance:
             out.append(f"expansion joint at {j:.2f} m")
     for o in placed:
         if o.plane != it.plane:
@@ -379,13 +380,15 @@ def arrange(
         fe = f.fenders
         a = fe.anchors
         half = max(fe.flange / 2000, a.circle_diameter / 2000 + (a.head_diameter or 3 * a.diameter) / 2000)
-        if f.protrusion:
-            half = max(half, f.protrusion.length / 2000)  # the whole block stays clear of the joints
+        # The whole fender block stays clear of the joints; its bolts alone are checked against the piles.
+        block_half = f.protrusion.length / 2000 if f.protrusion else 0.0
         items = []
         for s in evenly(length, fe.end_distance, fe.spacing):
             items.append(
                 _place(
-                    Item("fenders", s, half, 0.0, a.embedment / 1000 + 0.05, "face", True),
+                    Item(
+                        "fenders", s, half, 0.0, a.embedment / 1000 + 0.05, "face", True, joint_half=block_half
+                    ),
                     placed,
                     joints,
                     heads,

@@ -302,9 +302,11 @@ class QuayFurniture(_Model):
     )
     rules: FurnitureRules = Field(default_factory=FurnitureRules, title="Arrangement rules")
     protrusion: FenderProtrusion | None = Field(
-        None,
+        default_factory=FenderProtrusion,
         title="Front beam protrusion at each fender",
-        description="A block on the beam's sea face at every fender, flush with the cope. Tick to add it.",
+        description="A block on the beam's sea face at every fender, flush with the cope (drawing SC-502-1). "
+        "With an SCN 1600 and an STS crane it keeps the ship's flare clear of the crane's legs; untick where "
+        "there is none.",
     )
     sts_crane: StsCrane | None = Field(
         default_factory=StsCrane,
