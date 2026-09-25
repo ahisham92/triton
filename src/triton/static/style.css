@@ -432,3 +432,9 @@ table.matrix-grid td.trial-best-row { outline: 2px solid var(--ok); outline-offs
 .matrix-detail { margin-top: 12px; }
 .matrix-form .mx-axis { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
 .matrix-form .mx-axis.mx-off { opacity: 0.5; }
+
+/* Construction sequence: the step editor stays inside its card. */
+.seq-steps { padding-left: 1.4em; }
+.seq-steps li { margin-bottom: 8px; }
+.seq-steps select, .seq-steps input:not([type="checkbox"]) { display: block; width: 100%; max-width: 100%; box-sizing: border-box; margin-bottom: 4px; }
+.seq-steps li.on { background: var(--panel2, #eeeee8); border-radius: 6px; }
