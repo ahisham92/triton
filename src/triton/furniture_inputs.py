@@ -38,6 +38,8 @@ def _kn(title: str, default: float, **kw) -> Field:
 
 
 ASSUMED = "Assumed (common value), replace with the supplier's."
+CATALOGUE = "Super Cone SCN 1300 catalogue value at grade E1.0 (rated performance): the grade is assumed."
+REPORT = "From the design report's steel appendix (service load, ×9.81 kN/t)."
 
 
 CIRCLE = {"show_when": {"pattern": ["circle"]}}
@@ -71,13 +73,16 @@ class Anchors(_Model):
 class Fenders(_Model):
     """Fender units on the front face of the front beam."""
 
-    name: str = Field("Cone fender (assumed, 1000 mm high)", title="Fender")
-    reaction: float = _kn("Rated reaction R", 1100.0, gt=0, description=ASSUMED)
+    name: str = Field("Shibata SCN 1300 super cone, grade E1.0 (grade assumed)", title="Fender")
+    reaction: float = _kn("Rated reaction R", 1064.0, gt=0, description=CATALOGUE)
+    energy: float | None = Field(
+        825.0, title="Rated energy E", gt=0, json_schema_extra={"unit": "kNm"}, description=CATALOGUE
+    )
     friction: float = Field(
         0.3, title="Friction on the panel μ", ge=0, le=1, description="UHMW-PE pads 0.2 to 0.3."
     )
     panel_weight: float = _kn("Panel weight on the flange", 0.0, ge=0, description="0 where chains carry it.")
-    height: float = _m("Fender height (face to panel)", 1.0, gt=0)
+    height: float = _m("Fender height (face to panel)", 1.3, gt=0)
     load_factor: float = Field(
         1.5,
         title="Load factor",
@@ -85,11 +90,11 @@ class Fenders(_Model):
         description="On the rated reaction: 1.5 with berthing as the leading action; 1.0 where the "
         "reaction already includes the abnormal berthing factor (accidental).",
     )
-    flange: float = _mm("Base flange diameter", 1400.0, gt=0)
+    flange: float = _mm("Base flange diameter", 1275.0, gt=0)
     centre_below_cope: float = _m("Centre below the cope", 0.8, gt=0)
     anchors: Anchors = Field(
         default_factory=lambda: Anchors(
-            pattern="circle", count=6, circle_diameter=1100, diameter=36, embedment=500
+            pattern="circle", count=8, circle_diameter=1100, diameter=36, embedment=500
         ),
         title="Anchor bolts",
     )
@@ -168,7 +173,7 @@ class Ladders(_Model):
 class StormPins(_Model):
     """Storm (stowage) pins: a crane's sill beam pin dropped into a socket in the rail beam."""
 
-    force: float = _kn("Horizontal force per pin", 800.0, gt=0, description=ASSUMED)
+    force: float = _kn("Horizontal force per pin", 1765.8, gt=0, description=REPORT + " 180 t.")
     load_factor: float = Field(1.5, title="Load factor", gt=0)
     socket_width: float = _mm("Socket width (loaded face)", 300.0, gt=0)
     socket_length: float = _mm("Socket length", 400.0, gt=0)
@@ -209,7 +214,10 @@ class CraneRails(_Model):
         title="Clip bolt (one per clip)",
     )
     front_rail_from_face: float | None = _m(
-        "Front rail from the quay face", None, gt=0, description="Empty: over the front beam's centre."
+        "Front rail from the quay face",
+        None,
+        gt=0,
+        description="Empty: over the front (capping) beam's centre, fender protrusions not counted.",
     )
     gauge: float | None = _m(
         "Rail gauge", None, gt=0, description="Empty: front beam to rear beam centres in the model."
@@ -219,21 +227,22 @@ class CraneRails(_Model):
 class CraneStoppers(_Model):
     """End stops at both ends of each rail, bolted to the beam top."""
 
-    force: float = _kn("Buffer force per stop", 600.0, gt=0, description=ASSUMED)
+    force: float = _kn("Buffer force per stop", 1471.5, gt=0, description=REPORT + " 150 t.")
     load_factor: float = Field(1.5, title="Load factor", gt=0)
     buffer_height: float = _m("Buffer centre above the beam top", 1.2, gt=0)
-    base_length: float = _mm("Base plate along the rail", 1200.0, gt=0)
-    base_width: float = _mm("Base plate across", 700.0, gt=0)
+    base_length: float = _mm("Base plate along the rail", 2400.0, gt=0)
+    base_width: float = _mm("Base plate across", 1000.0, gt=0)
     end_distance: float = _m("From the berth end", 1.0, ge=0)
     anchors: Anchors = Field(
         default_factory=lambda: Anchors(
             pattern="grid",
             rows=2,
-            columns=4,
-            spacing_along=330,
-            spacing_across=500,
-            diameter=42,
-            embedment=700,
+            columns=6,
+            spacing_along=420,
+            spacing_across=700,
+            diameter=48,
+            grade="10.9",
+            embedment=800,
         ),
         title="Anchor bolts",
     )

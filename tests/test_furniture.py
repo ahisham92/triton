@@ -198,10 +198,11 @@ def test_the_berth_frame_and_arrangement():
     for it in lay["items"]["fenders"]:
         assert it["status"] != "clash"
         assert all(abs(it["s_m"] - j) >= 1.0 for j in lay["joints_m"])
-        # Its bolts (to 0.55 m in from the face) clear every king pile head (radius 0.813 m + 0.1 m).
+        # Its flange (to 0.55 m in from the face) clear every king pile head (radius 0.813 m + 0.1 m).
         half, depth = it["to_m"] - it["s_m"], it["across_m"][1]
         assert all(
-            math.hypot(max(abs(it["s_m"] - k["s"]) - half, 0), k["d"] - depth) >= 0.913 - 1e-6 for k in kings
+            math.hypot(max(abs(it["s_m"] - k["s"]) - half, 0), k["d"] - depth) >= 0.913 - 0.01
+            for k in kings  # positions are rounded to 10 mm
         )
     # With the rail over the 2 m front beam's centre there is no room for the bollards.
     assert all("crane rail" in " ".join(b["clashes"]) for b in lay["items"]["bollards"])
