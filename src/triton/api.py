@@ -1648,6 +1648,7 @@ class MatrixRequest(BaseModel):
     budget_s: float | None = Field(
         None, gt=0, description="Start no element after this long; what is left comes back in 'left'."
     )
+    view: bool = Field(True, description="Send the table back with each step (false: only at the end).")
 
 
 def _matrix(project_id: str, section_id: str) -> dict:
@@ -1691,6 +1692,8 @@ def run_matrix(project_id: str, section_id: str, body: MatrixRequest) -> dict:
         done = trials.run_scenarios(
             project, section, workbook, summary, d, variants, deadline, tell, "matrix"
         )
+    if done["left"] and not body.view:
+        return done  # still designing: the page asks for the table once all are done (or stopped)
     return {**_matrix(project_id, section_id), **done}
 
 

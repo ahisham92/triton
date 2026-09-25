@@ -17,7 +17,9 @@ from typing import Any
 from . import trials
 from .project import Project, Section, SlabInput
 
-MAX_OPTIONS = 36
+# Only a guard against a typing slip: the page designs any matrix in short steps (a few elements per
+# request) and the table collects them, so a big matrix just takes longer.
+MAX_OPTIONS = 400
 LAYER_NAMES = {
     "top_x": "Top, bars along X",
     "bottom_x": "Bottom, bars along X",
@@ -85,7 +87,9 @@ def clean_spec(spec: dict[str, Any], section: Section, spacings: list[float] | N
     out["use"] = {k: bool(use.get(k, True)) for k in AXES}
     n = len(options(out, section))
     if n > MAX_OPTIONS:
-        raise ValueError(f"That is {n} combinations; Triton designs at most {MAX_OPTIONS} at a time.")
+        raise ValueError(
+            f"That is {n} combinations; check the lists (more than {MAX_OPTIONS} is taken as a slip)."
+        )
     return out
 
 

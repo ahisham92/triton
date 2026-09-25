@@ -88,7 +88,7 @@ export async function renderMatrix(out, h) {
         .join(" ")}</div>
     </div>
     <p class="status">Untick a list to leave it out of the comparison: the deck keeps what it has (now ${fmt(cur_.thickness)} mm, wk ${fmt(cur_.crack_width_limit, 2)} mm, ${esc(data.peaks[cur_.peaks] || "")}${cur_.voids ? ", with voids" : ", solid"}, ${cur_.mesh ? `mesh @ ${fmt(cur_.mesh)}` : "the lighter mesh"}, ${esc((data.punching || {})[cur_.punching_per] || "")}).</p>
-    <p class="status">${n} combination${n === 1 ? "" : "s"}${n > data.max ? `: <span class="flag-bad">at most ${data.max} at a time</span>` : ""}.
+    <p class="status">${n} combination${n === 1 ? "" : "s"}${n > data.max ? `: <span class="flag-bad">more than ${data.max}, check the lists</span>` : n > 36 ? ", designed in batches one after the other and collected in one table (a big matrix takes a while; you can stop and carry on later, what is done is kept)" : ""}.
       An empty list keeps the deck as it is too.
       The crack width limit is the deck's own, on both faces; every combination is designed with the whole section and without the bars you set by hand.
       Combinations already designed from the same inputs are not designed again.${s.decks.some((d) => d.type === "voided") && !data.current?.voids ? " Voids run across the quay from 1 m behind the front beam to 1 m before the rear beam, as the Elements tab's defaults." : ""}</p>
@@ -260,15 +260,18 @@ export async function renderMatrix(out, h) {
     }, 1500);
     let total = null;
     try {
-      const body = JSON.stringify({ spec: spec(), budget_s: 3 });
+      // Steps without the table (it is the slow part of a big matrix); the table comes at the end.
+      const body = JSON.stringify({ spec: spec(), budget_s: 3, view: false });
+      let done = 0;
       for (;;) {
         const res = await again(() => api(`${secUrl()}/matrix`, { method: "POST", body }));
-        data = res;
-        total ??= res.left + res.done;
+        if (res.options) data = res;
+        done += res.done;
+        total = Math.max(total ?? 0, done + res.left);
         if (!res.left || running.stopped) break;
-        running.text = `${total - res.left} of ${total} element designs done…`;
-        draw();
+        say(`${done} of ${total} element designs done…`);
       }
+      data = await api(`${secUrl()}/matrix`);
       running = null;
       draw();
     } catch (e) {
