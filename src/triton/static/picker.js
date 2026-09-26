@@ -286,3 +286,57 @@ export function setFolded(box, folded) {
   box.classList.toggle("folded", folded);
   if (box.dataset.foldKey) keepPick(`fold:${box.dataset.foldKey}`, !folded);
 }
+
+// A long form in pages: each group of fields (a nested fieldset) is a page of its own and the loose
+// fields before it are "General"; numbered steps on top, Previous / Next below, and "All on one page"
+// to see everything at once. Pages with a field in error get a red mark. Only forms with 3+ pages.
+export function pageForm(fs, key, { minPages = 3 } = {}) {
+  const grid = fs.querySelector(":scope > .fields");
+  if (!grid) return fs;
+  // Loose fields (wherever they sit) all go on the first page, "General".
+  const general = { title: "General", els: [] };
+  const pages = [general];
+  for (const el of [...grid.children]) {
+    const inner = el.classList.contains("full") ? el.querySelector(":scope > fieldset > legend, :scope > .toggle") : null;
+    if (inner) pages.push({ title: inner.textContent.trim().split("\n")[0].trim(), els: [el] });
+    else general.els.push(el);
+  }
+  if (!general.els.length) pages.shift();
+  if (pages.length < minPages) return fs;
+  fs.classList.add("paged");
+  let cur = Math.min(picked(`page:${key}`) ?? 0, pages.length - 1);
+  if (cur !== ALL && (cur < 0 || typeof cur !== "number")) cur = 0;
+  const top = document.createElement("div");
+  top.className = "page-steps";
+  top.dataset.free = "";
+  const bottom = document.createElement("div");
+  bottom.className = "pick-nav page-nav";
+  bottom.dataset.free = "";
+  grid.before(top);
+  grid.after(bottom);
+  const draw = () => {
+    pages.forEach((p, i) => p.els.forEach((el) => el.classList.toggle("page-off", cur !== ALL && i !== cur)));
+    top.innerHTML = pages
+      .map((p, i) => `<button type="button" class="page-step ${i === cur ? "on" : ""} ${p.els.some((e) => e.querySelector(".field.bad") || e.matches(".field.bad")) ? "bad" : ""}" data-i="${i}" data-free>
+        <span class="n">${i + 1}</span>${esc(p.title)}</button>`)
+      .join("") + `<button type="button" class="page-step all ${cur === ALL ? "on" : ""}" data-i="${ALL}" data-free>All on one page</button>`;
+    bottom.innerHTML = cur === ALL
+      ? `<button type="button" class="quiet" data-go="0" data-free>Back to one page at a time</button>`
+      : `<button type="button" class="quiet" data-go="${cur - 1}" ${cur === 0 ? "disabled" : ""} data-free>&#9664; Previous</button>
+         <span class="status">Page ${cur + 1} of ${pages.length}: ${esc(pages[cur].title)}</span>
+         <button type="button" class="quiet" data-go="${cur + 1}" ${cur === pages.length - 1 ? "disabled" : ""} data-free>${cur < pages.length - 1 ? `Next: ${esc(pages[cur + 1].title)} &#9654;` : "Next &#9654;"}</button>`;
+    top.querySelectorAll("[data-i]").forEach((b) => (b.onclick = () => go(b.dataset.i === ALL ? ALL : +b.dataset.i)));
+    bottom.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => {
+      go(+b.dataset.go);
+      top.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }));
+  };
+  const go = (i) => {
+    cur = i;
+    keepPick(`page:${key}`, i);
+    draw();
+  };
+  fs._marks = draw; // showErrors calls it, so a page with a bad field gets its red mark
+  draw();
+  return fs;
+}

@@ -2,6 +2,8 @@
 // Plaxis result of the wall. app.js passes its helpers in (fmt, esc, frame, showTip, v3dSlot) and
 // onIgnore(element, rules), which saves the element's "Ignore N or Q" rules and designs it again.
 
+import { checkBar, zoneElevation } from "./tubeview.js";
+
 const ALL = "All combinations";
 const CHECKS = ["bending", "bending_shear", "web_buckling", "buckling", "bending_axial", "bending_shear_axial"];
 
@@ -58,9 +60,12 @@ export function spwCard(w, h) {
     <h3 style="margin-top:18px">Results by corrosion zone</h3>
     <div class="row" style="gap:8px;margin:4px 0"><label class="chip"><input type="radio" name="spw-view-${esc(w.element)}" value="designed" checked> ${d.adjusted ? "As designed" : "Results"}</label>
       ${d.adjusted ? `<label class="chip"><input type="radio" name="spw-view-${esc(w.element)}" value="as_plaxis"> With every Plaxis action</label>` : ""}</div>
-    <div class="scroll" data-spw="zones"></div>
+    <p class="status">Green is safe, amber near the limit (0.95 to 1.0), red unsafe. Each zone shows its worst point.</p>
+    <div class="tz-wrap" data-spw="zone-view"></div>
+    <details class="office-details"><summary>Zone results as a table</summary><div class="scroll" data-spw="zones"></div></details>
     <h3 style="margin-top:18px">Each check at its worst</h3>
-    <div class="scroll" data-spw="checks"></div>
+    <ul class="tz-checks spw-checks" data-spw="check-view"></ul>
+    <details class="office-details"><summary>Each check as a table (with where and the resistance)</summary><div class="scroll" data-spw="checks"></div></details>
     <details style="margin-top:12px" data-spw="detail-box"><summary>Numerical details at the governing point</summary><div data-spw="detail"></div></details>
     <h3 style="margin-top:18px">By combination: leave out N or Q</h3>
     <p class="status">Where a Plaxis value is suspect (the plate smears the wall), leave N or Q out for that combination and design again. The check with every action stays on this card.</p>
@@ -85,6 +90,32 @@ export function spwCard(w, h) {
         if (!x) return `<tr><td>${esc(T[c])}</td><td class="muted" colspan="8">not needed anywhere${c === "web_buckling" ? " (c / tw ≤ 72 ε)" : ""}</td></tr>`;
         return `<tr><td>${esc(T[c])}</td>${ufCell(x.checks[c])}<td>${fmt(x.z, 2)}</td><td>${esc(x.combination)}</td><td>${fmt(x.M, 1)}</td><td>${fmt(x.V, 1)}</td><td>${fmt(x.N, 1)}</td><td>${fmt(x.loss, 2)}</td><td>${resistance(c, x.values, fmt)}</td></tr>`;
       }).join("")}</table>`;
+    // The same results drawn: the wall's zones down its height, a card per zone, a bar per check.
+    let above = d.top;
+    const zs = r.zones.map((z) => {
+      const zz = d.zones[z.zone - 1] || {};
+      const top = above;
+      const bottom = Math.max(zz.bottom ?? d.toe, d.toe ?? -Infinity);
+      above = zz.bottom ?? above;
+      return { z, zz, top, bottom };
+    });
+    const gz = r.governing;
+    card.querySelector('[data-spw="zone-view"]').innerHTML = `<div class="tz-elev">${zoneElevation(
+      zs.filter((x) => x.top != null && x.bottom != null && x.bottom < x.top).map((x) => ({ name: `Zone ${x.z.zone}`, top: x.top, bottom: x.bottom, u: x.z.uf })),
+      { esc, fmt, note: "Level (m), from the top of the wall to its toe" })}</div>
+      <div class="tz-cards">${zs.map(({ z, zz, top }) => `<div class="tz-card" style="--st:${z.uf > 1 ? "var(--err)" : z.uf >= 0.95 ? "#e0a100" : "var(--ok)"}">
+        <div class="tz-head"><b>Zone ${z.zone}</b><span class="status">${top != null ? `${fmt(top, 2)} to ` : "down to "}${fmt(zz.bottom, 2)} m</span><span class="tz-badge">${fmt(z.uf, 2)}</span></div>
+        <div class="tz-facts"><span>corrosion <b>${fmt(z.loss, 2)}</b> mm <small>(${fmt(zz.front, 2)} front + ${fmt(zz.back, 2)} back)</small></span>
+          <span>class ${z.values.class}${z.values.class === 4 ? " → 3 (reduced fy)" : ""}</span><span>worst at z ${fmt(z.z, 2)} m, ${esc(z.combination)}</span></div>
+        <div class="tz-forces"><span><small>M</small><b>${fmt(z.M, 1)}</b> kNm/m</span><span><small>V</small><b>${fmt(z.V, 1)}</b> kN/m</span><span><small>N</small><b>${fmt(z.N, 1)}</b> kN/m</span></div>
+        <ul class="tz-checks">${CHECKS.map((c) => checkBar(T[c], z.checks[c], { esc, fmt, governs: z.checks[c] != null && Math.abs(z.checks[c] - z.uf) < 5e-4,
+          note: "" })).join("")}</ul></div>`).join("")}</div>`;
+    card.querySelector('[data-spw="check-view"]').innerHTML = CHECKS.map((c) => {
+      const x = r.checks[c];
+      if (!x) return checkBar(T[c], null, { esc, fmt, note: `not needed anywhere${c === "web_buckling" ? " (c / tw ≤ 72 ε)" : ""}` });
+      return checkBar(T[c], x.checks[c], { esc, fmt, governs: gz && c === gz.governs,
+        note: `${esc(x.combination)}, z ${fmt(x.z, 2)} m · ${resistance(c, x.values, fmt)}` });
+    }).join("");
     detail.innerHTML = details(r.governing, d, fmt, esc);
     profile(card.querySelector('[data-spw="profile"]'), d, h);
   };

@@ -9,7 +9,9 @@ import { APPROACH, approachCard, approachPanel } from "./approach.js";
 import { renderFurniture } from "./furniture.js";
 import { renderMovedPiles } from "./moved.js";
 import { renderSequence } from "./sequence.js";
-import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
+import { smooth } from "./progress.js";
+import { tubeZonesHtml } from "./tubeview.js";
+import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -539,7 +541,7 @@ async function projectPage(id, tab, sectionId) {
     host.append(used);
     storagePanel(used, id);
   }
-  else if (tab === "settings") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
+  else if (tab === "settings") host.append(pageForm(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"), `settings:${p.id}`));
   else if (tab === "design") renderDesignTab(host);
   else if (tab === "openings") renderOpeningsTab(host);
   else if (tab === "sections") renderSections(host);
@@ -787,6 +789,7 @@ function showErrors() {
     }
     ul.insertAdjacentHTML("beforeend", `<li>${esc(clean || "Project")}: ${esc(msg)}</li>`);
   }
+  document.querySelectorAll("fieldset.paged").forEach((f) => f._marks?.()); // red marks on the pages with errors
 }
 function cleanPath(loc) {
   // ["sections", 0, "elements", "Pile(1)", "pile", "casing", "thickness"] -> "sections.0.elements.Pile(1).casing.thickness"
@@ -1450,7 +1453,7 @@ function renderElements(host) {
       markDirty();
       route();
     };
-    const fs = renderObject(schema, el, `sections.${secIndex()}.elements.${name}`, "");
+    const fs = pageForm(renderObject(schema, el, `sections.${secIndex()}.elements.${name}`, ""), `el:${el.kind}`);
     fs.style.border = "0";
     fs.style.padding = "0";
     card.append(fs);
@@ -1579,14 +1582,21 @@ function jobCardHtml(job, inDock) {
 function fillJobCard(card, job) {
   const f = jobFraction(job);
   const running = job.steps.find((s) => s.state === "running");
-  card.querySelector(".job-pct").textContent = JOB_END[job.state] && job.state !== "done" ? JOB_END[job.state] : `${Math.round(f * 100)}%`;
-  card.querySelector(".bar.big i").style.width = `${Math.max(f * 100, 1)}%`;
+  // The bars move one per cent at a time (progress.js): quick when the work jumps, creeping on
+  // between reports at the pace so far, up to most of the next element's share.
+  const ended = JOB_END[job.state] && job.state !== "done";
+  const pctEl = card.querySelector(".job-pct");
+  smooth(`${job.id}:all`, card.querySelector(".bar.big i"), f, {
+    pct: ended ? null : pctEl, done: job.state === "done",
+    ahead: job.state === "running" ? 1 / Math.max(1, job.steps.length) : 0 });
+  if (ended) pctEl.textContent = JOB_END[job.state];
   card.querySelector(".job-sub span").textContent =
     job.state === "running" ? [running?.detail || running?.label, timeLeft(job, f)].filter(Boolean).join(" · ") : job.message || "";
   card.querySelectorAll(".job-steps li").forEach((li, i) => {
     const s = job.steps[i];
     li.className = `${s.state}${s.bad ? " bad" : ""}${s.state === "running" && s.fraction == null ? " busy" : ""}`;
-    li.querySelector("i").style.width = `${s.state === "done" ? 100 : s.state === "running" && s.fraction == null ? 100 : Math.round((s.fraction ?? 0) * 100)}%`;
+    if (s.state === "running" && s.fraction == null) li.querySelector("i").style.width = "100%"; // busy stripes
+    else smooth(`${job.id}:${i}`, li.querySelector("i"), s.state === "done" ? 1 : s.fraction ?? 0, { done: s.state === "done" });
     li.querySelector(".step-note").textContent = stepNote(s);
   });
   if (running && card.querySelector(".job-steps.many")) {
@@ -3692,8 +3702,10 @@ function loadingCard(box, title, run, full) {
     if (!document.body.contains(bar)) return clearInterval(timer);
     const spent = (Date.now() - run.began) / 1000;
     const f = run.fraction ?? (last ? Math.min(spent / (last / 1000), 0.95) : null);
-    pct.textContent = f == null ? "" : `${Math.round(f * 100)}%`;
-    bar.style.width = `${f == null ? 100 : Math.max(f * 100, 2)}%`;
+    if (f == null) {
+      pct.textContent = "";
+      bar.style.width = "100%";
+    } else smooth(`load:${full}:${run.began}`, bar, f, { pct, ahead: run.fraction != null ? 0.1 : 0 });
     const took = (s) => (s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
     sub.textContent = [run.step || "Working", took(spent), last ? `about ${took(last / 1000)} last time` : ""].filter(Boolean).join(" · ");
   };
@@ -5628,9 +5640,10 @@ function officeSheet(sh) {
   const head = `<tr><th>Item</th><th>Unit</th>${sh.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
   const body = sh.groups.map((g) => `<tr class="sheet-group"><th colspan="${sh.columns.length + 2}">${esc(g.title)}</th></tr>`
     + g.rows.map((r) => `<tr><td>${esc(r.item)}</td><td>${esc(r.unit)}</td>${r.values.map((v) => cell(v, r)).join("")}</tr>`).join("")).join("");
-  return `<h3 style="margin-top:18px">Tube check by zone (office sheet)</h3>
+  return `${tubeZonesHtml(sh, { esc, fmt })}
+    <details class="office-details"><summary>Full calculation in the office sheet layout</summary>
     <p class="status">Each zone takes its largest N, V and M together, as the office sheet does. Green passes, red fails.</p>
-    <div class="scroll"><table class="office-sheet">${head}${body}</table></div>`;
+    <div class="scroll"><table class="office-sheet">${head}${body}</table></div></details>`;
 }
 
 function combiCard(w) {
