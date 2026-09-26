@@ -1,6 +1,10 @@
 // A light 3D view of a section: piles and king piles as lines coloured by utilisation, plates as
 // panels, orbit / pan / zoom on a 2D canvas (orthographic, no library).
 
+import { span } from "./heat3d.js";
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
 const HEAT = [
   [0, [46, 157, 87]], // very safe: green
   [0.5, [214, 190, 44]], // yellow
@@ -113,6 +117,17 @@ function ramp(stops, u) {
   return `rgb(${stops[stops.length - 1][1]})`;
 }
 
+// Cost and reinforcement ratio: the lowest value in the view green, the highest red (heat3d.js).
+function rampLegendHtml(title, [lo, hi], unit, note) {
+  const stops = HEAT.map(([u, c]) => `rgb(${c}) ${u * 100}%`).join(", ");
+  const f = (v) => Math.round(v).toLocaleString("en-GB");
+  return `<div class="heat-legend"><span>${title}</span>
+    <div class="bar" style="background:linear-gradient(90deg, ${stops})"></div>
+    <div class="ticks"><span>${f(lo)}</span><span style="left:auto;right:0">${f(hi)}</span></div>
+    <div class="grey">${unit}: lowest in the view green, highest red</div>
+    <div class="grey"><i style="background:rgb(${GREY})"></i> ${note}</div></div>`;
+}
+
 const fmt1 = (v) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1));
 
 // A box as six shaded faces, drawn among the lines (fenders, bollards, blocks).
@@ -214,8 +229,9 @@ export const GAP_WHY = {
 };
 
 export class View3D {
-  constructor(host, { height = 460, compact = false, legend = true, onSite = null, deformed = null } = {}) {
+  constructor(host, { height = 460, compact = false, legend = true, onSite = null, deformed = null, modes = null } = {}) {
     this.host = host;
+    this.modes = modes; // the colour choices this view offers (default: all)
     this.legend = legend;
     this.onSite = onSite; // (changes) => saved to the section's site settings
     this.loadDeformed = deformed; // async (combination) => the section's deformed shape
@@ -228,7 +244,8 @@ export class View3D {
       .join("")}<button class="quiet" data-fit>Fit view</button>
       <label class="toggle"><input type="checkbox" data-labels ${this.labels ? "checked" : ""}> Labels</label>
       <span class="v3d-mode"><select data-mode aria-label="Colour by"><option value="util">Utilisation</option>
-      <option value="tension">Tension zones</option><option value="crack">Crack width (QP)</option></select>
+      <option value="tension">Tension zones</option><option value="crack">Crack width (QP)</option>
+      <option value="cost">Cost</option><option value="rebar">Reinforcement ratio</option></select>
       <select data-combo aria-label="Combination" hidden></select>
       <select data-dir aria-label="Slab bar direction" hidden><option value="x">Slabs: bars along X (M11)</option>
       <option value="y">Slabs: bars along Y (M22)</option></select></span></div>
@@ -403,6 +420,14 @@ export class View3D {
     this.fit();
   }
 
+  // New cost or reinforcement values (the Costing tab's inputs changed): redrawn from the same camera.
+  setValues(patch) {
+    if (!this.scene) return;
+    Object.assign(this.scene, patch);
+    this._controls();
+    this.update(this.scene);
+  }
+
   // A new scene drawn from the same camera and centre (an animation's next frame).
   update(scene) {
     const keep = this.center && { center: this.center, bounds: this.bounds, size: this.size };
@@ -418,12 +443,22 @@ export class View3D {
     const combos = [...new Set(tz.flatMap((t) => t.combinations || []))];
     if (prefs.combo && !combos.includes(prefs.combo)) prefs.combo = "";
     const ck = Object.values(this.scene?.crack || {}).filter((b) => b?.length);
-    const has = { util: true, tension: tz.length > 0, crack: ck.length > 0 };
+    const rb = Object.values(this.scene?.rebar || {}).filter((b) => b?.length);
+    const has = { util: true, tension: tz.length > 0, crack: ck.length > 0, cost: !!this.scene?.cost, rebar: rb.length > 0 };
+    const modes = this.modes || Object.keys(has);
     const mode = this.host.querySelector("[data-mode]");
-    for (const o of mode.options) o.disabled = !has[o.value];
-    mode.disabled = !has.tension && !has.crack;
-    mode.title = mode.disabled ? "Run the design to see the tension zones and crack widths" : "";
-    this.view = has[prefs.mode] ? prefs.mode : "util";
+    for (const o of mode.options) {
+      o.hidden = !modes.includes(o.value);
+      o.disabled = o.hidden || !has[o.value];
+    }
+    mode.disabled = [...mode.options].filter((o) => !o.disabled).length < 2;
+    mode.title = mode.disabled ? "Run the design to see the other colours" : "";
+    this.view = modes.includes(prefs.mode) && has[prefs.mode] ? prefs.mode : modes.find((m) => has[m]) || modes[0];
+    this.range = this.view === "cost"
+      ? span(Object.values(this.scene.cost?.values || {}).map((v) => v.value))
+      : this.view === "rebar"
+        ? span(rb.flat().map((r) => r[3]))
+        : null;
     mode.value = this.view;
     const on = this.view === "tension";
     const combo = this.host.querySelector("[data-combo]");
@@ -441,13 +476,39 @@ export class View3D {
       ? tensionLegendHtml()
       : this.view === "crack"
         ? crackLegendHtml()
-        : this.legend
+        : this.view === "cost"
+          ? this.range
+            ? rampLegendHtml("Cost", this.range, this.scene.cost.unit, this.scene.cost.note || "no cost yet")
+            : `<div class="heat-legend"><span>Cost</span><p>${esc(this.scene.cost?.note || "No costs yet.")}</p></div>`
+          : this.view === "rebar"
+            ? rampLegendHtml("Reinforcement ratio", this.range || [0, 0], "kg of bars and links per m³ of concrete (hover for the % of steel)",
+              "steel sections (no bars), or not designed yet. Piles zone by zone, slabs square by square (bars only), beams and infills as one value")
+            : this.legend
           ? legendHtml()
           : "";
+    this.onMode?.(this.view);
   }
 
   // Bands of an element as [x, y, z, value, size?] and how to paint a value.
   _source(e) {
+    const k = e.key || e.element;
+    const ramp = (u) => {
+      const r = this.range;
+      return u == null || !r ? `rgb(${GREY})` : heat(r[1] > r[0] ? (u - r[0]) / (r[1] - r[0]) : 0.5);
+    };
+    if (this.view === "cost") {
+      // One value over the element: its cost per metre of berth.
+      const c = this.scene.cost?.values?.[e.element];
+      const b = this.scene.bands?.[k] || [];
+      return { bands: c?.value == null ? [] : b.map((r) => [r[0], r[1], r[2], c.value, r[4], r[5]]), color: ramp, words: () => c.tip };
+    }
+    if (this.view === "rebar") {
+      return {
+        bands: this.scene.rebar?.[k] || [],
+        color: ramp,
+        words: (u, r) => (u == null ? "no bars here" : `${Math.round(u)} kg/m³ of reinforcement${r?.[6] != null ? `, ${r[6].toFixed(2)}% steel by volume` : ""}`),
+      };
+    }
     if (this.view === "crack") {
       const pct = (u) => `crack width ${Math.round(u * 100)}% of the limit (worst QP combination)`;
       return { bands: this.scene.crack?.[e.key || e.element] || [], color: heat, words: pct };
@@ -486,11 +547,12 @@ export class View3D {
       if (e.lines) {
         const b = src.bands;
         const byPos = new Map();
-        for (const [x, y, z, u] of b) {
+        for (const row of b) {
+          const [x, y, z, u] = row;
           if (this.view !== "util" && u == null) continue;
           const k = `${x.toFixed(2)},${y.toFixed(2)}`;
           if (!byPos.has(k)) byPos.set(k, []);
-          byPos.get(k).push([z, u]);
+          byPos.get(k).push([z, u, row]);
         }
         const width = e.type === "combi_wall" ? 6 : 4;
         e.lines.forEach(([x, y, top, bottom], i) => {
@@ -502,11 +564,11 @@ export class View3D {
             const hi = Math.min(top, segs[0][0] + 0.25);
             if (top > hi + 0.01) items.push({ kind: "line", a: [x, y, top], b: [x, y, hi], color: `rgb(${GREY})`, width, faded, element: e.element });
             // Each band reaches halfway to its neighbours, so the pile reads as one continuous line.
-            segs.forEach(([z, u], k) => {
+            segs.forEach(([z, u, row], k) => {
               // A small overlap hides the seams between bands.
               const up = k ? (z + segs[k - 1][0]) / 2 + 0.04 : Math.min(z + 0.25, top);
               const down = k < segs.length - 1 ? (z + segs[k + 1][0]) / 2 - 0.04 : Math.max(z - 0.25, bottom);
-              const what = src.words ? src.words(u) : `utilisation ${u.toFixed(2)}`;
+              const what = src.words ? src.words(u, row) : `utilisation ${u.toFixed(2)}`;
               items.push({ kind: "line", a: [x, y, up], b: [x, y, down], color: src.color(u), width, faded, cap: "butt",
                 element: e.element, tip: `${e.element} at X ${x}, Y ${y}, z ${z.toFixed(1)} m: ${what}` });
             });
@@ -534,7 +596,8 @@ export class View3D {
           // Beams: 0.5 m bands along the beam, across its full width.
           const along = Y[1] - Y[0] >= X[1] - X[0] ? "Y" : "X";
           const across = along === "Y" ? "X" : "Y";
-          for (const [x, y, z, u, size, why] of b) {
+          for (const row of b) {
+            const [x, y, z, u, size, why] = row;
             if (size && u == null) {
               // Slabs: a cell with no result, drawn outlined so it reads as left out, not as a gap.
               if (this.view !== "util") continue;
@@ -548,7 +611,7 @@ export class View3D {
               // Slabs: square cells of the zone grid. A square with no result of its own (over a pile head,
               // or no Plaxis node in it) shows the worst of the squares round it; those over a pile are outlined.
               const h = size / 2 + 0.01;
-              const what = src.words ? src.words(u) : `bending needs ${Math.round(u * 100)}% of the bars`;
+              const what = src.words ? src.words(u, row) : `bending needs ${Math.round(u * 100)}% of the bars`;
               items.push({ kind: "quad", pts: [[x - h, y - h, z], [x + h, y - h, z], [x + h, y + h, z], [x - h, y + h, z]],
                 faded, element: e.element, fill: src.color(u), stroke: why === "pile",
                 tip: `${e.element} at X ${x}, Y ${y}: ${what}${why ? `. ${GAP_WHY[why] || ""}` : ""}` });
@@ -560,7 +623,7 @@ export class View3D {
             const [t0, t1] = c[across];
             items.push({ kind: "quad", pts: [pt(s0, t0), pt(s1, t0), pt(s1, t1), pt(s0, t1)], faded, element: e.element,
               fill: src.color(u), stroke: false,
-              tip: `${e.element} at ${along} ${(along === "Y" ? y : x).toFixed(1)} m: ${src.words ? src.words(u) : `utilisation ${u.toFixed(2)}`}` });
+              tip: `${e.element} at ${along} ${(along === "Y" ? y : x).toFixed(1)} m: ${src.words ? src.words(u, row) : `utilisation ${u.toFixed(2)}`}` });
           }
         } else if (b.length) {
           // Walls: 0.5 m bands down the wall, along its full length.
@@ -570,12 +633,13 @@ export class View3D {
           const pt = (sv, zv) => (along === "Y" ? [w, sv, zv] : [sv, w, zv]);
           // Each band reaches halfway to its neighbours, so the wall reads as one surface.
           const lv = b.filter((q) => q[3] != null).sort((p, q) => q[2] - p[2]);
-          lv.forEach(([, , z, u], k) => {
+          lv.forEach((row, k) => {
+            const [, , z, u] = row;
             const up = k ? (z + lv[k - 1][2]) / 2 + 0.02 : Math.min(z + 0.25, c.Z[1]);
             const down = k < lv.length - 1 ? (z + lv[k + 1][2]) / 2 - 0.02 : Math.max(z - 0.25, c.Z[0]);
             items.push({ kind: "quad", pts: [pt(a0, down), pt(a1, down), pt(a1, up), pt(a0, up)], faded,
               element: e.element, fill: src.color(u), stroke: false,
-              tip: `${e.element} at z ${z.toFixed(1)} m: ${src.words ? src.words(u) : `utilisation ${u.toFixed(2)}`}` });
+              tip: `${e.element} at z ${z.toFixed(1)} m: ${src.words ? src.words(u, row) : `utilisation ${u.toFixed(2)}`}` });
           });
         }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);
