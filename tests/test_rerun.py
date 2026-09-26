@@ -33,7 +33,9 @@ def xlsx_bytes(sheets):
 def designed(client, monkeypatch):
     """A section with two piles, a front beam and a deck, designed once; ``asked`` lists what each
     later design ran (None: everything)."""
-    p = client.post("/api/projects", json={"element_names": ["Pile(1)", "Pile(2)", "Front Beam", "Deck"]}).json()
+    p = client.post(
+        "/api/projects", json={"element_names": ["Pile(1)", "Pile(2)", "Front Beam", "Deck"]}
+    ).json()
     url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
     sheets = {f"Pile({i})-{c}": pile_sheet() for i in (1, 2) for c in ("PT-B-Apron", "QP")}
     sheets |= {f"{e}-{c}": plate_sheet() for e in ("Front Beam", "Deck") for c in ("PT-B-Apron", "QP")}
