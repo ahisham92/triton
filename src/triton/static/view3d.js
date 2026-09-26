@@ -170,12 +170,7 @@ function extruded(box, color, common) {
         }
         grid.push(row);
       }
-      // The tile a point on this face lies on.
-      faces[a + side] = (pt) => {
-        const q = { X: pt[0], Y: pt[1], Z: pt[2] };
-        const at = (ks, x) => Math.min(ks.length - 2, Math.max(0, ks.findIndex((k) => k >= x) - 1));
-        return grid[at(us, q[u])][at(vs, q[v])];
-      };
+      faces[a + side] = { u, v, us, vs, grid };
     }
   }
   return { tiles, faces };
@@ -666,9 +661,29 @@ export class View3D {
       for (const side of sides) {
         const k = flat === "X" ? 0 : flat === "Y" ? 1 : 2;
         const at = c[flat][side] + (side ? lift : -lift);
-        const pts = it.pts.map((p) => p.map((v, i) => (i === k ? at : v)));
-        const ctr = [0, 1, 2].map((i) => pts.reduce((s, p) => s + p[i], 0) / pts.length);
-        items.push({ ...it, pts, on: faces[flat + side](ctr) });
+        // Cut at the tiles' edges: a band as long as the wall is drawn piece by piece, each piece with
+        // the tile it lies on, so no nearer tile covers it.
+        const f = faces[flat + side];
+        const ax = { X: 0, Y: 1, Z: 2 };
+        const span = (key) => [Math.min(...it.pts.map((p) => p[ax[key]])), Math.max(...it.pts.map((p) => p[ax[key]]))];
+        const [u0, u1] = span(f.u);
+        const [v0, v1] = span(f.v);
+        for (let i = 1; i < f.us.length; i++) {
+          const a0 = Math.max(u0, f.us[i - 1]), a1 = Math.min(u1, f.us[i]);
+          if (a1 - a0 <= 1e-6) continue;
+          for (let j = 1; j < f.vs.length; j++) {
+            const b0 = Math.max(v0, f.vs[j - 1]), b1 = Math.min(v1, f.vs[j]);
+            if (b1 - b0 <= 1e-6) continue;
+            const pt = (uu, vv) => {
+              const q = [0, 0, 0];
+              q[k] = at;
+              q[ax[f.u]] = uu;
+              q[ax[f.v]] = vv;
+              return q;
+            };
+            items.push({ ...it, pts: [pt(a0, b0), pt(a1, b0), pt(a1, b1), pt(a0, b1)], on: f.grid[i - 1][j - 1] });
+          }
+        }
       }
     }
   }
