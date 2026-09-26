@@ -53,6 +53,26 @@ function tick(now) {
 
 function paint(b) {
   const p = Math.floor(b.shown * 100 + 1e-6);
-  if (b.bar) b.bar.style.width = `${Math.max(b.shown * 100, 1)}%`;
+  if (b.bar) {
+    b.bar.style.width = `${Math.max(b.shown * 100, 1)}%`;
+    // A voyage bar: the ship ties up at the quay once the bar shows 100%.
+    b.bar.closest(".voyage")?.classList.toggle("moored", b.shown >= 0.9995);
+  }
   if (b.pct) b.pct.textContent = b.label(p);
+}
+
+// The big bar as a voyage: a container ship sails along the water with its wake behind it (the
+// filled part of the bar) and moors at the quay on the right when the work reaches 100%.
+// The ship rides at the end of the bar's <i>, so smooth() drives it like any other bar.
+const SHIP = `<svg class="ship" viewBox="0 0 64 26" aria-hidden="true">
+  <path class="hull" d="M2 15h58l-5 8H8z"/><path class="boot" d="M5.2 20h52.6l-2 3H8z"/>
+  <rect class="bridge" x="6" y="5" width="7" height="10" rx="1"/><rect class="win" x="7" y="7" width="5" height="1.6"/>
+  <rect class="funnel" x="8" y="1.5" width="3" height="3.5"/>
+  <g class="boxes"><rect x="16" y="10" width="8" height="5" fill="#e0583a"/><rect x="25" y="10" width="8" height="5" fill="#f2b033"/>
+  <rect x="34" y="10" width="8" height="5" fill="#2f9e6e"/><rect x="43" y="10" width="8" height="5" fill="#1e8fc0"/>
+  <rect x="20" y="5" width="8" height="5" fill="#1e8fc0"/><rect x="29" y="5" width="8" height="5" fill="#e0583a"/>
+  <rect x="38" y="5" width="8" height="5" fill="#f2b033"/></g>
+  <path class="line" d="M60 14.5Q67 13 74.5 9.5M56 15Q66 14.5 74 10.5"/></svg>`;
+export function voyageHtml() {
+  return `<div class="bar big voyage"><span class="sea"><i>${SHIP}</i></span><span class="quay" aria-hidden="true"><b></b></span></div>`;
 }
