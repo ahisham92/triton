@@ -3570,7 +3570,7 @@ function pickResults(res, out) {
   const rank = { unsafe: 3, limit: 2, safe: 1 };
   for (const a of alerts(res)) {
     const lvl = a.level === "safe" ? null : a.level;
-    for (const n of String(a.name).split(", ")) if (lvl && (rank[lvl] > (rank[worst[n]] || 0))) worst[n] = lvl;
+    for (const n of String(a.el || a.name).split(", ")) if (lvl && (rank[lvl] > (rank[worst[n]] || 0))) worst[n] = lvl;
   }
   const all = [...(res.piles || []), ...(res.combi_walls || []), ...(res.beams || []), ...(res.slabs || []), ...(res.sheet_pile_walls || []), ...(res.approach_slabs || [])];
   const util = (x) => {
