@@ -151,8 +151,11 @@ def curtail(
     if max_cages is not None and len(cages) > max_cages:
         cages = _spread(cages, top_cage, max_cages)
 
+    failing = {id(c): ok[c] for c in cages}  # by identity: hashing a cage is slow, and this runs often
+
     def fits(c: Arrangement, p: int, e: int) -> bool:
-        return (head_may_fail and p == 0 and c == top_cage) or ok[c][e] - ok[c][p] == 0
+        bad = failing[id(c)] if id(c) in failing else ok[c]
+        return (head_may_fail and p == 0 and c == top_cage) or bad[e] - bad[p] == 0
 
     coupled = {top_cage} if head_couplers else set()
     runs = _search(
@@ -248,43 +251,65 @@ def _search(
     into_slab=0.0,
     length_step=LENGTH_STEP,
 ) -> list[Run] | None:
-    """Best sequence of runs from the head (index 0) to the toe (index n_bands)."""
+    """Best sequence of runs from the head (index 0) to the toe (index n_bands).
+
+    Cages are handled by their place in ``cages`` and a run is built only when it is kept: a pile
+    tries about a million runs, and hashing cages and building runs took most of the time."""
     standard_mode = pr.curtailment == "standard_lengths" and not least
+    standard = tuple(pr.standard_bar_lengths)
     min_q = max(1, round(pr.min_zone_length / STEP))
     q_step = round(length_step / STEP)
     max_len = pr.max_bar_length
     lap_limit = MAX_RATIO_AT_LAPS * ac * (1 + 1e-9)
-    # best[(p, cage)] = (penalty, weight, previous state, run)
-    best: dict[tuple, tuple] = {(0, None): (0, 0.0, None, None)}
+    lapped_splice = pr.splice == "lap"
+    n = len(cages)
+    # What each cage needs, worked out once (by its place in ``cages``).
+    is_coupled = [c in coupled for c in cages]
+    area = [c.area for c in cages]
+    ring_mass = [tuple(r.area / 1e6 * STEEL_DENSITY for r in c.rings) for c in cages]
+    zeros = [tuple(0.0 for _ in c.rings) for c in cages]
+    laps = [zeros[i] if is_coupled[i] else _laps(settings, c, c) for i, c in enumerate(cages)]
+    head_above = [tuple(max(0.0, round(x - into_slab, 3)) for x in anchorage(settings, c)) for c in cages]
+    below = [[_fits_below(c, prev) for c in cages] for prev in cages]  # below[prev][c]
+    # by_p[p] = {cage index or None: (penalty, weight, previous state, run parts)}; the states at a
+    # level, in the order they were found.
+    by_p: dict[int, dict] = {0: {None: (0, 0.0, None, None)}}
     frontier = [0]
     seen = {0}
     while frontier:
         p = min(frontier)
         frontier.remove(p)
-        states = [(k, v) for k, v in best.items() if k[0] == p]
-        for (_, prev), (pen, w, _, _) in states:
-            for c in cages:
-                if prev is not None and not _fits_below(c, prev):
+        for prev, (pen, w, _, _) in list(by_p.get(p, {}).items()):
+            for ci in range(n):
+                if prev is not None and not below[prev][ci]:
                     continue
-                # Lap lengths below a run ending above the toe (none with couplers).
-                laps = tuple(0.0 for _ in c.rings) if c in coupled else _laps(settings, c, c)
-                # Anchorage from the pile's top level, less the part of the run inside the slab.
-                above = (
-                    tuple(max(0.0, round(x - into_slab, 3)) for x in anchorage(settings, c)) if p == 0 else ()
-                )
-                ext = max(laps) + max(above, default=0.0)
+                c = cages[ci]
+                lap = laps[ci]
+                above = head_above[ci] if p == 0 else ()
+                ext = max(lap) + max(above, default=0.0)
                 lengths = set()
                 remaining = n_bands - p
                 if remaining * STEP <= max_len + 1e-9:
                     lengths.add(remaining)
                 if standard_mode:
-                    for s in pr.standard_bar_lengths:
+                    for s in standard:
                         q = math.floor((s - ext) / STEP + 1e-9)
                         if 0 < q < remaining:
                             lengths.add(q)
                 for q in range(min_q, remaining, q_step):
                     if q * STEP + ext <= max_len + 1e-9:
                         lengths.add(q)
+                over_lap = (
+                    prev is not None
+                    and lapped_splice
+                    and not is_coupled[prev]
+                    and area[prev] + area[ci] > lap_limit
+                )
+                if over_lap:
+                    continue
+                top = round(head - p * STEP, 3)
+                above_rows = above or zeros[ci]
+                masses = ring_mass[ci]
                 for q in lengths:
                     e = p + q
                     at_toe = e == n_bands
@@ -292,34 +317,33 @@ def _search(
                         continue
                     if not fits(c, p, e):
                         continue
-                    lapped = pr.splice == "lap" and prev not in coupled
-                    if prev is not None and lapped and prev.area + c.area > lap_limit:
-                        continue
-                    run_ext = tuple(0.0 for _ in c.rings) if at_toe else laps
-                    joint = "toe" if at_toe else "coupler" if c in coupled else pr.splice
-                    run = Run(round(head - p * STEP, 3), round(head - e * STEP, 3), c, run_ext, joint, above)
-                    if max(run.bar_lengths()) > max_len + 1e-9:
+                    run_ext = zeros[ci] if at_toe else lap
+                    bottom = round(head - e * STEP, 3)
+                    length = top - bottom
+                    bars = [a + length + x for a, x in zip(above_rows, run_ext, strict=True)]
+                    if max(bars) > max_len + 1e-9:
                         continue
                     penalty = pen
-                    if standard_mode and not any(
-                        abs(run.bar_lengths()[0] - s) < 0.01 for s in pr.standard_bar_lengths
-                    ):
+                    if standard_mode and not any(abs(bars[0] - s) < 0.01 for s in standard):
                         penalty += 1
-                    cand = (penalty, w + run.weight, (p, prev), run)
-                    key = (e, c)
-                    if key not in best or cand[:2] < best[key][:2]:
-                        best[key] = cand
+                    weight = w + sum(m * b for m, b in zip(masses, bars, strict=True))
+                    level = by_p.setdefault(e, {})
+                    kept = level.get(ci)
+                    if kept is None or (penalty, weight) < kept[:2]:
+                        joint = "toe" if at_toe else "coupler" if is_coupled[ci] else pr.splice
+                        level[ci] = (penalty, weight, (p, prev), (top, bottom, ci, run_ext, joint, above))
                     if e not in seen and not at_toe:
                         seen.add(e)
                         frontier.append(e)
-    ends = [(v[:2], k) for k, v in best.items() if k[0] == n_bands]
+    ends = [(v[:2], ci) for ci, v in by_p.get(n_bands, {}).items()]
     if not ends:
         return None
-    key = min(ends)[1]
+    key = (n_bands, min(ends)[1])
     runs = []
-    while best[key][3] is not None:
-        runs.append(best[key][3])
-        key = best[key][2]
+    while by_p[key[0]][key[1]][3] is not None:
+        top, bottom, ci, run_ext, joint, above = by_p[key[0]][key[1]][3]
+        runs.append(Run(top, bottom, cages[ci], run_ext, joint, above))
+        key = by_p[key[0]][key[1]][2]
     return runs[::-1]
 
 
