@@ -4927,9 +4927,9 @@ function slabPlan(el, d, key) {
       <text class="tick" x="${pad}" y="${H - 8}">X ${fmt(flip ? x1 : x0, 1)}${flip ? " (sea side)" : ""}</text><text class="tick" x="${W - pad}" y="${H - 8}" text-anchor="end">X ${fmt(flip ? x0 : x1, 1)}</text>
       <text class="tick" x="${pad - 4}" y="${Y(y1) + 4}" text-anchor="end">Y ${fmt(y1, 0)}</text><text class="tick" x="${pad - 4}" y="${Y(y0)}" text-anchor="end">${fmt(y0, 0)}</text>
     </svg>
-    ${(d.punching || []).length ? `<p class="status plan-key"><svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="4" fill="none" stroke="var(--text)" stroke-width="1.5"/></svg> pile head
-      <svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="pp-u1"/></svg> punching control perimeter u1, 2d from the pile face: no links needed
-      <svg width="16" height="16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="pp-out"/></svg> the same, where the pile needs punching links (see Punching at the piles)</p>` : ""}`;
+    ${(d.punching || []).length ? `<p class="status plan-key"><svg class="key-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="4" fill="none" stroke="var(--text)" stroke-width="1.5"/></svg> pile head
+      <svg class="key-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="pp-u1"/></svg> punching control perimeter u1, 2d from the pile face: no links needed
+      <svg class="key-icon" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" class="pp-out"/></svg> the same, where the pile needs punching links (see Punching at the piles)</p>` : ""}`;
 }
 
 // The slab's voids in plan: a dashed band for each void over its run.
