@@ -565,12 +565,24 @@ def arrange(
 # --- The section's furniture -------------------------------------------------------------------------
 
 
-def berth_length(section: Section, frame: dict[str, Any]) -> tuple[float, str]:
+def line_length(line: list[list[float]] | None) -> float | None:
+    """The length of a berth's front beam line in plan (a corner berth: round the corner)."""
+    if not line or len(line) < 2:
+        return None
+    return sum(math.dist(a[:2], b[:2]) for a, b in zip(line, line[1:], strict=False)) or None
+
+
+def berth_length(
+    section: Section, frame: dict[str, Any], line: list[list[float]] | None = None
+) -> tuple[float, str]:
+    """``line``: a corner berth's front beam line in plan (the 3D view's alignment), None when straight."""
     sf = section.furniture
     if sf.berth_length:
         return sf.berth_length, "given for this section's furniture"
     if section.costing.berth_length:
         return section.costing.berth_length, "the Costing berth length"
+    if (round_corner := line_length(line)) is not None:
+        return round(round_corner, 3), "the front beam's length round the corner in the model"
     return frame["model_length_m"], "the model's length (give the berth length on the Costing tab)"
 
 
@@ -649,16 +661,18 @@ def design(
     section: Section,
     geometry: list[dict[str, Any]],
     joints: dict[str, Any] | None = None,
+    line: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """Arrangement and design of the project's furniture on this section's berth. ``joints``: the
     section's expansion joint layout (``joints.section_joints``); without one, a joint at each of the
-    front beam's lengths between joints."""
+    front beam's lengths between joints. ``line``: a corner berth's front beam line in plan, whose
+    length (round the corner) is the berth length when none is given."""
     sf: SectionFurniture = section.furniture
     f: QuayFurniture = for_section(project.furniture, sf)
     if not sf.use:
         return {"section": section.name, "section_id": section.id, "use": False}
     frame = berth_frame(project, section, geometry)
-    length, length_from = berth_length(section, frame)
+    length, length_from = berth_length(section, frame, line)
     fb = frame["front_beam"]
     front = fd.Beam(fb["width_mm"], fb["depth_mm"], fb["concrete"], fb["name"])
     rear = frame["rear_beam"]

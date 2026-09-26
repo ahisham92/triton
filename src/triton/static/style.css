@@ -609,3 +609,32 @@ h1 { color: var(--brand); }
 fieldset.section-pages { border: 0; padding: 0; margin: 0; background: transparent; }
 fieldset.section-pages > .fields { display: block; }
 fieldset.section-pages > .fields > .full + .full { margin-top: 12px; }
+
+/* The big progress bar as a voyage: water, the ship's wake as the filled part, a quay at 100%. */
+.bar.big.voyage { height: 34px; margin: 8px 0 4px; border-radius: 0; overflow: visible; background:
+  linear-gradient(180deg, transparent 0 21px, #bfe3f2 21px, #7cc3e2 34px); border-radius: 0 0 8px 8px; }
+.bar.big.voyage i, .job .bar.big.voyage i {
+  min-width: 58px; border-radius: 0 0 0 8px; animation: none; background:
+  linear-gradient(90deg, rgba(255,255,255,0) 0, rgba(255,255,255,.85) calc(100% - 30px), rgba(255,255,255,0) 100%) 0 23px / 100% 4px no-repeat,
+  repeating-linear-gradient(90deg, rgba(255,255,255,.55) 0 10px, rgba(255,255,255,0) 10px 18px) 0 29px / 100% 2px no-repeat,
+  linear-gradient(180deg, transparent 0 21px, var(--wake, #1e8fc0) 21px) 0 0 / 100% 100% no-repeat;
+  opacity: 1; }
+.job.done .bar.big.voyage i { --wake: #3aa77a; }
+.job.failed .bar.big.voyage i, .job.stopped .bar.big.voyage i { --wake: #d0605a; }
+.voyage .sea { position: absolute; inset: 0 20px 0 0; }
+.voyage .ship { position: absolute; right: -1px; top: 4px; width: 56px; height: 23px; overflow: visible;
+  transform-origin: 50% 90%; animation: bob 2.4s ease-in-out infinite; }
+.voyage .hull { fill: #00467a; } .voyage .boot { fill: #c0392b; } .voyage .bridge { fill: #f4f6f8; stroke: #9aa7b3; stroke-width: .5; }
+.voyage .win { fill: #00467a; } .voyage .funnel { fill: #e0583a; }
+.voyage .boxes rect { stroke: rgba(0,0,0,.25); stroke-width: .4; }
+.voyage .line { fill: none; stroke: #5a4a2e; stroke-width: 1.2; opacity: 0; transition: opacity .6s; }
+.voyage .quay { position: absolute; right: 0; top: 12px; bottom: 0; width: 20px; border-radius: 3px 0 8px 0;
+  background: repeating-linear-gradient(0deg, #b8b4aa 0 5px, #aaa59a 5px 6px); box-shadow: inset 2px 0 0 #8c877c; }
+.voyage .quay b { position: absolute; left: 6px; top: -5px; width: 7px; height: 6px; border-radius: 3px 3px 1px 1px; background: #4a4f55; }
+.voyage.moored .ship { animation: none; transform: none; }
+.voyage.moored .line { opacity: 1; }
+.voyage.moored .quay b { background: #2f9e6e; }
+.job.failed .voyage .hull, .job.stopped .voyage .hull { fill: #7a8793; }
+.job.failed .voyage .ship, .job.stopped .voyage .ship { animation: none; }
+@keyframes bob { 0%, 100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(1.5px) rotate(-1.2deg); } }
+@media (prefers-reduced-motion: reduce) { .voyage .ship { animation: none; } }

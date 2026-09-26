@@ -1,5 +1,6 @@
 // Triton front end: projects, schema-driven setup forms and the workbook check.
 import { GAP_WHY, View3D, directionArrows, heat } from "./view3d.js";
+import { costValues, rebarBands } from "./heat3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 import { spwCard } from "./spw.js";
 import { renderTrials } from "./trials.js";
@@ -9,7 +10,7 @@ import { APPROACH, approachCard, approachPanel } from "./approach.js";
 import { renderFurniture } from "./furniture.js";
 import { renderMovedPiles } from "./moved.js";
 import { renderSequence } from "./sequence.js";
-import { smooth } from "./progress.js";
+import { smooth, voyageHtml } from "./progress.js";
 import { tubeZonesHtml } from "./tubeview.js";
 import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
 import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
@@ -1609,7 +1610,7 @@ function jobCardHtml(job, inDock) {
   return `<div class="job ${job.state}" data-job="${job.id}" data-sig="${job.state}:${job.steps.length}">
     <div class="job-head"><span class="job-title">${esc(job.title)}</span><span class="job-pct"></span>
       ${job.state === "running" ? `<button class="quiet small" data-job-stop>Stop</button>` : `<button class="x" data-job-close title="Close">×</button>`}</div>
-    <div class="bar big"><i></i></div>
+    ${voyageHtml()}
     <div class="job-sub"><span></span>${inDock && job.home ? ` <a href="${job.home}">Open</a>` : ""}</div>
     <ol class="job-steps${job.steps.length > 5 ? " many" : ""}">${job.steps
       .map((s) => `<li><span class="step-name">${esc(s.label)}</span><span class="bar"><i></i></span><span class="step-note"></span></li>`)
@@ -3799,7 +3800,7 @@ function startLoad(full, stamp, progress) {
 // estimate from last time.
 function loadingCard(box, title, run, full) {
   box.innerHTML = `<div class="job running loading-card"><div class="job-head"><span class="job-title">${esc(title)}</span>
-    <span class="job-pct"></span></div><div class="bar big"><i></i></div><div class="job-sub"><span></span></div></div>`;
+    <span class="job-pct"></span></div>${voyageHtml()}<div class="job-sub"><span></span></div></div>`;
   const pct = box.querySelector(".job-pct");
   const bar = box.querySelector(".bar.big i");
   const sub = box.querySelector(".job-sub span");
@@ -4207,6 +4208,7 @@ async function renderCostingTab(host) {
   host.innerHTML = `<p class="sub">Quantities and cost along the berth, from each section's latest design. Unit prices are on the
       <a href="${tabHash("info")}">Project tab</a>; the numbers below change with them and with the inputs here.</p>
     <div class="panel row"><button id="cost-run">Work out the costs</button><span class="status" id="cost-status"></span></div>
+    <div id="cost-3d"></div>
     <div id="cost-out"></div>`;
   const out = document.getElementById("cost-out");
   const status = document.getElementById("cost-status");
@@ -4395,6 +4397,7 @@ async function renderCostingTab(host) {
     status.textContent = "Working out…";
     try {
       const data = await api(`${ROOT}/api/projects/${p.id}/costing`);
+      show3d(data);
       const a = document.activeElement;
       const ref = a?.dataset?.obj ? ["obj", a.dataset.obj] : a?.dataset?.item ? ["item", a.dataset.item] : null;
       const focus = ref ? `[data-${ref[0]}="${CSS.escape(ref[1])}"][data-key="${CSS.escape(a.dataset.key)}"]` : null;
@@ -4406,6 +4409,44 @@ async function renderCostingTab(host) {
     }
   };
   document.getElementById("cost-run").onclick = run;
+
+  // The section in 3D, coloured by cost or by reinforcement ratio (no utilisation here: that is the
+  // 3D tab's). Built once, then recoloured as the costs change.
+  let view = null;
+  let building = null;
+  let last = null;
+  const show3d = async (data) => {
+    last = data;
+    const cost = costValues(data, sec().id);
+    if (view) return view.setValues({ cost });
+    if (building) return building.then(() => view?.setValues({ cost: costValues(last, sec().id) }));
+    const box = document.getElementById("cost-3d");
+    const mine = (building = (async () => {
+      const [geo, res, site] = await Promise.all([sectionGeometry(), tabData("design").catch(() => null), sectionSite()]);
+      if (!box.isConnected || building !== mine) return; // left the tab, or picked another section meanwhile
+      const many = state.project.sections.length > 1;
+      const pick = many
+        ? ` <select id="cost-3d-sec" aria-label="Section">${state.project.sections
+          .map((s) => `<option value="${esc(s.id)}" ${s.id === sec().id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select>`
+        : "";
+      box.innerHTML = `<h2>${many ? "In 3D:" : `${esc(sec().name)} in 3D`}${pick}</h2>
+        <p class="sub">Coloured by cost per metre of berth or by reinforcement (kg/m³), from green (lowest) to red (highest).
+        Hover an element for its numbers.</p>
+        <div class="panel" id="cost-3d-view">${geo ? "" : '<p class="status">Upload this section\'s workbook to see it in 3D.</p>'}</div>`;
+      const again = box.querySelector("#cost-3d-sec");
+      if (again)
+        again.onchange = () => {
+          state.sectionId = again.value;
+          view = building = null;
+          show3d(last);
+        };
+      if (!geo) return;
+      const bands = resultBands(res);
+      view = new View3D(document.getElementById("cost-3d-view"), { height: 460, onSite: saveSite, modes: ["cost", "rebar"] });
+      view.setScene({ elements: geo.elements, bands, rebar: rebarBands(res, bands), cost: costValues(last, sec().id), site });
+    })());
+    await mine;
+  };
   run();
 }
 
@@ -4434,6 +4475,8 @@ async function renderView3dTab(host) {
   const bands = resultBands(res);
   const tension = resultTension(res);
   const crack = resultCracks(res);
+  const rebar = rebarBands(res, bands);
+  let cost = null; // from the Costing tab's numbers, once loaded
   const max = {};
   for (const p of res?.piles || []) max[p.element] = p.utilisation;
   for (const w of res?.combi_walls || []) max[w.element] = w.utilisation;
@@ -4444,7 +4487,7 @@ async function renderView3dTab(host) {
   state.pick3d = null;
   const show = () => {
     const el = geo.elements.find((e) => e.element === selected);
-    view.setScene({ elements: geo.elements, bands, tension, crack, selected, site,
+    view.setScene({ elements: geo.elements, bands, tension, crack, rebar, cost, selected, site,
       arrows: selected ? directionArrows(el, geo.axes.find((a) => a.element === selected)) : [] });
     side.querySelectorAll("[data-pick]").forEach((b) => b.classList.toggle("on", b.dataset.pick === selected));
   };
@@ -4460,7 +4503,36 @@ async function renderView3dTab(host) {
     selected = selected === b.dataset.pick ? null : b.dataset.pick;
     show();
   }));
+  view.onMode = (mode) => pickSwatches(side, geo, mode, view, { max, cost, res });
   show();
+  if (res)
+    api(`${ROOT}/api/projects/${state.project.id}/costing`)
+      .then((c) => {
+        cost = costValues(c, sec().id);
+        if (main.isConnected) view.setValues({ cost });
+      })
+      .catch(() => {});
+}
+
+// The element list beside a 3D view follows its colours: utilisation, cost per m of berth, or kg/m³.
+function pickSwatches(side, geo, mode, view, { max, cost, res }) {
+  const kg = {};
+  for (const p of res?.piles || []) kg[p.element] = p.steel?.kg_per_m3;
+  for (const w of res?.combi_walls || []) kg[w.element] = w.infill?.steel?.kg_per_m3;
+  for (const b of [...(res?.beams || []), ...(res?.slabs || [])]) kg[b.key || b.element] = b.steel?.kg_per_m3;
+  for (const e of geo.elements) {
+    const k = e.key || e.element;
+    const b = side.querySelector(`[data-pick="${CSS.escape(e.element)}"]`);
+    if (!b) continue;
+    const v = mode === "cost" ? view.scene?.cost?.values?.[e.element]?.value : mode === "rebar" ? kg[k] : max[k];
+    const r = view.range;
+    const colour = mode === "cost" || mode === "rebar"
+      ? v == null || !r ? heat(null) : heat(r[1] > r[0] ? Math.min(Math.max((v - r[0]) / (r[1] - r[0]), 0), 1) : 0.5)
+      : heat(max[k]);
+    b.querySelector("i").style.background = colour;
+    b.querySelector("span").textContent = v == null ? (mode === "cost" ? "no cost" : mode === "rebar" ? "no bars" : "not designed")
+      : mode === "cost" ? `${fmt(v)} /m` : mode === "rebar" ? `${fmt(v)} kg/m³` : fmt(v, 2);
+  }
 }
 
 // ---------------------------------------------------------------- Slabs
