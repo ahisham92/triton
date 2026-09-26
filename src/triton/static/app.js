@@ -13,6 +13,8 @@ import { renderSequence } from "./sequence.js";
 import { smooth, voyageHtml } from "./progress.js";
 import { tubeZonesHtml } from "./tubeview.js";
 import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
+import { projectsPage as renderProjectsPage } from "./projects.js";
+import { sectionPlace, sitesPanel } from "./sitemap.js";
 import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
 
 const $app = document.getElementById("app");
@@ -99,40 +101,9 @@ function route() {
 }
 
 // ---------------------------------------------------------------- projects list
-async function projectsPage() {
-  $app.innerHTML = `<div class="hero"><img src="${ROOT}/static/logo.svg" alt="" width="72" height="72">
-      <div><h1>Projects</h1><p class="sub">Each project holds the sections, materials and design
-    settings used to design the elements in a Plaxis workbook.</p>
-      <div class="hero-kinds">${["pile", "combi_wall", "sheet_pile_wall", "slab", "front_beam", "rear_beam"].map((k) => `<span style="--kind:${kindColor(k)}">${kindIcon(k, 20)}${esc(KINDS[k].label)}</span>`).join("")}</div></div></div>
-    <div class="row"><input id="new-name" placeholder="Project name" style="flex:1;max-width:320px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--input);color:var(--text);font:inherit">
-    <button id="new">New project</button></div>
-    <div class="row" style="margin-top:10px"><label for="trt">Open a project file</label>
-      <input type="file" id="trt" accept=".trt"><button id="open-trt" disabled>Open</button>
-      <span class="status" id="trt-status">A .trt downloaded from Triton (Project page › Download project).</span></div>
-    <div class="row" id="trt-choice" hidden></div>
-    <h2>Saved projects</h2><div class="panel scroll" id="list">Loading…</div>`;
-  wireOpenProject();
-  document.getElementById("new").onclick = async () => {
-    const name = document.getElementById("new-name").value.trim() || "New project";
-    const p = await api(ROOT + "/api/projects", { method: "POST", body: JSON.stringify({ info: { name } }) });
-    location.hash = `#/project/${p.id}/info`;
-  };
-  const list = await api(ROOT + "/api/projects");
-  const el = document.getElementById("list");
-  if (!list.length) {
-    el.innerHTML = `<p class="empty">No projects yet.</p>`;
-    return;
-  }
-  el.innerHTML =
-    `<table><tr><th>Name</th><th>Number</th><th>Sections</th><th>Elements</th><th>Last saved (Cairo)</th></tr>` +
-    list
-      .map(
-        (p) => `<tr class="link" data-id="${esc(p.id)}"><td>${esc(p.name)}</td><td>${esc(p.number)}</td>
-        <td>${p.sections}</td><td>${p.elements}</td><td>${esc(when(p.updated_at))}</td></tr>`
-      )
-      .join("") +
-    `</table>`;
-  el.querySelectorAll("tr.link").forEach((tr) => (tr.onclick = () => (location.hash = `#/project/${tr.dataset.id}/info`)));
+// The home page (static/projects.js): new and open, the saved projects, and the projects map.
+function projectsPage() {
+  return renderProjectsPage($app, { ROOT, api, when: (iso) => when(iso), wireOpenProject });
 }
 
 // Open a .trt as a project on the server: it goes up in pieces like a workbook. When a project
@@ -531,6 +502,7 @@ async function projectPage(id, tab, sectionId) {
     const info = renderObject(SCHEMA.properties.info, p.info, "info", "Project");
     info.dataset.free = ""; // names and numbers, not design inputs: open to edit at any time
     host.append(info);
+    host.append(sitesPanel(p, markDirty)); // where the project is built, for the projects map
     const prices = renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)");
     prices.dataset.free = ""; // not a design input: open while the model is locked
     host.append(prices);
@@ -1216,6 +1188,7 @@ function renderSections(host) {
       s.furniture, `sections.${i}.furniture`, "Quay furniture on this section");
     quay.dataset.free = ""; // the furniture is never in the element designs: open while locked
     part("quay", quay).dataset.free = "";
+    part("location", sectionPlace(p, s, markDirty, () => (location.hash = `#/project/${p.id}/info`))).dataset.free = "";
     part("alignment", alignmentEditor(p, s));
     part("joints", jointsEditor(p, s));
     card.append(pageForm(body, `section-page:${p.id}`, { plan: SECTION_PAGES, obj: s }));

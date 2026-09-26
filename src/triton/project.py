@@ -54,6 +54,16 @@ STRUCTURAL_CASING = {"show_when": {"role": ["structural"]}}
 # --- Project-wide settings -------------------------------------------------
 
 
+# Where a project is built. One project can have several sites (e.g. two berths in different ports):
+# each design section is placed at one of them, and may carry its own pin on the map.
+class Site(_Model):
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    name: str = Field("Site 1", title="Site name", min_length=1)
+    lat: float | None = Field(None, title="Latitude", ge=-90, le=90)
+    lon: float | None = Field(None, title="Longitude", ge=-180, le=180)
+    note: str = Field("", title="Note")
+
+
 class ProjectInfo(_Model):
     name: str = Field("New project", title="Project name", min_length=1)
     number: str = Field("", title="Project number")
@@ -67,6 +77,13 @@ class ProjectInfo(_Model):
         "P01",
         title="Revision",
         description="Printed on the reports' cover.",
+    )
+    sites: list[Site] = Field(
+        default_factory=list,
+        title="Sites",
+        description="Where the project is built, shown on the projects map. Set on the Project tab's map; "
+        "not a design input.",
+        json_schema_extra={"hidden": True},
     )
 
 
@@ -2556,6 +2573,14 @@ class ConstructionSequence(_Model):
     )
 
 
+class SectionLocation(_Model):
+    """Where a section is on the map: at one of the project's sites, optionally with its own pin."""
+
+    site: str = Field("", title="Site", description="The id of one of the project's sites; empty: none.")
+    lat: float | None = Field(None, title="Latitude", ge=-90, le=90)
+    lon: float | None = Field(None, title="Longitude", ge=-180, le=180)
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
@@ -2693,6 +2718,12 @@ class Section(_Model):
         default_factory=dict,
         title="Workbook combinations read as",
         description="A combination as spelled in the workbook, and the defined one it is (empty: left out).",
+    )
+    location: SectionLocation = Field(
+        default_factory=SectionLocation,
+        title="Location",
+        description="The site this section is at and its own pin on the map; never a design input.",
+        json_schema_extra=_HIDDEN,
     )
 
     @field_validator("combinations")
