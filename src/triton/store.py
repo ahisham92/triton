@@ -112,7 +112,13 @@ class ProjectStore:
         path = self._path(project_id)
         if not path.exists():
             raise ProjectNotFound(project_id)
-        return Project.model_validate_json(path.read_text("utf-8"))
+        project = Project.model_validate_json(path.read_text("utf-8"))
+        if project.locked and not any("locked" in s.model_fields_set for s in project.sections):
+            # Saved when one lock covered the whole project: the sections it designed are the locked ones.
+            for s in project.sections:
+                s.locked = s.id.isalnum() and (self.root / project_id / s.id / "results.json").exists()
+            project.locked = any(s.locked for s in project.sections)
+        return project
 
     def save(self, project: Project) -> Project:
         project.updated_at = _now()

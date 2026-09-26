@@ -615,39 +615,58 @@ async function storagePanel(box, id) {
 }
 
 // ---------------------------------------------------------------- lock
-// Designing locks the model: its inputs are read only (prices and costing inputs stay open) until
-// Unlock to edit. Changes after unlocking mark the results out of date.
+// Designing locks that section (Ahmed, 2026-09-26): its inputs are read only (prices and costing inputs
+// stay open) until Unlock to edit, while the other sections stay open. The shared settings (Project,
+// Design settings) are read only while any section is locked. Changes after unlocking mark the results
+// out of date.
 const LOCKED_TABS = new Set(["info", "settings", "sections", "elements", "workbook"]);
+const SHARED_TABS = new Set(["info", "settings"]);
+const lockedSections = () => state.project.sections.filter((s) => s.locked);
+const syncLock = () => (state.project.locked = lockedSections().length > 0);
+function lockSection(id) {
+  const s = state.project.sections.find((x) => x.id === id);
+  if (s) s.locked = true;
+  syncLock();
+}
 
 function applyLock() {
   const bar = document.getElementById("lockbar");
   const host = document.getElementById("tab");
   if (!bar || !host || !state) return;
-  const locked = state.project.locked;
-  bar.innerHTML = locked
+  const tab = (location.hash.match(/^#\/project\/[a-f0-9]+\/(\w+)/) || [])[1] || "info";
+  const shared = SHARED_TABS.has(tab);
+  const held = shared ? lockedSections() : tab === "sections" ? [] : sec()?.locked ? [sec()] : [];
+  const names = held.map((s) => esc(s.name)).join(", ");
+  const text = shared
+    ? `<strong>Locked since ${names} ${held.length === 1 ? "was" : "were"} designed.</strong> The shared settings are read only while a designed section is locked. Prices and costing inputs can still change.`
+    : `<strong>${names} is locked since the design.</strong> Its inputs are read only, so the results match them. Other sections stay open, and prices and costing inputs can still change.`;
+  bar.innerHTML = held.length
     ? `<div class="lockbar"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7V5a4 4 0 0 1 8 0v2h.5A1.5 1.5 0 0 1 14 8.5v5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 13.5v-5A1.5 1.5 0 0 1 3.5 7H4Zm2 0h4V5a2 2 0 0 0-4 0v2Z"/></svg>
-        <span><strong>Locked since the design.</strong> The inputs are read only, so the results match them. Prices and costing inputs can still change.</span>
-        <button id="unlock">Unlock to edit</button></div>`
+        <span>${text}</span>
+        <button id="unlock">${shared && held.length > 1 ? "Unlock all to edit" : "Unlock to edit"}</button></div>`
     : "";
   const unlock = document.getElementById("unlock");
   if (unlock)
     unlock.onclick = async () => {
       const ok = confirm(
-        "Unlock to edit?\n\nAs you change an input, the design results it affects are deleted (a shared input such as a " +
+        `Unlock ${held.map((s) => s.name).join(", ")} to edit?\n\nAs you change an input, the design results it affects are deleted (a shared input such as a ` +
           "design setting or the workbook deletes the whole section's), so no out-of-date results are kept. Results of " +
           "elements you don't touch stay. Files you already downloaded are not affected.",
       );
       if (!ok) return;
-      state.project.locked = false;
+      for (const s of held) s.locked = false;
+      syncLock();
       state.dirty = true;
       await save();
       route();
     };
   host._lockWatch?.disconnect();
-  const tab = (location.hash.match(/^#\/project\/[a-f0-9]+\/(\w+)/) || [])[1] || "info";
-  if (!locked || !LOCKED_TABS.has(tab)) return;
+  if (!LOCKED_TABS.has(tab)) return;
+  // The Sections tab locks each designed section's card; the other tabs lock as a whole.
+  const scope = tab === "sections" ? "[data-locked] " : "";
+  if (!scope && !held.length) return;
   const lock = () =>
-    host.querySelectorAll("input, select, textarea, button").forEach((el) => {
+    host.querySelectorAll(`${scope}input, ${scope}select, ${scope}textarea, ${scope}button`).forEach((el) => {
       if (!el.disabled && !el.closest("[data-free], [data-slot]")) el.disabled = true;
     });
   lock();
@@ -1057,9 +1076,10 @@ function renderSections(host) {
     const card = document.createElement("div");
     card.className = "panel";
     card.style.marginBottom = "16px";
+    if (s.locked) card.dataset.locked = "";
     const n = Object.keys(s.elements).length;
-    card.innerHTML = `<div class="element-head"><h3>${esc(s.name)}<span class="type">${n} element${n === 1 ? "" : "s"}</span></h3>
-      <span><button class="quiet" data-open data-free>Open</button> <button class="quiet" data-copy title="A new section with this one's settings, without its workbook, mapping or results">Duplicate</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
+    card.innerHTML = `<div class="element-head"><h3>${esc(s.name)}<span class="type">${n} element${n === 1 ? "" : "s"}${s.locked ? " · locked since the design" : ""}</span></h3>
+      <span><button class="quiet" data-open data-free>Open</button> <button class="quiet" data-copy data-free title="A new section with this one's settings, without its workbook, mapping or results">Duplicate</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
     card.querySelector("[data-open]").onclick = () => {
       state.sectionId = s.id;
       location.hash = tabHash("elements");
@@ -2529,7 +2549,7 @@ async function openSheet(url, name, refresh, start = null) {
     }
     if (!box.firstChild) box.innerHTML = `<div class="sheet-card"><p class="status">Opening ${esc(name)}…</p></div>`;
     const d = await api(`${url}/workbook/sheet?${q}`);
-    const locked = state?.project.locked && d.editable;
+    const locked = sec()?.locked && d.editable;
     if (locked) d.editable = false; // read only while the model is locked
     const flagged = d.flagged_rows;
     const body = d.rows
@@ -2565,7 +2585,7 @@ async function openSheet(url, name, refresh, start = null) {
         <span class="status">Click a column letter to sort. This only changes the view: rows keep their Excel numbers, and the sheet opens in Excel order next time.</span>
         ${view.sort != null || view.show !== "all" ? '<button class="quiet small" id="sheet-reset">Excel order</button>' : ""}</div>
       ${d.issues.length ? `<ul class="sheet-issues">${d.issues.map((i) => `<li><span class="sev ${i.severity}">${i.severity}</span> ${esc(i.message)}${i.rows.length ? ` <span class="rows">rows ${esc(rowRanges(i.rows))}</span>` : ""}</li>`).join("")}</ul>` : ""}
-      ${d.editable ? "" : locked ? '<p class="status">Read only while the model is locked. Press Unlock to edit to change cells.</p>' : '<p class="status">This workbook was uploaded before its rows were kept, so this shows the rows as cleaned and cannot be edited. Upload it again to edit here.</p>'}
+      ${d.editable ? "" : locked ? '<p class="status">Read only while this section is locked. Press Unlock to edit to change cells.</p>' : '<p class="status">This workbook was uploaded before its rows were kept, so this shows the rows as cleaned and cannot be edited. Upload it again to edit here.</p>'}
       <p class="status" id="sheet-status">${edits.size ? `${edits.size} cell(s) changed: Save edits to read the sheet again.` : d.editable ? "Click a cell to change it. Highlighted rows are the flagged ones; hover for the reason." : ""}</p>
       <div class="sheet-grid"><table><tr><th></th>${Array.from({ length: d.width }, (_, c) => `<th class="sortable" data-sort="${c}" title="Sort by this column">${colName(c)}${arrow(c)}${d.header?.[c] != null && d.header[c] !== "" ? `<div class="head-text">${esc(d.header[c])}</div>` : ""}</th>`).join("")}</tr>${body || `<tr><td colspan="${d.width + 1}" class="status">No rows to show.</td></tr>`}</table></div></div>`;
     const pick = box.querySelector("#sheet-show");
@@ -2817,12 +2837,12 @@ async function renderDesignTab(host) {
     out.innerHTML = `<p class="status">Designing. The new results appear here when it is done.</p>`;
     return;
   }
-  if (!state.project.locked) {
+  if (!section.locked) {
     // Unlocked to edit: the inputs may no longer match the last results, so they are not shown.
     try {
       await api(`${url}/design`);
-      out.innerHTML = `<div class="panel"><p style="margin:0"><strong>Results are hidden while the model is unlocked.</strong>
-        Design again to see them; the model locks again when you do.</p></div>`;
+      out.innerHTML = `<div class="panel"><p style="margin:0"><strong>Results are hidden while this section is unlocked.</strong>
+        Design again to see them; the section locks again when you do.</p></div>`;
     } catch {
       /* not designed yet */
     }
@@ -2936,7 +2956,7 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
     const bad = job.steps.filter((s) => s.bad).length;
     jobDone(job, "done", `Designed ${job.steps.length} element${job.steps.length === 1 ? "" : "s"}${bad ? `, ${bad} unsafe` : ", all safe"}.`);
     if (state?.project.id === pid) {
-      state.project.locked = true;
+      lockSection(section.id);
       if (location.hash.startsWith(`#/project/${pid}/`)) route();
       prepareTabs(pid, section); // the 3D view and Clashes, while you look at the results
     }
@@ -2951,7 +2971,7 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
       const n = done.size;
       jobDone(job, "stopped", `Stopped. ${n ? `${n} element${n === 1 ? "" : "s"} designed in this run keep${n === 1 ? "s" : ""} the new results; ` : ""}the others keep their earlier results.`);
       if (n && state?.project.id === pid) {
-        state.project.locked = true;
+        lockSection(section.id);
         if (location.hash.startsWith(`#/project/${pid}/`)) route();
         prepareTabs(pid, section);
       }
@@ -3125,7 +3145,7 @@ async function followServerQueue(project, first = null) {
         if (s.state === "done" && !seen.has(s.id)) {
           seen.add(s.id);
           if (state?.project.id === pid) {
-            state.project.locked = true;
+            lockSection(s.id);
             if (location.hash.startsWith(`#/project/${pid}/design`) && state.sectionId === s.id) route();
           }
         }
@@ -5204,12 +5224,12 @@ async function renderOpeningsTab(host) {
     fs.style.border = "0";
     fs.style.padding = "0";
     card.append(fs);
-    if (state.project.locked) card.querySelectorAll("input, select, textarea, button").forEach((x) => (x.disabled = true));
+    if (section.locked) card.querySelectorAll("input, select, textarea, button").forEach((x) => (x.disabled = true));
     inputs.append(card);
   };
   for (const [n, e] of beams) editor(n, e, ["rooms"], defs.BeamInput);
   for (const [n, e] of slabs) editor(n, e, ["manholes", "channels"], defs.SlabInput);
-  if (state.project.locked)
+  if (section.locked)
     inputs.insertAdjacentHTML("afterbegin", `<p class="status">Locked since the design: unlock to change the openings.</p>`);
   const withOpenings = () => [...beams.filter(([, e]) => e.rooms?.length), ...slabs.filter(([, e]) => e.manholes?.length || e.channels?.length)].map(([n]) => n);
   const status = host.querySelector("#op-status");
@@ -5228,8 +5248,8 @@ async function renderOpeningsTab(host) {
   } catch {
     return;
   }
-  if (!state.project.locked) {
-    out.innerHTML = `<div class="panel"><p style="margin:0">Results are hidden while the model is unlocked. Check the openings to see them.</p></div>`;
+  if (!section.locked) {
+    out.innerHTML = `<div class="panel"><p style="margin:0">Results are hidden while the section is unlocked. Check the openings to see them.</p></div>`;
     return;
   }
   const draws = [];

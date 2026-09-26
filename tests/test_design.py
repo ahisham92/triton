@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import time
 
@@ -482,12 +483,61 @@ def test_lock_blocks_changes_until_unlocked(client):
     project["sections"][0]["elements"]["Pile(1)"]["diameter"] = 1500
     r = client.put(f"/api/projects/{pid}", json=project)
     assert r.status_code == 409 and "Unlock" in r.json()["detail"]
-    assert client.post(f"/api/projects/{pid}/sections", json={"name": "S2"}).status_code == 409
+    assert client.post(f"/api/projects/{pid}/sections", json={"name": "S2"}).status_code == 201  # open
     assert client.post(f"{url}/elements", json={"names": ["Pile(2)"]}).status_code == 409
     assert client.delete(f"{url}/workbook").status_code == 409
     assert client.post(f"{url}/design").status_code == 200  # designing again is fine
     project["locked"] = False  # unlocking and editing in one save
     assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+
+
+def test_each_designed_section_is_locked_on_its_own(client, tmp_path):
+    """Ahmed, 2026-09-26: only a designed section is locked; the others stay open to edit."""
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)"]}).json()
+    pid, s1 = p["id"], p["sections"][0]["id"]
+    client.post(f"/api/projects/{pid}/sections", json={"name": "S2", "copy_from": s1})
+    url = f"/api/projects/{pid}/sections/{s1}"
+    data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet()})
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
+    assert client.post(f"{url}/design").status_code == 200
+    project = client.get(f"/api/projects/{pid}").json()
+    one, two = project["sections"]
+    assert project["locked"] and one["locked"] and not two["locked"]
+    s2 = f"/api/projects/{pid}/sections/{two['id']}"
+    assert client.post(f"{s2}/elements", json={"names": ["Pile(2)"]}).status_code == 200
+    assert client.post(f"{url}/elements", json={"names": ["Pile(2)"]}).status_code == 409
+    project = client.get(f"/api/projects/{pid}").json()
+    project["sections"][1]["elements"]["Pile(1)"]["diameter"] = 1500  # the open section
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+    project["design"]["design_life_years"] = 100  # a shared setting, while Section 1 is locked
+    r = client.put(f"/api/projects/{pid}", json=project)
+    assert r.status_code == 409 and "Section 1 is locked" in r.json()["detail"]
+    project = client.get(f"/api/projects/{pid}").json()
+    assert client.delete(url).status_code == 409  # a locked section is not removed
+    project["sections"][0]["locked"] = False  # Unlock to edit on Section 1 only
+    project["sections"][0]["elements"]["Pile(1)"]["diameter"] = 1500
+    saved = client.put(f"/api/projects/{pid}", json=project).json()
+    assert not saved["locked"] and not saved["sections"][0]["locked"]
+
+
+def test_projects_locked_before_sections_had_locks(client):
+    """A project locked as a whole: its designed sections are the locked ones."""
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)"]}).json()
+    pid, s1 = p["id"], p["sections"][0]["id"]
+    client.post(f"/api/projects/{pid}/sections", json={"name": "S2"})
+    url = f"/api/projects/{pid}/sections/{s1}"
+    data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet()})
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
+    client.post(f"{url}/design")
+    from triton.api import store
+
+    path = store()._path(pid)
+    old = json.loads(path.read_text("utf-8"))
+    for s in old["sections"]:
+        del s["locked"]
+    path.write_text(json.dumps(old), "utf-8")
+    project = client.get(f"/api/projects/{pid}").json()
+    assert project["locked"] and [s["locked"] for s in project["sections"]] == [True, False]
 
 
 def test_delete_some_or_all_tabs(client):
