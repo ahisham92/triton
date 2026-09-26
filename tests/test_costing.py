@@ -172,3 +172,27 @@ def test_furniture_numbers_fill_the_items():
     s.costing.items[0].count = 3  # a number given still wins
     rows = {r["element"]: r for r in cost_section(p, s, results(), furniture={"Fenders": 7})["rows"]}
     assert rows["Fenders"]["count"] == 3 and rows["Fenders"]["count_auto"] == 7
+
+
+def test_a_combi_wall_is_costed_as_its_steel_and_its_concrete_infill():
+    p = project()
+    p.prices.steel = 1500.0
+    p.prices.concrete_infill = 4500.0
+    res = results() | {
+        "combi_walls": [
+            {
+                "element": "Combi Wall",
+                "count": 12,
+                "tube": {"section": {"diameter_mm": 1626.0, "thickness_mm": 18.0}, "column": {"length_m": 40.0}},
+                "infill": {"steel": {"concrete_m3": 50.0, "total_kg": 9000.0}},
+            }
+        ]
+    }
+    row = next(r for r in cost_section(p, p.sections[0], res)["rows"] if r["kind"] == "combi_wall")
+    steel, infill = row["parts"]
+    assert steel["element"] == "Combi Wall – steel" and infill["element"] == "Combi Wall – concrete infill"
+    assert steel["concrete_m3"] == 0 and steel["steel_t"] > 0 and infill["steel_t"] == 0
+    assert infill["concrete_m3"] == 12 * 50.0 and infill["rebar_t"] == round(12 * 9.0, 2)
+    assert infill["cost"] == round(12 * 50 * 4500 + 12 * 9.0 * 60000)
+    assert row["cost"] == steel["cost"] + infill["cost"]
+    assert row["steel_t"] == steel["steel_t"] and row["concrete_m3"] == infill["concrete_m3"]

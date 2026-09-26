@@ -2919,6 +2919,7 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
         if (!r) s.note = (res.skipped || []).some((m) => m.startsWith(`${n}:`)) ? "No results in the workbook" : "Nothing to design";
         else if (r.passed === false) {
           s.note = mode === "standard" ? "Not workable" : "Unsafe";
+          if (r.infill && r.tube) s.note += `: ${combiParts(r).filter((p) => !p.passed).map((p) => (p.part === "infill" ? "concrete infill" : "steel")).join(" and ")}`;
           s.bad = true;
         } else s.note = mode === "standard" ? "Workable" : "OK";
       }
@@ -3328,8 +3329,18 @@ function standardHtml(res) {
   const list = RESULT_KINDS.flatMap((k) => (res[k] || []).filter(isStandard));
   if (!list.length) return "";
   const seen = new Set();
+  // A combi wall: a row for its concrete infill and one for its steel.
+  const standardParts = (e) => combiParts(e).map((p) => {
+    const checks = p.part === "steel"
+      ? [{ check: "Steel tube (EN 1993)", utilisation: p.utilisation, passed: p.passed }]
+      : (e.standard?.checks || []).filter((c) => c.check.startsWith("Concrete infill"));
+    return { element: p.element, standard: { workable: p.passed, utilisation: p.utilisation, governs: p.part === "steel" ? "Steel tube (EN 1993)" : "Bending with axial force (N–M)",
+      kg_per_m3: p.part === "infill" ? e.standard?.kg_per_m3 : null, ratio_pct: p.part === "infill" ? e.standard?.ratio_pct : null,
+      checks, why: p.passed ? [] : checks.filter((c) => !c.passed).map((c) => `${c.check} fails.`) } };
+  });
   const rows = list
     .filter((e) => !seen.has(e.element) && seen.add(e.element))
+    .flatMap((e) => (e.infill && e.tube ? standardParts(e) : [e]))
     .map((e) => {
       const o = e.standard || {};
       const tip = (o.checks || []).map((c) => `${c.check}: ${fmt(c.utilisation, 2)}${c.passed ? "" : " (fails)"}`).join("\n");
@@ -3407,7 +3418,13 @@ function drawCards(res, full = res, withBars = full) {
       return list.length ? `<div class="panel"><h3 style="margin-top:0">To look at</h3>${alertsHtml(list)}</div>` : "";
     })()}
     ${res.piles.length ? `<h2>Piles</h2><div class="panel scroll"><table><tr><th>Element</th><th>Bars at head</th><th>ULS N–M</th><th>Links at head</th><th>Shear</th><th title="Crack width over its limit">SLS (QP) crack mm</th><th title="Main bars over the whole pile, laps included">ρ overall</th><th>ρ at head</th><th>kg/m³ incl. links</th></tr>${rows}</table></div>` : ""}
-    <div id="pile-cards"></div><div id="combi-cards"></div>
+    <div id="pile-cards"></div>
+    ${walls.length ? `<h2>Combi wall</h2><div class="panel scroll"><table><tr><th>Element</th><th>Section</th><th>Utilisation</th><th>Governed by</th><th>Result</th></tr>
+      ${walls.flatMap((w) => combiParts(w).map((p) => `<tr><td>${esc(p.element)}</td>
+        <td>${p.part === "infill" ? (w.infill?.arrangement ? esc(w.infill.arrangement.label) : "–") : `Ø${fmt(w.tube?.section?.diameter_mm)} × ${fmt(w.tube?.section?.thickness_mm)} mm ${esc(w.tube?.section?.grade || "")}`}</td>
+        <td class="cell ${p.passed ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td><td>${esc(p.governs || "–")}</td>
+        <td class="cell ${p.passed ? "ok" : "error"}">${p.passed ? "passes" : "fails"}</td></tr>`)).join("")}</table></div>` : ""}
+    <div id="combi-cards"></div>
     ${beams.length ? `<h2>Beams</h2><div class="panel scroll"><table><tr><th>Element</th><th>b × h</th><th>Longitudinal bars</th><th>Links</th><th>Transverse bars (top / bottom)</th><th>Max util.</th><th>ρ overall</th><th>kg/m³</th></tr>
       ${beams.map((b) => `<tr><td>${esc(b.element)}</td><td>${fmt(b.width_mm)} × ${fmt(b.depth_mm)}</td><td>${b.cage ? esc(b.cage.label) : "–"}</td>
         <td>${b.shear?.link ? esc(b.shear.link.label) : "–"}</td><td>${b.transverse ? `${esc(b.transverse.top.label)} / ${esc(b.transverse.bottom.label)}` : "–"}</td>
@@ -3421,7 +3438,6 @@ function drawCards(res, full = res, withBars = full) {
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) cards.append(pileCard(p));
   const combi = document.getElementById("combi-cards");
-  if (walls.length) combi.insertAdjacentHTML("beforeend", "<h2>Combi wall</h2>");
   for (const w of walls) combi.append(combiCard(w));
   const bc = document.getElementById("beam-cards");
   for (const b of beams) bc.append(beamCard(b));
@@ -3702,10 +3718,21 @@ async function mountElementViews(res) {
   }
 }
 
+// A combi wall is designed as one element but shown as two, its concrete infill and its steel, so a
+// summary names the part that is unsafe (as design/combi.py parts()).
+const combiPart = (wall, part) => `${wall} – ${part === "infill" ? "concrete infill" : "steel"}`;
+function combiParts(w) {
+  return [
+    { element: combiPart(w.element, "infill"), part: "infill", utilisation: w.infill?.utilisation, passed: !!w.infill?.passed, governs: "N–M", d: w.infill },
+    { element: combiPart(w.element, "steel"), part: "steel", utilisation: w.tube?.utilisation, passed: !!w.tube?.passed, governs: w.tube?.governing?.check || "", d: w.tube },
+  ];
+}
+
 function alerts(res) {
   // Unsafe first, then close to the limit, then very safe.
   const out = [];
-  const add = (level, name, text) => out.push({ level, name, text });
+  // el: the element a line belongs to when its name is a part of it (a combi wall's infill or steel).
+  const add = (level, name, text, el = name) => out.push({ level, name, text, el });
   const at = (g) => (g?.combination ? ` (${g.combination}, z ${fmt(g.z, 2)} m)` : "");
   for (const p of res.piles || []) {
     const u = p.utilisation;
@@ -3724,13 +3751,16 @@ function alerts(res) {
     else if (a.shear?.links_mm2_per_m2) add("limit", a.element, `needs shear links near the ledge (${fmt(a.shear.links_mm2_per_m2)} mm²/m²), or a thicker slab`);
   }
   for (const w of res.combi_walls || []) {
+    const [inf, st] = combiParts(w);
     const u = w.infill?.utilisation;
-    if (u > 1) add("unsafe", w.element, `infill N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}`);
-    else if (u >= 0.95) add("limit", w.element, `infill N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}: close to the limit`);
+    if (u > 1) add("unsafe", inf.element, `N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}: needs a stronger cage`, w.element);
+    else if (u >= 0.95) add("limit", inf.element, `N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}: close to the limit`, w.element);
+    else if (w.infill && !w.infill.passed) add("unsafe", inf.element, (w.infill.failure || []).join(" ") || "does not pass: see its card", w.element);
+    if (w.infill?.shear && !w.infill.shear.passed) add("unsafe", inf.element, `shear utilisation ${fmt(w.infill.shear.utilisation, 2)}`, w.element);
     if (w.top_level_set === false) add("limit", w.element, "no top level set, so results inside the front beam are included: set it on the Elements tab");
     const t = w.tube?.utilisation;
-    if (t > 1) add("unsafe", w.element, `steel tube utilisation ${fmt(t, 2)} (${esc(w.tube.governing?.check || "")})`);
-    else if (t >= 0.95) add("limit", w.element, `steel tube utilisation ${fmt(t, 2)}: close to the limit`);
+    if (t > 1 || (w.tube && !w.tube.passed)) add("unsafe", st.element, `steel tube utilisation ${fmt(t, 2)} (${w.tube.governing?.check || ""})`, w.element);
+    else if (t >= 0.95) add("limit", st.element, `steel tube utilisation ${fmt(t, 2)}: close to the limit`, w.element);
   }
   for (const w of res.sheet_pile_walls || []) {
     const d = w.design;
@@ -3957,14 +3987,21 @@ async function renderCostingTab(host) {
             const spaced = ["pile", "combi_wall"].includes(r.kind) || (r.kind === "beam" && r.count != null);
             const steel = r.kind === "combi_wall" || r.kind === "sheet_pile_wall";
             const e = cs.elements[r.element] || {};
-            return `<tr><td>${esc(r.element)}</td>
+            // A combi wall: its steel (with the wall's inputs) and its concrete infill, a line each.
+            const [st, inf] = r.parts || [];
+            const q = st || r;
+            const infillRow = inf ? `<tr><td>${esc(inf.element)}</td><td>–</td><td class="hint">As the steel</td><td class="hint">As the steel</td><td>–</td>
+              <td class="basis">${esc(inf.basis || "–")}${inf.missing.length ? `<div class="flag-bad">Missing: ${esc(inf.missing.join(", "))}</div>` : ""}</td>
+              <td>${fmt(inf.concrete_m3, 1)}</td><td>${fmt(inf.rebar_t, 1)}</td><td>${fmt(inf.steel_t, 1)}</td>
+              <td>${money(inf.cost)}</td><td>${money(inf.cost_per_m)}</td></tr>` : "";
+            return `<tr><td>${esc(st ? st.element : r.element)}</td>
               <td>${spaced ? input(key, "spacing", r.spacing_m != null ? fmt(r.spacing_m, 2) : "") : "–"}</td>
               <td>${spaced ? input(key, "count", r.count_auto ?? r.count ?? "", 'step="1"') + (e.count != null ? `<div class="hint">Given by you${r.count_auto != null ? `; automatic ${fmt(r.count_auto)}` : ""}</div><button class="small" data-auto="${esc(key)}">Use automatic</button>` : "") : "–"}</td>
               <td>${["approach_slab", "ledge"].includes(r.kind) ? (r.length_m != null ? fmt(r.length_m, 1) : "–") : input(key, "length", r.length_m != null ? fmt(r.length_m, 1) : "")}</td>
               <td>${steel ? pick(key, "steel_element", e.steel_element, r.kind === "sheet_pile_wall" ? "Its section, else the first AZ" : "Structural steel price") : "–"}${r.kind === "combi_wall" ? `<div class="hint">Intermediate sheets</div>${pick(key, "intermediate_element", e.intermediate_element, "None")}` : ""}</td>
-              <td class="basis">${esc(r.basis)}${r.flags.map((f) => `<div class="${/above/.test(f) ? "flag-bad" : "flag-ok"}">${esc(f)}</div>`).join("")}${r.missing.length ? `<div class="flag-bad">Missing: ${esc(r.missing.join(", "))}</div>` : ""}</td>
-              <td>${fmt(r.concrete_m3, 1)}</td><td>${fmt(r.rebar_t, 1)}</td><td>${fmt(r.steel_t, 1)}</td>
-              <td>${money(r.cost)}</td><td>${money(r.cost_per_m)}</td></tr>`;
+              <td class="basis">${esc(q.basis)}${r.flags.map((f) => `<div class="${/above/.test(f) ? "flag-bad" : "flag-ok"}">${esc(f)}</div>`).join("")}${q.missing.length ? `<div class="flag-bad">Missing: ${esc(q.missing.join(", "))}</div>` : ""}</td>
+              <td>${fmt(q.concrete_m3, 1)}</td><td>${fmt(q.rebar_t, 1)}</td><td>${fmt(q.steel_t, 1)}</td>
+              <td>${money(q.cost)}</td><td>${money(q.cost_per_m)}</td></tr>${infillRow}`;
           })
           .join("");
         const t = c.totals;
@@ -5469,12 +5506,11 @@ function combiCard(w) {
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(w.utilisation, 2)}</b>max utilisation</div>
       <div class="count"><b>${fmt((1 - w.steel_share) * 100)}% / ${fmt(w.steel_share * 100)}%</b>infill / tube share where filled (E·I)</div>
-      <div class="count"><b>${fmt(w.infill.utilisation, 2)}</b>infill N–M</div>
-      <div class="count"><b>${fmt(t.utilisation, 2)}</b>steel tube</div>
+      ${combiParts(w).map((p) => `<div class="count"><b class="${p.passed ? "" : "bad"}">${fmt(p.utilisation, 2)}</b>${esc(p.part === "infill" ? "concrete infill (N–M)" : "steel")}: ${p.passed ? "passes" : "fails"}</div>`).join("")}
     </div>
     ${w.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${v3dSlot(w.element)}
-    <h3 style="margin-top:18px">Steel tube</h3>
+    <h3 style="margin-top:18px">${esc(combiPart(w.element, "steel"))} <span class="sev ${t.passed ? "ok" : "error"}">${t.passed ? "passes" : "fails"}</span></h3>
     <div class="cage"><div class="chart" data-kind="tube"></div><div class="scroll"><table>
       <tr><th colspan="2">Corroded section (${fmt(s.corrosion_mm, 1)} mm lost outside)</th></tr>
       <tr><td>Diameter × wall</td><td>${fmt(s.corroded_diameter_mm)} × ${fmt(s.corroded_thickness_mm, 1)} mm</td></tr>
@@ -5489,7 +5525,7 @@ function combiCard(w) {
     ${(t.notes || []).map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${officeSheet(t.sheet)}
     ${steelSetsBlock(t.governing_sets, "kN, kNm")}
-    <h3 style="margin-top:18px">Concrete infill</h3>`;
+    <h3 style="margin-top:18px">${esc(combiPart(w.element, "infill"))} <span class="sev ${w.infill.passed ? "ok" : "error"}">${w.infill.passed ? "passes" : "fails"}</span></h3>`;
   if (t.profile?.length) profileChart(card.querySelector('[data-kind="tube"]'), t, "Tube utilisation along the wall", w.infill_bottom_level);
   card.querySelector('[data-kind="tube"]').parentElement.classList.add("wide");
   const infill = pileCard({ ...w.infill, element: `${w.element} infill` });

@@ -228,3 +228,22 @@ def test_the_office_king_pile_sheet_section_1():
     assert steel["check"].startswith("N/Aeff + M/Weff") and steel["u"] == pytest.approx(0.945, abs=2e-3)
     table = sheet_table(sh, 35000, 40)
     assert table["columns"][0] == "Splash" and table["groups"][0]["title"] == "Pile parameters"
+
+
+def test_the_wall_shows_as_its_concrete_infill_and_its_steel():
+    from triton.design.combi import failing_parts, parts
+    from triton.design.standard import combi_parts
+    from triton.runner import _outcome
+
+    w = design_combi_wall("Combi Wall", CombiWallInput(top_level_to_ignore=0.0), DesignSettings(), combi_sheets().elements()["Combi Wall"])
+    infill, steel = parts(w)
+    assert infill["element"] == "Combi Wall – concrete infill" and steel["element"] == "Combi Wall – steel"
+    assert infill["utilisation"] == w["infill"]["utilisation"] and steel["utilisation"] == w["tube"]["utilisation"]
+    # Results stored before the split: only the tube fails, and it is the one named.
+    w["tube"]["passed"], w["passed"] = False, False
+    assert failing_parts(w) == ["Combi Wall – steel"]
+    overview = combi_parts(w)
+    assert [o["workable"] for o in overview] == [w["infill"]["passed"], False]
+    assert overview[1]["why"] == ["Steel tube (EN 1993) fails."]
+    w["infill"]["passed"] = False
+    assert _outcome({"designed": ["Combi Wall"], "combi_walls": [w]}) == ("done", "2 unsafe")

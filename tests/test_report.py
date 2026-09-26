@@ -63,7 +63,8 @@ def test_combi_tube_rows_and_corrosion_zones_as_the_office_tables():
     assert zones.rows[-1] == ["-25 to -39", "1.75", "1.75", "14.5"]
     summary = next(b for b in rep.blocks if b.kind == "table" and b.headers[0] == "Element")
     bending, interaction = summary.rows[:2]
-    assert bending[0].startswith("Combi Wall – steel tube") and "interaction" in interaction[0]
+    assert bending[0].startswith("Combi Wall – steel") and "interaction" in interaction[0]
+    assert any(r[0] == "Combi Wall – concrete infill" for r in summary.rows)
     num = [float(v.replace(",", "")) for v in bending[2:5]]
     assert num[0] == pytest.approx(abs(num[1]) / num[2], abs=2e-3)
 
