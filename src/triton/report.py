@@ -870,7 +870,14 @@ def _sections(r: Report, section: Section, res: dict) -> None:
             if m is not None and mrd:
                 # As the office tables: bending alone, then with the N–M (and buckling) interaction.
                 rows.append(
-                    [f"{part_name(w['element'], 'steel')}{zone}", "N.A", round(abs(m) / mrd, 3), m, mrd, combo]
+                    [
+                        f"{part_name(w['element'], 'steel')}{zone}",
+                        "N.A",
+                        round(abs(m) / mrd, 3),
+                        m,
+                        mrd,
+                        combo,
+                    ]
                 )
             rows.append(
                 [
@@ -1212,7 +1219,12 @@ def _steel_summary(r: Report, res: dict) -> None:
     for w in res.get("combi_walls", []):
         st = (w.get("infill") or {}).get("steel") or {}
         rows.append(
-            [part_name(w["element"], "infill"), overall_ratio(st), st.get("kg_per_m3"), st.get("element_total_t")]
+            [
+                part_name(w["element"], "infill"),
+                overall_ratio(st),
+                st.get("kg_per_m3"),
+                st.get("element_total_t"),
+            ]
         )
     for b in res.get("beams", []):
         st = b.get("steel") or {}

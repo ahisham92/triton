@@ -789,9 +789,7 @@ def _element_summary(kind: str, design: dict[str, Any]) -> dict[str, Any]:
         return {
             "utilisation": design.get("utilisation"),
             "passed": bool(design.get("passed")),
-            "parts": [
-                {k: p[k] for k in ("element", "part", "utilisation", "passed")} for p in parts(design)
-            ],
+            "parts": [{k: p[k] for k in ("element", "part", "utilisation", "passed")} for p in parts(design)],
         }
     return _summary(kind, design)
 

@@ -183,7 +183,10 @@ def test_a_combi_wall_is_costed_as_its_steel_and_its_concrete_infill():
             {
                 "element": "Combi Wall",
                 "count": 12,
-                "tube": {"section": {"diameter_mm": 1626.0, "thickness_mm": 18.0}, "column": {"length_m": 40.0}},
+                "tube": {
+                    "section": {"diameter_mm": 1626.0, "thickness_mm": 18.0},
+                    "column": {"length_m": 40.0},
+                },
                 "infill": {"steel": {"concrete_m3": 50.0, "total_kg": 9000.0}},
             }
         ]

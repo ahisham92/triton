@@ -266,7 +266,9 @@ def cost_section(
         tube_t = n * kg_m * length / 1000
         steel.basis.append(f"{how}, tube {D:.0f} × {t:.0f} × {length:.1f} m ({kg_m:.0f} kg/m)")
         steel.steel_t += tube_t
-        _steel_cost(steel, prices, c.steel_element, tube_t, n * length, n * math.pi * D / 1000 * length, "tube")
+        _steel_cost(
+            steel, prices, c.steel_element, tube_t, n * length, n * math.pi * D / 1000 * length, "tube"
+        )
         inf = (w.get("infill") or {}).get("steel") or {}
         if inf.get("concrete_m3"):
             infill.basis.append(f"{n} infills, {inf['concrete_m3']:.1f} m³ each")
@@ -289,7 +291,9 @@ def cost_section(
             if item and item.unit == "t" and not mass:
                 steel.add(None, f"{item.name} mass per m²")
             else:
-                _steel_cost(steel, prices, c.intermediate_element, tonnes, gaps, area_m2, "intermediate sheets")
+                _steel_cost(
+                    steel, prices, c.intermediate_element, tonnes, gaps, area_m2, "intermediate sheets"
+                )
         for part in (steel, infill):
             row.basis += part.basis
             row.concrete_m3 += part.concrete_m3

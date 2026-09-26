@@ -171,7 +171,9 @@ def combi_parts(entry: dict[str, Any]) -> list[dict[str, Any]]:
                 "kg_per_m3": kg,
                 "ratio_pct": pct,
                 "checks": found,
-                "why": list(inf.get("failure") or []) if part == "infill" and failing else [f"{c} fails." for c in failing],
+                "why": list(inf.get("failure") or [])
+                if part == "infill" and failing
+                else [f"{c} fails." for c in failing],
             }
         )
     return out

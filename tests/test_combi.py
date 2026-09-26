@@ -235,10 +235,18 @@ def test_the_wall_shows_as_its_concrete_infill_and_its_steel():
     from triton.design.standard import combi_parts
     from triton.runner import _outcome
 
-    w = design_combi_wall("Combi Wall", CombiWallInput(top_level_to_ignore=0.0), DesignSettings(), combi_sheets().elements()["Combi Wall"])
+    w = design_combi_wall(
+        "Combi Wall",
+        CombiWallInput(top_level_to_ignore=0.0),
+        DesignSettings(),
+        combi_sheets().elements()["Combi Wall"],
+    )
     infill, steel = parts(w)
     assert infill["element"] == "Combi Wall – concrete infill" and steel["element"] == "Combi Wall – steel"
-    assert infill["utilisation"] == w["infill"]["utilisation"] and steel["utilisation"] == w["tube"]["utilisation"]
+    assert (
+        infill["utilisation"] == w["infill"]["utilisation"]
+        and steel["utilisation"] == w["tube"]["utilisation"]
+    )
     # Results stored before the split: only the tube fails, and it is the one named.
     w["tube"]["passed"], w["passed"] = False, False
     assert failing_parts(w) == ["Combi Wall – steel"]
