@@ -638,3 +638,5 @@ fieldset.section-pages > .fields > .full + .full { margin-top: 12px; }
 .job.failed .voyage .ship, .job.stopped .voyage .ship { animation: none; }
 @keyframes bob { 0%, 100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(1.5px) rotate(-1.2deg); } }
 @media (prefers-reduced-motion: reduce) { .voyage .ship { animation: none; } }
+.run-voyage { max-width: 640px; margin: 6px 0 4px; }
+.run-voyage .run-left { margin: 0; }

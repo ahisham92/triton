@@ -4,6 +4,8 @@
 // diameter under the deck) is costed with them. Nothing here changes the design.
 // app.js passes its helpers in: api, again, esc, fmt, secUrl, ROOT, project(), sectionId(), costingHash.
 
+import { newRun, paintRun, runHtml } from "./progress.js";
+
 export async function renderValueEngineering(host, h) {
   const { api, again, esc, fmt, secUrl, ROOT } = h;
   host.innerHTML = `<p class="sub">Ideas to bring the cost down (or check that a heavier option pays), each designed with the whole section and
@@ -134,6 +136,7 @@ export async function renderValueEngineering(host, h) {
         <div class="row"><button id="ve-run" ${running ? "disabled" : ""}>${running ? "Designing…" : "Design and cost"}</button>
           ${running ? '<button id="ve-stop" class="quiet">Stop</button>' : ""}<span class="status" id="ve-status">${running ? esc(running.text) : ""}</span>
           <span style="margin-left:auto">Export: ${["docx:Word", "pdf:PDF", "xlsx:Excel"].map((x) => { const [f, t] = x.split(":"); return `<a class="quiet-link" href="${secUrl()}/comparisons/report.${f}?what=ve">${t}</a>`; }).join(" ")}</span></div>
+        ${runHtml(running)}
         <p class="status">Each line designs every element of the section with the change, without the bars you set by hand (so the lines differ only
           by the idea). Elements an idea does not touch are designed once and shared, so a new idea costs little more than the elements it changes.</p>
         <div class="scroll"><table class="cost trials"><tr><th>What</th><th>Cost per m (${esc(cur)}/m)</th><th>Against as set, per m</th>
@@ -188,21 +191,25 @@ export async function renderValueEngineering(host, h) {
     out.querySelector("#ve-run").onclick = () => !running && run();
     const stop = out.querySelector("#ve-stop");
     if (stop) stop.onclick = () => (running.stopped = true);
+    paintRun(out, running);
   };
 
   const say = (text) => {
     if (running) running.text = text;
     const s = out.querySelector("#ve-status");
     if (s) s.textContent = text;
+  paintRun(out, running);
   };
 
   const run = async () => {
-    running = { text: "Starting…", stopped: false };
-    draw();
     const key = `trials-${h.project().id}-${h.sectionId()}`;
+    running = newRun(key);
+    const run = running;
+    draw();
     const poll = setInterval(async () => {
       try {
         const p = await api(`${ROOT}/api/progress/${key}`);
+        if (p.fraction != null) run.f = Math.max(run.f, Math.min(p.fraction, 0.99));
         if (p.step) say(`${p.step}…`);
       } catch {
         /* between requests */
@@ -217,8 +224,9 @@ export async function renderValueEngineering(host, h) {
         data = res;
         queue = fromServer();
         total ??= res.left + res.done;
+        run.f = Math.max(run.f, Math.min((total - res.left) / (total || 1), 0.99));
+        if (res.combinations) run.count = `${res.combinations - res.combinations_left} of ${res.combinations} ideas designed and costed`;
         if (!res.left || running.stopped) break;
-        running.text = `${total - res.left} of ${total} element designs done…`;
         draw();
       }
       running = null;

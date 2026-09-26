@@ -14,7 +14,7 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from . import trials
+from . import atomic, trials
 from .project import Project, Section, SlabInput
 
 # Only a guard against a typing slip: the page designs any matrix in short steps (a few elements per
@@ -174,9 +174,10 @@ def load_spec(d: Path) -> dict[str, Any] | None:
 
 
 def save_spec(d: Path, spec: dict[str, Any]) -> None:
-    data = trials.load_scenarios(d, "matrix")
-    data["spec"] = spec
-    trials._save_scenarios(d, data, "matrix")
+    with atomic.locked(d / "matrix.lock"):
+        data = trials.load_scenarios(d, "matrix")
+        data["spec"] = spec
+        trials._save_scenarios(d, data, "matrix")
 
 
 def default_spec(section: Section) -> dict[str, Any] | None:

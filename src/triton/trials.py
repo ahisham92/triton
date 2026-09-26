@@ -191,19 +191,30 @@ def _save_design(d: Path, key: str, design: dict[str, Any]) -> None:
     atomic.write_bytes(path, gzip.compress(json.dumps(design, default=str).encode(), 5))
 
 
+PRUNE_GRACE_S = 900  # a design this new may belong to a run still going in another tab: kept
+
+
 def prune(d: Path, data: dict[str, Any]) -> None:
-    """Delete full designs no trial refers to any more."""
+    """Delete full designs no trial refers to any more. Designs saved in the last few minutes stay: a
+    comparison running in another tab on the same section saves its designs before it lists them."""
     folder = d / "trials"
     if not folder.is_dir():
         return
+    fresh_since = time.time() - PRUNE_GRACE_S
     used = {r["key"] for el in data.values() for r in (el.get("runs") or {}).values()}
     for which in SETS:
         used |= {
             k for run in (load_scenarios(d, which).get("runs") or {}).values() for k in run.values() if k
         }
     for f in folder.glob("*.json.gz"):
-        if f.name[: -len(".json.gz")] not in used:
-            f.unlink(missing_ok=True)
+        if f.name[: -len(".json.gz")] in used:
+            continue
+        try:
+            if f.stat().st_mtime > fresh_since:
+                continue
+        except FileNotFoundError:
+            continue
+        f.unlink(missing_ok=True)
 
 
 # --- Running ---------------------------------------------------------------------------
@@ -336,7 +347,11 @@ def run(
     # Sizes taken off the list go.
     wanted = {size_key(s) for s in sizes}
     entry["runs"] = {k: v for k, v in runs.items() if k in wanted}
-    save(d, data)
+    # Only this element's entry changes: another tab may have saved other elements' trials meanwhile.
+    with atomic.locked(_file(d).with_suffix(".lock")):
+        data = load(d)
+        data[name] = entry
+        save(d, data)
     prune(d, data)
     return {"done": done, "left": left}
 
@@ -715,6 +730,7 @@ def run_scenarios(
     names = _designable(section, project)
     todo = [(v, n) for v in variants for n in names]
     done, left = 0, 0
+    waiting = set()  # the changes with an element still to design
     for i, (variant, name) in enumerate(todo):
         vs = variant_section(section, variant)
         vp = variant_project(project, variant)
@@ -728,6 +744,7 @@ def run_scenarios(
             continue
         if deadline is not None and done and time.monotonic() > deadline:
             left += 1
+            waiting.add(vk)
             continue
         if tell:
             tell(i / max(len(todo), 1), f"Designing {name} ({variant_label(variant, section)})")
@@ -742,10 +759,23 @@ def run_scenarios(
         mine[name] = key
         done += 1
     wanted = {variant_key(v) for v in variants}
-    data["runs"] = {k: v for k, v in runs.items() if k in wanted}
-    _save_scenarios(d, data, which)
+    # Another tab on the same section may have saved this list meanwhile: keep what it designed.
+    with atomic.locked(_scenario_file(d, which).with_suffix(".lock")):
+        latest = load_scenarios(d, which)
+        merged = latest.get("runs") or {}
+        for k, mine in runs.items():
+            merged[k] = {**(merged.get(k) or {}), **mine}
+        data = {**latest, **{k: v for k, v in data.items() if k != "runs"}}
+        data["runs"] = {k: v for k, v in merged.items() if k in wanted}
+        _save_scenarios(d, data, which)
     prune(d, load(d))
-    return {"done": done, "left": left}
+    changes = len(variants) - 1
+    return {
+        "done": done,
+        "left": left,
+        "combinations": changes,
+        "combinations_left": len(waiting - {variant_key({})}),
+    }
 
 
 def scenario_key(project: Project, section: Section, name: str, workbook: dict | None) -> str:
