@@ -57,7 +57,17 @@ async function again(fn, tries = 4) {
 // Uploads and designs under way, whatever page is open (see "long work" below).
 const JOBS = [];
 // This window, so a design of a section running in another window or tab is not started again here.
-const WINDOW_ID = Math.random().toString(36).slice(2, 12) || "w";
+// Kept over a reload of the tab, so a design it was running is its own to carry on.
+const WINDOW_ID = (() => {
+  const made = Math.random().toString(36).slice(2, 12) || "w";
+  try {
+    const id = sessionStorage.getItem("triton-window") || made;
+    sessionStorage.setItem("triton-window", id);
+    return id;
+  } catch {
+    return made;
+  }
+})();
 // Sections whose workbook was opened on this visit: their Workbook tab opens it straight away.
 const OPENED = new Set();
 let state = null; // the open project: { project, sectionId, dirty, errors }
@@ -423,6 +433,7 @@ async function projectPage(id, tab, sectionId) {
     }
   }
   const p = state.project;
+  resumeQueue(p);
   if (sectionId && p.sections.some((s) => s.id === sectionId)) state.sectionId = sectionId;
   if (!p.sections.some((s) => s.id === state.sectionId)) state.sectionId = p.sections[0].id;
   const tabs = [
@@ -2638,12 +2649,12 @@ const DESIGNED = new Set(["pile", "combi_wall", "front_beam", "rear_beam", "tran
 // What the Design tab can design: every pile, combi wall, beam and slab, and the sheet pile wall's
 // governing sets.
 const DESIGN_ORDER = { pile: 0, combi_wall: 0, sheet_pile_wall: 1, front_beam: 2, rear_beam: 2, transverse_beam: 2, slab: 3 };
-const designUnits = (section) =>
+const designUnits = (section, project = state?.project) =>
   Object.entries(section.elements)
     .filter(([, e]) => e.kind in DESIGN_ORDER)
     .sort(([, a], [, b]) => DESIGN_ORDER[a.kind] - DESIGN_ORDER[b.kind]) // the order the server designs them in
     .map(([n]) => n)
-    .concat(state?.project?.approach ? [APPROACH] : []); // the project's approach slab, last
+    .concat(project?.approach ? [APPROACH] : []); // the project's approach slab, last
 
 async function renderDesignTab(host) {
   const url = secUrl();
@@ -2660,8 +2671,10 @@ async function renderDesignTab(host) {
       </div>
       <div class="row">
       <button id="run-design" ${units.length ? "" : "disabled"}>Design</button>
+      ${state.project.sections.length > 1 ? `<button class="quiet" id="run-all" title="Every section, one after another, each with all its elements. Keep this page open; if it closes, opening the project again carries on.">Design all ${state.project.sections.length} sections</button>` : ""}
       <span class="status" id="design-status">${units.length ? "" : "Add pile, combi wall, beam or slab elements first."}</span>
       </div>
+      <div data-slot="design-all"></div>
       <div class="row pick-row" id="export-pick" hidden></div>
       <div class="row export-links">
       <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download bars for Revit (JSON: pile and infill cages, beams, slab)</a>
@@ -2768,6 +2781,18 @@ async function renderDesignTab(host) {
     drawPick();
   };
   state.runDesign = (names) => start(names);
+  const runAll = document.getElementById("run-all");
+  if (runAll) {
+    runAll.disabled = !!allRunning();
+    runAll.onclick = async () => {
+      if (state.dirty) await save();
+      if (state.errors?.length) return;
+      runAll.disabled = true;
+      const project = state.project;
+      await designAllSections(project, project.sections.map((s) => s.id), designMode());
+      if (document.body.contains(runAll)) runAll.disabled = false;
+    };
+  }
   run.onclick = () => start(state.designPick[section.id]?.filter((n) => units.includes(n)) ?? null);
   drawJobs();
   if (busyWith(`design-${section.id}`)) {
@@ -2821,11 +2846,10 @@ function setDesignMode(mode) {
   }
 }
 
-async function designJob(section, chosen, onResults, mode = "detailed") {
-  const pid = state.project.id;
+async function designJob(section, chosen, onResults, mode = "detailed", pid = state.project.id) {
   const url = `${ROOT}/api/projects/${pid}/sections/${section.id}`;
   const key = `design-${pid}-${section.id}`;
-  const names = chosen || designUnits(section);
+  const names = chosen || designUnits(section, state?.project?.id === pid ? state.project : null);
   const job = newJob({
     kind: "design",
     title: `${mode === "standard" ? "Standard design of" : "Designing"} ${section.name}${chosen ? ` (${names.length} of ${designUnits(section).length})` : ""}`,
@@ -2916,6 +2940,139 @@ async function designJob(section, chosen, onResults, mode = "detailed") {
   } finally {
     clearInterval(poll);
   }
+  return job;
+}
+
+// ---------------------------------------------------------------- design all sections
+// Every section of the project designed one after another from this window, each as its own design
+// (its Design tab shows its bars and then its results). The sections left are kept in this browser:
+// the project opened again after the page was closed or reloaded carries on with them.
+const QUEUE_KEY = "triton-design-all";
+const QUEUE_MAX_AGE = 24 * 3600 * 1000; // a queue left longer than this is forgotten
+const QUEUE_QUIET = 60 * 1000; // a window running the queue says so at least this often
+
+function savedQueue() {
+  try {
+    const q = JSON.parse(localStorage.getItem(QUEUE_KEY) || "null");
+    return q && Date.now() - q.made < QUEUE_MAX_AGE ? q : null;
+  } catch {
+    return null;
+  }
+}
+
+function keepQueue(q) {
+  try {
+    if (q) localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+    else localStorage.removeItem(QUEUE_KEY);
+  } catch {
+    /* private window: the queue runs, but is not carried on after a reload */
+  }
+}
+
+const allRunning = () => JOBS.find((j) => j.slot === "design-all" && j.state === "running");
+
+async function designAllSections(project, ids, mode, resumed = false) {
+  if (allRunning()) return;
+  const sections = ids.map((id) => project.sections.find((s) => s.id === id)).filter(Boolean);
+  const job = newJob({
+    kind: "design-all",
+    title: `${resumed ? "Carrying on: designing" : "Designing"} all sections${mode === "standard" ? " (Standard)" : ""}`,
+    slot: "design-all",
+    home: `#/project/${project.id}/design`,
+    steps: sections.map((s) => ({ label: s.name, name: s.id, state: "waiting" })),
+  });
+  const queue = { pid: project.id, ids: sections.map((s) => s.id), mode, made: savedQueue()?.made || Date.now(), window: WINDOW_ID, alive: Date.now() };
+  keepQueue(queue);
+  let current = null;
+  job.stop = async () => {
+    job.stopped = true;
+    await current?.stop?.();
+  };
+  // Keep the screen on while the page is in front (a sleeping computer pauses the page).
+  let awake = null;
+  const wake = async () => {
+    try {
+      if (document.visibilityState === "visible") awake = await navigator.wakeLock?.request("screen");
+    } catch {
+      /* not offered by this browser */
+    }
+  };
+  document.addEventListener("visibilitychange", wake);
+  await wake();
+  const beat = setInterval(() => {
+    const on = job.steps.find((x) => x.state === "running");
+    if (on && current) on.fraction = jobFraction(current);
+    if (Date.now() - queue.alive > QUEUE_QUIET / 3) keepQueue({ ...queue, alive: (queue.alive = Date.now()) });
+  }, 1000);
+  let failed = 0;
+  try {
+    for (const s of sections) {
+      if (job.stopped) break;
+      const step = job.steps.find((x) => x.name === s.id);
+      if (busyWith(`design-${s.id}`)) {
+        Object.assign(step, { state: "done", note: "Designed on its own" });
+        continue;
+      }
+      if (!designUnits(s, project).length) {
+        Object.assign(step, { state: "done", note: "Nothing to design" });
+        continue;
+      }
+      Object.assign(step, { state: "running", fraction: 0 });
+      drawJobs();
+      let one = null;
+      // A window closed mid-design holds its section on the server for up to two minutes.
+      for (let tries = 0; ; tries++) {
+        const run = designJob(s, null, null, mode, project.id);
+        current = JOBS.find((j) => j.slot === `design-${s.id}` && j.state === "running");
+        one = await run;
+        current = null;
+        if (job.stopped || one.state !== "failed" || !/another window/.test(one.message || "") || tries >= 12) break;
+        step.detail = "Waiting for another window to let go of it";
+        await new Promise((r) => setTimeout(r, 15000));
+      }
+      if (one.state === "stopped" && job.stopped) {
+        Object.assign(step, { state: "waiting", note: "Stopped" });
+        break;
+      }
+      const bad = one.steps.filter((x) => x.bad).length;
+      if (one.state === "done") Object.assign(step, { state: "done", note: bad ? `${bad} unsafe` : "All safe", bad: bad > 0 });
+      else {
+        failed++;
+        Object.assign(step, { state: "done", note: one.state === "failed" ? "Failed" : "Stopped", bad: true, detail: one.message });
+      }
+      queue.ids = queue.ids.filter((id) => id !== s.id);
+      keepQueue({ ...queue, alive: (queue.alive = Date.now()) });
+      drawJobs();
+    }
+  } finally {
+    clearInterval(beat);
+    document.removeEventListener("visibilitychange", wake);
+    awake?.release?.().catch(() => {});
+    keepQueue(null);
+  }
+  const n = job.steps.filter((x) => x.state === "done").length;
+  if (job.stopped) jobDone(job, "stopped", `Stopped after ${n} of ${sections.length} sections. The others keep their earlier results.`);
+  else
+    jobDone(
+      job,
+      "done",
+      failed
+        ? `Designed ${sections.length - failed} of ${sections.length} sections. Not finished: ${job.steps.filter((x) => x.note === "Failed" || x.note === "Stopped").map((x) => x.label).join(", ")} (its Design tab says why; design it again there).`
+        : `Designed all ${sections.length} sections.`
+    );
+}
+
+// A window closed or reloaded mid-queue: the next page opened on the project carries on.
+window.addEventListener("pagehide", () => {
+  const q = savedQueue();
+  if (q && q.window === WINDOW_ID && allRunning()) keepQueue({ ...q, alive: 0 });
+});
+
+function resumeQueue(project) {
+  const q = savedQueue();
+  if (!q || q.pid !== project.id || allRunning() || !q.ids?.length) return;
+  if (q.window !== WINDOW_ID && Date.now() - q.alive < QUEUE_QUIET) return; // still running in another window
+  designAllSections(project, q.ids, q.mode, true);
 }
 
 // Every time is shown in Cairo, whatever the browser's own zone; stamps carry their offset.
