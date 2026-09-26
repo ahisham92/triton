@@ -2671,7 +2671,7 @@ async function renderDesignTab(host) {
       </div>
       <div class="row">
       <button id="run-design" ${units.length ? "" : "disabled"}>Design</button>
-      ${state.project.sections.length > 1 ? `<button class="quiet" id="run-all" title="Every section, one after another, each with all its elements. Keep this page open; if it closes, opening the project again carries on.">Design all ${state.project.sections.length} sections</button>` : ""}
+      ${state.project.sections.length > 1 ? `<button class="quiet" id="run-all" title="Every section, one after another, each with all its elements. With the server's runner on you can close the page; otherwise keep it open (opening the project again carries on).">Design all ${state.project.sections.length} sections</button>` : ""}
       <span class="status" id="design-status">${units.length ? "" : "Add pile, combi wall, beam or slab elements first."}</span>
       </div>
       <div data-slot="design-all"></div>
@@ -2789,7 +2789,7 @@ async function renderDesignTab(host) {
       if (state.errors?.length) return;
       runAll.disabled = true;
       const project = state.project;
-      await designAllSections(project, project.sections.map((s) => s.id), designMode());
+      await designAll(project, designMode());
       if (document.body.contains(runAll)) runAll.disabled = false;
     };
   }
@@ -3068,7 +3068,87 @@ window.addEventListener("pagehide", () => {
   if (q && q.window === WINDOW_ID && allRunning()) keepQueue({ ...q, alive: 0 });
 });
 
+// With the server's runner on, the sections are designed there with no page open; this card only
+// shows how it goes (and follows a queue left earlier when the project is opened again).
+async function followServerQueue(project, first = null) {
+  if (allRunning()) return;
+  const pid = project.id;
+  const url = `${ROOT}/api/projects/${pid}/design-all`;
+  let q = first;
+  if (!q) {
+    try {
+      q = await api(url);
+    } catch {
+      return; // nothing queued
+    }
+  }
+  if (q.finished || allRunning()) return;
+  const job = newJob({
+    kind: "design-all",
+    title: `Designing all sections on the server${q.mode === "standard" ? " (Standard)" : ""}`,
+    slot: "design-all",
+    home: `#/project/${pid}/design`,
+    steps: q.sections.map((s) => ({ label: s.name, name: s.id, state: "waiting" })),
+  });
+  job.stop = async () => {
+    job.stopped = true;
+    q = await api(`${url}/stop`, { method: "POST" }).catch(() => q);
+  };
+  const seen = new Set();
+  const show = () => {
+    for (const s of q.sections) {
+      const step = job.steps.find((x) => x.name === s.id);
+      if (!step) continue;
+      if (s.state === "running") Object.assign(step, { state: "running", detail: `${s.name} (you can close this page)` });
+      else if (s.state === "waiting") step.state = "waiting";
+      else {
+        Object.assign(step, { state: "done", note: s.state === "done" ? s.note : s.state === "failed" ? "Failed" : s.note || "Stopped", bad: s.state !== "done" || /unsafe/.test(s.note), detail: s.note });
+        if (s.state === "done" && !seen.has(s.id)) {
+          seen.add(s.id);
+          if (state?.project.id === pid) {
+            state.project.locked = true;
+            if (location.hash.startsWith(`#/project/${pid}/design`) && state.sectionId === s.id) route();
+          }
+        }
+      }
+    }
+    drawJobs();
+  };
+  for (;;) {
+    show();
+    if (q.finished) break;
+    const on = q.sections.find((s) => s.state === "running");
+    if (on) {
+      const p = await api(`${ROOT}/api/progress/design-${pid}-${on.id}`).catch(() => null);
+      const step = job.steps.find((x) => x.name === on.id);
+      if (p && step) Object.assign(step, { fraction: p.fraction, detail: `${on.name}: ${p.step} (you can close this page)` });
+      drawJobs();
+    }
+    if (!q.runner_on) job.message = "The server's runner is off: it carries on when it is on again.";
+    await new Promise((r) => setTimeout(r, 3000));
+    q = await again(() => api(url)).catch(() => q);
+  }
+  const bad = q.sections.filter((s) => s.state !== "done").map((s) => s.name);
+  if (job.stopped || q.stop) jobDone(job, "stopped", `Stopped. ${q.sections.filter((s) => s.state === "done").length} of ${q.sections.length} sections designed; the others keep their earlier results.`);
+  else jobDone(job, "done", bad.length ? `Designed ${q.sections.length - bad.length} of ${q.sections.length} sections. Not finished: ${bad.join(", ")} (its Design tab says why).` : `Designed all ${q.sections.length} sections on the server.`);
+}
+
+// Design all sections: on the server when its runner is on, else from this page.
+async function designAll(project, mode) {
+  const on = await api(`${ROOT}/api/runner`).then((r) => r.on).catch(() => false);
+  if (on) {
+    const q = await api(`${ROOT}/api/projects/${project.id}/design-all`, { method: "POST", body: JSON.stringify({ mode }) }).catch((e) => {
+      alert(e.message);
+      return null;
+    });
+    if (q) await followServerQueue(project, q);
+    return;
+  }
+  await designAllSections(project, project.sections.map((s) => s.id), mode);
+}
+
 function resumeQueue(project) {
+  followServerQueue(project);
   const q = savedQueue();
   if (!q || q.pid !== project.id || allRunning() || !q.ids?.length) return;
   if (q.window !== WINDOW_ID && Date.now() - q.alive < QUEUE_QUIET) return; // still running in another window

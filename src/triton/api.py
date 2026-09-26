@@ -44,6 +44,7 @@ from . import (
 )
 from . import furniture as furniture_mod
 from . import moved as moved_piles
+from . import runner as runner_mod
 from .alignment import plan_geometry
 from .clashes import Clashes, _clean, apply_connections, assumptions, find_clashes
 from .costing import cost_project
@@ -1297,6 +1298,67 @@ def _lock_model(project_id: str) -> None:
         if not project.locked:
             project.locked = True
             store().save(project)
+
+
+# --- Design all sections on the server ---------------------------------------------------------
+# With the runner on (runner.py, an Always-on task), "Design all sections" is left in a queue file
+# and designed with no page open; the page only shows how it goes.
+
+
+class DesignAllRequest(BaseModel):
+    mode: Literal["detailed", "standard"] = "detailed"
+    sections: list[str] | None = Field(None, description="Section ids, in order; empty: all of them.")
+
+
+@app.get("/api/runner")
+def runner_state() -> dict:
+    return {"on": runner_mod.alive()}
+
+
+@app.get("/api/projects/{project_id}/design-all")
+def design_all_state(project_id: str) -> dict:
+    _get(project_id)
+    q = runner_mod.load(project_id)
+    if q is None:
+        raise HTTPException(404, "Nothing queued.")
+    return {**q, "finished": runner_mod.finished(q), "runner_on": runner_mod.alive()}
+
+
+@app.post("/api/projects/{project_id}/design-all")
+def design_all(project_id: str, body: DesignAllRequest | None = None) -> dict:
+    """Queue every section (or the ones given) for the runner to design one after another."""
+    body = body or DesignAllRequest()
+    project = _get(project_id)
+    if not runner_mod.alive():
+        raise HTTPException(503, "The background runner is off.")
+    ids = body.sections or [s.id for s in project.sections]
+    sections = [(s.id, s.name) for i in ids for s in project.sections if s.id == i]
+    with runner_mod.lock(project_id):
+        if not runner_mod.finished(runner_mod.load(project_id)):
+            raise HTTPException(409, "This project's sections are already queued. Stop that first.")
+        q = runner_mod.new_queue(project_id, sections, body.mode)
+        runner_mod.save(q)
+    return {**q, "finished": runner_mod.finished(q), "runner_on": True}
+
+
+@app.post("/api/projects/{project_id}/design-all/stop")
+def design_all_stop(project_id: str) -> dict:
+    """Stop the queue: the section under way stops at its next element, the others do not start."""
+    _get(project_id)
+    with runner_mod.lock(project_id):
+        q = runner_mod.load(project_id)
+        if q is None or runner_mod.finished(q):
+            raise HTTPException(404, "Nothing running.")
+        q["stop"] = True
+        for s in q["sections"]:
+            if s["state"] == "waiting":
+                s.update(state="stopped", note="Not started")
+            elif s["state"] == "running":
+                path = _progress_path(f"design-{project_id}-{s['id']}")
+                if path.exists():
+                    path.with_suffix(".stop").touch()
+        runner_mod.save(q)
+    return {**q, "finished": runner_mod.finished(q), "runner_on": runner_mod.alive()}
 
 
 def _results(project_id: str, section_id: str) -> tuple[Project, Section, dict]:

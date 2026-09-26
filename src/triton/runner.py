@@ -1,0 +1,207 @@
+"""Designs that run on the server with no page open: "Design all sections" handed to a runner.
+
+The web workers only work while they answer a request, and a host cuts a long request off, so a
+design driven by the page stops when the page closes. The runner is a separate program that keeps
+going on its own (on PythonAnywhere an Always-on task: ``python -m triton.cli runner``). The page
+leaves a queue file per project in ``<data>/queue``; the runner designs its sections one after
+another, each exactly as the Design button would, and writes how each went back into the file.
+
+Only one runner works at a time (a lock file); a second one started by mistake waits its turn.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+from . import atomic
+
+ALIVE_S = 60  # a runner that has not said it is there for this long is taken to be off
+BEAT_S = 10
+BUSY_TRIES = 12  # a section a window is designing is tried again this many times, BUSY_WAIT_S apart
+BUSY_WAIT_S = 15
+
+
+def folder(data: str | Path | None = None) -> Path:
+    root = Path(data or os.environ.get("TRITON_DATA_DIR", "data")) / "queue"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _beat_file(data: str | Path | None = None) -> Path:
+    return folder(data) / "runner.beat"
+
+
+def alive(data: str | Path | None = None) -> bool:
+    """Whether a runner is on: it touches its beat file every few seconds."""
+    try:
+        return time.time() - _beat_file(data).stat().st_mtime < ALIVE_S
+    except FileNotFoundError:
+        return False
+
+
+def queue_path(project_id: str, data: str | Path | None = None) -> Path:
+    if not project_id.isalnum():
+        raise ValueError(project_id)
+    return folder(data) / f"{project_id}.json"
+
+
+def load(project_id: str, data: str | Path | None = None) -> dict[str, Any] | None:
+    try:
+        return json.loads(queue_path(project_id, data).read_text("utf-8"))
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def save(queue: dict[str, Any], data: str | Path | None = None) -> None:
+    atomic.write_text(queue_path(queue["pid"], data), json.dumps(queue))
+
+
+def lock(project_id: str, data: str | Path | None = None):
+    """Held while the page or the runner reads a queue file, changes it and saves it."""
+    return atomic.locked(queue_path(project_id, data).with_suffix(".lock"))
+
+
+def finished(queue: dict[str, Any] | None) -> bool:
+    return not queue or all(s["state"] not in ("waiting", "running") for s in queue["sections"])
+
+
+def new_queue(project_id: str, sections: list[tuple[str, str]], mode: str) -> dict[str, Any]:
+    return {
+        "pid": project_id,
+        "mode": mode,
+        "asked_at": time.time(),
+        "stop": False,
+        "sections": [{"id": sid, "name": name, "state": "waiting", "note": ""} for sid, name in sections],
+    }
+
+
+def _update(project_id: str, change, data: str | Path | None = None) -> dict[str, Any] | None:
+    with lock(project_id, data):
+        q = load(project_id, data)
+        if q is None:
+            return None
+        change(q)
+        save(q, data)
+        return q
+
+
+def _next(data: str | Path | None = None) -> str | None:
+    """The project whose queue was asked for first among those with sections waiting."""
+    waiting = []
+    for f in folder(data).glob("*.json"):
+        try:
+            q = json.loads(f.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not q.get("stop") and any(s["state"] == "waiting" for s in q.get("sections", [])):
+            waiting.append((f.stat().st_mtime, q["pid"]))
+    return min(waiting)[1] if waiting else None
+
+
+def _outcome(res: dict[str, Any]) -> tuple[str, str]:
+    """The state and note a design's answer gives its section."""
+    if res.get("stopped"):
+        return "stopped", "Stopped"
+    kinds = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
+    done = set(res.get("designed") or [])
+    designed = [e for k in kinds for e in res.get(k) or [] if e.get("element") in done]
+    unsafe = sum(1 for e in designed if e.get("passed") is False)
+    return "done", f"{unsafe} unsafe" if unsafe else "All safe"
+
+
+def design_one(project_id: str, section_id: str, mode: str, sleep=time.sleep) -> tuple[str, str]:
+    """Design every element of one section, as the Design button does; returns (state, note)."""
+    from fastapi import HTTPException
+
+    from . import api
+    from .design.stop import Stopped
+
+    for tries in range(BUSY_TRIES + 1):
+        try:
+            res = api.design_section(project_id, section_id, api.DesignRequest(mode=mode, run="server"))
+            return _outcome(res)
+        except Stopped:
+            return "stopped", "Stopped"
+        except HTTPException as e:
+            if e.status_code == 409 and e.detail == api.BUSY and tries < BUSY_TRIES:
+                sleep(BUSY_WAIT_S)  # a window is designing it: wait for it to finish
+                continue
+            return "failed", str(e.detail)
+        except Exception as e:  # noqa: BLE001 - one section failing leaves the others to design
+            return "failed", f"{type(e).__name__}: {e}"
+    return "failed", "Another window kept designing it."
+
+
+def work(project_id: str, data: str | Path | None = None, sleep=time.sleep) -> None:
+    """Design the queue's waiting sections one after another, until it is done or stopped."""
+    while True:
+        q = load(project_id, data)
+        if q is None or q.get("stop"):
+            return
+        todo = next((s for s in q["sections"] if s["state"] == "waiting"), None)
+        if todo is None:
+            return
+        sid = todo["id"]
+
+        def start(q, sid=sid):
+            for s in q["sections"]:
+                if s["id"] == sid:
+                    s.update(state="running", started=time.time())
+
+        _update(project_id, start, data)
+        state, note = design_one(project_id, sid, q.get("mode") or "detailed", sleep)
+
+        def end(q, sid=sid, state=state, note=note):
+            for s in q["sections"]:
+                if s["id"] == sid:
+                    s.update(state=state, note=note, finished=time.time())
+            if state == "stopped" or q.get("stop"):
+                q["stop"] = True
+                for s in q["sections"]:
+                    if s["state"] == "waiting":
+                        s.update(state="stopped", note="Not started")
+
+        _update(project_id, end, data)
+
+
+def run_forever(data: str | Path | None = None, idle_s: float = 5.0) -> None:  # pragma: no cover
+    """The runner: say it is there, and design whatever is queued, for as long as it runs."""
+    import fcntl
+
+    if data:
+        os.environ["TRITON_DATA_DIR"] = str(data)
+    with open(folder(data) / "runner.lock", "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)  # another runner already on: wait until it stops
+
+        def beat() -> None:
+            while True:
+                _beat_file(data).touch()
+                time.sleep(BEAT_S)
+
+        threading.Thread(target=beat, daemon=True).start()
+        # A section left "running" by a runner that was stopped (the task restarted) starts again.
+        for f2 in folder(data).glob("*.json"):
+            try:
+                pid = json.loads(f2.read_text("utf-8"))["pid"]
+            except (OSError, ValueError, KeyError):
+                continue
+            _update(pid, _requeue, data)
+        print(f"Triton runner on, queue in {folder(data)}", flush=True)
+        while True:
+            pid = _next(data)
+            if pid is None:
+                time.sleep(idle_s)
+                continue
+            print(f"{time.strftime('%H:%M:%S')} designing project {pid}", flush=True)
+            work(pid, data)
+
+
+def _requeue(q: dict[str, Any]) -> None:
+    for s in q["sections"]:
+        if s["state"] == "running":
+            s.update(state="waiting", note="")

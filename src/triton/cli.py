@@ -22,7 +22,17 @@ def main(argv: list[str] | None = None) -> int:
         "--data",
         help="Folder for projects and uploaded workbooks (default: TRITON_DATA_DIR, else ./data).",
     )
+    runner = sub.add_parser(
+        "runner", help="Design what the page queued (Design all sections), with no page open."
+    )
+    runner.add_argument("--data", help="The same data folder as the web app (default: TRITON_DATA_DIR).")
     args = parser.parse_args(argv)
+
+    if args.command == "runner":
+        from .runner import run_forever
+
+        run_forever(args.data)
+        return 0
 
     if args.command == "serve":
         import os
