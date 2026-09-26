@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Triton">
+  <circle cx="50" cy="50" r="46.5" fill="#fff" stroke="#6a9bcc" stroke-width="3.5"/>
+  <g fill="#00467a">
+    <path d="M50 11 L56.5 24.5 L52.5 23 L52.5 44 L47.5 44 L47.5 23 L43.5 24.5 Z"/>
+    <path d="M24.5 20.5 C31 25 36 31 36.2 42 L30.2 42 C30.3 33 28.5 27 24.5 20.5 Z"/>
+    <path d="M75.5 20.5 C69 25 64 31 63.8 42 L69.8 42 C69.7 33 71.5 27 75.5 20.5 Z"/>
+    <path d="M30.2 41.5 L69.8 41.5 L69.8 45 Q69.8 47.5 67.3 47.5 L32.7 47.5 Q30.2 47.5 30.2 45 Z"/>
+    <rect x="40.5" y="51.5" width="19" height="4.5" rx="0.6"/>
+    <rect x="47.5" y="47" width="5" height="21"/>
+  </g>
+  <g fill="none" stroke="#1e8fc0" stroke-linecap="round">
+    <path d="M23 67 q6.75 -3.6 13.5 0 t13.5 0 t13.5 0 t13.5 0" stroke-width="4"/>
+    <path d="M29 75 q5.25 -3 10.5 0 t10.5 0 t10.5 0 t10.5 0" stroke-width="3.4"/>
+    <path d="M38 82 q3 -2.2 6 0 t6 0 t6 0 t6 0" stroke-width="2.8"/>
+  </g>
+</svg>

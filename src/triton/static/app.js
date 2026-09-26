@@ -9,6 +9,9 @@ import { APPROACH, approachCard, approachPanel } from "./approach.js";
 import { renderFurniture } from "./furniture.js";
 import { renderMovedPiles } from "./moved.js";
 import { renderSequence } from "./sequence.js";
+import { smooth } from "./progress.js";
+import { tubeZonesHtml } from "./tubeview.js";
+import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -94,8 +97,10 @@ function route() {
 
 // ---------------------------------------------------------------- projects list
 async function projectsPage() {
-  $app.innerHTML = `<h1>Projects</h1><p class="sub">Each project holds the sections, materials and design
+  $app.innerHTML = `<div class="hero"><img src="${ROOT}/static/logo.svg" alt="" width="72" height="72">
+      <div><h1>Projects</h1><p class="sub">Each project holds the sections, materials and design
     settings used to design the elements in a Plaxis workbook.</p>
+      <div class="hero-kinds">${["pile", "combi_wall", "sheet_pile_wall", "slab", "front_beam", "rear_beam"].map((k) => `<span style="--kind:${kindColor(k)}">${kindIcon(k, 20)}${esc(KINDS[k].label)}</span>`).join("")}</div></div></div>
     <div class="row"><input id="new-name" placeholder="Project name" style="flex:1;max-width:320px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--input);color:var(--text);font:inherit">
     <button id="new">New project</button></div>
     <div class="row" style="margin-top:10px"><label for="trt">Open a project file</label>
@@ -456,10 +461,12 @@ async function projectPage(id, tab, sectionId) {
   ];
   const picker = SECTION_TABS.has(tab)
     ? `<div class="row section-pick"><label for="section-pick">Section</label>
+        ${p.sections.length > 1 ? `<button type="button" class="quiet step" data-sec-step="-1" data-free ${secIndex() === 0 ? "disabled" : ""} title="Previous section">&#9664;</button>` : ""}
         <select id="section-pick">${p.sections
           .map((s) => `<option value="${esc(s.id)}" ${s.id === sec().id ? "selected" : ""}>${esc(s.name)}</option>`)
           .join("")}</select>
-        <span class="status">Elements, workbook, load multipliers and results below are for this section.</span></div>`
+        ${p.sections.length > 1 ? `<button type="button" class="quiet step" data-sec-step="1" data-free ${secIndex() === p.sections.length - 1 ? "disabled" : ""} title="Next section">&#9654;</button>` : ""}
+        <span class="status">Elements, workbook, load multipliers and results below are for this section${p.sections.length > 1 ? ` (${secIndex() + 1} of ${p.sections.length})` : ""}.</span></div>`
     : "";
   // Download, Duplicate and Delete sit on the Project tab only, so moving between tabs never
   // leaves Delete under the pointer.
@@ -482,6 +489,12 @@ async function projectPage(id, tab, sectionId) {
       state.sectionId = pick.value;
       location.hash = tabHash(tab);
     };
+  $app.querySelectorAll("[data-sec-step]").forEach((b) => (b.onclick = () => {
+    const next = p.sections[secIndex() + +b.dataset.secStep];
+    if (!next) return;
+    state.sectionId = next.id;
+    location.hash = tabHash(tab);
+  }));
   if (tab === "info") {
     document.getElementById("delete").onclick = async () => {
       if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
@@ -506,6 +519,12 @@ async function projectPage(id, tab, sectionId) {
   }
   const host = document.getElementById("tab");
   if (tab === "info") {
+    const flow = document.createElement("div");
+    flow.className = "panel flow-panel";
+    flow.dataset.free = "";
+    flow.innerHTML = `<div class="pick-head"><h3>How Triton works</h3><span class="status">From the project to the calculation reports, for ${esc(sec().name)}. Click a step to open it.</span></div>`;
+    host.append(flow);
+    projectFlow(flow, p);
     const info = renderObject(SCHEMA.properties.info, p.info, "info", "Project");
     info.dataset.free = ""; // names and numbers, not design inputs: open to edit at any time
     host.append(info);
@@ -522,7 +541,7 @@ async function projectPage(id, tab, sectionId) {
     host.append(used);
     storagePanel(used, id);
   }
-  else if (tab === "settings") host.append(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"));
+  else if (tab === "settings") host.append(pageForm(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"), `settings:${p.id}`));
   else if (tab === "design") renderDesignTab(host);
   else if (tab === "openings") renderOpeningsTab(host);
   else if (tab === "sections") renderSections(host);
@@ -591,6 +610,34 @@ async function projectPage(id, tab, sectionId) {
   showErrors();
   applyLock();
   drawJobs();
+}
+
+// The steps of the whole program with where this project stands (the workbook and results from the
+// storage list, which is quick).
+async function projectFlow(box, p) {
+  const s = sec();
+  const n = Object.keys(s.elements).length;
+  let used = null;
+  try {
+    used = (await api(`${ROOT}/api/projects/${p.id}/storage`)).sections.find((x) => x.id === s.id);
+  } catch {
+    /* drawn without it */
+  }
+  const wb = used ? used.workbook > 0 : null;
+  const designed = used ? used.results > 0 : null;
+  const steps = [
+    { tab: "info", title: "Project", note: p.info.number ? `${p.info.name} · ${p.info.number}` : p.info.name, done: !!p.info.name, color: "#00467a" },
+    { tab: "settings", title: "Design settings", note: "grades, covers, codes (shared)", done: true, color: "#1e6fb0" },
+    { tab: "sections", title: "Sections", note: `${p.sections.length} section${p.sections.length > 1 ? "s" : ""}`, done: p.sections.length > 0, color: "#1e8fc0" },
+    { tab: "elements", title: "Elements", note: n ? `${n} in ${s.name}` : "add piles, walls, slab, beams", done: n > 0, color: "#2a9d8f" },
+    { tab: "workbook", title: "Plaxis workbook", note: wb ? "uploaded and mapped" : "upload the straining actions", done: !!wb, color: "#5a8f29" },
+    { tab: "design", title: "Design", note: designed ? "designed: see the results" : "bars and utilisation", done: !!designed, color: "#d9730d" },
+    { tab: "view3d", title: "Check", note: "3D view, clashes, openings", done: false, color: "#c2477d", optional: true },
+    { tab: "costing", title: "Cost and compare", note: "costing, comparisons, VE", done: false, color: "#7b4bc4", optional: true },
+  ];
+  let next = steps.findIndex((x) => !x.done);
+  steps.forEach((x, i) => (x.state = x.done ? "done" : i === next ? "next" : x.optional && designed ? "next" : "todo"));
+  box.append(flowDiagram(steps, (t) => (location.hash = tabHash(t))));
 }
 
 // Space each section takes on the server, so it is clear where it goes.
@@ -761,6 +808,7 @@ function showErrors() {
     }
     ul.insertAdjacentHTML("beforeend", `<li>${esc(clean || "Project")}: ${esc(msg)}</li>`);
   }
+  document.querySelectorAll("fieldset.paged").forEach((f) => f._marks?.()); // red marks on the pages with errors
 }
 function cleanPath(loc) {
   // ["sections", 0, "elements", "Pile(1)", "pile", "casing", "thickness"] -> "sections.0.elements.Pile(1).casing.thickness"
@@ -1072,13 +1120,44 @@ function renderSections(host) {
     const name = document.getElementById("sec-name").value.trim();
     if (name) addSection(name, copy.value, document.getElementById("sec-status"));
   };
+  // One section at a time (the one the other tabs show), picked from tiles, Previous / Next or the list.
+  const secCards = new Map();
+  if (p.sections.length > 1) {
+    const items = p.sections.map((s) => ({ key: s.id, label: s.name, kind: "section",
+      sub: `${Object.keys(s.elements).length || "no"} element${Object.keys(s.elements).length === 1 ? "" : "s"}`,
+      dots: Object.values(s.elements).map((e) => e.kind) }));
+    const cur = picked(`sections:${p.id}`) === ALL ? ALL : sec().id;
+    const guide = document.createElement("div");
+    guide.className = "panel pick-panel";
+    guide.innerHTML = `<div class="pick-head"><h3>Sections of ${esc(p.info.name)}</h3><span class="status">Choose a section to see its settings. It becomes the section the other tabs show.</span></div>`;
+    guide.append(stepper({ items, current: cur, noun: "section", onFoldAll: (f) => secCards.forEach((c) => setFolded(c, f)), onPick: (key) => {
+      keepPick(`sections:${p.id}`, key);
+      if (key !== ALL) state.sectionId = key;
+      for (const [id, c] of secCards) {
+        c.hidden = key !== ALL && id !== key;
+        if (id === key) setFolded(c, false);
+      }
+      const s2 = document.getElementById("section-pick");
+      if (s2 && key !== ALL) s2.value = key;
+    } }));
+    host.insertBefore(guide, host.querySelector(".panel.row"));
+    queueMicrotask(() => {
+      for (const [id, c] of secCards) {
+        c.hidden = cur !== ALL && id !== cur;
+        if (id === cur) setFolded(c, false);
+      }
+    });
+  }
   p.sections.forEach((s, i) => {
     const card = document.createElement("div");
-    card.className = "panel";
+    card.className = "panel kind-card";
+    card.style.setProperty("--kind", kindColor("section"));
     card.style.marginBottom = "16px";
+    secCards.set(s.id, card);
+    if (p.sections.length > 1) foldable(card, `section:${s.id}`, false);
     if (s.locked) card.dataset.locked = "";
     const n = Object.keys(s.elements).length;
-    card.innerHTML = `<div class="element-head"><h3>${esc(s.name)}<span class="type">${n} element${n === 1 ? "" : "s"}${s.locked ? " · locked since the design" : ""}</span></h3>
+    card.innerHTML = `<div class="element-head"><h3>${kindIcon("section", 30)}${esc(s.name)}<span class="type">${n} element${n === 1 ? "" : "s"}${s.locked ? " · locked since the design" : ""}</span></h3>
       <span><button class="quiet" data-open data-free>Open</button> <button class="quiet" data-copy data-free title="A new section with this one's settings, without its workbook, mapping or results">Duplicate</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
     card.querySelector("[data-open]").onclick = () => {
       state.sectionId = s.id;
@@ -1344,14 +1423,49 @@ function renderElements(host) {
     host.insertAdjacentHTML("beforeend", `<p class="empty">No elements yet.</p>`);
     return;
   }
+  // Pick one element (tiles, Previous / Next or the list) and only its card is shown.
+  const pickKey = `elements:${p.id}`;
+  let current = picked(pickKey);
+  if (current !== ALL && !names.includes(current)) current = names[0];
+  const cards = new Map();
+  const show = (key) => {
+    current = key;
+    keepPick(pickKey, key);
+    for (const [n, c] of cards) {
+      c.hidden = key !== ALL && n !== key;
+      if (n === key) setFolded(c, false);
+    }
+    sketchBox.replaceChildren(sketch(key));
+  };
+  const list = names.map((n) => ({ key: n, label: n, kind: p.elements[n].kind }));
+  const guide = document.createElement("div");
+  guide.className = "panel pick-panel";
+  guide.innerHTML = `<div class="pick-head"><h3>Elements of ${esc(p.name)}</h3><span class="status">Choose an element to see and edit its sizes, levels and bars.</span></div>`;
+  const sketchBox = document.createElement("div");
+  let geoKept = KEPT.get(`${secUrl()}/geometry`)?.data || null;
+  // The real levels and positions once the workbook's geometry is in (kept after the first time).
+  if (!geoKept)
+    sectionGeometry().then((g) => {
+      if (!g || !sketchBox.isConnected) return;
+      geoKept = g;
+      sketchBox.replaceChildren(sketch(current));
+    });
+  const sketch = (sel) => quaySketch({ elements: names.map((n) => ({ name: n, kind: p.elements[n].kind })), geometry: geoKept, site: p.site, selected: sel, onPick: (n) => bar.pick(n) });
+  const bar = stepper({ items: list, current, noun: "element", onPick: show, onFoldAll: (f) => cards.forEach((c) => setFolded(c, f)) });
+  guide.append(bar, sketchBox);
+  host.prepend(guide);
   for (const name of names) {
     const el = p.elements[name];
     const schema = { $ref: SCHEMA.$defs.Section.properties.elements.additionalProperties.discriminator.mapping[el.kind] };
     const card = document.createElement("div");
     card.className = "panel";
     card.style.marginBottom = "16px";
-    card.innerHTML = `<div class="element-head"><h3>${esc(name)}<span class="type">${esc(KIND_LABEL[el.kind] || el.kind)}</span></h3>
+    card.classList.add("kind-card");
+    card.style.setProperty("--kind", kindColor(el.kind));
+    card.innerHTML = `<div class="element-head"><h3>${kindIcon(el.kind, 30)}${esc(name)}<span class="type">${esc(KIND_LABEL[el.kind] || el.kind)}</span></h3>
       <button class="danger">Remove</button></div>`;
+    cards.set(name, card);
+    foldable(card, `element:${p.id}:${name}`, false);
     card.querySelector("button").onclick = () => {
       const copy = { ...p.elements };
       delete copy[name];
@@ -1359,12 +1473,13 @@ function renderElements(host) {
       markDirty();
       route();
     };
-    const fs = renderObject(schema, el, `sections.${secIndex()}.elements.${name}`, "");
+    const fs = pageForm(renderObject(schema, el, `sections.${secIndex()}.elements.${name}`, ""), `el:${el.kind}`);
     fs.style.border = "0";
     fs.style.padding = "0";
     card.append(fs);
     host.append(card);
   }
+  show(current);
 }
 
 async function addElements(names) {
@@ -1487,14 +1602,21 @@ function jobCardHtml(job, inDock) {
 function fillJobCard(card, job) {
   const f = jobFraction(job);
   const running = job.steps.find((s) => s.state === "running");
-  card.querySelector(".job-pct").textContent = JOB_END[job.state] && job.state !== "done" ? JOB_END[job.state] : `${Math.round(f * 100)}%`;
-  card.querySelector(".bar.big i").style.width = `${Math.max(f * 100, 1)}%`;
+  // The bars move one per cent at a time (progress.js): quick when the work jumps, creeping on
+  // between reports at the pace so far, up to most of the next element's share.
+  const ended = JOB_END[job.state] && job.state !== "done";
+  const pctEl = card.querySelector(".job-pct");
+  smooth(`${job.id}:all`, card.querySelector(".bar.big i"), f, {
+    pct: ended ? null : pctEl, done: job.state === "done",
+    ahead: job.state === "running" ? 1 / Math.max(1, job.steps.length) : 0 });
+  if (ended) pctEl.textContent = JOB_END[job.state];
   card.querySelector(".job-sub span").textContent =
     job.state === "running" ? [running?.detail || running?.label, timeLeft(job, f)].filter(Boolean).join(" · ") : job.message || "";
   card.querySelectorAll(".job-steps li").forEach((li, i) => {
     const s = job.steps[i];
     li.className = `${s.state}${s.bad ? " bad" : ""}${s.state === "running" && s.fraction == null ? " busy" : ""}`;
-    li.querySelector("i").style.width = `${s.state === "done" ? 100 : s.state === "running" && s.fraction == null ? 100 : Math.round((s.fraction ?? 0) * 100)}%`;
+    if (s.state === "running" && s.fraction == null) li.querySelector("i").style.width = "100%"; // busy stripes
+    else smooth(`${job.id}:${i}`, li.querySelector("i"), s.state === "done" ? 1 : s.fraction ?? 0, { done: s.state === "done" });
     li.querySelector(".step-note").textContent = stepNote(s);
   });
   if (running && card.querySelector(".job-steps.many")) {
@@ -2717,6 +2839,9 @@ async function renderDesignTab(host) {
     </div><div class="panel" id="displacements" data-free></div><div class="panel" id="deflections" data-free></div><div id="design-out"></div>`;
   displacementsPanel(document.getElementById("displacements"));
   deflectionsPanel(document.getElementById("deflections"));
+  // Folded to their title lines until opened (kept per section).
+  foldable(document.getElementById("displacements"), `disp:${section.id}`, false);
+  foldable(document.getElementById("deflections"), `defl:${section.id}`, false);
   let stale = [];
   let quick = []; // designed in Standard mode
   const run = document.getElementById("run-design");
@@ -3463,7 +3588,71 @@ function drawCards(res, full = res, withBars = full) {
   for (const b of beams) bc.append(beamCard(b));
   const sc = document.getElementById("slab-cards");
   for (const d of slabs) sc.append(slabCard(d));
+  pickResults(res, out);
   mountElementViews(res);
+}
+
+// The results one element at a time: tiles coloured safe / near the limit / unsafe, Previous / Next
+// and a list to jump to one; "Show all" gives the whole page with the summary tables.
+function pickResults(res, out) {
+  const cards = [...out.querySelectorAll("#pile-cards > .panel, #combi-cards > .panel, #beam-cards > .panel, #slab-cards > .panel, #spw-cards > .panel, #approach-cards > .panel")]
+    .map((card) => {
+      const h = card.querySelector(".element-head h3") || card.querySelector("h3");
+      const name = h ? [...h.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim() : "";
+      return { card, name };
+    })
+    .filter((c) => c.name);
+  if (cards.length < 2) return;
+  const worst = {};
+  const rank = { unsafe: 3, limit: 2, safe: 1 };
+  for (const a of alerts(res)) {
+    const lvl = a.level === "safe" ? null : a.level;
+    for (const n of String(a.el || a.name).split(", ")) if (lvl && (rank[lvl] > (rank[worst[n]] || 0))) worst[n] = lvl;
+  }
+  const all = [...(res.piles || []), ...(res.combi_walls || []), ...(res.beams || []), ...(res.slabs || []), ...(res.sheet_pile_walls || []), ...(res.approach_slabs || [])];
+  const util = (x) => {
+    if (!x) return undefined;
+    if (x.design) return x.design.uf ?? null;
+    if (x.infill || x.tube) return Math.max(x.infill?.utilisation ?? 0, x.tube?.utilisation ?? 0) || null;
+    if (x.utilisation != null) return x.utilisation;
+    const layers = Object.values(x.layers || {}).map((l) => l.utilisation).filter((u) => u != null);
+    return layers.length ? Math.max(...layers) : null;
+  };
+  const items = cards.map(({ name }) => {
+    const r = all.find((x) => (x.key || x.element) === name) || all.find((x) => x.element === name);
+    const u = util(r);
+    const kind = sec().elements[r?.element || name]?.kind || guessKind(name);
+    const st = worst[name] || (u == null ? null : statusOf(u));
+    return { key: name, label: name, kind, utilisation: u, status: st || (u === undefined ? "" : "none"),
+      sub: u != null ? `utilisation ${fmt(u, 2)}` : KINDS[kind]?.label };
+  });
+  const pickKey = `results:${sec().id}`;
+  let current = picked(pickKey);
+  // First visit: every element folded to its title line, to open one by one or pick from the tiles.
+  if (current !== ALL && !items.some((i) => i.key === current)) current = ALL;
+  const show = (key) => {
+    keepPick(pickKey, key);
+    out.classList.toggle("one-element", key !== ALL);
+    for (const c of cards) {
+      c.card.classList.toggle("picked", key === ALL || c.name === key);
+      if (key === c.name) setFolded(c.card, false);
+    }
+  };
+  for (const c of cards) foldable(c.card, `result:${sec().id}:${c.name}`, false);
+  const look = [...out.querySelectorAll(":scope > .panel")].find((x) => x.querySelector(":scope > h3")?.textContent.startsWith("To look at"));
+  if (look) foldable(look, `look:${sec().id}`, true);
+  const box = document.createElement("div");
+  box.className = "panel pick-panel";
+  box.innerHTML = `<div class="pick-head"><h3>Results by element</h3><span class="status">Green safe, amber near the limit (0.95 to 1.0), red unsafe. The bar shows the utilisation.</span></div>`;
+  box.append(stepper({ items, current, noun: "element", onPick: show, onFoldAll: (f) => cards.forEach((c) => setFolded(c.card, f)) }));
+  const first = out.querySelector(":scope > h2, #pile-cards");
+  out.insertBefore(box, first);
+  cards.forEach((c) => {
+    const kind = items.find((i) => i.key === c.name)?.kind;
+    c.card.classList.add("kind-card");
+    c.card.style.setProperty("--kind", kindColor(kind));
+  });
+  show(current);
 }
 
 // ---------------------------------------------------------------- 3D
@@ -3550,8 +3739,10 @@ function loadingCard(box, title, run, full) {
     if (!document.body.contains(bar)) return clearInterval(timer);
     const spent = (Date.now() - run.began) / 1000;
     const f = run.fraction ?? (last ? Math.min(spent / (last / 1000), 0.95) : null);
-    pct.textContent = f == null ? "" : `${Math.round(f * 100)}%`;
-    bar.style.width = `${f == null ? 100 : Math.max(f * 100, 2)}%`;
+    if (f == null) {
+      pct.textContent = "";
+      bar.style.width = "100%";
+    } else smooth(`load:${full}:${run.began}`, bar, f, { pct, ahead: run.fraction != null ? 0.1 : 0 });
     const took = (s) => (s < 60 ? `${Math.round(s)} s` : `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`);
     sub.textContent = [run.step || "Working", took(spent), last ? `about ${took(last / 1000)} last time` : ""].filter(Boolean).join(" · ");
   };
@@ -5507,9 +5698,10 @@ function officeSheet(sh) {
   const head = `<tr><th>Item</th><th>Unit</th>${sh.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
   const body = sh.groups.map((g) => `<tr class="sheet-group"><th colspan="${sh.columns.length + 2}">${esc(g.title)}</th></tr>`
     + g.rows.map((r) => `<tr><td>${esc(r.item)}</td><td>${esc(r.unit)}</td>${r.values.map((v) => cell(v, r)).join("")}</tr>`).join("")).join("");
-  return `<h3 style="margin-top:18px">Tube check by zone (office sheet)</h3>
+  return `${tubeZonesHtml(sh, { esc, fmt })}
+    <details class="office-details"><summary>Full calculation in the office sheet layout</summary>
     <p class="status">Each zone takes its largest N, V and M together, as the office sheet does. Green passes, red fails.</p>
-    <div class="scroll"><table class="office-sheet">${head}${body}</table></div>`;
+    <div class="scroll"><table class="office-sheet">${head}${body}</table></div></details>`;
 }
 
 function combiCard(w) {
