@@ -312,4 +312,5 @@ export const SECTION_PAGES = [
   { title: "Quay furniture", keys: ["quay"], intro: "Whether this berth has fender protrusions and STS cranes. Their sizes are on the Furniture tab." },
   { title: "Berth line", keys: ["alignment"], intro: "The berth's line in plan: straight, or a corner with an inclined part." },
   { title: "Joints", keys: ["joints"], intro: "Expansion joints along this section's berth." },
+  { title: "Location on the map", keys: ["location"], intro: "Which of the project's sites this section is at, and its own pin if you want it placed exactly. Never a design input." },
 ];

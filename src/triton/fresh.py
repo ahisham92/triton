@@ -39,6 +39,7 @@ _SECTION_OWN = {
     "site",
     "existing",
     "sequence",
+    "location",
 }
 
 

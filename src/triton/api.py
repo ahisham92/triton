@@ -71,6 +71,7 @@ from .project import (
     ProjectInfo,
     Section,
     SheetPileInput,
+    Site,
     WeldSettings,
     WhatIf,
     _now,
@@ -116,7 +117,7 @@ def store() -> ProjectStore:
 def index() -> HTMLResponse:
     page = (STATIC / "index.html").read_text(encoding="utf-8")
     # A new version of a file gets a new address, so no browser keeps running an old one.
-    for name in ("app.js", "style.css"):
+    for name in ("app.js", "style.css", "projects.css"):
         page = page.replace(f"static/{name}", f"static/{name}?v={int((STATIC / name).stat().st_mtime)}")
     # The modules app.js imports get new addresses too, through an import map.
     modules = {
@@ -159,6 +160,18 @@ def project_schema() -> dict:
 # --- Projects ----------------------------------------------------------------------
 
 
+class SectionPin(BaseModel):
+    """A section on the projects map: its site, its own pin if it has one, and what it holds."""
+
+    id: str
+    name: str
+    site: str = ""
+    lat: float | None = None
+    lon: float | None = None
+    kinds: list[str] = []
+    locked: bool = False
+
+
 class ProjectSummary(BaseModel):
     id: str
     name: str
@@ -166,6 +179,10 @@ class ProjectSummary(BaseModel):
     sections: int
     elements: int
     updated_at: str
+    client: str = ""
+    location: str = ""
+    sites: list[Site] = []
+    section_pins: list[SectionPin] = []
 
 
 class NewProject(BaseModel):
@@ -209,6 +226,21 @@ def list_projects() -> list[ProjectSummary]:
             sections=len(p.sections),
             elements=sum(len(s.elements) for s in p.sections),
             updated_at=p.updated_at,
+            client=p.info.client,
+            location=p.info.location,
+            sites=p.info.sites,
+            section_pins=[
+                SectionPin(
+                    id=s.id,
+                    name=s.name,
+                    site=s.location.site,
+                    lat=s.location.lat,
+                    lon=s.location.lon,
+                    kinds=[e.kind for e in s.elements.values()],
+                    locked=s.locked,
+                )
+                for s in p.sections
+            ],
         )
         for p in store().list()
     ]
@@ -325,6 +357,7 @@ def _model(p: Project) -> dict:
         s.pop("site", None)  # seabed, water and soil as drawn in 3D
         s.pop("existing", None)  # the quay already on site: drawn and checked, never designed
         s.pop("sequence", None)  # the construction sequence
+        s.pop("location", None)  # where the section is on the map
         s.pop("locked", None)
         for el in s.get("elements", {}).values():  # a sheet pile wall's "ignore N or Q", ticked on its card
             if el.get("kind") == "sheet_pile_wall":
