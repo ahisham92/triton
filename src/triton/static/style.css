@@ -541,3 +541,12 @@ h1 { color: var(--brand); }
   .pick-text small { font-size: 11px; }
   .hero { flex-direction: column; align-items: flex-start; }
 }
+/* Panels that fold to their title line (the element head, or a first h3). */
+.foldable > .element-head, .foldable > .pick-head, .foldable > h3:first-child { cursor: pointer; user-select: none; }
+.foldable > .element-head h3::before, .foldable > .pick-head h3::before, .foldable > h3:first-child::before {
+  content: "\25BE"; display: inline-block; width: 1em; color: var(--muted); font-size: 14px; transition: transform .15s; }
+.foldable.folded > .element-head h3::before, .foldable.folded > .pick-head h3::before, .foldable.folded > h3:first-child::before { transform: rotate(-90deg); }
+.foldable.folded > :not(.element-head):not(.pick-head):not(h3:first-child) { display: none !important; }
+.foldable.folded > .element-head, .foldable.folded > .pick-head, .foldable.folded > h3:first-child { margin-bottom: 0; }
+.foldable.folded { padding-top: 12px; padding-bottom: 12px; }
+.fold-all { display: inline-flex; gap: 6px; }

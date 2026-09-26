@@ -9,7 +9,7 @@ import { APPROACH, approachCard, approachPanel } from "./approach.js";
 import { renderFurniture } from "./furniture.js";
 import { renderMovedPiles } from "./moved.js";
 import { renderSequence } from "./sequence.js";
-import { ALL, KINDS, flowDiagram, guessKind, keepPick, kindColor, kindIcon, picked, quaySketch, statusOf, stepper } from "./picker.js";
+import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -1108,15 +1108,23 @@ function renderSections(host) {
     const guide = document.createElement("div");
     guide.className = "panel pick-panel";
     guide.innerHTML = `<div class="pick-head"><h3>Sections of ${esc(p.info.name)}</h3><span class="status">Choose a section to see its settings. It becomes the section the other tabs show.</span></div>`;
-    guide.append(stepper({ items, current: cur, noun: "section", onPick: (key) => {
+    guide.append(stepper({ items, current: cur, noun: "section", onFoldAll: (f) => secCards.forEach((c) => setFolded(c, f)), onPick: (key) => {
       keepPick(`sections:${p.id}`, key);
       if (key !== ALL) state.sectionId = key;
-      for (const [id, c] of secCards) c.hidden = key !== ALL && id !== key;
+      for (const [id, c] of secCards) {
+        c.hidden = key !== ALL && id !== key;
+        if (id === key) setFolded(c, false);
+      }
       const s2 = document.getElementById("section-pick");
       if (s2 && key !== ALL) s2.value = key;
     } }));
     host.insertBefore(guide, host.querySelector(".panel.row"));
-    queueMicrotask(() => { for (const [id, c] of secCards) c.hidden = cur !== ALL && id !== cur; });
+    queueMicrotask(() => {
+      for (const [id, c] of secCards) {
+        c.hidden = cur !== ALL && id !== cur;
+        if (id === cur) setFolded(c, false);
+      }
+    });
   }
   p.sections.forEach((s, i) => {
     const card = document.createElement("div");
@@ -1124,6 +1132,7 @@ function renderSections(host) {
     card.style.setProperty("--kind", kindColor("section"));
     card.style.marginBottom = "16px";
     secCards.set(s.id, card);
+    if (p.sections.length > 1) foldable(card, `section:${s.id}`, false);
     const n = Object.keys(s.elements).length;
     card.innerHTML = `<div class="element-head"><h3>${kindIcon("section", 30)}${esc(s.name)}<span class="type">${n} element${n === 1 ? "" : "s"}</span></h3>
       <span><button class="quiet" data-open data-free>Open</button> <button class="quiet" data-copy title="A new section with this one's settings, without its workbook, mapping or results">Duplicate</button> <button class="danger" data-remove ${p.sections.length > 1 ? "" : "disabled"}>Remove</button></span></div>`;
@@ -1399,7 +1408,10 @@ function renderElements(host) {
   const show = (key) => {
     current = key;
     keepPick(pickKey, key);
-    for (const [n, c] of cards) c.hidden = key !== ALL && n !== key;
+    for (const [n, c] of cards) {
+      c.hidden = key !== ALL && n !== key;
+      if (n === key) setFolded(c, false);
+    }
     sketchBox.replaceChildren(sketch(key));
   };
   const list = names.map((n) => ({ key: n, label: n, kind: p.elements[n].kind }));
@@ -1416,7 +1428,7 @@ function renderElements(host) {
       sketchBox.replaceChildren(sketch(current));
     });
   const sketch = (sel) => quaySketch({ elements: names.map((n) => ({ name: n, kind: p.elements[n].kind })), geometry: geoKept, site: p.site, selected: sel, onPick: (n) => bar.pick(n) });
-  const bar = stepper({ items: list, current, noun: "element", onPick: show });
+  const bar = stepper({ items: list, current, noun: "element", onPick: show, onFoldAll: (f) => cards.forEach((c) => setFolded(c, f)) });
   guide.append(bar, sketchBox);
   host.prepend(guide);
   for (const name of names) {
@@ -1430,6 +1442,7 @@ function renderElements(host) {
     card.innerHTML = `<div class="element-head"><h3>${kindIcon(el.kind, 30)}${esc(name)}<span class="type">${esc(KIND_LABEL[el.kind] || el.kind)}</span></h3>
       <button class="danger">Remove</button></div>`;
     cards.set(name, card);
+    foldable(card, `element:${p.id}:${name}`, false);
     card.querySelector("button").onclick = () => {
       const copy = { ...p.elements };
       delete copy[name];
@@ -2796,6 +2809,9 @@ async function renderDesignTab(host) {
     </div><div class="panel" id="displacements" data-free></div><div class="panel" id="deflections" data-free></div><div id="design-out"></div>`;
   displacementsPanel(document.getElementById("displacements"));
   deflectionsPanel(document.getElementById("deflections"));
+  // Folded to their title lines until opened (kept per section).
+  foldable(document.getElementById("displacements"), `disp:${section.id}`, false);
+  foldable(document.getElementById("deflections"), `defl:${section.id}`, false);
   let stale = [];
   let quick = []; // designed in Standard mode
   const run = document.getElementById("run-design");
@@ -3565,17 +3581,23 @@ function pickResults(res, out) {
   });
   const pickKey = `results:${sec().id}`;
   let current = picked(pickKey);
-  if (current !== ALL && !items.some((i) => i.key === current))
-    current = (items.find((i) => i.status === "unsafe") || items[0]).key; // the first unsafe one, else the first
+  // First visit: every element folded to its title line, to open one by one or pick from the tiles.
+  if (current !== ALL && !items.some((i) => i.key === current)) current = ALL;
   const show = (key) => {
     keepPick(pickKey, key);
     out.classList.toggle("one-element", key !== ALL);
-    for (const c of cards) c.card.classList.toggle("picked", key === ALL || c.name === key);
+    for (const c of cards) {
+      c.card.classList.toggle("picked", key === ALL || c.name === key);
+      if (key === c.name) setFolded(c.card, false);
+    }
   };
+  for (const c of cards) foldable(c.card, `result:${sec().id}:${c.name}`, false);
+  const look = [...out.querySelectorAll(":scope > .panel")].find((x) => x.querySelector(":scope > h3")?.textContent.startsWith("To look at"));
+  if (look) foldable(look, `look:${sec().id}`, true);
   const box = document.createElement("div");
   box.className = "panel pick-panel";
   box.innerHTML = `<div class="pick-head"><h3>Results by element</h3><span class="status">Green safe, amber near the limit (0.95 to 1.0), red unsafe. The bar shows the utilisation.</span></div>`;
-  box.append(stepper({ items, current, noun: "element", onPick: show }));
+  box.append(stepper({ items, current, noun: "element", onPick: show, onFoldAll: (f) => cards.forEach((c) => setFolded(c.card, f)) }));
   const first = out.querySelector(":scope > h2, #pile-cards");
   out.insertBefore(box, first);
   cards.forEach((c) => {

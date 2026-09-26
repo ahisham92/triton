@@ -95,7 +95,7 @@ export const ALL = "*";
  * items: [{ key, label, kind, sub, status, utilisation }]
  * Returns the element; `onPick(key)` is called on every change (ALL for "show all").
  */
-export function stepper({ items, current, noun = "element", nouns = `${noun}s`, onPick, allowAll = true, tiles = true }) {
+export function stepper({ items, current, noun = "element", nouns = `${noun}s`, onPick, allowAll = true, tiles = true, onFoldAll = null }) {
   const box = document.createElement("div");
   box.className = "stepper";
   const keys = items.map((i) => i.key);
@@ -122,11 +122,17 @@ export function stepper({ items, current, noun = "element", nouns = `${noun}s`, 
           .map((i) => `<option value="${esc(i.key)}" ${i.key === cur ? "selected" : ""}>${esc(i.label)}</option>`)
           .join("")}${allowAll ? `<option value="${ALL}" ${cur === ALL ? "selected" : ""}>All ${esc(nouns)}</option>` : ""}</select>
         <button type="button" class="quiet" data-step="1" ${at < 0 || at >= keys.length - 1 ? "disabled" : ""} data-free>Next &#9654;</button>
-        <span class="status">${at >= 0 ? `${at + 1} of ${keys.length}` : `all ${keys.length}`}</span></div>`;
+        <span class="status">${at >= 0 ? `${at + 1} of ${keys.length}` : `all ${keys.length}`}</span>
+        ${cur === ALL && onFoldAll ? `<span class="fold-all"><button type="button" class="quiet" data-fold="0" data-free>&#9662; Open all</button>
+          <button type="button" class="quiet" data-fold="1" data-free>&#9656; Fold all</button></span>` : ""}
+        ${cur === ALL && allowAll && keys.length ? `<button type="button" class="quiet" data-one data-free title="Back to one ${esc(noun)} at a time">Show one at a time</button>` : ""}</div>`;
     box.querySelectorAll(".pick-tile, .pick-nav button, .pick-nav select").forEach((b) => (b.dataset.free = ""));
     box.querySelectorAll(".pick-tile").forEach((b) => (b.onclick = () => go(b.dataset.key)));
     box.querySelectorAll("[data-step]").forEach((b) => (b.onclick = () => go(keys[Math.max(0, Math.min(keys.length - 1, keys.indexOf(cur) + +b.dataset.step))])));
     box.querySelector("select").onchange = (e) => go(e.target.value);
+    box.querySelectorAll("[data-fold]").forEach((b) => (b.onclick = () => onFoldAll(b.dataset.fold === "1")));
+    const one = box.querySelector("[data-one]");
+    if (one) one.onclick = () => go(keys[0]);
   };
   const go = (key) => {
     if (key == null) return;
@@ -257,4 +263,26 @@ export function flowDiagram(steps, onGo) {
     .join("");
   box.querySelectorAll(".flow-step").forEach((b) => (b.onclick = () => onGo(b.dataset.tab)));
   return box;
+}
+
+// A panel that folds to its title line: click the title (or its arrow) to open or hide the rest.
+// What was open is kept per `key`; `open` is the first-time state.
+export function foldable(box, key, open = false) {
+  box.classList.add("foldable");
+  const kept = key ? picked(`fold:${key}`) : undefined;
+  box.classList.toggle("folded", !(kept ?? open));
+  box.dataset.foldKey = key || "";
+  if (box._folding) return box;
+  box._folding = true;
+  box.addEventListener("click", (e) => {
+    const head = [...box.children].find((ch) => ch.matches(".element-head, .pick-head, h3:first-child") && ch.contains(e.target));
+    if (!head) return;
+    if (e.target.closest("button, a, input, select, label, textarea") && !e.target.closest(".fold-arrow")) return;
+    setFolded(box, !box.classList.contains("folded"));
+  });
+  return box;
+}
+export function setFolded(box, folded) {
+  box.classList.toggle("folded", folded);
+  if (box.dataset.foldKey) keepPick(`fold:${box.dataset.foldKey}`, !folded);
 }
