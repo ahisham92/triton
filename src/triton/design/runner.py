@@ -159,8 +159,8 @@ def run_section(
     elements. ``deadline`` (``time.monotonic()``): start no element after it (at least one is done);
     the rest are listed in ``left``, the ones done in ``designed``. ``approach``: the project's approach
     slab, designed as the element "Approach Slab" with its ledge on the rear beam, whose load and
-    torque the rear beam takes too. ``mode``: "detailed" (the full design) or "standard" (the quick
-    overview, see design/standard.py)."""
+    torque the rear beam takes too. ``mode``: "detailed" or "standard": the same design, Standard marked as
+    having no drawings, AdSec files or clash checks (see design/standard.py)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {', '.join(MODES)}")
     started: list[str] = []
@@ -192,7 +192,7 @@ def run_section(
     stopped = False
     section, heads = assumed_heads(section, workbook)
     try:
-        _design(settings, section, workbook, approach, furniture_at, tick, take, out, mode == "standard")
+        _design(settings, section, workbook, approach, furniture_at, tick, take, out)
         on.clear()
     except Stopped:
         # Stop pressed: the elements finished so far keep their results; the one under way is dropped.

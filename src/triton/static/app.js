@@ -2666,7 +2666,7 @@ async function renderDesignTab(host) {
       <div class="row pick-row" id="design-mode">
       <span>Type</span>
       <label class="chip" title="The full design: bars, cages, drawings, AdSec files, clash checks"><input type="radio" name="design-mode" value="detailed" ${designMode() === "detailed" ? "checked" : ""}> Detailed</label>
-      <label class="chip" title="Quicker: whether each element works, its utilisation and steel ratio, without the bar layout"><input type="radio" name="design-mode" value="standard" ${designMode() === "standard" ? "checked" : ""}> Standard (quick overview)</label>
+      <label class="chip" title="The full design (bars, cages, every check) without drawings, AdSec files and clash checks"><input type="radio" name="design-mode" value="standard" ${designMode() === "standard" ? "checked" : ""}> Standard (no drawings, AdSec or clashes)</label>
       <span class="status" id="design-mode-note"></span>
       </div>
       <div class="row">
@@ -2705,7 +2705,7 @@ async function renderDesignTab(host) {
     if (note)
       note.textContent =
         designMode() === "standard"
-          ? "Workable or not, utilisation and steel ratio per element. No bars, drawings, AdSec files or clash checks."
+          ? "The full design (bars, cages, every check) without drawings, AdSec files or clash checks."
           : "Bars, cages, drawings, AdSec files and clash checks.";
   };
   modeNote();
@@ -2728,7 +2728,7 @@ async function renderDesignTab(host) {
           <input type="checkbox" data-pick="${esc(n)}" ${picked?.includes(n) ? "checked" : ""}> ${esc(n)}</label>`)
         .join("")}
       ${stale.length ? `<button class="quiet small" id="pick-stale">Only the ${stale.length} out of date</button>` : ""}
-      ${quick.length && designMode() === "detailed" ? `<button class="quiet small" id="pick-standard">Only the ${quick.length} designed in Standard</button>` : ""}`;
+      ${quick.length && designMode() === "detailed" ? `<button class="quiet small" id="pick-standard" title="Ticks the elements whose last design was Standard, to design them again in Detailed">Tick the ${quick.length === 1 ? "element" : `${quick.length} elements`} last designed in Standard</button>` : ""}`;
     box.querySelectorAll("[data-pick]").forEach(
       (c) =>
         (c.onchange = () => {
@@ -3294,8 +3294,9 @@ function wireExportPick(names, steelOnly, anyCages) {
   draw();
 }
 
-// Standard design: a quick overview (workable or not, utilisation, steel ratio) without the bar
-// layout. Those elements get one table; the Detailed ones keep their cards, exports and drawings.
+// Standard design: the full design (bars, cages, every check) without drawings, AdSec files and
+// clash checks. Its elements get their cards as usual and an overview table on top; the drawing,
+// AdSec and bar downloads are for the Detailed ones.
 const RESULT_KINDS = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"];
 const isStandard = (e) => e?.design_mode === "standard";
 const withoutStandard = (r) => {
@@ -3321,13 +3322,13 @@ function standardHtml(res) {
     })
     .join("");
   return `<h2>Standard design (overview)</h2><div class="panel scroll">
-    <p class="status" style="margin-top:0">The same checks and forces as a Detailed design, without the bar layout. The steel is an estimate.
-      Bars, cages, drawings, AdSec files and clash checks need a Detailed design: tick these elements and design them in Detailed.</p>
+    <p class="status" style="margin-top:0">The same design as Detailed: bars, cages and every check are in each element's card below.
+      Drawings, AdSec files and clash checks need a Detailed design: tick these elements and design them in Detailed.</p>
     <table><tr><th>Element</th><th>Result</th><th title="Hover a value for every check">Utilisation</th><th>Governed by</th><th>kg/m³</th><th>Steel</th><th>What does not work</th></tr>${rows}</table></div>`;
 }
 
 function drawResults(res, full = res) {
-  drawCards(withoutStandard(res), withoutStandard(full));
+  drawCards(res, full, withoutStandard(full));
   const html = standardHtml(res);
   if (!html) return;
   const out = document.getElementById("design-out");
@@ -3336,13 +3337,14 @@ function drawResults(res, full = res) {
   else out?.insertAdjacentHTML("afterbegin", html);
 }
 
-function drawCards(res, full = res) {
+function drawCards(res, full = res, withBars = full) {
   const out = document.getElementById("design-out");
   const walls = res.combi_walls || [];
   const spws = res.sheet_pile_walls || [];
   const beams = res.beams || [];
   const slabs = res.slabs || [];
-  const anyCages = full.piles.length || (full.combi_walls || []).length || (full.beams || []).length || (full.slabs || []).length;
+  // Drawings, AdSec files and bars for Revit: from the elements designed in Detailed.
+  const anyCages = withBars.piles.length || (withBars.combi_walls || []).length || (withBars.beams || []).length || (withBars.slabs || []).length;
   const link = document.getElementById("cages");
   if (link) link.hidden = !anyCages;
   const ads = document.getElementById("ads");

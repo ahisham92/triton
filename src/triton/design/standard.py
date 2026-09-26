@@ -1,12 +1,12 @@
-"""Standard design: a quick overview of a section, next to the Detailed design.
+"""Standard design: the Detailed design without its drawings, AdSec files and clash checks.
 
-A Standard design runs the same checks as a Detailed one (N–M, shear, QP crack widths, punching,
-the steel casing and tube) with the same forces, so "workable" means the same in both. It is quicker
-because it leaves out what only drawing the bars needs: the pile cages are one cage down the whole
-pile (no curtailment zones or alternatives), a slab is designed with one mesh spacing, the beam's
-transverse bars are checked for crack width at the QP nodes that can give the widest crack, and
-there are no construction joints, AdSec sets, drawings, cages or clash checks. Its steel is an
-estimate for the overview (kg/m³ and % of the concrete): the bars behind it are not for drawing.
+A Standard design is the same run as a Detailed one (Ahmed, 2026-09-26): the same bars, cages and
+checks, shown in Triton, with an overview per element (workable or not, utilisation, what governs,
+steel ratio). Only the drawings (DXF / Revit), the bars for Revit, the AdSec files and governing
+sets, and the clash checks leave its elements out, until they are designed in Detailed mode.
+
+The designs' ``standard`` arguments (quicker checks: coarser pile zones, one slab mesh spacing,
+QP crack candidates) are not used by a Standard design any more.
 """
 
 from __future__ import annotations
@@ -17,9 +17,8 @@ MODES = ("detailed", "standard")
 KEY = "design_mode"  # on each element's results; missing = detailed (every design before Standard)
 
 NOTE = (
-    "Standard design (overview): whether the element works, its utilisation and its steel ratio. "
-    "The bars behind the steel ratio are an estimate, not for drawing: design it in Detailed mode for "
-    "the bar layout, cages, drawings, AdSec files and clash checks."
+    "Standard design: the full design, without drawings, AdSec files or clash checks. Design it in "
+    "Detailed mode for those."
 )
 
 

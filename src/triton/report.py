@@ -137,12 +137,8 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
         )
     _introduction(r, project, section, results, detail)
     _criteria(r, project.design, section, results)
-    # Elements designed in Standard mode: their overview only, not the bars behind it.
-    full = results
-    results, _ = standard.detailed_only(results, ("piles", "combi_walls", "beams", "slabs"))
-    _standard_overview(r, full)
-    if any(results.get(k) for k in ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls")):
-        _sections(r, section, results)
+    _standard_overview(r, results)
+    _sections(r, section, results)
     _displacements(r, section)
     for a in results.get("approach_slabs", []):
         _approach_summary(r, a)
@@ -526,10 +522,8 @@ def _standard_overview(r: Report, res: dict) -> None:
         return
     r.h(1, "Standard design (overview)")
     r.p(
-        "These elements were designed in Standard mode: the same checks and forces as a Detailed design "
-        "(N–M, shear, QP crack widths, punching, the steel tube and casing), giving whether each element "
-        "works, its utilisation and its steel ratio. The steel is an estimate; the bar layout, cages, "
-        "drawings and AdSec files come with a Detailed design."
+        "These elements were designed in Standard mode: the same design as Detailed, with their bars and "
+        "every check in this report, but without drawings, AdSec files or clash checks."
     )
     r.table(["Element", "Workable", "Utilisation", "Governed by", "Steel kg/m³", "Steel %"], rows)
     if why:

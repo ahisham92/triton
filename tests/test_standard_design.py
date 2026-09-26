@@ -20,25 +20,19 @@ def deck_section():
     )
 
 
-def test_standard_gives_the_same_verdict_and_steel_quicker():
+def test_standard_is_the_detailed_design_marked():
     wb = deck_workbook()
     full = run_section(DesignSettings(), deck_section(), wb)
-    quick = run_section(DesignSettings(), deck_section(), wb, mode="standard")
-    assert full["mode"] == "detailed" and quick["mode"] == "standard"
+    same = run_section(DesignSettings(), deck_section(), wb, mode="standard")
+    assert full["mode"] == "detailed" and same["mode"] == "standard"
     for kind in ("piles", "slabs"):
-        (d,), (q,) = full[kind], quick[kind]
+        (d,), (q,) = full[kind], same[kind]
         assert standard.KEY not in d and q[standard.KEY] == "standard"
-        assert q["passed"] == d["passed"] and q["utilisation"] == pytest.approx(d["utilisation"], abs=0.05)
-        o = q["standard"]
-        assert o["workable"] == q["passed"] and o["checks"] and o["kg_per_m3"] > 0
-        assert q["notes"][0] == standard.NOTE
-    # A pile: no alternatives or AdSec sets; its steel from zones as in the Detailed design.
-    (p,), (pq,) = full["piles"], quick["piles"]
-    assert pq["alternatives"] == [] and pq["governing_sets"] == []
-    assert pq["steel"]["kg_per_m3"] == pytest.approx(p["steel"]["kg_per_m3"], rel=0.15)
-    # A slab: one mesh spacing, not both.
-    (sq,) = quick["slabs"]
-    assert "mesh_choice" not in sq and any("Standard design" in n for n in sq["notes"])
+        assert q["notes"][0] == standard.NOTE and q["standard"]["checks"]
+        # Everything else exactly as the Detailed design: bars, zones, alternatives, AdSec sets.
+        drop = (standard.KEY, "standard", "notes")
+        assert {k: v for k, v in q.items() if k not in drop} == {k: v for k, v in d.items() if k not in drop}
+        assert q["notes"][1:] == d["notes"]
     with pytest.raises(ValueError):
         run_section(DesignSettings(), deck_section(), wb, mode="rough")
 
@@ -108,4 +102,4 @@ def test_report_lists_standard_elements_in_an_overview():
     res = run_section(DesignSettings(), section, wb, mode="standard")
     rep = build_report(Project(sections=[section]), section, res, "detailed")
     text = str(rep.blocks)
-    assert "Standard design (overview)" in text and "Pile(1): pile" not in text
+    assert "Standard design (overview)" in text and "Pile(1): pile" in text
