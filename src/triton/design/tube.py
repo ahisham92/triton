@@ -65,6 +65,8 @@ class Tube:
     grade: str
     fabrication_class: str = "B"
     inside: float = 0.0  # mm, lost from the inside
+    fy_set: float | None = None  # MPa, instead of the grade's value for the thickness
+    name: str = ""
 
     @property
     def d(self) -> float:
@@ -99,6 +101,8 @@ class Tube:
 
     @property
     def fy(self) -> float:
+        if self.fy_set:
+            return float(self.fy_set)
         return float(structural_steel_fy(self.grade, self.thickness))
 
     @property
@@ -150,6 +154,38 @@ class Tube:
             "sigma_Rd_MPa": round(chi * self.fy / GAMMA_M1, 1),
         }
 
+    def shear_buckling(self, length: float, gamma_m1: float = GAMMA_M1) -> dict[str, float]:
+        """EN 1993-1-6 D.1.4: shear buckling of a cylinder of ``length`` (mm) between restraints."""
+        r = (self.d - self.t) / 2
+        omega = length / math.sqrt(r * self.t)
+        if omega <= 10:
+            c_tau = math.sqrt(1 + 42 / omega**3)
+        elif omega <= 8.7 * r / self.t:
+            c_tau = 1.0
+        else:
+            c_tau = math.sqrt(omega * self.t / r) / 3
+        tau_cr = 0.75 * E_STEEL * c_tau * math.sqrt(1 / omega) * self.t / r
+        q = Q_FABRICATION[self.fabrication_class]
+        alpha = 0.65 / (1 + 1.91 * (math.sqrt(r / self.t) / q) ** 1.44)
+        lam = math.sqrt(self.fy / math.sqrt(3) / tau_cr)
+        lam0, beta = 0.4, 0.6
+        lam_p = math.sqrt(alpha / (1 - beta))
+        if lam <= lam0:
+            chi = 1.0
+        elif lam < lam_p:
+            chi = 1 - beta * (lam - lam0) / (lam_p - lam0)
+        else:
+            chi = alpha / lam**2
+        return {
+            "omega": omega,
+            "C_tau": c_tau,
+            "tau_cr_MPa": tau_cr,
+            "alpha": alpha,
+            "slenderness": lam,
+            "chi": chi,
+            "tau_Rd_MPa": chi * self.fy / math.sqrt(3) / gamma_m1,
+        }
+
     def resistances(self, gamma_m0: float = GAMMA_M0) -> dict[str, float]:
         fy = self.fy
         return {
@@ -194,7 +230,7 @@ def tube_loads(
 ):
     """ULS points with the tube's share of the actions (Plaxis sign, kN and kNm).
 
-    Results up to ``above`` (m) over the top level are kept and taken at the top level.
+    Results up to ``above`` (m) over the top level are kept at their own level.
     """
     parts = []
     for combo, sheet in sheets.items():
@@ -206,7 +242,6 @@ def tube_loads(
         f = f[cols].copy()
         if top is not None:
             f = f[f["Z"] <= top + above + 1e-9]
-            f = f.assign(Z=f["Z"].clip(upper=top))
         filled = f["Z"] >= filled_from - 1e-9
         share = np.where(filled, steel_share, 1.0)
         f = f.assign(
@@ -250,9 +285,11 @@ def column_buckling(
     curve: str,
     gamma_m0: float,
     gamma_m1: float,
+    firm: float | None = None,
+    column_ei: float | None = None,
 ) -> tuple[dict[str, Any], np.ndarray]:
     """Composite column buckling of the king pile (see the module notes); utilisation per load."""
-    length = max(top - toe, 0.1)
+    length = max(top - (toe if firm is None else max(firm, toe)), 0.1)
     grid = np.linspace(top, toe, 201)
     gi = zone_index(zones, grid)
     filled = grid >= filled_from - 1e-9
@@ -261,6 +298,7 @@ def column_buckling(
     ei = np.array([E_STEEL * zones[k][2].i for k in gi]) + np.where(filled, KE * ecm * ic, 0.0)
     npl = np.array([zones[k][2].a_eff * zones[k][2].fy for k in gi]) + np.where(filled, 0.85 * ac * fck, 0.0)
     ei_avg, npl_avg = float(ei.mean()), float(npl.mean())  # N·mm², N
+    ei_avg = column_ei or ei_avg
     lcr = factor * length * 1e3
     ncr = math.pi**2 * ei_avg / lcr**2
     lam = math.sqrt(npl_avg / ncr)
@@ -287,6 +325,108 @@ def column_buckling(
         "N_b_Rd_kN": round(nb_rd),
     }
     return info, util
+
+
+def _office(
+    zones: Zones, loads: pd.DataFrame, column: dict[str, Any], gamma_m0: float, gamma_m1: float
+) -> tuple[dict, dict, np.ndarray, np.ndarray, dict | None]:
+    """The office sheet per zone, from each zone's largest forces, and its checks at every result."""
+    top, toe = column["top"], column["toe"]
+    segs = segments(zones, top, toe, column["filled_from"])
+    zi = zone_index(zones, loads["Z"].to_numpy(float))
+    filled = loads["filled"].to_numpy(bool)
+    where = {(sg.zone, sg.filled): j for j, sg in enumerate(segs)}
+    seg_of = np.array(
+        [where.get((int(k), bool(f)), where.get((int(k), not f), 0)) for k, f in zip(zi, filled, strict=True)]
+    )
+    n, v, m = (loads[c].to_numpy(float) for c in ("N", "V", "M"))
+    nt = loads["N_total"].to_numpy(float) if "N_total" in loads.columns else n
+    forces, combos = [], []
+    for j in range(len(segs)):
+        k = seg_of == j
+        pick = lambda a, k=k: float(a[k].max()) if k.any() else 0.0  # noqa: E731
+        forces.append(
+            {
+                "N": max(pick(-n), 0.0),
+                "N_t": max(pick(n), 0.0),
+                "V": pick(v),
+                "M": pick(m),
+                "N_total": max(pick(-nt), 0.0),
+            }
+        )
+        combos.append(str(loads["combination"].to_numpy()[k][np.argmax(m[k])]) if k.any() else "")
+    firm = column.get("firm")
+    length = max(top - (toe if firm is None else max(firm, toe)), 0.1)
+    sh = office_sheet(
+        segs,
+        forces,
+        length=length,
+        factor=column["factor"],
+        infill_diameter=column["infill_diameter"],
+        fck=column["fck"],
+        ecm=column["ecm"],
+        curve=column["curve"],
+        column_ei=column.get("column_ei"),
+        gamma_m0=gamma_m0,
+        gamma_m1=gamma_m1,
+    )
+    cols = sh["columns"]
+    # The same checks at every result, with its own N, V and M.
+    get = lambda key: np.array([cols[j][key] for j in seg_of], float)  # noqa: E731
+    cls = get("cls")
+    n_c = np.clip(-n, 0, None)
+    tau = v * 1e3 * get("S") / (get("I") * 2 * get("t"))
+    u_tau = tau / (get("fy") / math.sqrt(3) / gamma_m0)
+    u_m = m / get("M_Rd")
+    kyy = CMY * (1 + 0.6 * np.minimum(get("lam"), 1.0) * n_c / get("Nb_Rd"))
+    u_nm = np.clip(-nt, 0, None) / get("Nb_Rd") + kyy * u_m
+    u_sig = np.where(cls >= 3, (np.abs(n) * 1e3 / get("A") + m * 1e6 / get("W_el")) / get("fy"), 0.0)
+    v_pl = get("V_pl")
+    rho = np.where(v >= 0.5 * v_pl, (2 * v / v_pl - 1) ** 2, 0.0)
+    u_mv = np.where(rho > 0, u_m / np.clip(1 - rho, 1e-9, None), 0.0)
+    tau_rd = np.array([cols[j]["tau_Rd_shell"] or np.inf for j in seg_of], float)
+    u_shell = tau / tau_rd
+    stack = np.vstack([u_tau, u_nm, u_sig, u_mv, u_shell])
+    names = np.array(
+        [
+            "shear τ = V·S/(I·2t)",
+            "column buckling N + M (office sheet)",
+            "σ = N/A + M/Wel ≤ fy",
+            "bending with shear",
+            "shell buckling in shear (EN 1993-1-6 D.1.4)",
+        ]
+    )
+    u_more = stack.max(axis=0)
+    why = names[stack.argmax(axis=0)]
+    j = max(range(len(cols)), key=lambda q: cols[q]["u"]) if cols else None
+    governs = None
+    if j is not None:
+        c = cols[j]
+        governs = {
+            "u": c["u"],
+            "zone": c["seg"].name,
+            "check": f"{c['check']} (zone envelope, as the office sheet)",
+            "N": c["N"],
+            "M": c["M"],
+            "V": c["V"],
+            "M_Rd": c["M_Rd"],
+            "combination": combos[j],
+        }
+    b = min(cols, key=lambda c: c["Nb_Rd"]) if cols else None
+    col = {
+        "length_m": round(length, 2),
+        "buckling_length_m": round(sh["Lcr_m"], 2),
+        "EI_eff_kNm2": round(sh["EI_col"] / 1e9),
+        "EI_from": sh["EI_from"],
+        "N_cr_kN": round(sh["N_cr"] / 1e3),
+        "N_pl_Rk_kN": round(sh["Npl_w"] / 1e3),
+        "slenderness": round(b["lam"], 3) if b else None,
+        "curve": column["curve"],
+        "chi": round(b["chi"], 4) if b else None,
+        "N_b_Rd_kN": round(b["Nb_Rd"]) if b else None,
+        "utilisation": _num(max(c["u_NM"] for c in cols), 3) if cols else None,
+    }
+    return sheet_table(sh, column["ecm"], column["fck"]), col, u_more, why, governs
 
 
 def check_tube(
@@ -347,7 +487,13 @@ def check_tube(
         checks[mask] = np.where(fk, "plastic N–M, filled tube (EN 1993-5 5.5.4(9))", check_free)
 
     col = None
-    if column is not None:
+    sheet = None
+    governs = None
+    if column is not None and method == "office":
+        sheet, col, u_more, why, governs = _office(zones, loads, column, gamma_m0, gamma_m1)
+        checks = np.where(u_more > u, why, checks)
+        u = np.maximum(u, u_more)
+    elif column is not None:
         col, u_col = column_buckling(zones, loads, gamma_m0=gamma_m0, gamma_m1=gamma_m1, **column)
         col["utilisation"] = _num(float(np.nanmax(u_col)), 3)
         worse = u_col > u
@@ -382,10 +528,26 @@ def check_tube(
         for p in prof.itertuples()
     ]
     notes.append(
-        "Shell buckling under shear and the forces from the secondary sheet piles are not included yet."
+        "Shell buckling in shear is checked below the infill (EN 1993-1-6 D.1.4, office check); the "
+        "forces from the secondary sheet piles are not included yet."
+        if method == "office"
+        else "Shell buckling under shear and the forces from the secondary sheet piles are not included yet."
     )
     first = zones[0][2]
     u_max = float(u[i])
+    if governs is not None and governs["u"] >= u_max - 1e-9:
+        # The sheet's zone forces are the zone's largest N, V and M together: at least any one result.
+        u_max = governs["u"]
+        governing.update(
+            zone=governs["zone"],
+            check=governs["check"],
+            N_kN=round(-governs["N"]),
+            M_kNm=round(governs["M"]),
+            V_kN=round(governs["V"]),
+            M_Rd_kNm=round(governs["M_Rd"]),
+            combination=governs["combination"],
+            envelope=True,
+        )
     return {
         "utilisation": _num(u_max, 3),
         "passed": bool(u_max <= 1.0),
@@ -420,6 +582,7 @@ def check_tube(
         "resistances": {k: round(v) for k, v in r.items()},
         "buckling": first.buckling() if first.section_class == 4 and method != "office" else None,
         "column": col,
+        "sheet": sheet,
         "governing": governing,
         "profile": profile,
         "notes": list(dict.fromkeys(notes)),
@@ -428,3 +591,373 @@ def check_tube(
 
 def _num(v: float, d: int) -> float | None:
     return round(float(v), d) if math.isfinite(v) else None
+
+
+# --- The office king pile sheet ("SECTION #1") --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Segment:
+    """One column of the office sheet: a corrosion zone, split where the infill stops."""
+
+    name: str
+    top: float
+    bottom: float
+    tube: Tube
+    filled: bool
+    zone: int
+
+    @property
+    def length(self) -> float:
+        return max(self.top - self.bottom, 0.0)
+
+
+def segments(zones: Zones, top: float, toe: float, filled_from: float) -> list[Segment]:
+    out = []
+    for k, (zt, zb, tube) in enumerate(zones):
+        hi, lo = min(zt, top), max(zb, toe) if k < len(zones) - 1 else toe
+        if hi <= lo + 1e-9:
+            continue
+        cuts = [(hi, max(lo, filled_from), True), (min(hi, filled_from), lo, False)]
+        parts = [(a, b, f) for a, b, f in cuts if a > b + 1e-9]
+        for a, b, f in parts:
+            name = tube.name or f"{_lvl(a)} to {_lvl(b)} m"
+            if len(parts) > 1:
+                name += " (filled)" if f else " (steel only)"
+            out.append(Segment(name, a, b, tube, f, k))
+    return out
+
+
+def _lvl(z: float) -> str:
+    return f"{z:+.2f}".rstrip("0").rstrip(".")
+
+
+def _chi(lam: float, alpha: float) -> tuple[float, float]:
+    phi = 0.5 * (1 + alpha * (lam - 0.2) + lam**2)
+    return phi, min(1.0, 1 / (phi + math.sqrt(max(phi**2 - lam**2, 0.0))))
+
+
+def office_sheet(
+    segs: list[Segment],
+    forces: list[dict[str, float]],
+    *,
+    length: float,
+    factor: float,
+    infill_diameter: float,
+    fck: float,
+    ecm: float,
+    curve: str,
+    column_ei: float | None,
+    gamma_m0: float,
+    gamma_m1: float,
+) -> dict[str, Any]:
+    """The office king pile sheet, one column per segment, from the segment's design forces.
+
+    ``forces`` per segment: N (the tube's compression, kN), N_t (the tube's tension), V, M (kN, kNm)
+    and N_total (the whole king pile's compression, composite column). ``column_ei`` in N·mm².
+    Row by row as the sheet, with two rows added: the class 3/4 stress with effective properties
+    and γM0 (EN 1993-1-1 6.2.1(7)) and the shear with γM0 as a utilisation.
+    """
+    ac = math.pi / 4 * infill_diameter**2
+    ic = math.pi / 64 * infill_diameter**4
+    cols = []
+    for sg in segs:
+        t = sg.tube
+        fy, d, tw = t.fy, t.d, t.t
+        di = d - 2 * tw
+        eps2 = 235 / fy
+        cls = t.section_class
+        a, a_eff = t.area, t.a_eff
+        w_el, w_eff, w_pl, i = t.w_el, t.w_eff, t.w_pl, t.i
+        s1 = (d**3 - di**3) / 12
+        av = 2 * a / math.pi
+        ei = E_STEEL * i + (KE * ecm * ic if sg.filled else 0.0)
+        npl_rk = a_eff * fy + (0.85 * ac * fck if sg.filled else 0.0)
+        cols.append(
+            {
+                "seg": sg,
+                "fy": fy,
+                "d": d,
+                "di": di,
+                "t": tw,
+                "eps": math.sqrt(eps2),
+                "cls": cls,
+                "A": a,
+                "A_eff": a_eff,
+                "I": i,
+                "W_el": w_el,
+                "W_eff": w_eff if cls == 4 else w_el,
+                "W_pl": w_pl,
+                "S": s1,
+                "A_v": av,
+                "EI": ei,
+                "Npl_Rk": npl_rk,
+            }
+        )
+    total = sum(c["seg"].length for c in cols) or 1.0
+    npl_w = sum(c["Npl_Rk"] * c["seg"].length for c in cols) / total
+    ei_avg = sum(c["EI"] * c["seg"].length for c in cols) / total
+    ei_col = column_ei or ei_avg
+    lcr = factor * length * 1e3
+    ncr = math.pi**2 * ei_col / lcr**2
+    alpha = CURVES[curve]
+    for c, f in zip(cols, forces, strict=True):
+        fy, cls = c["fy"], c["cls"]
+        n = max(f["N"], f.get("N_t", 0.0))  # kN, the larger of compression and tension
+        v, m, nc = f["V"], f["M"], f["N_total"]
+        n_rd = (c["A_eff"] if cls == 4 else c["A"]) * fy / gamma_m0 / 1e3
+        w_rd = {1: c["W_pl"], 2: c["W_pl"], 3: c["W_el"]}.get(cls, c["W_eff"])
+        m_rd = w_rd * fy / gamma_m0 / 1e6
+        v_pl = c["A_v"] * fy / math.sqrt(3) / gamma_m0 / 1e3
+        tau = v * 1e3 * c["S"] / (c["I"] * 2 * c["t"])
+        u_m = m / m_rd
+        rho = (2 * v / v_pl - 1) ** 2 if v >= 0.5 * v_pl else None
+        nn = n / n_rd
+        mn_rd = m_rd * max(1 - nn**1.7, 0.0) if cls <= 2 else None
+        sigma = n * 1e3 / c["A"] + m * 1e6 / c["W_el"]
+        sigma_eff = n * 1e3 / (c["A_eff"] if cls == 4 else c["A"]) + m * 1e6 / c["W_eff"]
+        shell = (
+            c["seg"].tube.shear_buckling(c["seg"].length * 1e3, max(gamma_m1, GAMMA_M1))
+            if cls == 4 and not c["seg"].filled
+            else None
+        )
+        lam = math.sqrt(c["Npl_Rk"] / ncr)
+        phi, chi = _chi(lam, alpha)
+        nb_rd = chi * npl_w / gamma_m1 / 1e3
+        kyy = CMY * (1 + 0.6 * min(lam, 1.0) * f["N"] / nb_rd)
+        c.update(
+            N=f["N"],
+            N_t=f.get("N_t", 0.0),
+            V=v,
+            M=m,
+            N_total=nc,
+            N_Rd=n_rd,
+            u_N=n / n_rd,
+            M_Rd=m_rd,
+            u_M=u_m,
+            tau=tau,
+            u_tau=tau / (fy / math.sqrt(3) / gamma_m0),
+            tau_Rd_shell=shell["tau_Rd_MPa"] if shell else None,
+            chi_tau=shell["chi"] if shell else None,
+            u_tau_shell=tau / shell["tau_Rd_MPa"] if shell else None,
+            V_pl=v_pl,
+            u_V=v / v_pl,
+            rho=rho,
+            u_MV=u_m / (1 - rho) if rho is not None and rho < 1 else (math.inf if rho is not None else None),
+            n=nn,
+            MN_Rd=mn_rd,
+            u_MN=(m / mn_rd if mn_rd else math.inf) if mn_rd is not None else None,
+            sigma=sigma,
+            u_sigma=sigma / fy if cls >= 3 else None,
+            sigma_eff=sigma_eff,
+            u_sigma_eff=sigma_eff / (fy / gamma_m0) if cls >= 3 else None,
+            lam=lam,
+            phi=phi,
+            chi=chi,
+            Nb_Rd=nb_rd,
+            u_Nb=nc / nb_rd,
+            kyy=kyy,
+            u_NM=nc / nb_rd + kyy * u_m,
+        )
+        checks = {
+            "compression / tension": c["u_N"],
+            "bending": u_m,
+            "shear": c["u_tau"],
+            "shell buckling in shear (EN 1993-1-6 D.1.4)": c["u_tau_shell"],
+            "bending with shear": c["u_MV"],
+            (
+                "bending with axial force (plastic)"
+                if cls <= 2
+                else "N/Aeff + M/Weff ≤ fy/γM0 (EN 1993-1-1 6.2.1(7))"
+            ): c["u_MN"] if cls <= 2 else c["u_sigma_eff"],
+            "stress N/A + M/Wel (sheet)": c["u_sigma"],
+            "column buckling N + M": c["u_NM"],
+        }
+        checks = {k: u for k, u in checks.items() if u is not None}
+        c["check"] = max(checks, key=checks.get)
+        c["u"] = checks[c["check"]]
+    return {
+        "columns": cols,
+        "length_m": length,
+        "Lcr_m": lcr / 1e3,
+        "EI_col": ei_col,
+        "EI_avg": ei_avg,
+        "EI_from": "entered" if column_ei else "zones averaged over the length",
+        "Npl_w": npl_w,
+        "N_cr": ncr,
+        "alpha": alpha,
+    }
+
+
+def sheet_table(sheet: dict[str, Any], ecm: float, fck: float) -> dict[str, Any]:
+    """The office sheet as rows × zone columns for the results card and the report."""
+    cols = sheet["columns"]
+
+    def row(item: str, unit: str, key, fmt: str = "num", check: bool = False) -> dict[str, Any]:
+        vals = [key(c) if callable(key) else c.get(key) for c in cols]
+        out = []
+        for v in vals:
+            if v is None or isinstance(v, str):
+                out.append(v)
+            elif not math.isfinite(v):
+                out.append(None)
+            elif fmt == "pct":
+                out.append(round(100 * v, 2))
+            elif fmt == "sci":
+                out.append(float(f"{v:.3e}"))
+            else:
+                out.append(round(v, 2))
+        return {"item": item, "unit": unit, "values": out, "format": fmt, "check": check}
+
+    t = lambda c: c["seg"].tube  # noqa: E731
+    groups = [
+        (
+            "Pile parameters",
+            [
+                row("Inner pile (infill) diameter", "mm", lambda c: c["di"] + 2 * t(c).inside),
+                row("Thickness", "mm", lambda c: t(c).thickness),
+                row("Corrosion, outside", "mm", lambda c: t(c).corrosion),
+                row("Corrosion, inside", "mm", lambda c: t(c).inside),
+                row("Length of each segment", "m", lambda c: c["seg"].length),
+                row("Levels", "m", lambda c: f"{_lvl(c['seg'].top)} to {_lvl(c['seg'].bottom)}", "text"),
+                row("L, pile head to firm soil", "m", lambda c: sheet["length_m"]),
+            ],
+        ),
+        (
+            "Section class",
+            [
+                row("Effective thickness", "mm", "t"),
+                row("Effective outer diameter", "mm", "d"),
+                row("Effective inner diameter", "mm", "di"),
+                row("d/t", "", lambda c: c["d"] / c["t"]),
+                row("Yield strength fy", "MPa", "fy"),
+                row("ε", "", "eps"),
+                row("Class 1 limit 50ε²", "", lambda c: 50 * c["eps"] ** 2),
+                row("Class 2 limit 70ε²", "", lambda c: 70 * c["eps"] ** 2),
+                row("Class 3 limit 90ε²", "", lambda c: 90 * c["eps"] ** 2),
+                row("Pile class", "", lambda c: f"Class {c['cls']}", "text"),
+                row("Filled with concrete", "", lambda c: "Yes" if c["seg"].filled else "No", "text"),
+            ],
+        ),
+        (
+            "Action forces (tube)",
+            [
+                row("Compression force NEd", "kN", "N"),
+                row("Tension force", "kN", "N_t"),
+                row("Shear force VEd", "kN", "V"),
+                row("Moment MEd", "kNm", "M"),
+            ],
+        ),
+        (
+            "Properties of area",
+            [
+                row("Area A", "mm²", "A"),
+                row("Effective area Aeff = A·√(90ε²/(d/t))", "mm²", "A_eff"),
+                row("Aeff / A", "%", lambda c: c["A_eff"] / c["A"], "pct"),
+                row("Concrete area", "mm²", lambda c: math.pi / 4 * (c["di"] + 2 * t(c).inside) ** 2),
+                row("Second moment of area I", "mm⁴", "I", "sci"),
+                row("Plastic modulus Wpl", "mm³", "W_pl", "sci"),
+                row("Elastic modulus Wel = I/(D/2)", "mm³", "W_el", "sci"),
+                row("Effective modulus Weff = Wel·(140ε²/(d/t))^0.25", "mm³", "W_eff", "sci"),
+                row("Weff / Wel", "%", lambda c: c["W_eff"] / c["W_el"], "pct"),
+                row("S, first moment of half the tube", "mm³", "S", "sci"),
+                row("Shear area Av = 2A/π", "mm²", "A_v"),
+                row("τEd = VEd·S/(I·2t)", "MPa", "tau"),
+            ],
+        ),
+        (
+            "Section check",
+            [
+                row("NRd (A or Aeff)·fy/γM0", "kN", "N_Rd"),
+                row("NEd / NRd", "%", "u_N", "pct", True),
+                row("MRd (Wpl, Wel or Weff)·fy/γM0", "kNm", "M_Rd"),
+                row("MEd / MRd", "%", "u_M", "pct", True),
+                row("τEd / (fy/√3/γM0)", "%", "u_tau", "pct", True),
+                row(
+                    "τRd, shell buckling in shear (EN 1993-1-6 D.1.4), unfilled class 4",
+                    "MPa",
+                    lambda c: c["tau_Rd_shell"] if c["tau_Rd_shell"] is not None else "Not applicable",
+                ),
+                row(
+                    "τEd / τRd (shell buckling in shear)",
+                    "%",
+                    lambda c: c["u_tau_shell"] if c["u_tau_shell"] is not None else "Not applicable",
+                    "pct",
+                    True,
+                ),
+                row(
+                    "MEd / MV,Rd (bending with shear)",
+                    "%",
+                    lambda c: "No interaction: VEd/Vpl,Rd < 0.5" if c["rho"] is None else c["u_MV"],
+                    "pct",
+                    True,
+                ),
+                row("n = NEd / NRd", "", "n"),
+                row(
+                    "MEd / MN,Rd, class 1 and 2",
+                    "%",
+                    lambda c: c["u_MN"] if c["cls"] <= 2 else "Not applicable",
+                    "pct",
+                    True,
+                ),
+                row("σ = N/A + M/Wel, class 3 and 4", "MPa", lambda c: c["sigma"] if c["cls"] >= 3 else None),
+                row(
+                    "σ / fy (as the sheet)",
+                    "%",
+                    lambda c: c["u_sigma"] if c["cls"] >= 3 else "Not applicable",
+                    "pct",
+                    True,
+                ),
+                row(
+                    "N/Aeff + M/Weff ≤ fy/γM0 (EN 1993-1-1 6.2.1(7))",
+                    "%",
+                    lambda c: c["u_sigma_eff"] if c["cls"] >= 3 else "Not applicable",
+                    "pct",
+                    True,
+                ),
+            ],
+        ),
+        (
+            "Buckling check",
+            [
+                row("Ecm", "MPa", lambda c: ecm if c["seg"].filled else "N/A", "num"),
+                row("Ke", "", lambda c: KE if c["seg"].filled else "N/A"),
+                row(
+                    "I concrete",
+                    "mm⁴",
+                    lambda c: math.pi / 64 * (c["di"] + 2 * t(c).inside) ** 4 if c["seg"].filled else "N/A",
+                    "sci",
+                ),
+                row("Total compression on the composite section", "kN", "N_total"),
+                row("Lcr = factor × L", "m", lambda c: sheet["Lcr_m"]),
+                row("EIeff = Ea·Ia + Ke·Ecm·Ic", "N·mm²", "EI", "sci"),
+                row(
+                    f"EI of the whole column ({sheet['EI_from']})", "N·mm²", lambda c: sheet["EI_col"], "sci"
+                ),
+                row(f"Npl,Rk = Aeff·fy + 0.85·Ac·fck (fck {fck:g})", "kN", lambda c: c["Npl_Rk"] / 1e3),
+                row("Npl,Rk of the whole column, length-weighted", "kN", lambda c: sheet["Npl_w"] / 1e3),
+                row("Ncr = π²·EI/Lcr²", "kN", lambda c: sheet["N_cr"] / 1e3),
+                row("λ = √(Npl,Rk / Ncr)", "", "lam"),
+                row("α", "", lambda c: sheet["alpha"]),
+                row("Φ = 0.5·(1 + α(λ − 0.2) + λ²)", "", "phi"),
+                row("χ = 1/(Φ + √(Φ² − λ²))", "", "chi"),
+                row("Nb,Rd = χ·Npl,Rk,whole/γM1", "kN", "Nb_Rd"),
+                row("Nc / Nb,Rd", "%", "u_Nb", "pct", True),
+                row("MEd / MRd", "%", "u_M", "pct", True),
+                row("Cmy", "", lambda c: CMY),
+                row("kyy = Cmy·(1 + 0.6·λ·NEd/Nb,Rd)", "", "kyy"),
+                row("Interaction Nc/Nb,Rd + kyy·MEd/MRd", "%", "u_NM", "pct", True),
+            ],
+        ),
+        (
+            "Result",
+            [
+                row("Governing check", "", "check", "text"),
+                row("Utilisation", "%", "u", "pct", True),
+            ],
+        ),
+    ]
+    return {
+        "columns": [c["seg"].name for c in cols],
+        "groups": [{"title": g, "rows": rows} for g, rows in groups],
+    }

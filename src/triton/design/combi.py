@@ -20,7 +20,15 @@ from typing import Any
 from ..forces import CombiSection, scale_forces
 from ..importer import SheetData
 from ..materials import concrete
-from ..project import Casing, CombiWallInput, DesignSettings, PileInput, with_project_grades
+from ..project import (
+    Casing,
+    CombiWallInput,
+    DesignSettings,
+    PileInput,
+    UserCage,
+    _office_tube_zones,
+    with_project_grades,
+)
 from .governing import placeholder_sets, steel_sets
 from .piles import design_pile
 from .tube import Tube, check_tube, tube_loads
@@ -40,16 +48,26 @@ def combi_section(wall: CombiWallInput) -> CombiSection:
 def tube_zones(wall: CombiWallInput) -> list[tuple[float, float, Tube]]:
     """(top, bottom, tube) down the king pile from the corrosion zones, or one tube for the whole length."""
 
-    def tube(outside: float, inside: float = 0.0) -> Tube:
+    def tube(outside: float, inside: float = 0.0, name: str = "") -> Tube:
         return Tube(
-            wall.tube_diameter, wall.tube_thickness, outside, wall.steel, wall.fabrication_class, inside
+            wall.tube_diameter,
+            wall.tube_thickness,
+            outside,
+            wall.steel,
+            wall.fabrication_class,
+            inside,
+            fy_set=wall.tube_fy,
+            name=name,
         )
 
     if not wall.corrosion_zones:
         return [(math.inf, -math.inf, tube(wall.corrosion_loss))]
     out, top = [], math.inf
+    # Zones saved before they had names take the office sheet's name for the same level and losses.
+    office = {(o.bottom_level, o.outside, o.inside): o.name for o in _office_tube_zones()}
     for z in wall.corrosion_zones:
-        out.append((top, z.bottom_level, tube(z.outside, z.inside)))
+        name = z.name or office.get((z.bottom_level, z.outside, z.inside), "")
+        out.append((top, z.bottom_level, tube(z.outside, z.inside, name)))
         top = z.bottom_level
     return out
 
@@ -71,7 +89,12 @@ def infill_as_pile(wall: CombiWallInput) -> PileInput:
 
 
 def design_combi_wall(
-    name: str, wall: CombiWallInput, settings: DesignSettings, sheets: dict[str, SheetData]
+    name: str,
+    wall: CombiWallInput,
+    settings: DesignSettings,
+    sheets: dict[str, SheetData],
+    cage: UserCage | None = None,
+    standard: bool = False,
 ) -> dict[str, Any]:
     wall = with_project_grades(wall, settings.materials, settings.durability)
     sec = combi_section(wall)
@@ -84,7 +107,7 @@ def design_combi_wall(
         f = f[f["Z"] >= bottom - 1e-9]
         if not f.empty:
             infill_sheets[combo] = replace(sheet, frame=scale_forces(f, 1 - share))
-    infill = design_pile(name, infill_as_pile(wall), settings, infill_sheets).to_dict()
+    infill = design_pile(name, infill_as_pile(wall), settings, infill_sheets, cage, standard).to_dict()
     infill["notes"] = [
         n.replace("into the slab", "into the front beam")
         for n in infill["notes"]
@@ -116,6 +139,8 @@ def design_combi_wall(
             "ecm": conc.ecm,
             "factor": wall.buckling_length_factor,
             "curve": wall.buckling_curve,
+            "firm": wall.firm_soil_level,
+            "column_ei": wall.column_ei * 1e9 if wall.column_ei else None,  # kN·m² to N·mm²
         }
     steel = check_tube(
         zones, loads, method=wall.tube_check, gamma_m0=pf.gamma_m0, gamma_m1=pf.gamma_m1, column=column

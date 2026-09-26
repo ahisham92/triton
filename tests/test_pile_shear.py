@@ -83,9 +83,18 @@ def test_high_shear_needs_closer_links_and_crushing_is_reported():
 def test_link_size_rule():
     sh = design(column(), link_diameter=6.0)["shear"]
     assert sh["min_link_diameter_mm"] >= 6
-    d = design(column(m=6000.0), link_diameter=6.0)
-    if max(r["diameter"] for r in d["arrangement"]["rings"]) > 24:
-        assert any("9.5.3" in n for n in d["shear"]["notes"])
+    # Links below the 9.5.3 minimum are not kept: the design moves up to a size that meets it.
+    d = design(column(m=6000.0), link_diameter=6.0)["shear"]
+    assert d["link_diameter_mm"] >= d["min_link_diameter_mm"]
+    assert not any("9.5.3" in n for n in d["notes"])
+
+
+def test_links_are_designed_from_t10_up():
+    assert PileInput().link_diameter == 10
+    d = design(column(q=2500.0))["shear"]
+    assert d["passed"] and d["link_diameter_mm"] > 10
+    assert min(z["spacing_mm"] for z in d["zones"]) >= 100
+    assert d["notes"][0].startswith(f"Links designed as Ø{d['link_diameter_mm']:g}")
 
 
 def test_steel_totals_include_links():

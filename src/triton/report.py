@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
-from .figures import slab_stations
+from . import clock
+from .alignment import named_parts
+from .design import standard
+from .figures import deflected_shape, slab_bars, slab_stations
+from .materials import STEEL_DENSITY
 from .project import DesignSettings, Project, Section
 
 
@@ -99,8 +102,9 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
     then shear, punching and steel quantities). The detailed report adds an appendix with the
     calculation of each element.
     """
+    results = named_parts(results)  # a corner berth's parts by their own names
     info = project.info
-    run_at = str(results.get("run_at", ""))[:16].replace("T", " ")
+    run_at = clock.show(results.get("run_at", ""))
     r = Report(
         f"{info.name}: {section.name}",
         f"{'Detailed structural calculations' if detail == 'detailed' else 'Structural design summary'}, "
@@ -113,27 +117,447 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             ("Client", info.client),
             ("Location", info.location),
             ("Section", section.name),
-            ("Designed by", info.designer),
+            ("Document number", info.document_number),
+            ("Revision", info.revision),
+            ("Prepared by", info.designer),
             ("Checked by", info.checker),
-            ("Report printed", datetime.now().strftime("%Y-%m-%d %H:%M")),
+            ("Approved by", info.approver),
+            ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
         ]
     )
+    checks = _check_rows(section, results)
+    if checks:
+        r.p("Checking of each element:")
+        r.table(["Element", "Status", "By", "Date", "Comment"], checks)
+    if results.get("changed"):
+        r.p(
+            "OUT OF DATE: these results were designed before the following inputs changed: "
+            + ", ".join(results["changed"])
+            + ". Design the section again for results that match its inputs."
+        )
     _introduction(r, project, section, results, detail)
     _criteria(r, project.design, section, results)
+    _standard_overview(r, results)
     _sections(r, section, results)
+    _displacements(r, section)
+    for a in results.get("approach_slabs", []):
+        _approach_summary(r, a)
+    _construction_joints(r, results, project.design.construction_joints.model_dump(mode="json"))
+    _deflections(r, results.get("deflections"))
     if detail == "detailed":
         r.h(1, "Appendix A. Calculations of each element")
         for p in results.get("piles", []):
             _pile(r, p)
+            _joint_calcs(r, p)
         for w in results.get("combi_walls", []):
             _combi(r, w)
         for b in results.get("beams", []):
             _beam(r, b)
+            _joint_calcs(r, b)
         for s in results.get("slabs", []):
             _slab(r, s)
+            _joint_calcs(r, s)
         for w in results.get("sheet_pile_walls", []):
             _spw(r, w)
+        for a in results.get("approach_slabs", []):
+            _approach(r, a)
     return r
+
+
+def _saving(v: Any) -> str:
+    if v is None:
+        return "–"
+    return "0" if v == 0 else (f"saves {_fmt(v)}" if v > 0 else f"costs {_fmt(-v)} more")
+
+
+def build_trials_report(project: Project, section: Section, view: dict, element: str) -> Report:
+    """Comparisons, one element at several sizes: each size's safety, reinforcement, links and cost."""
+    info = project.info
+    el = next(e for e in view["elements"] if e["element"] == element)
+    cur = view.get("currency") or ""
+    r = Report(f"{info.name}: {section.name}", f"{element}: sizes compared")
+    r.kv(
+        [
+            ("Project", info.name),
+            ("Section", section.name),
+            ("Element", f"{element} (now {el['current_label']})"),
+            ("Berth length", f"{view['berth_length_m']:g} m" if view.get("berth_length_m") else None),
+            ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
+        ]
+    )
+    r.p(
+        "Each size is the element designed again with the section's other inputs, without the bars set by "
+        f"hand for its current size. Costs are per metre of berth in {cur}, at the unit prices on the "
+        "Project tab; savings are against the current size."
+    )
+    for n in view.get("notes") or []:
+        r.note(n)
+    slab = el["kind"] == "slabs"
+    rows = []
+    for t in el["rows"]:
+        tag = " (current)" if t.get("current") else ""
+        tag += " (cheapest safe)" if t.get("best") else ""
+        if t.get("state") != "done":
+            rows.append([t["label"] + tag, "not run", *[""] * (8 if slab else 6)])
+            continue
+        common = [
+            t["label"] + tag,
+            "yes" if t.get("passed") else "no",
+            t.get("utilisation"),
+            t.get("cost_per_m"),
+            _saving(t.get("saving_per_m")),
+            t.get("kg_per_m3"),
+        ]
+        if slab:
+            common += [
+                t.get("kg_per_m3_with_links"),
+                f"{t.get('punching_need_links') or 0} of {t.get('punching_heads') or 0} heads",
+            ]
+        else:
+            common += [t.get("links") or t.get("bars") or "–"]
+        rows.append([*common, t.get("concrete_m3_per_m"), t.get("rebar_t_per_m")])
+    head = ["Size (mm)", "Safe", "Utilisation", f"{cur}/m", "Against current, per m", "Bars kg/m³"]
+    head += ["With links kg/m³", "Punching links"] if slab else ["Links / cage"]
+    r.table([*head, "Concrete m³/m", "Rebar t/m"], rows)
+    for t in el["rows"]:
+        if t.get("state") == "done" and not t.get("passed") and t.get("why"):
+            r.note(f"{t['label']}: {t['why']}")
+    return r
+
+
+def build_scenarios_report(project: Project, section: Section, view: dict, title: str) -> Report:
+    """Comparisons, all elements (or Value engineering): the whole section per change, per element."""
+    info = project.info
+    cur = view.get("currency") or ""
+    r = Report(f"{info.name}: {section.name}", title)
+    r.kv(
+        [
+            ("Project", info.name),
+            ("Section", section.name),
+            ("Berth length", f"{view['berth_length_m']:g} m" if view.get("berth_length_m") else None),
+            ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
+        ]
+    )
+    r.p(
+        "Each change is the whole section designed again with it, every element without the bars set by "
+        f"hand, and costed per metre of berth in {cur} against the section as set."
+    )
+    cols = view.get("variants") or []
+    r.table(
+        [
+            "Change",
+            f"{cur}/m",
+            "Against as set, per m",
+            "Whole berth",
+            "Concrete m³/m",
+            "Rebar t/m",
+            "Safe",
+            "Not safe",
+        ],
+        [
+            [
+                c["label"],
+                c.get("cost_per_m") if c.get("complete") else "not complete",
+                _saving(c.get("saving_per_m")) if not c.get("base") else "–",
+                _saving(c.get("saving")) if not c.get("base") and c.get("saving") is not None else "–",
+                c.get("concrete_m3_per_m"),
+                c.get("rebar_t_per_m"),
+                c.get("safe_count"),
+                ", ".join(c.get("unsafe") or []) or "–",
+            ]
+            for c in cols
+        ],
+    )
+    names = view.get("elements") or []
+    if names and cols:
+        r.h(2, "Each element")
+        rows = []
+        for n in names:
+            for c in cols:
+                e = (c.get("elements") or {}).get(n) or {}
+                if e.get("state") != "done":
+                    rows.append([n, c["label"], e.get("state") or "not run", "", ""])
+                    continue
+                rows.append(
+                    [
+                        n,
+                        c["label"],
+                        "yes" if e.get("passed") else "no",
+                        e.get("utilisation"),
+                        e.get("cost_per_m"),
+                    ]
+                )
+        r.table(["Element", "Change", "Safe", "Utilisation", f"{cur}/m"], rows)
+    return r
+
+
+def _matrix_axes(view: dict) -> list[tuple[str, str, Any]]:
+    """Each list of the option matrix: its key, its name in the report and how a value reads."""
+    return [
+        ("thickness", "Thicknesses (mm)", lambda t: f"{t:g}"),
+        ("crack_width_limit", "Crack width limits (mm)", lambda t: f"{t:g}"),
+        ("peaks", "Moments at the pile faces", lambda p: view["peaks"].get(p, p)),
+        (
+            "decks",
+            "Deck types",
+            lambda d: "solid" if d["type"] == "solid" else f"voids Ø{d['diameter']:g} @ {d['spacing']:g}",
+        ),
+        ("mesh", "Mesh spacings (mm)", lambda m: f"{m:g}"),
+        ("punching_per", "Punching design", lambda p: (view.get("punching") or {}).get(p, p)),
+    ]
+
+
+def _axis(spec: dict, key: str, text: Any) -> str:
+    if not (spec.get("use") or {}).get(key, True) or not spec.get(key):
+        return "not compared (as set)"
+    return ", ".join(text(v) for v in spec[key])
+
+
+def build_matrix_report(project: Project, section: Section, view: dict, designs: dict[str, dict]) -> Report:
+    """A deck's options compared (Comparisons tab, option matrix): the options set, a summary of every
+    option, then each option's bars (as the design page draws them), governing sections, shear and
+    punching. ``designs`` maps an option's key to its deck design."""
+    info = project.info
+    name = view["element"]
+    cur = view.get("currency") or ""
+    r = Report(f"{info.name}: {section.name}", f"{name}: options compared")
+    spec = view["spec"]
+    r.kv(
+        [
+            ("Project", info.name),
+            ("Section", section.name),
+            ("Deck", name),
+            *[(label, _axis(spec, k, text)) for k, label, text in _matrix_axes(view)],
+            ("Berth length", f"{view['berth_length_m']:g} m" if view.get("berth_length_m") else None),
+            ("Report printed", clock.now().strftime("%Y-%m-%d %H:%M")),
+        ]
+    )
+    r.p(
+        "Every option is the whole section designed with the deck changed as listed: the crack width "
+        "limit is the deck's own (top and bottom), bars set by hand are left out so each option picks "
+        "its own, and the beams are designed with the deck's thickness. Costs are per metre of berth, "
+        "at the unit prices on the Project tab, for the whole section and for the deck alone."
+    )
+    options = [o for o in view["options"] if o["key"] in designs]
+    r.h(1, "1 Summary")
+    rows = []
+    for o in options:
+        dk = o.get("deck") or {}
+        punch = dk.get("punching") or []
+        need = [p for p in punch if p["needs_links"]]
+        rows.append(
+            [
+                o["label"] + (" (cheapest safe)" if o.get("best") else ""),
+                "yes" if dk.get("passed") else "no",
+                dk.get("utilisation"),
+                dk.get("kg_per_m3"),
+                dk.get("kg_per_m3_with_links"),
+                (
+                    ", ".join(f"{p['pile']} ({p['heads']})" for p in need)
+                    if need
+                    else ("none" if punch else "–")
+                ),
+                (dk.get("shear") or {}).get("cells_needing_links"),
+                o.get("concrete_m3_per_m"),
+                o.get("rebar_t_per_m"),
+                o.get("deck_cost_per_m"),
+                o.get("cost_per_m"),
+                o.get("over_best_per_m"),
+            ]
+        )
+    r.table(
+        [
+            "Option",
+            "Deck safe",
+            "Utilisation",
+            "Bars kg/m³",
+            "With links kg/m³",
+            "Punching links (heads)",
+            "Shear link cells",
+            "Concrete m³/m",
+            "Rebar t/m",
+            f"Deck {cur}/m",
+            f"Section {cur}/m",
+            f"Over the cheapest safe, {cur}/m",
+        ],
+        rows,
+    )
+    best = next((o for o in options if o.get("best")), None)
+    if best:
+        r.p(
+            f"Cheapest option with a safe deck: {best['label']}, {_fmt(best['cost_per_m'])} {cur}/m of berth."
+        )
+    unsafe = [o for o in options if not (o.get("deck") or {}).get("passed")]
+    for o in unsafe:
+        r.note(f"{o['label']}: not safe. {(o.get('deck') or {}).get('why') or ''}")
+    others: dict[tuple, list[str]] = {}
+    for o in options:
+        if o.get("others_unsafe"):
+            others.setdefault(tuple(o["others_unsafe"]), []).append(o["label"])
+    for names, labels in others.items():
+        who = "every option" if len(labels) == len(options) else ", ".join(labels)
+        r.note(f"Other elements not safe with {who}: {', '.join(names)}.")
+    r.h(2, "Bars of each option")
+    r.table(
+        ["Option", "Top X", "Bottom X", "Top Y", "Bottom Y", "Heaviest additional bars"],
+        [
+            [
+                o["label"],
+                *[
+                    ((o.get("deck") or {}).get("meshes") or {}).get(k)
+                    for k in ("top_x", "bottom_x", "top_y", "bottom_y")
+                ],
+                "; ".join(
+                    f"{g['name']}: {g['heaviest_bars']}"
+                    for g in (o.get("deck") or {}).get("governing") or []
+                    if g.get("heaviest_as_mm2_per_m")
+                    and g["heaviest_bars"] != ((o.get("deck") or {}).get("meshes") or {}).get(g["layer"])
+                ),
+            ]
+            for o in options
+        ],
+    )
+    r.h(1, "2 Each option")
+    for n, o in enumerate(options, start=1):
+        design = designs[o["key"]]
+        dk = o.get("deck") or {}
+        r.h(2, f"2.{n} {o['label']}")
+        r.kv(
+            [
+                ("Deck", "safe" if dk.get("passed") else f"not safe: {dk.get('why') or ''}"),
+                ("Utilisation (bending, cracks and shear)", dk.get("utilisation")),
+                ("Bars", f"{_fmt(dk.get('kg_per_m3'))} kg/m³ ({_fmt(dk.get('bars_kg_per_m2'))} kg/m²)"),
+                ("With shear and punching links", f"{_fmt(dk.get('kg_per_m3_with_links'))} kg/m³"),
+                ("Mesh spacing", f"{_fmt(dk.get('mesh_mm'))} mm" if dk.get("mesh_mm") else None),
+                (
+                    "Cost of the deck",
+                    f"{_fmt(o.get('deck_cost_per_m'))} {cur}/m" if o.get("deck_cost_per_m") else None,
+                ),
+                (
+                    "Cost of the section",
+                    f"{_fmt(o.get('cost_per_m'))} {cur}/m" if o.get("cost_per_m") else None,
+                ),
+            ]
+        )
+        for view_ in ("along", "across"):
+            png = slab_bars(design, view_)
+            if png:
+                r.image(
+                    png,
+                    f"Figure 2.{n}{'a' if view_ == 'along' else 'b'}: {o['label']}, bars along "
+                    f"{'the strips' if view_ == 'along' else 'the quay'}",
+                )
+        gov = dk.get("governing") or []
+        if gov:
+            r.p("Governing sections, per face and direction:")
+            r.table(
+                ["Face", "Where", "Bars", "M (kNm/m)", "Combination", "MEd/MRd", "wk / limit (mm)", "Set by"],
+                [
+                    [
+                        g["name"],
+                        g["where"],
+                        g["bars"],
+                        g["M_kNm_per_m"],
+                        g["combination"],
+                        g["ratio"],
+                        f"{_fmt(g['wk_mm'])} / {_fmt(g['wk_limit_mm'])}"
+                        if g.get("wk_mm") is not None
+                        else "–",
+                        g["set_by"],
+                    ]
+                    for g in gov
+                ],
+            )
+        sh = dk.get("shear") or {}
+        r.kv(
+            [
+                ("Shear utilisation", sh.get("utilisation")),
+                ("Cells that need shear links", sh.get("cells_needing_links")),
+                ("Heaviest shear links", sh.get("heaviest")),
+                ("Governing shear", sh.get("governing")),
+            ]
+        )
+        punch = dk.get("punching") or []
+        if punch:
+            r.p("Punching at the piles (one design per pile type, its worst head):")
+            r.table(
+                ["Pile type", "Heads", "Utilisation without links", "Links needed", "Links", "Passes"],
+                [
+                    [
+                        p["pile"],
+                        p["heads"],
+                        p["utilisation"],
+                        "yes" if p["needs_links"] else "no",
+                        p["links"] or ("links alone cannot" if p["needs_links"] and not p["passed"] else "–"),
+                        "yes" if p["passed"] else "no",
+                    ]
+                    for p in punch
+                ],
+            )
+        for w in dk.get("ductility") or []:
+            r.note(f"Over-reinforced: {w}")
+    return r
+
+
+def _standard_overview(r: Report, res: dict) -> None:
+    """The elements designed in Standard mode: workable or not, utilisation, steel, what fails."""
+    rows, why = [], []
+    for kind in ("piles", "combi_walls", "beams", "slabs"):
+        for e in res.get(kind) or []:
+            if not standard.is_standard(e):
+                continue
+            o = e.get("standard") or standard.summary(kind, e)
+            rows.append(
+                [
+                    e["element"],
+                    "Yes" if o["workable"] else "NO",
+                    _fmt(o["utilisation"]),
+                    o["governs"] or "–",
+                    "–" if o["kg_per_m3"] is None else f"{o['kg_per_m3']:.0f}",
+                    "–" if o["ratio_pct"] is None else f"{o['ratio_pct']:.2f}",
+                ]
+            )
+            why += [f"{e['element']}: {w}" for w in o["why"]]
+    if not rows:
+        return
+    r.h(1, "Standard design (overview)")
+    r.p(
+        "These elements were designed in Standard mode: the same design as Detailed, with their bars and "
+        "every check in this report, but without drawings, AdSec files or clash checks."
+    )
+    r.table(["Element", "Workable", "Utilisation", "Governed by", "Steel kg/m³", "Steel %"], rows)
+    if why:
+        r.p("Not workable: " + " ".join(why))
+
+
+CHECK_STATUS = {
+    "designed": "Designed, not yet checked",
+    "comments": "Returned with comments",
+    "checked": "Checked",
+    "approved": "Approved",
+}
+
+
+def _check_rows(section: Section, res: dict) -> list[list[str]]:
+    """Each designed element's checking status; a check given on an earlier design says so."""
+    names = [
+        x["element"]
+        for k in ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs")
+        for x in res.get(k, [])
+    ]
+    if not section.checks:
+        return []
+    rows = []
+    for name in dict.fromkeys(names):
+        c = section.checks.get(name)
+        if c is None:
+            rows.append([name, CHECK_STATUS["designed"], "", "", ""])
+            continue
+        status = CHECK_STATUS[c.status]
+        if c.status != "designed" and c.design_run_at and c.design_run_at != res.get("run_at"):
+            status += " (on an earlier design)"
+        rows.append([name, status, c.by, clock.show(c.at or "")[:10], c.comment])
+    return rows
 
 
 def _elements(res: dict) -> list[str]:
@@ -145,7 +569,17 @@ def _elements(res: dict) -> list[str]:
     out += [f"{b['element']} ({KIND.get(b.get('kind'), 'beam').lower()})" for b in res.get("beams", [])]
     out += [f"{s['element']} (deck slab)" for s in res.get("slabs", [])]
     out += [
-        f"{w['element']} (sheet pile wall, straining actions only)" for w in res.get("sheet_pile_walls", [])
+        f"{a['element']} (approach slab to the slab on grade, on a ledge of the rear beam)"
+        for a in res.get("approach_slabs", [])
+    ]
+    out += [
+        f"{w['element']} (steel sheet pile wall"
+        + (
+            f", {w['design']['section']})"
+            if (w.get("design") or {}).get("section")
+            else ", straining actions only)"
+        )
+        for w in res.get("sheet_pile_walls", [])
     ]
     return out
 
@@ -206,12 +640,20 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
     )
     r.h(2, "2.3 Durability")
     r.h(3, "Crack width limits")
-    limits = sorted({_limit(x) for x in section.elements.values() if _limit(x) is not None})
+    limits = sorted(set().union(*(_limits(x) for x in section.elements.values())))
     r.p(
         "Crack widths are checked under the quasi-permanent (QP) combinations (BS EN 1990 6.5.3), limit "
         + (" / ".join(f"{v:g}" for v in limits) or "0.2")
-        + " mm. No crack width check applies inside a steel casing or tube."
+        + " mm. No crack width check applies inside a steel casing or tube. Slabs and beams take their own "
+        "limit on each face:"
     )
+    rows = [
+        [name, f"{e.crack_width_limit:g}", f"{getattr(e, 'crack_width_limit_bottom', e.crack_width_limit):g}"]
+        for name, e in section.elements.items()
+        if _limit(e) is not None
+    ]
+    if rows:
+        r.table(["Element", "Top face / pile (mm)", "Bottom face (mm)"], rows)
     r.h(3, "Concrete cover")
     cv = d.covers
     r.kv(
@@ -287,8 +729,17 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
             ("γM0 / γM1", f"{pf.gamma_m0:g} / {pf.gamma_m1:g}"),
             ("αcc", f"{pf.alpha_cc:g}"),
             ("Concrete area", "net of the bars" if pf.deduct_bar_area else "gross (as AdSec)"),
-            ("Plate moments", f"positive = {s.plate_positive_moment}"),
+            (
+                "Plate moments",
+                "positive read from the results (Auto; see each slab and beam)"
+                if s.plate_positive_moment == "auto"
+                else f"positive = {s.plate_positive_moment}",
+            ),
             ("Shear checked at", f"{s.shear_check_distance} from the support face"),
+            (
+                "Beam bending and shear",
+                "peak × beam width" if s.beam_actions == "peak_width" else "integrated over the model width",
+            ),
             ("Creep coefficient φ (QP stresses)", f"{cr.creep_coefficient:g}"),
             (
                 "Restraint: T1, T2, α, K1",
@@ -312,10 +763,54 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
             ["Load multiplier", "Sheets"],
             [[f"× {f.factor:g}", ", ".join(f.sheets)] for f in factors if getattr(f, "sheets", None)],
         )
+    _joints(r, s, res.get("joints"))
+
+
+def _joints(r: Report, s: DesignSettings, j: dict | None) -> None:
+    """2.6: where the expansion joints are and the segment lengths the restraint checks use."""
+    if not j or not j.get("segments"):
+        return
+    rules = s.joints
+    r.h(2, "2.6 Expansion joints")
+    r.p(
+        f"The berth ({j['berth_length_m']:.1f} m, from {j.get('runs_from', 'the inputs')}) is split by "
+        f"{len(j['joints'])} expansion joints into segments of at most {rules.max_segment:g} m and at least "
+        f"{rules.min_segment:g} m, as nearly equal as possible"
+        + (
+            ", mid-way between two rows of piles"
+            if j.get("position") == "midway"
+            else ", at a doubled row of piles"
+            if j.get("position") == "at_row"
+            else ""
+        )
+        + (
+            f", at least {rules.furniture_clearance:g} m clear of the quay furniture"
+            if rules.furniture_clearance and j.get("furniture")
+            else ""
+        )
+        + (", with a joint at each corner" if rules.at_corners and len(j.get("runs") or []) > 1 else "")
+        + "."
+        + (
+            " Each beam and slab's restraint check takes the longest segment of its part of the berth as the "
+            "length between movement joints."
+            if rules.use_in_restraint
+            else ""
+        )
+    )
+    r.table(
+        ["Segment", "From (m)", "To (m)", "Length (m)"],
+        [[g["name"], f"{g['start']:.1f}", f"{g['end']:.1f}", f"{g['length']:.1f}"] for g in j["segments"]],
+    )
+    for w in j.get("warnings") or []:
+        r.note(w)
 
 
 def _limit(element: Any) -> float | None:
     return getattr(element, "crack_width_limit", None)
+
+
+def _limits(element: Any) -> set[float]:
+    return {v for v in (_limit(element), getattr(element, "crack_width_limit_bottom", None)) if v is not None}
 
 
 def _combinations(res: dict) -> set[str]:
@@ -372,6 +867,20 @@ def _sections(r: Report, section: Section, res: dict) -> None:
         rows += _part_rows(f"{w['element']} – infill", w.get("infill") or {}, w["element"])
     for p in res.get("piles", []):
         rows += _part_rows(p["element"], p)
+        t = (p.get("casing") or {}).get("tube") or {}
+        if t:
+            g = t.get("governing") or {}
+            m, mrd = (None if v is None else float(v) for v in (g.get("M_kNm"), g.get("M_Rd_kNm")))
+            rows.append(
+                [
+                    f"{p['element']} – steel casing (considering interaction between moment and normal)",
+                    "N.A",
+                    t.get("utilisation"),
+                    m,
+                    mrd,
+                    _sheet(p["element"], g.get("combination")),
+                ]
+            )
     for b in res.get("beams", []):
         g = (b.get("bending") or {}).get("governing") or {}
         cracks = [c.get("wk") for c in (b.get("cracks") or {}).values() if c.get("wk") is not None]
@@ -403,16 +912,13 @@ def _sections(r: Report, section: Section, res: dict) -> None:
     for s in res.get("slabs", []):
         _slab_summary(r, s)
     for w in res.get("sheet_pile_walls", []):
-        r.p(
-            f"{w['element']}: the sheet pile wall is designed with the sheet pile program; its governing straining "
-            "actions are exported (Plaxis sign, multipliers applied)."
-        )
+        _spw_summary(r, w)
     _shear_summary(r, res)
     _punching_summary(r, res)
     _steel_summary(r, res)
     failing = [
         x["element"]
-        for k in ("piles", "combi_walls", "beams", "slabs")
+        for k in ("piles", "combi_walls", "beams", "slabs", "approach_slabs")
         for x in res.get(k, [])
         if not x.get("passed")
     ]
@@ -424,6 +930,7 @@ def _sections(r: Report, section: Section, res: dict) -> None:
 
 def _sheet(element: str, combination: Any) -> Any:
     """The combination as the workbook's sheet name, e.g. Pile(1)-PT-C-Apron, as the office tables."""
+    element = element.split(" · ")[0]  # a corner berth's part: the element's own sheets
     return f"{element}-{combination}" if isinstance(combination, str) and combination else combination
 
 
@@ -464,6 +971,8 @@ def _part_rows(name: str, p: dict, element: str | None = None) -> list[list[Any]
 
 
 def _strip_label(s: dict, row: dict) -> str:
+    if row["strip"] == "all":  # bars over the whole deck (across the strips), or one of their zones
+        return f"{s['element']} – {row['moment']} – {row['label']} – {row['face']}"
     a, b = row["station"]
     return f"{s['element']} – {row['moment']} – Station {a:g} to {b:g} – {row['strip'].capitalize()} Strip"
 
@@ -476,6 +985,7 @@ def _slab_summary(r: Report, s: dict) -> None:
         r.caption(
             f"Table 3-2: Summary of design results for {s['element']} ({s.get('thickness_mm', 0):g} mm)"
         )
+        table = sd.get("table") or []
         r.table(
             [
                 "Slab",
@@ -484,26 +994,32 @@ def _slab_summary(r: Report, s: dict) -> None:
                 "Acting moment (kN.m/m)",
                 "Moment capacity (kN.m/m)",
                 "Governing load combination",
-                "Face, bars",
+                "Bottom bars",
+                "Top bars",
             ],
             [
                 [
-                    _strip_label(s, x),
+                    f"{x['moment']} – {x['label']}"
+                    + ("" if x["strip"] == "all" else f" – {x['strip'].capitalize()} Strip")
+                    + (" (bars set by the user)" if x.get("user_set") else ""),
                     x.get("wk_mm"),
                     x.get("ratio"),
                     x.get("M_kNm_per_m"),
                     x.get("MRd_kNm_per_m"),
                     _sheet(s["element"], x.get("combination")),
-                    f"{x['face']}, {x['bars']}",
+                    x["bars"].get("bottom", "–"),
+                    x["bars"].get("top", "–"),
                 ]
-                for x in sd["summary"]
+                for x in table
             ],
         )
         r.note(
-            f"Stations are distances along the strips ({sd['along']}) from the slab edge at the {sd['from']}. "
-            f"Column strips are {sd['column_width_m']:g} m wide on the lines of piles, field strips "
+            f"Stations are distances ({sd['along']}) from the {sd['from']}, on the sea side, increasing towards "
+            f"the rear. Column strips are {sd['column_width_m']:g} m wide on the lines of piles, field strips "
             f"{sd['field_width_m']:g} m between them; moments are per metre, averaged across the strip, and every "
-            "column (field) strip is designed together. Each row is the face that governs; Appendix A has both."
+            "column (field) strip along the berth is designed together. Bars along the strips are given per "
+            "station; bars along the berth are one mesh over the whole deck, with zones of additional bars "
+            "only where it needs more. Each row shows its worst face; Appendix A has both."
         )
         return
     rows = []
@@ -589,10 +1105,27 @@ def _shear_summary(r: Report, res: dict) -> None:
         )
 
 
+def _punch_rows(s: dict) -> list[tuple[str, dict]]:
+    """A slab's punching designs with their labels: one per pile type when unified (its worst head's
+    design, used on every head of the type), else one per head."""
+    types = [t for t in s.get("punching_types") or [] if t.get("unified")]
+    if types:
+        return [
+            (
+                f"{t['pile']}, all {t['heads']} heads (worst at {t['governing_x']:g}, {t['governing_y']:g})",
+                t,
+            )
+            for t in types
+        ]
+    return [(f"{q['pile']} ({q['x']:g}, {q['y']:g})", q) for q in s.get("punching") or []]
+
+
 def _punching_summary(r: Report, res: dict) -> None:
     rows = []
+    unified = False
     for s in res.get("slabs", []):
-        for q in s.get("punching") or []:
+        unified = unified or any(t.get("unified") for t in s.get("punching_types") or [])
+        for label, q in _punch_rows(s):
             face = q["vEd_face_MPa"] / q["vRd_max_MPa"]
             if face > 1:
                 links = f"FAILS at the pile face: vEd,0 {q['vEd_face_MPa']:.2f} > vRd,max {q['vRd_max_MPa']:.2f} MPa"
@@ -602,9 +1135,11 @@ def _punching_summary(r: Report, res: dict) -> None:
                 links = f"{q['perimeters']} perimeters @ {q['radial_spacing_mm']} mm, {q['asw_mm2_per_perimeter']} mm² each"
             else:
                 links = "NO NEED FOR R.F.T"
+            if q.get("added_bars"):
+                links += f"; added {q['added_bars']}"
             rows.append(
                 [
-                    f"{q['pile']} ({q['x']:g}, {q['y']:g})",
+                    label,
                     q.get("utilisation"),
                     q.get("utilisation_with_links")
                     if q.get("perimeters")
@@ -616,6 +1151,11 @@ def _punching_summary(r: Report, res: dict) -> None:
     if rows:
         r.h(2, "3.3 Punching")
         r.caption("Table 3-5: Punching of the slab over the piles (EN 1992-1-1 6.4)")
+        if unified:
+            r.p(
+                "One punching design per pile type, as detailed on site: every head of a type takes the "
+                "design of its worst head, with links enough for all of them."
+            )
         r.table(
             [
                 "Pile (X, Y)",
@@ -628,26 +1168,424 @@ def _punching_summary(r: Report, res: dict) -> None:
         )
 
 
+def overall_ratio(steel: dict) -> float | None:
+    """The main bars' volume over the element's concrete, in %; worked out for older results."""
+    if steel.get("ratio_pct") is not None:
+        return steel["ratio_pct"]
+    if steel.get("longitudinal_kg") and steel.get("concrete_m3"):
+        return round(100 * steel["longitudinal_kg"] / STEEL_DENSITY / steel["concrete_m3"], 2)
+    return None
+
+
 def _steel_summary(r: Report, res: dict) -> None:
     rows = []
     for p in res.get("piles", []):
         st = p.get("steel") or {}
         rows.append(
-            [p["element"], st.get("kg_per_m3", p.get("steel_ratio_kg_m3")), st.get("element_total_t")]
+            [
+                p["element"],
+                overall_ratio(st),
+                st.get("kg_per_m3", p.get("steel_ratio_kg_m3")),
+                st.get("element_total_t"),
+            ]
         )
     for w in res.get("combi_walls", []):
         st = (w.get("infill") or {}).get("steel") or {}
-        rows.append([f"{w['element']} infill", st.get("kg_per_m3"), st.get("element_total_t")])
+        rows.append(
+            [f"{w['element']} infill", overall_ratio(st), st.get("kg_per_m3"), st.get("element_total_t")]
+        )
     for b in res.get("beams", []):
         st = b.get("steel") or {}
-        rows.append([b["element"], st.get("kg_per_m3"), st.get("total_t")])
+        rows.append(
+            [
+                b["element"],
+                overall_ratio(st),
+                st.get("kg_per_m3"),
+                st.get("element_total_t", st.get("total_t")),
+            ]
+        )
     for s in res.get("slabs", []):
         st = s.get("steel") or {}
-        rows.append([s["element"], st.get("kg_per_m3"), st.get("total_t")])
+        rows.append([s["element"], overall_ratio(st), st.get("kg_per_m3"), st.get("total_t")])
     if rows:
         r.h(2, "3.4 Reinforcement quantities")
         r.caption("Table 3-6: Reinforcement per element")
-        r.table(["Element", "kg/m³", "Total (t)"], rows)
+        r.table(["Element", "Overall ρ, main bars (%)", "kg/m³ incl. links", "Total (t)"], rows)
+        r.note(
+            "Overall ρ is the main bars' volume over the whole element's concrete, laps included; the "
+            "ratio at the pile head, where the cage is heaviest, is in each pile's calculation."
+        )
+
+
+def _approach_summary(r: Report, a: dict) -> None:
+    """The approach slab and its ledge on the rear beam, per metre."""
+    b = a.get("bending") or {}
+    led = a.get("ledge") or {}
+    r.h(2, "3.6 Approach slab and rear beam ledge")
+    r.p(
+        f"The approach slab ({a.get('length_m', 0):g} m long, {a.get('thickness_mm', 0):g} mm thick, "
+        f"{a.get('concrete')}) links the quay to the existing slab on grade. It rests on an elastomeric bearing "
+        f"strip on a ledge of the rear beam, with a {a.get('joint_mm', 0):g} mm expansion joint, and is designed per "
+        "metre width to BS EN 1992-1-1; the ledge is designed as a nib by strut and tie (BS EN 1992-1-1 6.5 and "
+        "Annex J.3), and its load and torque are added to the rear beam."
+    )
+    rows = []
+    for face, label in (("bottom", "Bottom (sagging)"), ("top", "Top (hogging)")):
+        f = b.get(face) or {}
+        rows.append(
+            [
+                label,
+                f.get("bars"),
+                f.get("as_mm2_per_m"),
+                f.get("M_Ed_kNm"),
+                f.get("M_Rd_kNm"),
+                f"{f.get('wk_mm')} / {f.get('wk_limit_mm')}",
+                f.get("utilisation"),
+            ]
+        )
+    r.caption("Table 3-8: Approach slab, per metre width")
+    r.table(["Face", "Bars", "As (mm²/m)", "MEd (kNm/m)", "MRd (kNm/m)", "wk / limit (mm)", "Ratio"], rows)
+    sh = a.get("shear") or {}
+    r.p(
+        f"Shear at d from the ledge: VEd {sh.get('V_Ed_kN')} kN/m against VRd,c {sh.get('V_Rd_c_kN')} kN/m"
+        + (
+            f"; links of {sh['links_mm2_per_m2']} mm² per m² are needed near the ledge."
+            if sh.get("links_mm2_per_m2")
+            else ", no links needed."
+        )
+    )
+    u = led.get("utilisations") or {}
+    r.caption("Table 3-9: Ledge on the rear beam, per metre")
+    r.table(
+        ["Check", "Value", "Ratio"],
+        [
+            [
+                "Tie bars (top)",
+                f"{(led.get('tie') or {}).get('bars')}, Ft {led.get('F_t_kN_per_m')} kN/m",
+                u.get("tie"),
+            ],
+            ["Crack width (QP)", f"{(led.get('crack') or {}).get('wk_mm')} mm", u.get("crack")],
+            ["Bearing node", f"{(led.get('bearing') or {}).get('sigma_MPa')} MPa", u.get("bearing")],
+            ["Shear at the beam face", f"β = {(led.get('shear') or {}).get('beta')}", u.get("shear")],
+            ["Compression node at the face", f"x = {led.get('x_node_mm')} mm", u.get("node")],
+        ],
+    )
+
+
+def _approach(r: Report, a: dict) -> None:
+    """Appendix: the approach slab and its ledge in full."""
+    b = a.get("bending") or {}
+    led = a.get("ledge") or {}
+    rb = led.get("rear_beam") or {}
+    r.h(1, f"{a['element']}: approach slab and rear beam ledge")
+    r.kv(
+        [
+            ("Slab", f"{a.get('length_m')} m × {a.get('thickness_mm')} mm, {a.get('concrete')}"),
+            ("Covers", f"top {a.get('cover_top_mm')} mm, bottom {a.get('cover_bottom_mm')} mm"),
+            (
+                "Span",
+                f"{a.get('span_m')} m"
+                + (
+                    " (ledge to slab on grade)"
+                    if a.get("far_support")
+                    else " unsupported, then on the ground"
+                ),
+            ),
+            (
+                "Largest sagging moment",
+                f"{(b.get('bottom') or {}).get('M_Ed_kNm')} kNm/m at {a.get('M_sag_at_m')} m",
+            ),
+            (
+                "Largest hogging moment",
+                f"{(b.get('top') or {}).get('M_Ed_kNm')} kNm/m at {a.get('M_hog_at_m')} m",
+            ),
+            ("Bottom bars", (b.get("bottom") or {}).get("bars")),
+            ("Top bars", (b.get("top") or {}).get("bars")),
+            (
+                "Distribution bars",
+                f"bottom {((a.get('distribution') or {}).get('bottom') or {}).get('bars')}, top {((a.get('distribution') or {}).get('top') or {}).get('bars')}",
+            ),
+            (
+                "Reaction on the ledge",
+                f"ULS {(a.get('reaction') or {}).get('uls_kN_per_m')} kN/m, QP {(a.get('reaction') or {}).get('qp_kN_per_m')} kN/m",
+            ),
+            ("Utilisation", a.get("utilisation")),
+            ("Result", _ok(a.get("passed"))),
+        ]
+    )
+    r.bullets(a.get("notes") or [])
+    r.h(2, "Ledge (nib), strut and tie")
+    r.kv(
+        [
+            (
+                "Ledge",
+                f"{led.get('projection_mm')} mm projection × {led.get('depth_mm')} mm deep, top {led.get('top_below_beam_top_mm')} mm below the beam top",
+            ),
+            (
+                "Load F (ULS)",
+                f"{led.get('F_Ed_kN_per_m')} kN/m at a_c = {led.get('a_F_mm')} mm, H = {led.get('H_Ed_kN_per_m')} kN/m",
+            ),
+            (
+                "Lever arm",
+                f"d = {led.get('d_mm')} mm, z = {led.get('z_mm')} mm, tan θ = {led.get('tan_theta')}",
+            ),
+            ("Tie force Ft", f"{led.get('F_t_kN_per_m')} kN/m"),
+            (
+                "Tie bars",
+                f"{(led.get('tie') or {}).get('bars')} ({(led.get('tie') or {}).get('as_mm2_per_m')} / {(led.get('tie') or {}).get('as_req_mm2_per_m')} mm²/m); {(led.get('tie') or {}).get('detail')}",
+            ),
+            (
+                "Links",
+                f"{(led.get('links') or {}).get('bars') or 'none'}: {(led.get('links') or {}).get('rule')}",
+            ),
+            (
+                "Bearing node",
+                f"{(led.get('bearing') or {}).get('sigma_MPa')} ≤ {(led.get('bearing') or {}).get('sigma_Rd_MPa')} MPa",
+            ),
+            (
+                "Shear at the face",
+                f"β·VEd = {(led.get('shear') or {}).get('beta')} × {(led.get('shear') or {}).get('V_Ed_kN')} kN ≤ VRd,c {(led.get('shear') or {}).get('V_Rd_c_kN')} kN",
+            ),
+            (
+                "Crack width (QP)",
+                f"{(led.get('crack') or {}).get('wk_mm')} mm ≤ {(led.get('crack') or {}).get('limit_mm')} mm",
+            ),
+            (
+                "Hanger bars in the rear beam",
+                f"{(led.get('hanger') or {}).get('bars')} ({(led.get('hanger') or {}).get('as_req_mm2_per_m')} mm²/m), in addition to its links",
+            ),
+            (
+                "On the rear beam",
+                f"{rb.get('line_load_uls_kN_per_m')} kN/m and a {rb.get('wheel_uls_kN')} kN wheel (ULS), {rb.get('eccentricity_mm')} mm off its centre line",
+            ),
+            ("Utilisation", led.get("utilisation")),
+            ("Result", _ok(led.get("passed"))),
+        ]
+    )
+    r.bullets(led.get("notes") or [])
+
+
+def _displacements(r: Report, section: Section) -> None:
+    """The displacements typed in as received from the geotechnical team, against their limits."""
+    rows = [
+        [
+            d.what,
+            d.combination,
+            d.value,
+            "–" if d.limit is None else d.limit,
+            "No limit" if d.passed is None else "OK" if d.passed else "NOT OK",
+            d.source,
+        ]
+        for d in section.displacements
+    ]
+    if not rows:
+        return
+    r.h(2, "3.5 Displacements")
+    r.p(
+        "Displacements of the section as received from the geotechnical team, checked against their limits "
+        "(the value's magnitude against the limit)."
+    )
+    r.caption("Table 3-7: Displacements")
+    r.table(["What", "Combination or phase", "Displacement (mm)", "Limit (mm)", "Check", "Source"], rows)
+
+
+def _joint_extra(j: dict) -> str:
+    stretches = j.get("stretches") or []
+    if stretches:
+        return "; ".join(
+            (s["bars"] or {}).get("label")
+            or f"{s['additional_mm2_per_m']} mm²/m more from {s['from_m']:g} to {s['to_m']:g} m: no allowed bar fits"
+            for s in stretches
+        )
+    if j.get("additional"):
+        return j["additional"]["label"]
+    return "None" if j.get("passed") else j.get("status") or "–"
+
+
+def _construction_joints(r: Report, res: dict, rules: dict) -> None:
+    """Every construction joint set on the elements: its check and the bars it needs there."""
+    from .design.construction_joints import summary
+
+    joints = summary(res)
+    if not joints:
+        return
+    r.h(2, "3.7 Construction joints")
+    r.p(
+        "Each construction joint set on an element is checked with the Plaxis actions at it (ULS): shear "
+        "across the joint to EN 1992-1-1 6.2.5: vEdi = β VEd / (z bi) with β = 1, vRdi = c fctd + μ σn + "
+        "ρ fyd μ ≤ 0.5 ν fcd, c fctd = 0 when σn is tension, As = ρ b h. "
+        + _joint_rules(rules)
+        + " Where the bars crossing the joint are not enough, the additional bars at that joint are given."
+    )
+    r.caption("Table 3-8: Construction joints")
+    rows = []
+    for j in joints:
+        unit = "mm²/m" if j.get("provided_mm2_per_m") is not None else "mm²"
+        get = lambda k, j=j: j.get(f"{k}_mm2_per_m", j.get(f"{k}_mm2"))  # noqa: E731
+        rows.append(
+            [
+                j["element"],
+                j["where"] + (f" ({j['note']})" if j.get("note") else ""),
+                j["surface"],
+                (j.get("crossing") or {}).get("label", "–"),
+                "–" if get("needed") is None else f"{get('needed')} / {get('provided')} {unit}",
+                "–" if j.get("v_Edi_MPa") is None else f"{j['v_Edi_MPa']:.2f} / {j['v_Rdi_MPa']:.2f}",
+                _fmt(j.get("utilisation")),
+                _joint_extra(j),
+                " ".join(j.get("laps") or []) or ("OK" if j.get("passed") else j.get("status", "")),
+            ]
+        )
+    r.table(
+        [
+            "Element",
+            "Joint",
+            "Surface",
+            "Bars crossing",
+            "Needed / provided",
+            "vEdi / vRdi (MPa)",
+            "Utilisation",
+            "Additional bars",
+            "Check",
+        ],
+        rows,
+    )
+
+
+def _joint_rules(rules: dict) -> str:
+    return (
+        f"z = {rules['lever_arm']:g} d, d = "
+        + ("h − cover" if rules["effective_depth"] == "cover" else "to the tension bars")
+        + f", σn = N / (b {rules['sigma_n_area']})"
+        + (
+            ", the slab's largest shear at the joint"
+            if rules["actions"] == "peak"
+            else ", slab actions averaged over the strip width"
+        )
+        + (
+            "; the joint bars are the shear-friction steel, N through σn, bending checked in the element design."
+            if rules["tension"] == "separate"
+            else "; the tension steel of N with M is added to the shear-friction steel."
+        )
+    )
+
+
+def _joint_calcs(r: Report, d: dict) -> None:
+    """The calculation of each construction joint of one element (detailed report)."""
+    joints = d.get("construction_joints") or []
+    if not joints:
+        return
+    r.h(2, f"{d.get('key') or d['element']}: construction joints")
+    for j in joints:
+        r.h(3, j["where"] + (f" ({j['note']})" if j.get("note") else ""))
+        if j.get("v_Edi_MPa") is None:
+            r.p(j.get("status", "Not checked."))
+            continue
+        f = j.get("forces") or {}
+        per_m = j.get("provided_mm2_per_m") is not None
+        unit = "mm²/m" if per_m else "mm²"
+        get = lambda k, j=j: j.get(f"{k}_mm2_per_m", j.get(f"{k}_mm2"))  # noqa: E731
+        pairs = [
+            ("Surface", f"{j['surface']}: c = {j['c']}, μ = {j['mu']} (EN 1992-1-1 6.2.5(2))"),
+            ("Governing actions", ", ".join(f"{k} {v}" for k, v in f.items() if v is not None)),
+            ("Bars crossing", f"{(j.get('crossing') or {}).get('label', '–')}: {get('provided')} {unit}"),
+            ("vEdi = V / (z bi)", f"{j['v_Edi_MPa']} MPa"),
+            ("σn (compression +)", f"{j.get('sigma_n_MPa')} MPa"),
+            ("fctd, fyd", f"{j.get('fctd_MPa')} MPa, {j.get('fyd_MPa')} MPa"),
+            ("ρ of the bars left after the tension", f"{j.get('rho_pct')}%"),
+            ("vRdi (≤ 0.5 ν fcd)", f"{j['v_Rdi_MPa']} MPa (max {j['v_Rdi_max_MPa']} MPa)"),
+            (
+                "Steel for tension (N with M)",
+                f"{get('tension')} {unit}"
+                + (
+                    ""
+                    if j.get("tension_added", True)
+                    else " (shown only: bending is checked in the element design)"
+                ),
+            ),
+            ("Steel for shear friction", f"{get('shear')} {unit}"),
+            (
+                "Needed / provided",
+                f"{get('needed')} / {get('provided')} {unit}: utilisation {_fmt(j.get('utilisation'))}",
+            ),
+            ("Additional bars at this joint", _joint_extra(j)),
+            ("Result", j.get("status", "")),
+        ]
+        if j.get("method_note"):
+            pairs.insert(1, ("Method", j["method_note"]))
+        if j.get("averaged_over_m"):
+            pairs.insert(
+                1, ("Actions", f"mean over {j['averaged_over_m']:g} m along the joint, pile heads left out")
+            )
+        r.kv(pairs)
+        for w in j.get("laps") or []:
+            r.note(w)
+
+
+TOE_WORDS = {
+    "tied": "tied at the deck (every head under it moves the same, by the mean head movement of the piles "
+    "fixed at their toes) and held at the toe or firm soil level, rotating about it",
+    "fixed": "fixed at the toe (no displacement and no rotation), the member being deeply embedded",
+    "firm_soil": "held at the toe and at the firm soil level (no displacement at either), the toe rotating",
+}
+
+
+def _deflections(r: Report, est: dict | None) -> None:
+    """3.8: the displacements estimated from the straining actions (not a Plaxis displacement run)."""
+    if not est or not (est.get("elements") or est.get("skipped")):
+        return
+    ds = est.get("settings") or {}
+    stiffness = (
+        "cracked where the moment passes the cracking moment (EN 1992-1-1 7.4.3 for the piles, 0.6 Ecm·Ic for "
+        "the combi wall infill, EN 1994-1-1 6.7.3.3)"
+        if ds.get("stiffness") == "cracked"
+        else "gross (uncracked)"
+    )
+    r.h(2, "3.8 Estimated displacements from the straining actions")
+    r.p(
+        "ESTIMATE, not a Plaxis displacement result. Each member's curvature M / EI, from the moments in the "
+        f"workbook, is integrated twice along it; piles and walls are {TOE_WORDS.get(ds.get('toe'), '')}, with "
+        f"{stiffness} E·I{' and long-term concrete Ec,eff = Ecm / (1 + φ)' if ds.get('long_term') else ''}. "
+        "Slabs and beams are a simple strip estimate relative to their supports. The estimate is the members' own "
+        "bending: it leaves out the soil springs, the toe moving in the ground, axial shortening and "
+        "second-order effects, and it is only as good as the Plaxis moments. Signs follow each member's local "
+        "axes; the size and the shape are what it gives."
+    )
+    if est.get("deck"):
+        r.p(est["deck"]["words"])
+    base = next((e["baseline_note"] for e in est.get("elements") or [] if e.get("baseline_note")), "")
+    r.p(
+        f"Movement from: {base}."
+        if base
+        else "The moments in a Plaxis phase are the total since the model started, construction included, so "
+        "this is the total movement. Measuring from the end of construction needs that phase in the workbook."
+    )
+    rows = [
+        [
+            e["element"],
+            e["combination"],
+            e["max_direction"],
+            "–" if e.get("head_mm") is None else e["head_mm"],
+            e["max_mm"],
+            f"{e['max_at']:g} m {'level' if e.get('axis') == 'level' else 'along'}",
+        ]
+        for e in est.get("elements") or []
+    ]
+    if rows:
+        r.caption("Table 3-10: Estimated displacements (from the straining actions)")
+        r.table(["Element", "Combination", "Direction", "Head / top (mm)", "Largest (mm)", "At"], rows)
+    r.bullets(
+        [
+            f"{e['element']}: {e['at']}. {e['boundary']} {e['stiffness']} Combination {e['combination']}: "
+            f"{e['combination_note']}."
+            for e in est.get("elements") or []
+        ]
+    )
+    r.bullets(est.get("skipped") or [])
+    n = 0
+    for e in est.get("elements") or []:
+        if e.get("axis") == "level":
+            n += 1
+            r.image(deflected_shape(e), f"Figure 3-{n + 1}: {e['element']}, estimated deflected shape")
 
 
 def _sets(r: Report, sets: list[dict], title: str) -> None:
@@ -683,7 +1621,10 @@ def _pile_body(r: Report, p: dict) -> None:
                 f"{sec.get('cover_mm', 0):g} / {sec.get('link_diameter_mm', 0):g} mm",
             ),
             ("Top / toe level", f"{sec.get('head_level_m')} / {sec.get('toe_level_m')} m"),
-            ("Cage at the head", a.get("label")),
+            (
+                "Cage at the head",
+                f"{a.get('label')} (set by the user, checked)" if p.get("user_set") else a.get("label"),
+            ),
             ("Steel area", f"{a.get('area_mm2', 0):,} mm² ({p.get('reinforcement_ratio_pct', 0):.2f}%)"),
             ("N–M utilisation", p.get("utilisation")),
             ("Result", _ok(p.get("passed"))),
@@ -706,13 +1647,14 @@ def _pile_body(r: Report, p: dict) -> None:
     if runs:
         r.h(3, "Reinforcement down the pile")
         r.table(
-            ["From m", "To m", "Cage", "Bar lengths m", "Lap below m", "Utilisation"],
+            ["From m", "To m", "Cage", "Bar lengths m", "Above head m", "Lap below m", "Utilisation"],
             [
                 [
                     x["top"],
                     x["bottom"],
                     x["cage"]["label"],
                     ", ".join(f"{v:g}" for v in x.get("bar_lengths_m", [])),
+                    ", ".join(f"{v:g}" for v in x.get("above_head_m", [])) or "-",
                     ", ".join(f"{v:g}" for v in x.get("lap_below_m", [])),
                     x.get("utilisation"),
                 ]
@@ -745,6 +1687,33 @@ def _pile_body(r: Report, p: dict) -> None:
         )
     if c and c.get("casing"):
         r.note(c["casing"])
+    cas = p.get("casing")
+    if cas and cas.get("tube"):
+        t = cas["tube"]
+        sc = t.get("section") or {}
+        g = t.get("governing") or {}
+        r.h(3, "Steel casing (structural)")
+        r.p(cas["note"])
+        r.kv(
+            [
+                (
+                    "Casing",
+                    f"Ø{_fmt(sc.get('diameter_mm'))} × {_fmt(sc.get('thickness_mm'))} mm {sc.get('grade', '')}",
+                ),
+                (
+                    "Corroded",
+                    f"Ø{_fmt(sc.get('corroded_diameter_mm'))} × {_fmt(sc.get('corroded_thickness_mm'))} mm",
+                ),
+                *[(k.replace("_", " "), v) for k, v in (t.get("resistances") or {}).items()],
+                (
+                    "Governing",
+                    f"{g.get('combination')}, z {g.get('z')} m: N = {_fmt(g.get('N_kN'))} kN, "
+                    f"M = {_fmt(g.get('M_kNm'))} kNm, V = {_fmt(g.get('V_kN'))} kN ({g.get('check')})",
+                ),
+                ("Utilisation", t.get("utilisation")),
+                ("Result", _ok(t.get("passed"))),
+            ]
+        )
     con = p.get("connection")
     if con:
         r.h(3, "Casing connection")
@@ -757,7 +1726,15 @@ def _pile_body(r: Report, p: dict) -> None:
         r.kv(
             [
                 ("Longitudinal bars (with laps)", f"{st.get('longitudinal_kg', 0):,.0f} kg"),
-                ("Links", f"{st.get('links_kg', 0):,.0f} kg"),
+                (
+                    "Links",
+                    f"{st.get('links_kg', 0):,.0f} kg"
+                    + (
+                        f" (incl. {sh_['inner_links_kg']:,.0f} kg in {sh_['inner_rings']} inner ring(s))"
+                        if (sh_ := p.get("shear") or {}).get("inner_rings")
+                        else ""
+                    ),
+                ),
                 ("Steel ratio", f"{st.get('kg_per_m3', 0):.0f} kg/m³"),
                 ("Piles of this type", p.get("count")),
                 (
@@ -840,6 +1817,26 @@ def _combi(r: Report, w: dict) -> None:
                     for z in zones
                 ],
             )
+        sheet = t.get("sheet")
+        if sheet:
+            r.h(3, "Tube check by zone (office sheet)")
+            r.caption("Each zone takes its largest N, V and M together, as the office king pile sheet does.")
+            rows = []
+            for g in sheet["groups"]:
+                rows.append([g["title"], ""] + [""] * len(sheet["columns"]))
+                for row in g["rows"]:
+                    vals = [
+                        v
+                        if v is None or isinstance(v, str)
+                        else f"{v:.2f}%"
+                        if row["format"] == "pct"
+                        else f"{v:.2E}"
+                        if row["format"] == "sci"
+                        else v
+                        for v in row["values"]
+                    ]
+                    rows.append([row["item"], row["unit"], *vals])
+            r.table(["Item", "Unit", *sheet["columns"]], rows)
         col = t.get("column")
         if col:
             r.h(3, "Column buckling (composite, EN 1994-1-1 6.7.3)")
@@ -899,6 +1896,21 @@ def _beam(r: Report, b: dict) -> None:
             ("Steel area", f"{c.get('area_mm2', 0):,} mm² ({c.get('ratio_pct', 0):.2f}%)"),
             ("Utilisation (all checks)", b.get("utilisation")),
             ("Result", _ok(b.get("passed"))),
+            *(
+                [
+                    (
+                        "Ductility x/d (sagging / hogging)",
+                        f"{b['ductility']['faces']['bottom']['x_d']} / {b['ductility']['faces']['top']['x_d']}"
+                        + (
+                            ": " + "; ".join(b["ductility"]["warnings"])
+                            if b["ductility"]["warnings"]
+                            else " (limit 0.45, bars yield)"
+                        ),
+                    )
+                ]
+                if b.get("ductility")
+                else []
+            ),
         ]
     )
     bend = b.get("bending") or {}
@@ -912,6 +1924,33 @@ def _beam(r: Report, b: dict) -> None:
         )
     ex = bend.get("extremes") or {}
     r.table(["Action", "Max", "Min"], [[k, v.get("max"), v.get("min")] for k, v in ex.items()])
+    faces = b.get("faces") or []
+    if faces:
+        r.h(3, "What sets each face (mm² each check needs)")
+
+        def need(f: dict, k: str) -> Any:
+            v = (f.get("needs_mm2") or {}).get(k, "–")
+            return "below minimum" if v == 0 else "more than any bars" if v is None else v
+
+        keys = ["minimum", "bending", "crack", "restraint"] + (
+            ["truss"] if any("truss" in (f.get("needs_mm2") or {}) for f in faces) else []
+        )
+        r.table(
+            ["Face", "Minimum", "Bending (Plaxis)", "QP crack (Plaxis)", "Restraint", "Truss tie"][
+                : len(keys) + 1
+            ]
+            + ["From Plaxis alone", "Final", "Governed by"],
+            [
+                [
+                    f["face"],
+                    *[need(f, k) for k in keys],
+                    f.get("plaxis"),
+                    f.get("final"),
+                    f.get("governed_by"),
+                ]
+                for f in faces
+            ],
+        )
     cr = b.get("cracks") or {}
     rs = (b.get("restraint") or {}).get("faces") or {}
     rows = [
@@ -925,6 +1964,20 @@ def _beam(r: Report, b: dict) -> None:
     if rows:
         r.h(3, "Crack widths")
         r.table(["Check", "Face", "wk mm", "Limit mm", "σs MPa", "sr,max mm", "Result"], rows)
+    segs = (b.get("restraint") or {}).get("segments") or []
+    if len(segs) > 1:
+        r.p("Restraint crack width for each segment length between expansion joints the beam runs through:")
+        r.table(
+            ["Segment length m", "R", "Top wk mm", "Bottom wk mm", "Side wk mm"],
+            [
+                [
+                    g["length_m"],
+                    g["R"],
+                    *[(g["faces"].get(f) or {}).get("wk") for f in ("top", "bottom", "side")],
+                ]
+                for g in segs
+            ],
+        )
     sh = b.get("shear") or {}
     if sh.get("link"):
         r.h(3, "Links")
@@ -969,6 +2022,49 @@ def _beam(r: Report, b: dict) -> None:
                 ("Result", _ok(bo.get("passed"))),
             ]
         )
+        bb = bo.get("beam_bars")
+        if bb:
+            r.h(3, "Extra bars in the front beam for the bollard")
+            r.table(
+                ["For", "Needs", "Bars"],
+                [[x["what"], x["need"], x["bars"]] for x in bb["rows"]]
+                + [["Top, in all", f"{bb['top_total_mm2']} mm²", bb["top_bars"]]],
+            )
+            r.kv(
+                [
+                    ("Torsion", f"T = {_fmt(bb['T_kNm'])} kNm, {_fmt(bb['T_Ed_kNm'])} kNm each side"),
+                    ("Thin-walled section", f"tef {bb['tef_mm']} mm, Ak {bb['Ak_m2']} m², uk {bb['uk_m']} m"),
+                    ("Struts", f"TRd,max {_fmt(bb['T_Rd_max_kNm'])} kNm, utilisation {bb['utilisation']}"),
+                    (
+                        "Uplift",
+                        f"P {_fmt(bb['uplift_kN'])} kN over {bb['span_m']:g} m: M {_fmt(bb['M_uplift_kNm'])} kNm",
+                    ),
+                ]
+            )
+            r.note(bb["note"])
+        th = bo.get("thickening")
+        if th:
+            r.h(3, "Thickened slab at the bollard to the slab")
+            r.kv(
+                [
+                    (
+                        "Step",
+                        f"{th['thickening_mm']:g} mm to {th['slab_mm']:g} mm, {th['width_m']:g} m wide, {th['length_m']:g} m from the beam",
+                    ),
+                    (
+                        "Tension at the step",
+                        f"N {_fmt(th['N_kN'])} kN at e {th['e_mm']} mm: M {_fmt(th['M_kNm'])} kNm, z {th['z_mm']} mm",
+                    ),
+                    (
+                        "Bottom",
+                        f"needs {th['bottom']['need_mm2']} mm², ties give {th['bottom']['ties_mm2']} mm² (utilisation {th['bottom']['utilisation']})",
+                    ),
+                    ("Top", f"needs {th['top']['need_mm2']} mm², mesh {th['top']['mesh_mm2']} mm²"),
+                    ("Shear", f"V {_fmt(th['V_kN'])} kN: {th['links_note']}"),
+                    ("Bars past the step", f"{th['lap_past_step_mm']} mm (lap, EN 1992-1-1 8.7.3)"),
+                    ("Result", _ok(th["passed"])),
+                ]
+            )
     tr = b.get("truss")
     if tr and tr.get("cases"):
         r.h(3, "Truss model between king piles")
@@ -1002,12 +2098,163 @@ def _beam(r: Report, b: dict) -> None:
         r.kv([("Result", _ok(tr.get("passed")))])
     elif tr:
         r.note(tr.get("note", ""))
+    for rm in b.get("rooms") or []:
+        _room(r, rm)
     for n in b.get("notes", []):
         r.note(n)
     _sets(r, b.get("governing_sets"), "Governing sets")
 
 
+WALL = {"sea": "Sea-side wall", "land": "Land-side wall", "floor": "Floor", "roof": "Roof"}
+
+
+def _room(r: Report, rm: dict, kind: str = "room") -> None:
+    """A room cut into the beam (or a channel in the deck): its section, checks and extra bars."""
+    if kind == "room":
+        r.h(3, f"{rm['name']}: room in the beam from {rm['start_m']:g} to {rm['end_m']:g} m")
+    else:
+        r.h(
+            3,
+            f"{rm['name']}: channel along {rm.get('direction', '')} from {rm['start_m']:g} to {rm['end_m']:g} m, "
+            f"centre line at {rm.get('at_m', 0):g} m",
+        )
+    x = rm.get("section")
+    if not x:
+        for n in rm.get("notes", []):
+            r.note(n)
+        r.kv([("Result", _ok(False))])
+        return
+    for w in rm.get("warnings") or []:
+        r.note(w)
+    bars = rm["bars"]
+    fr = rm["frame"]
+    g = rm["bending"].get("governing") or {}
+    r.kv(
+        [
+            (
+                kind.capitalize(),
+                f"{x['width_mm']} × {x['height_mm']} mm"
+                + (f" under a {x['top_mm']} mm roof" if x["top_mm"] else ", open at the top"),
+            ),
+            ("Concrete below", f"{x['bottom_mm']} mm"),
+            (
+                "Walls",
+                f"{x['wall_sea_mm']} mm sea side, {x['wall_land_mm']} mm land side"
+                if kind == "room"
+                else f"{x['wall_sea_mm']} mm",
+            ),
+            ("Below the slab soffit", f"{rm['downstand_mm']} mm" if rm.get("downstand_mm") else None),
+            (f"Stations along the {kind}", rm.get("stations")),
+            (
+                "N with biaxial bending",
+                f"{rm['bending']['utilisation']} ({g.get('combination')} at {g.get('s')} m: N {g.get('N_kN')} kN, "
+                f"Mv {g.get('Mv_kNm')} kNm of {g.get('MRd_v_kNm')}, Mh {g.get('Mh_kNm')} kNm of {g.get('MRd_h_kNm')})"
+                if g
+                else rm["bending"]["utilisation"],
+            ),
+        ]
+    )
+    r.table(
+        ["Part", "V share", "T share", "V (kN)", "T (kNm)", "Links", "Utilisation"],
+        [
+            [
+                WALL.get(k, k),
+                s.get("V_share"),
+                s.get("T_share"),
+                (s.get("governing") or {}).get("V_kN"),
+                (s.get("governing") or {}).get("T_kNm"),
+                (s.get("link") or {}).get("label") or "not needed",
+                s.get("utilisation"),
+            ]
+            for k, s in rm["shear"].items()
+        ],
+    )
+    r.table(
+        ["Crack (QP)", "wk (mm)", "Limit (mm)", "Result"],
+        [
+            ["Top of the walls" if f == "top" else "Bottom", c["wk"], c["limit"], _ok(c["passed"])]
+            for f, c in rm["cracks"].items()
+        ],
+    )
+    fl, wl = fr["floor"], fr["walls"]
+    r.p(
+        f"Across the room (per metre): M {fr['M_kNm_per_m']['max']} / {fr['M_kNm_per_m']['min']} kNm/m from the "
+        f"plates, plus the floor's span of {fr['floor_load']['span_m']} m under {fr['floor_load']['uls_kPa']} kPa "
+        "(ULS)."
+    )
+    r.table(
+        ["Across, per metre", "Thickness (mm)", "Top / inside", "Bottom / outside", "Utilisation"],
+        [
+            ["Floor", fl["thickness_mm"], fl["top"]["label"], fl["bottom"]["label"], fl["utilisation"]],
+            ["Walls", wl["thickness_mm"], wl["top"]["label"], wl["bottom"]["label"], wl["utilisation"]],
+            [
+                "Floor shear",
+                fl["thickness_mm"],
+                fr["floor_shear"].get("links") or "no links",
+                "",
+                fr["floor_shear"]["utilisation"],
+            ],
+        ],
+    )
+    r.kv(
+        [
+            (
+                "Beam top bars cut",
+                f"{bars['cut_top']['count']}Ø{bars['cut_top']['phi']} ({bars['cut_top']['area_mm2']} mm²)",
+            ),
+            (
+                "Top of each wall",
+                f"{bars['wall_top']['label']}, {rm['corners']['wall_top_bars_past_ends_mm']} mm past each end",
+            ),
+            ("Extra bottom bars", bars["bottom_extra"]["label"]),
+            ("Inside faces of the walls", bars["inner_sides"]["label"]),
+            ("Inside corners", fr["corner_bars"]["label"]),
+            ("Corners of the opening", rm["corners"]["diagonals"]),
+            ("Extra steel over the room", f"{rm['extra_steel_kg']} kg"),
+            ("Utilisation (all checks)", rm.get("utilisation")),
+            ("Result", _ok(rm.get("passed"))),
+        ]
+    )
+    if rm.get("suggestion"):
+        r.note(rm["suggestion"]["text"])
+    for n in rm.get("notes", []):
+        r.note(n)
+
+
 LAYER = {"bottom_x": "bottom X", "bottom_y": "bottom Y", "top_x": "top X", "top_y": "top Y"}
+
+
+def _mesh_choice(s: dict) -> list[tuple[str, str]]:
+    mc = s.get("mesh_choice")
+    if not mc:
+        return []
+    others = ", ".join(
+        f"{o['spacing_mm']:g} mm gives {o['kg_per_m3']:g} kg/m³"
+        for o in mc["options"]
+        if o["spacing_mm"] != mc["chosen_mm"]
+    )
+    return [("Mesh spacing", f"{mc['chosen_mm']:g} mm ({others})")]
+
+
+def _voids_kv(s: dict) -> list[tuple[str, str]]:
+    v = s.get("voids")
+    if not v or not v.get("positions"):
+        return []
+    return [
+        (
+            "Voids",
+            f"{len(v['positions'])} × Ø{v['diameter_mm']:g} @ {v['spacing_mm']:g} mm along {v['along']}, "
+            f"{v['run'][0]:g} to {v['run'][1]:g} m ({v['run_from']}), centre {v['centre_depth_mm']:g} mm below the "
+            f"top; solid {v['flange_top_mm']:g} mm above / {v['flange_bottom_mm']:g} mm below, webs {v['web_mm']:g} mm; "
+            f"{v['void_share_pct']:g}% of the concrete",
+        ),
+        (
+            "Voided section",
+            "bending with the compression block on the concrete left at each depth; crack widths with the voided "
+            "compression zone; shear on the webs, links in the webs only; the voids stop short of the piles, so "
+            "punching is on the solid slab",
+        ),
+    ]
 
 
 def _slab(r: Report, s: dict) -> None:
@@ -1018,14 +2265,24 @@ def _slab(r: Report, s: dict) -> None:
             ("Thickness", f"{s.get('thickness_mm', 0):g} mm, {s.get('concrete')}"),
             ("Covers top / bottom", f"{s.get('cover_top_mm', 0):g} / {s.get('cover_bottom_mm', 0):g} mm"),
             ("Layout", "column and field strips" if s.get("strips") == "column_and_field" else "uniform"),
+            *_voids_kv(s),
+            *_mesh_choice(s),
             (
                 "Steel",
                 f"{st.get('kg_per_m3', 0):.0f} kg/m³, {st.get('kg_per_m2', 0):.1f} kg/m², {st.get('total_t', 0):.1f} t (links not included)",
             ),
             ("Utilisation", s.get("utilisation")),
             ("Result", _ok(s.get("passed"))),
+            (
+                "Ductility (x/d ≤ 0.45, bars yield, ≤ 4%)",
+                f"{len(s['ductility'])} sections over-reinforced or short of ductility"
+                if s.get("ductility")
+                else "every strip and zone section passes",
+            ),
         ]
     )
+    if s.get("ductility"):
+        r.bullets([f"{q['where']}: {q['bars']}. {'; '.join(q['warnings'])}." for q in s["ductility"]])
     sd = s.get("strip_design")
     if sd:
         r.h(3, "Column and field strips")
@@ -1093,8 +2350,48 @@ def _slab(r: Report, s: dict) -> None:
                 ],
             )
     punch = s.get("punching") or []
+    unified = [t for t in s.get("punching_types") or [] if t.get("unified")]
+    if unified:
+        r.h(3, "Punching (EN 1992-1-1 6.4), one design per pile type")
+        r.p(
+            "Every head of a pile type takes the design of its worst head, with links enough for all of "
+            "them; each head's own check follows."
+        )
+        r.table(
+            [
+                "Pile type",
+                "Heads",
+                "Worst head X, Y",
+                "h mm",
+                "VEd kN",
+                "β",
+                "vEd / vRd,c MPa",
+                "Face / vRd,max MPa",
+                "Links on every head",
+                "Result",
+            ],
+            [
+                [
+                    t["pile"],
+                    t["heads"],
+                    f"{t['governing_x']:g}, {t['governing_y']:g}",
+                    t.get("thickness_mm"),
+                    t.get("V_kN"),
+                    t.get("beta"),
+                    f"{t['vEd_MPa']:.3f} / {t['vRd_c_MPa']:.3f}",
+                    f"{t['vEd_face_MPa']:.2f} / {t['vRd_max_MPa']:.2f}",
+                    f"{t['perimeters']} perimeters @ {t['radial_spacing_mm']} mm, {t['asw_mm2_per_perimeter']} mm² each"
+                    if t.get("perimeters")
+                    else ("needed" if t.get("needs_reinforcement") else "none")
+                    + (f"; added {t['added_bars']}" if t.get("added_bars") else ""),
+                    _ok(t.get("passed")),
+                ]
+                for t in unified
+            ],
+        )
+        punch = [{**q, **q.get("own", {})} for q in punch]
     if punch:
-        r.h(3, "Punching (EN 1992-1-1 6.4)")
+        r.h(3, "Punching (EN 1992-1-1 6.4)" + (", each head on its own" if unified else ""))
         r.table(
             [
                 "Pile",
@@ -1152,13 +2449,171 @@ def _slab(r: Report, s: dict) -> None:
             ],
         )
         r.p(f"{rest.get('length_m')} m between joints, R = {rest.get('R')} ({rest.get('R_from')}).")
+    op = s.get("openings") or {}
+    for m in op.get("manholes") or []:
+        _manhole(r, m)
+    for c in op.get("channels") or []:
+        _room(r, c, "channel")
     for n in s.get("notes", []):
         r.note(n)
 
 
+def _manhole(r: Report, m: dict) -> None:
+    """A manhole or pit in the deck: the strips beside it and their trimmer bars."""
+    r.h(3, f"{m['name']}: opening in the deck")
+    if not m.get("directions"):
+        for n in m.get("notes", []):
+            r.note(n)
+        r.kv([("Result", _ok(False))])
+        return
+    r.kv(
+        [
+            (
+                "Opening",
+                f"{m['size_x_mm']} × {m['size_y_mm']} mm at X {m['x']:g}, Y {m['y']:g}"
+                + ("" if m["through"] else f", a pit {m['depth_mm']:g} mm deep"),
+            ),
+        ]
+    )
+    r.table(
+        [
+            "Bars along",
+            "Cut over (mm)",
+            "Strip (mm)",
+            "Factor",
+            "Strips need top / bottom",
+            "Trimmers top",
+            "Trimmers bottom",
+            "Utilisation",
+            "Shear",
+        ],
+        [
+            [
+                k,
+                d["cut_width_mm"],
+                d["strip_mm"],
+                d["factor"],
+                f"{d['strip']['top']['label']} / {d['strip']['bottom']['label']}",
+                d["trimmers"]["top"]["label"],
+                d["trimmers"]["bottom"]["label"],
+                d["strip"]["utilisation"],
+                d["shear"]["utilisation"],
+            ]
+            for k, d in m["directions"].items()
+        ],
+    )
+    pairs = [("Corners", m["corners"]["diagonals"])]
+    for p in m.get("piles") or []:
+        pairs.append(
+            (
+                f"Punching, {p['pile']}",
+                f"{round(100 * p['share'])}% of the perimeter lost: {p['utilisation_before']} → {p['utilisation']}",
+            )
+        )
+    if m.get("pit"):
+        pit = m["pit"]
+        pairs.append(
+            (
+                "Pit floor",
+                f"{pit['thickness_mm']} mm: top {pit['top']['label']}, bottom "
+                f"{pit['bottom']['label']}, utilisation {pit['utilisation']}",
+            )
+        )
+    pairs += [("Utilisation", m.get("utilisation")), ("Result", _ok(m.get("passed")))]
+    r.kv(pairs)
+    if m.get("suggestion"):
+        r.note(m["suggestion"]["text"])
+    for n in m.get("notes", []):
+        r.note(n)
+
+
+def _spw_summary(r: Report, w: dict) -> None:
+    d = w.get("design")
+    if not d or d.get("error"):
+        r.p(f"{w['element']}: {d['error'] if d else 'no sheet pile design (no results)'}")
+        return
+    t = d["check_titles"]
+    g = d["designed"]["governing"]
+    r.p(
+        f"{w['element']}: {d['section']}, fy {d['steel']['fy']:g} MPa, checked to EN 1993-5 as ArcelorMittal "
+        f"Durability 4.2.1 at every Plaxis result: Uf = {d['uf']:.2f} ({t[g['governs']].lower()}, "
+        f"{g['combination']}, z {g['z']:.2f} m), {'passes' if d['ok'] else 'FAILS'}."
+    )
+    if d["adjusted"]:
+        p = d["as_plaxis"]
+        left = "; ".join(
+            f"{' and '.join(x for x, on in (('N', i['ignore_n']), ('Q', i['ignore_q'])) if on)} left out in "
+            f"{i['combination'].lower() if i['combination'] == 'All combinations' else i['combination']}"
+            for i in d["ignored"]
+        )
+        r.note(
+            f"{w['element']}: {left}, as the Plaxis values there are not taken as sheet pile actions. With every "
+            f"Plaxis action Uf = {p['uf']:.2f} ({t[p['governing']['governs']].lower()})."
+        )
+
+
 def _spw(r: Report, w: dict) -> None:
     r.h(1, f"{w['element']}: sheet pile wall")
-    r.p("Not designed in Triton; the governing straining actions (Plaxis sign, multipliers applied) are:")
+    d = w.get("design")
+    if d and not d.get("error"):
+        t = d["check_titles"]
+        pr, st = d["properties"], d["settings"]
+        r.p(
+            f"{d['section']} ({pr['h']:g} mm high, tf {pr['tf']:g} mm, tw {pr['tw']:g} mm; A {pr['area']:g} cm²/m, "
+            f"I {pr['inertia']:g} cm⁴/m, Wel {pr['wel']:g} cm³/m, Wpl {pr['wpl']:g} cm³/m), fy {d['steel']['fy']:g} "
+            f"MPa, γM0 {st['gamma_m0']:g}, γM1 {st['gamma_m1']:g}, buckling length {st['buckling_length']:g} m"
+            f"{'' if st['buckling_length_given'] else ' (assumed)'}. Flange b {pr['flange']:g} mm"
+            f"{'' if pr['flange_given'] or pr.get('flange_known') else ' (estimated)'}, web angle {pr['angle']:g}°"
+            f"{'' if pr['angle_given'] or pr.get('flange_known') else ' (estimated)'}. Checked at {d['points']} Plaxis points with M = |M_11| "
+            f"+ |N| e, V = |{st['shear']}|, N = −N_1 (compression +); corrosion (front + back) taken off every plate."
+        )
+        r.table(
+            ["Zone", "Down to m", "Front mm", "Back mm", "Total mm"],
+            [[z["zone"], z["bottom"], z["front"], z["back"], z["total"]] for z in d["zones"]],
+        )
+        for key, title in (("designed", "Results by zone" + (" (as designed)" if d["adjusted"] else "")),) + (
+            (("as_plaxis", "Results by zone with every Plaxis action"),) if d["adjusted"] else ()
+        ):
+            res = d[key]
+            r.h(2, title)
+            r.table(
+                ["Zone", "z m", "Combination", "M kNm/m", "V kN/m", "N kN/m", "Loss mm", "Class"]
+                + [t[c] for c in t]
+                + ["Uf"],
+                [
+                    [
+                        z["zone"],
+                        z["z"],
+                        z["combination"],
+                        z["M"],
+                        z["V"],
+                        z["N"],
+                        z["loss"],
+                        z["values"]["class"],
+                    ]
+                    + [("–" if z["checks"][c] is None else z["checks"][c]) for c in t]
+                    + [z["uf"]]
+                    for z in res["zones"]
+                ],
+            )
+        g = d["designed"]["governing"]
+        v = g["values"]
+        r.h(2, "Governing point")
+        r.bullets(
+            [
+                f"{g['combination']}, z {g['z']:.2f} m, corrosion {g['loss']:g} mm: tf {v['tf']:.2f} mm, tw "
+                f"{v['tw']:.2f} mm, A {v['area']:.1f} cm²/m, I {v['inertia']:.0f} cm⁴/m, Wel {v['wel']:.0f}, Wpl "
+                f"{v['wpl']:.0f} cm³/m; (b / tf) / ε = {v['slender']:.1f}, class {v['class']:g}"
+                + (f" taken as 3 with fy,red {v['fy_used']:.1f} MPa" if v["class"] == 4 else ""),
+                f"MEd {g['M']:.1f} kNm/m, Mc,Rd {v['Mc']:.1f} kNm/m; VEd {g['V']:.1f} kN/m, Vpl,Rd {v['Vpl']:.1f} kN/m"
+                + (f", Vb,Rd {v['Vb']:.1f} kN/m" if v.get("Vb") is not None else "")
+                + f"; NEd {g['N']:.1f} kN/m, Npl,Rd {v['Npl']:.0f} kN/m, Ncr {v['Ncr']:.0f} kN/m, χ {v['chi']:.3f}",
+                f"Uf = {g['uf']:.3f} ({t[g['governs']].lower()})",
+            ]
+        )
+        for n in [*(w.get("notes") or []), *d["notes"]]:
+            r.note(n)
+    r.p("Governing straining actions (Plaxis sign, multipliers applied), for Durability:")
     gs = w.get("governing_sets") or {}
     cols = list((gs.get("columns") or {}).keys())
     r.table(

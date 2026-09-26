@@ -28,12 +28,15 @@ sign.
 
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from ..adsec import slab_sets, strip_width, tension_face
+from ..alignment import named_parts
 from ..importer import SheetData
 from ..project import DesignSettings, PileInput
 
@@ -102,10 +105,12 @@ def placeholder_sets() -> list[dict[str, Any]]:
     ]
 
 
-def cased(pile: PileInput, top: float, bottom: float) -> bool:
+def cased(pile: PileInput, top: float, bottom: float, settings: DesignSettings) -> bool:
     """Whether a station lies wholly inside the pile's steel casing (no crack width check)."""
-    c = pile.casing
-    return c is not None and c.bottom_level <= bottom + 1e-9 and top <= c.top_level + 1e-9
+    from .piles import casing_band
+
+    band = casing_band(pile, settings)
+    return band is not None and band[0] <= bottom + 1e-9 and top <= band[1] + 1e-9
 
 
 def station_sets(
@@ -116,18 +121,23 @@ def station_sets(
     stations: list[tuple[float, float, dict]],
 ) -> list[dict[str, Any]]:
     """Seven ULS and seven QP sets for each (top, bottom, cage dict) station."""
-    from .piles import _utilisation
+    from .piles import _utilisation, casing_band
 
     out = []
     for top, bottom, cage in stations:
         arrangement = SimpleNamespace(rings=[SimpleNamespace(**r) for r in cage["rings"]])
         u_rows = uls[(uls["Z"] <= top + 1e-9) & (uls["Z"] >= bottom - 1e-9)]
         q_rows = qp[(qp["Z"] <= top + 1e-9) & (qp["Z"] >= bottom - 1e-9)] if not qp.empty else qp
-        if pile.casing is not None and not q_rows.empty:
-            c = pile.casing
-            q_rows = q_rows[(q_rows["Z"] > c.top_level + 1e-9) | (q_rows["Z"] < c.bottom_level - 1e-9)]
-        no_crack = cased(pile, top, bottom) or (pile.casing is not None and q_rows.empty)
+        band = casing_band(pile, settings)
+        if band is not None and not q_rows.empty:
+            q_rows = q_rows[(q_rows["Z"] > band[1] + 1e-9) | (q_rows["Z"] < band[0] - 1e-9)]
+        no_crack = cased(pile, top, bottom, settings) or (band is not None and q_rows.empty)
         util = _utilisation(pile, arrangement, settings, u_rows) if len(u_rows) else None
+        qp_sets = placeholder_sets()
+        if not no_crack:
+            qp_sets = pile_set_cracks(
+                pile, settings, arrangement, pick_sets(q_rows, None, "largest resultant M")
+            )
         out.append(
             {
                 "top": top,
@@ -136,10 +146,48 @@ def station_sets(
                 "rings": cage["rings"],
                 "governing": _governing(pile, settings, arrangement, u_rows, util),
                 "uls": pick_sets(u_rows, util, "most utilised"),
-                "qp": placeholder_sets() if no_crack else pick_sets(q_rows, None, "largest resultant M"),
+                "qp": qp_sets,
             }
         )
     return out
+
+
+def pile_set_cracks(pile: PileInput, settings: DesignSettings, arrangement, rows: list[dict]) -> list[dict]:
+    """Each QP set with its crack width and the terms that draw it (7.3.4 at the extreme bar)."""
+    from .piles import crack_widths
+
+    if not rows:
+        return rows
+    n = np.array([r["N_kN"] for r in rows], float)
+    m2 = np.array([r["M2_kNm"] for r in rows], float)
+    m3 = np.array([r["M3_kNm"] for r in rows], float)
+    w = crack_widths(pile, arrangement, settings, pd.DataFrame({"N": n, "M": np.hypot(m2, m3)}))
+    limit = pile.crack_width_limit
+    for r, t, a2, a3 in zip(rows, w.itertuples(index=False), m2, m3, strict=True):
+        r["crack"] = crack_terms(t.wk, limit, t.sigma_s, t.sr_max, t.x, pile.diameter)
+        # The direction of the moment vector, from the M3 axis towards M2 (degrees).
+        r["crack"]["angle_deg"] = round(math.degrees(math.atan2(a2, a3)), 1)
+        r["utilisation"] = r["crack"]["util"]  # SLS: crack width over its limit
+    return rows
+
+
+def crack_terms(wk, limit, sigma_s, sr_max, x, h) -> dict:
+    """What a crack picture needs: wk against its limit, the bar stress, the crack spacing and the
+    compressed depth x (0 all in tension, h all in compression) of a section h deep (mm)."""
+
+    def num(v, nd=0):
+        return None if v is None or not np.isfinite(v) else round(float(v), nd) if nd else round(float(v))
+
+    wk = float(wk or 0.0)
+    return {
+        "wk_mm": round(wk, 3),
+        "limit_mm": limit,
+        "util": round(wk / limit, 3) if limit else None,
+        "sigma_s_MPa": num(sigma_s, 1),
+        "sr_max_mm": num(sr_max) if wk > 0 else None,
+        "x_mm": num(x),
+        "h_mm": num(h),
+    }
 
 
 def _governing(
@@ -231,6 +279,8 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
 
     ``Concrete``: for each pile, combi wall infill and beam (and each station where the cage
     changes down the element), its name, then 7 QP rows and 7 ULS rows underneath.
+    ``Slabs``: for each strip or zone of the slab's strip table, its QP and ULS sets per metre (max N,
+    min N, max M, min M and the governing ones, as the slab .ads files).
     ``Steel``: for each combi wall tube and sheet pile wall, its name and 10 ULS rows.
     """
     import io
@@ -246,6 +296,7 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
     ws.append(
         ["N in the concrete (AdSec) sign convention: Plaxis N × −1, compression +. M2, M3 as in Plaxis."]
     )
+    results = named_parts(results)  # a corner berth's parts by their own names
     designs = [(p["element"], p) for p in results.get("piles", [])]
     designs += [(f"{w['element']} infill", w["infill"]) for w in results.get("combi_walls", [])]
     designs += [
@@ -284,9 +335,57 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
                     )
     _widths(ws, (26, 10, 10, 10, 16, 8, 9, 11))
 
+    slabs = [d for d in results.get("slabs", []) if (d.get("strip_design") or {}).get("table")]
+    if slabs:
+        sl = wb.create_sheet("Slabs")
+        sl.append([f"{project} · {section} · slabs, per metre width (as the slab .ads files)"])
+        sl.append(
+            [
+                "N compression +, M sagging + (bottom in tension). Per strip and direction, for QP and "
+                "ULS: max N, min N, max M, min M over every combination, and the set that governs each "
+                "face's bars."
+            ]
+        )
+        for d in slabs:
+            sd = d["strip_design"]
+            by_key = {r["key"]: r for r in sd.get("rows") or [] if r.get("sets") is not None}
+            for row in sd["table"]:
+                sl.append([])
+                strip = {"column": "column strip", "field": "field strip"}.get(row["strip"], "")
+                sl.append([" · ".join(x for x in (d["element"], row["moment"], row["label"], strip) if x)])
+                sl.cell(sl.max_row, 1).font = bold
+                sl.append(["Set", "N kN/m", "M kNm/m", "Combination", "Face"])
+                for c in sl[sl.max_row]:
+                    c.font = bold
+                faces = {
+                    f: [by_key[k] for k in row["keys"].get(f, []) if k in by_key] for f in ("bottom", "top")
+                }
+                for state, kind in (("QP", "qp"), ("ULS", "uls")):
+                    for x in slab_sets(faces, kind):
+                        sl.append(
+                            [
+                                f"{state} {x['case']}",
+                                x["N_kN_per_m"],
+                                x["M_kNm_per_m"],
+                                x["combination"],
+                                x["face"],
+                            ]
+                        )
+                if all(faces.values()):
+                    face = tension_face(row)
+                    spacing = faces[face][0]["mesh"]["spacing_mm"]
+                    width = strip_width(spacing)
+                    sl.append(
+                        [
+                            f"AdSec file: strip {width:.0f} mm wide ({face} bars at {spacing:g} mm), "
+                            f"these forces x {width / 1000:g}"
+                        ]
+                    )
+        _widths(sl, (30, 10, 10, 16, 8))
+
     ss = wb.create_sheet("Steel")
     ss.append([f"{project} · {section} · steel elements"])
-    ss.append(["Plaxis signs (N not multiplied by −1). Not designed in Triton: max and min of each action."])
+    ss.append(["Plaxis signs (N not multiplied by −1): max and min of each action along the element."])
     steel = [
         (f"{w['element']} tube", "kN, kNm", (w.get("tube") or {}).get("governing_sets"))
         for w in results.get("combi_walls", [])

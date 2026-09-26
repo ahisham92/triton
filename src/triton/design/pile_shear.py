@@ -16,6 +16,9 @@ for ρl.
 * Detailing to 9.5.3: hoop diameter at least max(6 mm, φl,max/4), spacing at
   most min(20·φl,min, D, 400 mm), times 0.6 for a length D below the pile
   head (slab above) and over laps of bars larger than 14 mm.
+* The links are designed, not only checked: from the pile's link diameter (T10 by
+  default) up through the link sizes, the first that carries the shear at a pitch
+  of at least PREFERRED_PITCH is chosen (else the first that works at all).
 """
 
 from __future__ import annotations
@@ -31,6 +34,8 @@ from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, pile_cover
 
 MIN_LINK_SPACING = 75.0  # mm, practical minimum pitch
+PREFERRED_PITCH = 100.0  # mm, a larger link is chosen before a pitch closer than this
+LINK_SIZES = (10, 12, 14, 16, 20, 25)
 STEP = 0.05  # m, level grid
 MIN_LINK_ZONE = 1.0  # m, shorter zones join a neighbour at the closer spacing
 
@@ -46,6 +51,14 @@ class CageZone:
     phi_max: float
     phi_min: float
     lap_below: float  # m, lap of this zone's bars below ``bottom``
+    inner_rows: tuple[tuple[float, float], ...] = ()  # (bar circle radius, bar Ø) mm of each inner row
+
+
+def inner_hoops(zone: CageZone, link: float) -> list[float]:
+    """Diameters (mm, to the link centre line) of the inner link rings: one around each inner row of
+    bars (2 rows: one ring, 3 rows: two; a half row gets its own ring too). Not counted in the shear
+    check, only in the steel."""
+    return [2 * (radius + phi / 2 + link / 2) for radius, phi in zone.inner_rows]
 
 
 def _factors(settings: DesignSettings, accidental: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -58,6 +71,34 @@ def _factors(settings: DesignSettings, accidental: np.ndarray) -> tuple[np.ndarr
 def design_shear(
     pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, zones: list[CageZone]
 ) -> dict:
+    """The links of a pile: the smallest size from the pile's link diameter up that carries the
+    shear at a practical pitch."""
+    start = pile.link_diameter
+    sizes = [start] + [d for d in LINK_SIZES if d > start]
+    tried = []
+    for link in sizes:
+        out = _design_with(pile, settings, loads, zones, float(link))
+        tried.append(out)
+        pitch = min(z["spacing_mm"] for z in out["zones"])
+        if out["passed"] and pitch >= PREFERRED_PITCH - 1e-9:
+            break
+        if out.get("crushed"):
+            break  # no link helps: the concrete strut crushes
+    else:
+        out = next((t for t in tried if t["passed"]), tried[-1])
+    if out["link_diameter_mm"] > start:
+        out["notes"] = [
+            f"Links designed as Ø{out['link_diameter_mm']:g}: Ø{start:g} would need a pitch closer than "
+            f"{PREFERRED_PITCH:g} mm or would not carry the shear."
+        ] + out["notes"]
+    for t in tried:
+        t.pop("crushed", None)
+    return out
+
+
+def _design_with(
+    pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, zones: list[CageZone], link: float
+) -> dict:
     D = pile.diameter
     r = D / 2
     ac = math.pi * r * r
@@ -65,7 +106,6 @@ def design_shear(
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     alpha_cc = settings.partial_factors.alpha_cc
     head, toe = zones[0].top, zones[-1].bottom
-    link = pile.link_diameter
     asw = math.pi * link * link / 4
 
     # Cage at each load's level.
@@ -168,6 +208,16 @@ def design_shear(
     hoop_len = math.pi * (D - 2 * pile_cover(pile, settings) - link) / 1000  # m
     weight = sum((zz["top"] - zz["bottom"]) * 1000 / zz["spacing_mm"] * hoop_len for zz in out_zones)
     weight *= asw / 1e6 * STEEL_DENSITY
+    # Inner rings at the same size and pitch as the outer links, over each cage zone's length.
+    inner = 0.0
+    for zz in out_zones:
+        for cz in zones:
+            overlap = min(zz["top"], cz.top) - max(zz["bottom"], cz.bottom)
+            if overlap > 0 and cz.inner_rows:
+                length = sum(math.pi * dia / 1000 for dia in inner_hoops(cz, link))
+                inner += overlap * 1000 / zz["spacing_mm"] * length
+    inner *= asw / 1e6 * STEEL_DENSITY
+    rings = max((len(cz.inner_rows) for cz in zones), default=0)
     provided = np.array(
         [next(zz["spacing_mm"] for zz in out_zones if zz["bottom"] - 1e-9 <= lv) for lv in levels]
     )
@@ -189,10 +239,14 @@ def design_shear(
             "VRd_max_kN": round(float(vrd_max(cot[i])[i]), 1),
             "cot_theta": round(float(cot[i]), 2),
         },
+        "link_diameter_mm": link,
+        "crushed": bool(crushed.any()),
         "max_spacing_mm": s_max,
         "min_link_diameter_mm": link_min,
         "zones": out_zones,
-        "links_kg": round(weight, 1),
+        "links_kg": round(weight + inner, 1),
+        "inner_links_kg": round(inner, 1),
+        "inner_rings": rings,
         "profile": _profile(levels, band, v_ed, vrdc),
         "notes": notes,
     }

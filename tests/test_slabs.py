@@ -6,8 +6,25 @@ import pytest
 from conftest import PLATE_HEADER, pile_sheet
 
 from triton.design.runner import run_section
-from triton.design.slabs import auto_stations, bar_options, required_as, wood_armer, zones_for
-from triton.project import CraneArea, DesignSettings, PileInput, PunchingDepth, Section, SlabInput, SlabMesh
+from triton.design.slabs import (
+    auto_stations,
+    bar_options,
+    required_as,
+    station_text,
+    strip_frame,
+    wood_armer,
+    zones_for,
+)
+from triton.project import (
+    CraneArea,
+    DesignSettings,
+    PileInput,
+    PunchingDepth,
+    Section,
+    SlabInput,
+    SlabMesh,
+    SlabStrips,
+)
 from triton.validation import import_sheets
 
 
@@ -89,7 +106,13 @@ def test_slab_design_with_zones_punching_and_restraint():
     }
     wb = import_sheets(raw)
     els = {
-        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3),
+        "Deck": SlabInput(
+            thickness=800,
+            crack_width_limit=0.3,
+            crack_width_limit_bottom=0.3,
+            peaks="design",
+            restraint_check="design",
+        ),
         "Pile(1)": PileInput(head_level=2.7),
     }
     res = run_section(DesignSettings(), Section(elements=els), wb)
@@ -108,7 +131,8 @@ def test_slab_design_with_zones_punching_and_restraint():
     # At the pile face the β of u1 (EC2 6.4.5(3)); the kmax = 1.5 limit on links.
     assert p["vEd_face_MPa"] == pytest.approx(p["beta"] * 1500e3 / (math.pi * 1200 * p["d_mm"]), rel=2e-3)
     assert p["kmax_ratio"] == pytest.approx(p["vEd_MPa"] / (1.5 * p["vRd_c_MPa"]), abs=2e-3)
-    assert set(d["restraint"]["layers"]) == {"bottom_x", "bottom_y", "top_x", "top_y"}
+    # Restraint from the joints works along the quay: on the bars along Y when the strips run along X.
+    assert set(d["restraint"]["layers"]) == {"bottom_y", "top_y"}
     assert d["steel"]["kg_per_m3"] > 0 and d["bands"] and len(d["bands"][0]) == 5
 
 
@@ -145,9 +169,9 @@ def deck_workbook():
 
 
 def design_deck(**slab):
-    limits = {"crack_width_limit": 0.3, "crack_width_limit_bottom": 0.3} | slab
+    limits = {"crack_width_limit": 0.3, "crack_width_limit_bottom": 0.3, "peaks": "design"} | slab
     els = {"Deck": SlabInput(thickness=800, **limits), "Pile(1)": PileInput(head_level=2.7)}
-    return run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
+    return run_section(DesignSettings(), Section(elements=els, end_trim=0.0), deck_workbook())["slabs"][0]
 
 
 def test_slab_user_meshes_punching_depth_crane_and_peaks():
@@ -169,10 +193,12 @@ def test_slab_user_meshes_punching_depth_crane_and_peaks():
     assert zones and all(z["x"][0] >= -8 and z["x"][1] <= -5 for z in zones)
     assert not plain["layers"]["bottom_y"]["zones"]
     assert any("Mobile crane" in n for n in d["notes"])
-    # Averaging the hogging over a ring round the pile needs less top steel there.
-    avg = design_deck(peaks="average")
+    # Averaging the hogging over a ring round the pile needs less top steel there; face by face
+    # never more than the peaks.
+    avg = design_deck(peaks="ring_mean")
     most = lambda r: max([z["as_mm2_per_m"] for z in r["layers"]["top_x"]["zones"]] or [0])  # noqa: E731
     assert most(avg) < most(plain)
+    assert most(design_deck(peaks="face_mean")) <= most(plain)
 
 
 def test_mesh_with_additional_bars_or_mesh_only():
@@ -216,11 +242,26 @@ def test_column_and_field_strips_by_station():
     assert col["MRd_kNm_per_m"] >= 600 and col["ratio"] <= 1 and col["wk_mm"] <= 0.3
     field = rows[("top_x", (2.0, 6.0), "field")]
     assert field["M_kNm_per_m"] < 600 and field["as_mm2_per_m"] <= col["as_mm2_per_m"]
-    assert {(r["moment"], r["strip"]) for r in sd["summary"]} == {
-        (m, s) for m in ("M11", "M22") for s in ("column", "field")
-    }
+    assert {(r["moment"], r["strip"]) for r in sd["summary"]} == {("M11", "column"), ("M11", "field")}
+    # M22 is not split into strips: one mesh over the whole deck, zones only where it needs more.
+    m22 = [r for r in sd["table"] if r["moment"] == "M22"]
+    assert m22[0]["label"] == "Whole deck, basic mesh" and m22[0]["strip"] == "all"
+    assert all(r["zone"] for r in m22[1:]) and set(m22[0]["bars"]) == {"bottom", "top"}
+    assert not d["layers"]["bottom_y"]["strips"] and d["layers"]["bottom_x"]["strips"]
+    assert all(r["set_by"] and r["bar_layers"] for r in sd["table"])
+    across = sd["across_profile"]
+    assert across["moment"] == "M22" and across["axis"] == "Y" and across["lines"] == [0.0]
+    # Each strip's QP sets carry the crack terms of the bars the strip gets, as its crack check.
+    sag = rows[("bottom_x", (2.0, 6.0), "column")]
+    q = sag["sets"]["qp"][0]["crack"]
+    assert q["wk_mm"] == pytest.approx(sag["wk_mm"], abs=1e-3) and q["face"] == "bottom"
+    assert q["util"] == pytest.approx(q["wk_mm"] / q["limit_mm"], abs=5e-3) and 0 < q["x_mm"] < q["h_mm"]
+    # The 3D crack view: wk / limit per cell, the column strip's cells at its crack width.
+    worst = max(r["wk_mm"] / r["wk_limit_mm"] for r in sd["rows"] if r["wk_mm"] is not None)
+    assert max(b[3] for b in d["crack_bands"]) == pytest.approx(worst, abs=5e-3)
     assert design_deck(stations=[3.0, 5.0])["strip_design"]["stations"] == [0.0, 3.0, 5.0, 8.0]
-    assert design_deck(strips="uniform")["strip_design"] is None
+    uniform = design_deck(strips="uniform")
+    assert uniform["strip_design"] is None and uniform["crack_bands"]
 
 
 def test_slab_meshes_at_150_or_200():
@@ -229,3 +270,425 @@ def test_slab_meshes_at_150_or_200():
     s = DesignSettings()
     s.reinforcement.slab_spacings = []
     assert {o[2] for o in bar_options(s)} > {150.0, 200.0}
+
+
+def test_stations_from_the_front_wall_line_on_the_sea_side():
+    box = {"X": [-23.2, -1.0], "Y": [-16.8, 16.8]}
+    front = {"type": "front_beam", "box": {"X": [-1.0, 1.0], "Y": [-16.8, 16.8]}}
+    piles = [(-7.5, 0.0, 0.6), (-12.0, 0.0, 0.6), (-18.0, 0.0, 0.6)]
+    f = strip_frame(SlabInput(), box, piles, [front])
+    # Station 0 is the front beam's centre line; the slab runs from 1.0 to 23.2 m, rows at 7.5, 12, 18.
+    assert (f["origin"], f["sign"], f["start"], f["end"]) == (0.0, -1.0, 1.0, 23.2)
+    assert f["rows"] == [7.5, 12.0, 18.0]
+    assert f["bounds"] == [1.0, 5.5, 9.75, 14.0, 16.0, 20.0, 23.2]
+    assert strip_frame(SlabInput(), box, piles, [front], [4.0, 8.0])["bounds"] == [1.0, 4.0, 8.0, 23.2]
+
+
+def test_station_labels_as_in_the_report():
+    every = [[2.25, 4.0], [4.0, 8.0], [8.0, 12.0], [12.0, 16.0]]
+    assert station_text(every, every) == "All stations"
+    assert station_text([[4.0, 8.0]], every) == "Station 4 to 8"
+    assert station_text([[2.25, 4.0], [8.0, 12.0], [12.0, 16.0]], every) == "All stations except 4 to 8"
+
+
+def test_report_table_and_bars_set_by_the_user():
+    d = design_deck()
+    sd = d["strip_design"]
+    table = sd["table"]
+    m11 = [r for r in table if r["moment"] == "M11"]
+    assert all(r["along_strips"] and len(r["stations"]) == 1 for r in m11)
+    assert {r["label"] for r in table if r["moment"] == "M22"} <= {"All stations"} | {
+        r["label"] for r in table if r["moment"] == "M22"
+    }
+    assert sd["profile"]["M11"] and {"column_max", "field_min"} <= set(sd["profile"]["M11"][0])
+    assert d["moment_cells"]["cells"] and len(d["moment_cells"]["cells"][0]) == 6
+    row = next(r for r in m11 if r["strip"] == "column" and r["stations"] == [[2.0, 6.0]])
+    labels = d["layers"]["top_x"]["additional_labels"]
+    heavy = labels[-1]
+    els = {
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3, peaks="design"),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
+    sec = Section(elements=els)
+    sec.slab_strips["Deck"] = SlabStrips(bars={k: heavy for k in row["keys"]["top"]})
+    mine = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
+    got = next(
+        r
+        for r in mine["strip_design"]["table"]
+        if r["moment"] == "M11" and r["strip"] == "column" and r["stations"] == [[2.0, 6.0]]
+    )
+    assert got["user_set"] and got["additional"]["top"] == heavy
+    assert got["ratio"] < row["ratio"]
+    # Stations set on the Design tab win over the slab's own.
+    sec.slab_strips["Deck"] = SlabStrips(stations=[3.0, 5.0])
+    assert run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]["strip_design"]["stations"] == [
+        0.0,
+        3.0,
+        5.0,
+        8.0,
+    ]
+
+
+def test_twisting_moment_is_left_out_unless_asked():
+    assert any("without the twisting moment" in n for n in design_deck()["notes"])
+    assert any("Wood–Armer" in n for n in design_deck(twisting="wood_armer")["notes"])
+
+
+def test_bar_layers_set_by_the_user_and_the_mesh_across():
+    d = design_deck()
+    row = next(
+        r
+        for r in d["strip_design"]["table"]
+        if r["moment"] == "M11" and r["strip"] == "column" and r["stations"] == [[2.0, 6.0]]
+    )
+    els = {
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3, peaks="design"),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
+    sec = Section(elements=els)
+    spec = "layers: Ø32@150 | Ø25@150"
+    bars = {k: spec for k in row["keys"]["top"]} | {"top_y|mesh": "Ø20 @ 150"}
+    sec.slab_strips["Deck"] = SlabStrips(bars=bars)
+    mine = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
+    got = next(
+        r
+        for r in mine["strip_design"]["table"]
+        if r["moment"] == "M11" and r["strip"] == "column" and r["stations"] == [[2.0, 6.0]]
+    )
+    assert got["user_set"] and got["additional"]["top"] == spec and got["set_by"]["top"] == "your bars"
+    lay = got["bar_layers"]["top"]
+    # Layer 1: the mesh with Ø32 between its bars, at the cover; layer 2 under it, deeper in.
+    assert [x["layer"] for x in lay] == [1, 2] and "Ø32 @ 150" in lay[0]["text"]
+    assert lay[0]["from_face_mm"] == 50 + 16 and lay[1]["from_face_mm"] > lay[0]["from_face_mm"] + 32
+    assert got["bars"]["top"].endswith("Ø32 @ 150 between the mesh bars + Ø25 @ 150 in L1")
+    assert got["ratio"] < row["ratio"]
+    assert mine["layers"]["top_y"]["basic"]["label"] == "Ø20 @ 150"
+    whole = next(r for r in mine["strip_design"]["table"] if r["label"] == "Whole deck, basic mesh")
+    assert whole["set_by"]["top"] == "your mesh" and whole["user_set"]
+
+
+def test_slab_sets_in_the_adsec_force_set_workbook():
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    from triton.design.governing import workbook
+
+    d = design_deck()
+    ws = load_workbook(BytesIO(workbook("P", "S", {"slabs": [d]})))["Slabs"]
+    rows = [r for r in ws.iter_rows(values_only=True) if r[0]]
+    titles = [r[0] for r in rows if r[0].startswith("Deck · ")]
+    assert len(titles) == len(d["strip_design"]["table"])
+    sets = [r for r in rows if r[0].startswith(("QP ", "ULS "))]
+    assert sets and all(r[4] in ("bottom", "top") for r in sets)
+    assert {r[0].split()[0] for r in sets} == {"QP", "ULS"}
+
+
+def test_slab_bars_in_the_drawing_file():
+    from triton.design.export import pile_cages
+
+    d = design_deck()
+    (js,) = pile_cages("P", {"slabs": [d]})["slabs"]
+    assert {f["face"] + f["bars_along"] for f in js["faces"]} == {"bottomX", "bottomY", "topX", "topY"}
+    zones = [z for f in js["faces"] for z in f["zones"]]
+    assert zones and all(z["layers"] and z["layers"][0]["bars"][0]["kind"] == "mesh" for z in zones)
+    assert all(f["mesh"]["layers"][0]["from_face_mm"] > f["cover_mm"] for f in js["faces"])
+
+
+def test_failing_punching_says_what_would_fix_it():
+    wb = import_sheets(
+        {
+            "Deck-PT-B-Apron": deck_rows(lambda x, y: [0.0] * 5 + [50.0, 50.0, 0.0]),
+            "Deck-QP": deck_rows(lambda x, y: [0.0] * 5 + [20.0, 20.0, 0.0]),
+            "Pile(1)-PT-B-Apron": piles_at([(-4.0, 0.0)], 9000.0),
+            "Pile(1)-QP": piles_at([(-4.0, 0.0)], 6000.0),
+        }
+    )
+    els = {"Deck": SlabInput(thickness=500), "Pile(1)": PileInput(head_level=2.7)}
+    (d,) = run_section(DesignSettings(), Section(elements=els), wb)["slabs"]
+    (p,) = d["punching"]
+    assert not p["passed"]
+    fix = p["fix"]
+    # A thicker slab always helps, and it needs more without links than with them.
+    assert 500 < fix["thickness_mm_with_links"] <= fix["thickness_mm_without_links"]
+    if fix.get("rho_l_with_links"):
+        assert fix["rho_l_with_links"] > p["rho_l"]
+
+
+def test_slab_is_designed_with_each_mesh_spacing_and_the_pick_drives_it():
+    from triton.project import SlabStrips
+
+    els = {
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3, peaks="design"),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
+    d = run_section(DesignSettings(), Section(elements=els), deck_workbook())["slabs"][0]
+    mc = d["mesh_choice"]
+    assert [o["spacing_mm"] for o in mc["options"]] == [150, 200] and not mc["picked"]
+    assert all(o["kg_per_m3"] > 0 and o["ratio_pct"] > 0 for o in mc["options"])
+    assert {lay["basic"]["spacing_mm"] for lay in d["layers"].values()} == {mc["chosen_mm"]}
+    other = 350 - mc["chosen_mm"]
+    sec = Section(elements=els, slab_strips={"Deck": SlabStrips(spacing=other)})
+    d2 = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
+    assert d2["mesh_choice"]["chosen_mm"] == other and d2["mesh_choice"]["picked"]
+    assert {lay["basic"]["spacing_mm"] for lay in d2["layers"].values()} == {other}
+    assert any("as you picked" in n for n in d2["notes"])
+
+
+def test_added_layers_sit_inside_their_mesh():
+    from triton.design.export import _slab
+    from triton.design.slabs import bar_layers
+
+    rows = bar_layers((0, 20, 150, 1), [(25, 150), (25, 150)], 50)
+    assert [r["from_face_mm"] for r in rows] == sorted(r["from_face_mm"] for r in rows)
+    d = {"element": "Deck", "thickness_mm": 800, "layers": {}}
+    for face in ("bottom", "top"):
+        d["layers"][f"{face}_x"] = {"basic": {}, "mesh_bar_layers": rows, "zones": []}
+    faces = {f["face"]: f["mesh"]["layers"] for f in _slab(d)["faces"]}
+    up = [r["above_soffit_mm"] for r in faces["bottom"]]
+    down = [r["above_soffit_mm"] for r in faces["top"]]
+    assert up == sorted(up) and down == sorted(down, reverse=True)  # bottom layers go up, top layers down
+
+
+def test_slab_station_diagrams_have_the_qp_envelope_too():
+    sd = design_deck()["strip_design"]
+    assert set(sd["profile_qp"]) == set(sd["profile"]) and sd["across_profile_qp"]["points"]
+    # QP moments are smaller than ULS ones in this workbook.
+    top = max(abs(q["column_max"]) for q in sd["profile"]["M11"])
+    assert max(abs(q["column_max"]) for q in sd["profile_qp"]["M11"]) < top
+
+
+def test_top_and_bottom_crack_limits_are_used_face_by_face():
+    d = design_deck(crack_width_limit=0.3, crack_width_limit_bottom=0.15)
+    rows = d["strip_design"]["rows"]
+    assert {r["face"]: r["wk_limit_mm"] for r in rows} == {"top": 0.3, "bottom": 0.15}
+    assert all(r["wk_mm"] is None or r["wk_mm"] <= r["wk_limit_mm"] + 1e-9 for r in rows)
+    for r in rows:
+        for q in r["sets"]["qp"]:
+            assert q["crack"]["limit_mm"] == r["wk_limit_mm"]
+
+
+def test_pile_face_methods_keep_faces_and_directions_apart():
+    import pandas as pd
+
+    from triton.design.slabs import face_average, treat_pile_faces
+
+    pts = [(0.6, 0.0, 1000.0, 5.0), (0.9, 0.5, 600.0, 5.0), (-0.6, 0.0, 40.0, 5.0), (0.2, 0.7, 300.0, 5.0)]
+    f = pd.DataFrame(
+        [
+            {"combination": c, "Node": i, "X": x, "Y": y, "Mx": m * k, "My": 10.0 * k, "Mxy": t}
+            for c, k in (("A", 1.0), ("B", 0.5))
+            for i, (x, y, m, t) in enumerate(pts)
+        ]
+    )
+    piles = [(0.0, 0.0, 0.5)]
+    face = face_average(f, piles, 0.5)
+    a = face[face.combination == "A"].set_index("Node")
+    # +X face: the nodes on its side of the pile, the one beside the round head included (1000, 600,
+    # 300); the -X face keeps its own 40.
+    assert a.loc[0, "Mx"] == a.loc[1, "Mx"] == a.loc[3, "Mx"] == pytest.approx(633.33, abs=0.01)
+    assert a.loc[2, "Mx"] == 40
+    ring = treat_pile_faces(f, piles, "ring_mean", 0.5)
+    assert ring[ring.combination == "A"]["Mx"].nunique() == 1  # opposite faces mixed
+    assert treat_pile_faces(f, piles, "peak", 0.5).equals(f)
+    # Envelope: the worst of A and B at each node (A), averaged, for both combinations.
+    env = face_average(f, piles, 0.5, envelope=True).set_index(["combination", "Node"])
+    assert env.loc[("B", 0), "Mx"] == env.loc[("A", 0), "Mx"] == pytest.approx(633.33, abs=0.01)
+    # Old saved values still load.
+    assert SlabInput(peaks="average").peaks == "face_mean" and SlabInput(peaks="design").peaks == "peak"
+
+
+def test_export_takes_the_strip_design_bars():
+    from triton.design.export import _slab
+
+    d = design_deck()
+    sd = d["strip_design"]
+    out = _slab(d)
+    along = f"bottom_{sd['along'].lower()}"
+    heavy = [r for r in sd["rows"] if r["layer"] == along and r.get("additional_bars") and not r.get("zone")]
+    face = next(f for f in out["faces"] if f["face"] == "bottom" and f["bars_along"] == sd["along"])
+    # Every strip row with added bars is drawn, with the row's own layers, on every line of piles.
+    for r in heavy:
+        mine = [z for z in face["zones"] if z.get("row") == r["key"]]
+        assert mine and all(
+            sum(q["as_mm2_per_m"] for q in z["layers"]) == sum(q["as_mm2_per_m"] for q in r["bar_layers"])
+            for z in mine
+        )
+
+
+def test_squares_without_results_borrow_from_their_neighbours():
+    from triton.design.slabs import gap_cells
+
+    box = {"X": [0.0, 5.0], "Y": [0.0, 5.0]}
+    have = {(i, j) for i in range(6) for j in range(6)} - {(2, 2), (4, 4), (0, 5)}
+    # A pile head at (4.5, 4.5); (2, 2) is a hole in the Plaxis mesh.
+    gaps = gap_cells(have, 6, 6, 0.0, 0.0, 1.0, box, [(4.5, 4.5, 0.6)])
+    assert gaps[(2, 2)][1] == "no node" and len(gaps[(2, 2)][0]) == 8
+    assert gaps[(4, 4)][1] == "pile"
+    # A corner square with results on two sides only lies beyond the slab's outline: left out.
+    assert (0, 5) not in gaps
+
+
+def test_least_spacing_of_additional_bars():
+    from triton.design.slabs import additional_options
+    from triton.project import ReinforcementSettings
+
+    mesh = (2094.0, 20, 150.0, 1)
+
+    def labels(**r):
+        return additional_options(mesh, DesignSettings(reinforcement=ReinforcementSettings(**r)))[2]
+
+    assert "Ø32 @ 150 in 2 layers + Ø32 behind the mesh bars" in labels()  # the bars @ 75
+    kept = labels(slab_min_bar_spacing=150)
+    assert "Ø32 @ 300" in kept and "Ø32 @ 150 in 2 layers" in kept and "Ø32 @ 150 in 3 layers" in kept
+    assert not any("behind" in t for t in kept)
+    # As many layers as the design needs, whatever Maximum bar layers says, up to mid-depth.
+    deep = additional_options(mesh, DesignSettings(), room=250)[2]
+    assert "Ø32 @ 150 in 4 layers" in deep and "Ø32 @ 150 in 5 layers" not in deep
+    assert all(t == "Ø20 @ 150" or t.endswith("@ 300") for t in labels(slab_min_bar_spacing=300))
+
+
+def test_an_empty_least_spacing_keeps_stored_designs_fresh():
+    from triton.fresh import _hash, fingerprint
+    from triton.project import Project
+
+    p = Project()
+    before = fingerprint(p, Section(), None)["design settings"]
+    # The same hash as before the setting existed: the settings without it.
+    old = p.design.model_dump(mode="json", exclude={"joints", "construction_joints"})
+    del old["reinforcement"]["slab_min_bar_spacing"]
+    assert before == _hash(old)
+    p.design.reinforcement.slab_min_bar_spacing = 150
+    assert fingerprint(p, Section(), None)["design settings"] != before
+
+
+def test_a_zone_runs_on_through_a_square_with_no_result():
+    import numpy as np
+    import pandas as pd
+
+    from triton.design.slabs import zones_for
+
+    options = [(1000.0, 16, 200, 1), (3000.0, 25, 150, 1)]
+    # One row of 7 squares needing the heavier bars, with no result at i = 3 (over a pile head).
+    need = pd.DataFrame({"i": [0, 1, 2, 4, 5, 6], "j": [0] * 6, "idx": [1] * 6})
+    ok = np.array([[False, True]] * 6)
+    split = zones_for(need, ok, options, 1.0, 0.0, 0.0, "X", 2.5, 0)
+    whole = zones_for(need, ok, options, 1.0, 0.0, 0.0, "X", 2.5, 0, gaps={(3, 0): ([(2, 0)], "pile")})
+    assert [z["x"] for z in split["zones"]] == [[0.0, 3.0], [4.0, 7.0]]
+    assert [z["x"] for z in whole["zones"]] == [[0.0, 7.0]]
+
+
+def _unified_deck(**slab):
+    def forces(x, y):
+        return [0.0, 0.0, 0.0, 20.0, 30.0, -300.0, 80.0, 0.0]
+
+    heavy = piles_at([(-6.0, -2.0)], 4000.0)
+    light = piles_at([(-6.0, 2.0)], 3400.0)[1:]
+    for r in light:
+        r[1] += 100  # its own node numbers
+    other = piles_at([(-2.0, 0.0)], 2000.0)
+    raw = {
+        "Deck-PT-B-Apron": deck_rows(forces),
+        "Deck-QP": deck_rows(lambda x, y: [0.0] * 5 + [100.0, 50.0, 0.0]),
+        "Pile(1)-PT-B-Apron": heavy + light,
+        "Pile(1)-QP": piles_at([(-6.0, -2.0), (-6.0, 2.0)], 1000.0),
+        "Pile(2)-PT-B-Apron": other,
+        "Pile(2)-QP": piles_at([(-2.0, 0.0)], 1000.0),
+    }
+    els = {
+        "Deck": SlabInput(thickness=700, **slab),
+        "Pile(1)": PileInput(head_level=2.7),
+        "Pile(2)": PileInput(head_level=2.7),
+    }
+    (d,) = run_section(DesignSettings(), Section(elements=els), import_sheets(raw))["slabs"]
+    return d
+
+
+def test_punching_is_one_design_per_pile_type():
+    d = _unified_deck()
+    heavy, light = (q for q in d["punching"] if q["pile"] == "Pile(1)")
+    # Each head keeps its own check...
+    assert heavy["own"]["V_kN"] == 4000.0 and light["own"]["V_kN"] == 3400.0
+    assert light["own"]["utilisation"] < heavy["own"]["utilisation"]
+    assert light["own"]["perimeters"] < light["perimeters"] == 3
+    # ... and both carry the governing head's design and links, as detailed on site.
+    for k in (
+        "V_kN",
+        "utilisation",
+        "needs_reinforcement",
+        "perimeters",
+        "asw_mm2_per_perimeter",
+        "link_radii_mm",
+    ):
+        assert light.get(k) == heavy.get(k), k
+    assert heavy["governing"] and not light["governing"]
+    assert (light["x"], light["y"]) == (-6.0, 2.0)
+    types = {t["pile"]: t for t in d["punching_types"]}
+    assert set(types) == {"Pile(1)", "Pile(2)"}
+    assert types["Pile(1)"]["heads"] == 2 and types["Pile(1)"]["V_kN"] == 4000.0
+    assert (types["Pile(1)"]["governing_x"], types["Pile(1)"]["governing_y"]) == (-6.0, -2.0)
+
+    # Per head: each its own design.
+    each = _unified_deck(punching_per="head")
+    h, lt = (q for q in each["punching"] if q["pile"] == "Pile(1)")
+    assert (h["V_kN"], lt["V_kN"]) == (4000.0, 3400.0) and "own" not in lt
+
+    # Only the pile types picked.
+    only = _unified_deck(punching_piles=["Pile(1)"])
+    assert {q["pile"] for q in only["punching"]} == {"Pile(1)"}
+    assert any("not checked for Pile(2)" in n for n in only["notes"])
+
+
+def test_older_results_are_unified_when_read(tmp_path):
+    from triton.store import _upgrade
+
+    d = _unified_deck(punching_per="head")
+    old = {"slabs": [{k: v for k, v in d.items() if k != "punching_types"}]}
+    (s,) = _upgrade(old)["slabs"]
+    assert len(s["punching_types"]) == 2
+    a, b = (q for q in s["punching"] if q["pile"] == "Pile(1)")
+    assert a["V_kN"] == b["V_kN"] == 4000.0
+
+
+def test_punching_that_links_cannot_carry_gets_bars_over_the_pile():
+    from triton.design.export import _slab
+
+    def forces(x, y):
+        return [0.0, 0.0, 0.0, 20.0, 30.0, -300.0, 80.0, 0.0]
+
+    heavy = piles_at([(-6.0, -2.0)], 5200.0)
+    light = piles_at([(-6.0, 2.0)], 3400.0)[1:]
+    for r in light:
+        r[1] += 100
+    raw = {
+        "Deck-PT-B-Apron": deck_rows(forces),
+        "Deck-QP": deck_rows(lambda x, y: [0.0] * 5 + [100.0, 50.0, 0.0]),
+        "Pile(1)-PT-B-Apron": heavy + light,
+        "Pile(1)-QP": piles_at([(-6.0, -2.0), (-6.0, 2.0)], 1000.0),
+    }
+
+    def deck(**kw):
+        els = {"Deck": SlabInput(thickness=700, **kw), "Pile(1)": PileInput(head_level=2.7)}
+        return run_section(DesignSettings(), Section(elements=els), import_sheets(raw))["slabs"][0]
+
+    report = deck(punching_fix="report")
+    assert not any(q["passed"] for q in report["punching"]) and not report["punching_bars"]
+    need = report["punching"][0]["fix"]["rho_l_with_links"]
+
+    d = deck()
+    (b,) = d["punching_bars"]
+    # The type's one detail: the same bars on both heads, on the top face (the pile pushes up).
+    assert b["face"] == "top" and len(b["heads"]) == 2
+    assert all(q["passed"] and q["perimeters"] and q["rho_l"] >= need for q in d["punching"])
+    assert b["width_mm"] == 1200 + 6 * d["punching"][0]["d_mm"]
+    assert d["steel"]["punching_bars_kg"] == round(b["kg"]) > 0
+    # They are drawn as their own zones, inside the face's other bars.
+    top_x = next(f for f in _slab(d)["faces"] if f["face"] == "top" and f["bars_along"] == "X")
+    zones = [z for z in top_x["zones"] if z.get("punching")]
+    assert (
+        len(zones) == 2
+        and zones[0]["x_m"][1] - zones[0]["x_m"][0] == b["directions"]["x"]["length_mm"] / 1000
+    )
+    assert zones[0]["layers"][0]["from_face_mm"] > max(
+        r["from_face_mm"] for r in d["layers"]["top_x"]["mesh_bar_layers"]
+    )

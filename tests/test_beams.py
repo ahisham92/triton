@@ -158,7 +158,21 @@ def test_design_beam_with_supports_and_export():
     wb = import_sheets(raw)
     truss = {"crane_load": 0, "bollard_slab_thickness": None}
     els = {"Front Beam": BeamInput(depth=1500, truss=truss), "Pile(1)": PileInput(head_level=2.7)}
+    faces = DesignSettings(beam_support_results="faces")
     d = design_beam(
+        "Front Beam",
+        els["Front Beam"],
+        faces,
+        wb.elements()["Front Beam"],
+        section_geometry(wb),
+        els,
+        {"1": "X", "2": "Y"},
+    )
+    # The QP diagrams: the same positions, the QP envelope and its crack width over the limit.
+    assert d["profile_qp"] and {"s", "u", "Mv_max", "Mv_min"} <= set(d["profile_qp"][0])
+    assert max(q["Mv_max"] for q in d["profile_qp"]) < max(q["Mv_max"] for q in d["profile"])
+    # By default every result is designed, the peak inside the pile too, as the office's beam designs.
+    every = design_beam(
         "Front Beam",
         els["Front Beam"],
         DesignSettings(),
@@ -167,6 +181,8 @@ def test_design_beam_with_supports_and_export():
         els,
         {"1": "X", "2": "Y"},
     )
+    assert every["support_results"] == "all" and every["bending"]["extremes"]["Mv"]["max"] > 5000
+    assert [q["s"] for q in every["supports"]] == [0.0, 6.0, 12.0]
     assert [q["s"] for q in d["supports"]] == [0.0, 6.0, 12.0]
     # 6 m between piles on a 1.5 m deep beam: the truss tie, not bending, sets the bottom bars.
     assert d["passed"] and d["utilisation"] <= 1
@@ -182,8 +198,14 @@ def test_design_beam_with_supports_and_export():
     assert d["steel"]["kg_per_m3"] > 0
     assert d["truss"]["spacing_m"] == 6.0 and d["truss"]["spacing_from"] == "workbook"
     assert len(d["governing_sets"][0]["uls"]) == 7 and len(d["governing_sets"][0]["qp"]) == 7
+    # Crack view: each QP set with its crack at its tension face; bands of wk / limit along the beam.
+    qp = d["governing_sets"][0]["qp"]
+    assert max(r["crack"]["wk_mm"] for r in qp) == pytest.approx(d["cracks"]["bottom"]["wk"], abs=2e-3)
+    assert all(r["crack"]["face"] == ("bottom" if r["M3_kNm"] >= 0 else "top") for r in qp)
+    worst = d["cracks"]["bottom"]["wk"] / d["cracks"]["bottom"]["limit"]
+    assert max(b[3] for b in d["crack_bands"]) == pytest.approx(worst, abs=2e-3)
 
-    res = run_section(DesignSettings(), Section(elements=els), wb)
+    res = run_section(faces, Section(elements=els), wb)
     assert [b["element"] for b in res["beams"]] == ["Front Beam"]
     from io import BytesIO
 
@@ -192,6 +214,11 @@ def test_design_beam_with_supports_and_export():
     ws = load_workbook(BytesIO(workbook("P", "S", res)))["Concrete"]
     titles = [r[0] for r in ws.iter_rows(values_only=True) if r[0] and str(r[0]).startswith("Front Beam")]
     assert titles and "M3 vertical" in titles[0]
+    from triton.design.export import pile_cages
+
+    (jb,) = pile_cages("P", res, "S")["beams"]
+    assert jb["element"] == "Front Beam" and len(jb["bars"]) == len(res["beams"][0]["cage"]["bars"])
+    assert jb["links"]["spacing_mm"] > 0 and {"top", "bottom"} <= set(jb["transverse"])
 
 
 def test_bollard_ties_as_the_office_drawing():
@@ -264,3 +291,100 @@ def test_torsion_steel_comes_out_of_the_cage():
     assert "torsion_steel" not in plain["bending"]
     assert twisted["steel"]["longitudinal_kg_per_m"] >= plain["steel"]["longitudinal_kg_per_m"]
     assert any("6.3.2(3)" in n for n in twisted["notes"])
+
+
+def test_peak_times_width_takes_the_largest_nodal_values():
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(
+            lambda x, y: [0.0, -50.0, 0.0, 30.0 + 10 * x, 0.0, 0.0, 100.0 + 50 * x, 0.0]
+        )
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    lay = layout(sheets, {"1": "X", "2": "Y"})
+    f = station_forces(sheets["PT-B-Apron"].frame, lay, 1.0, np.array([6.0]), peak_width=4.5)
+    assert sorted(f["Mv"]) == pytest.approx([50 * 4.5, 150 * 4.5])
+    assert np.allclose(f["V"], 40 * 4.5)
+    assert np.allclose(f["N"], 100.0)  # still integrated over the model's 2 m
+
+
+def test_beam_reports_what_sets_each_face():
+    settings = DesignSettings()
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=100.0, q23=30.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=60.0)),
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    d = design_beam(
+        "Front Beam", BeamInput(kind="front_beam", width=2000, depth=1600), settings, sheets, [], {}, None
+    )
+    faces = {f["face"]: f for f in d["faces"]}
+    assert set(faces) == {"top", "bottom", "side"}
+    assert faces["top"]["needs_mm2"]["minimum"] > 0 and faces["top"]["governed_by"]
+    assert any("peak nodal" in n for n in d["notes"])
+
+
+def test_bars_set_by_the_user_are_checked_as_they_are():
+    from triton.project import BeamCage
+
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=400.0, q23=30.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=300.0)),
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    beam = BeamInput(kind="front_beam", width=2000, depth=1600)
+    auto = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None)
+    light = BeamCage(
+        top={"count": 10, "diameter": 16},
+        bottom={"count": 10, "diameter": 16},
+        side={"count": 4, "diameter": 16},
+    )
+    d = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None, light)
+    assert d["user_set"] and not auto["user_set"]
+    assert d["cage"]["bottom"]["count"] == 10 and d["cage"]["bottom"]["phi"] == 16
+    assert d["cracks"]["bottom"]["wk"] > auto["cracks"]["bottom"]["wk"]
+    assert any("set by you" in n for n in d["notes"])
+    # The drawing shows the bars at their real size.
+    assert {bar[2] for bar in d["cage"]["bars"]} == {16}
+    tight = BeamCage(**{**light.model_dump(), "bottom": {"count": 60, "diameter": 32}})
+    t = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None, tight)
+    assert not t["passed"] and any("clear spacing" in n for n in t["notes"])
+
+
+def test_beam_top_and_bottom_crack_limits():
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=150.0, m11=300.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=100.0, m11=200.0)),
+        "Pile(1)-PT-B-Apron": pile_line([0.0, 6.0, 12.0]),
+        "Pile(1)-QP": pile_line([0.0, 6.0, 12.0]),
+    }
+    wb = import_sheets(raw)
+    truss = {"crane_load": 0, "bollard_slab_thickness": None}
+    beam = BeamInput(depth=1500, truss=truss, crack_width_limit=0.3, crack_width_limit_bottom=0.1)
+    els = {"Front Beam": beam, "Pile(1)": PileInput(head_level=2.7)}
+    d = design_beam(
+        "Front Beam",
+        beam,
+        DesignSettings(),
+        wb.elements()["Front Beam"],
+        section_geometry(wb),
+        els,
+        {"1": "X", "2": "Y"},
+    )
+    limits = {f: c["limit"] for f, c in d["cracks"].items()}
+    assert limits.get("bottom", 0.1) == 0.1 and limits.get("top", 0.3) == 0.3
+    assert all(c["wk"] <= c["limit"] + 1e-9 for c in d["cracks"].values())
+
+
+def test_stop_reaches_inside_a_beam_design():
+    from triton.design.stop import Stopped, watching
+
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=150.0, q23=80.0, m11=300.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=100.0, m11=200.0)),
+    }
+    wb = import_sheets(raw)
+    els = {"Front Beam": BeamInput(depth=1500)}
+    with watching(lambda: True), pytest.raises(Stopped):
+        design_beam(
+            "Front Beam", els["Front Beam"], DesignSettings(), wb.elements()["Front Beam"], [], els, None
+        )

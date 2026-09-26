@@ -9,13 +9,17 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from . import clock
+from .design.sheet_piles import DEFAULT_SECTION as DEFAULT_SHEET_PILE
+from .design.sheet_piles import SECTION_NAMES as SHEET_PILE_SECTIONS
+from .design.sheet_piles import normalise as _normalise_sheet_pile
 from .durability import bs6349_corrosion, bs6349_covers
 from .elements import ElementType, parse_sheet_name
+from .furniture_inputs import QuayFurniture, SectionFurniture
 from .materials import (
     BAR_DIAMETERS,
     CONCRETE_GRADES,
@@ -28,6 +32,7 @@ ConcreteGrade = Literal[tuple(CONCRETE_GRADES)]  # type: ignore[valid-type]
 RebarGrade = Literal[tuple(REINFORCEMENT_GRADES)]  # type: ignore[valid-type]
 SteelGrade = Literal[tuple(STRUCTURAL_STEEL_GRADES)]  # type: ignore[valid-type]
 SheetPileGrade = Literal[tuple(SHEET_PILE_GRADES)]  # type: ignore[valid-type]
+SheetPileSection = Literal[tuple(SHEET_PILE_SECTIONS)]  # type: ignore[valid-type]
 
 
 class _Model(BaseModel):
@@ -38,8 +43,12 @@ def _mm(title: str, default: float | None = None, **kw) -> Field:
     return Field(default, title=title, json_schema_extra={"unit": "mm"}, **kw)
 
 
-def _m(title: str, default: float | None = None, **kw) -> Field:
-    return Field(default, title=title, json_schema_extra={"unit": "m"}, **kw)
+def _m(title: str, default: float | None = None, extra: dict | None = None, **kw) -> Field:
+    return Field(default, title=title, json_schema_extra={"unit": "m", **(extra or {})}, **kw)
+
+
+# A field shown on the form only while another field of the same object has one of these values.
+STRUCTURAL_CASING = {"show_when": {"role": ["structural"]}}
 
 
 # --- Project-wide settings -------------------------------------------------
@@ -52,6 +61,13 @@ class ProjectInfo(_Model):
     location: str = Field("", title="Location")
     designer: str = Field("", title="Designed by")
     checker: str = Field("", title="Checked by")
+    approver: str = Field("", title="Approved by")
+    document_number: str = Field("", title="Calculation document number")
+    revision: str = Field(
+        "P01",
+        title="Revision",
+        description="Printed on the reports' cover.",
+    )
 
 
 class PartialFactors(_Model):
@@ -88,6 +104,21 @@ class ReinforcementSettings(_Model):
         json_schema_extra={"unit": "mm"},
     )
     min_clear_spacing: float = _mm("Minimum clear spacing (slabs and beams)", 50.0, gt=0)
+    slab_min_clear_spacing: float = _mm(
+        "Minimum clear spacing in slabs",
+        32.0,
+        gt=0,
+        description="EC2 8.2(2): the larger bar's Ø, aggregate + 5 mm and 20 mm, at least; 32 mm lets Ø32 "
+        "additional bars sit between Ø20 @ 150 mesh bars, as on the issued drawings.",
+    )
+    slab_min_bar_spacing: float | None = _mm(
+        "Least spacing of additional slab bars",
+        None,
+        gt=0,
+        description="Each set of additional bars in a slab is at this spacing or wider: 150 on a 150 mm "
+        "mesh keeps Ø @ 150 (every gap) and Ø @ 300 (every second gap) and drops the bars @ 75 behind "
+        "the mesh bars; more layers @ 150 take their place. Empty: no limit.",
+    )
     max_spacing: float = _mm("Maximum bar spacing (slabs and beams)", 250.0, gt=0)
     spacing_step: float = _mm("Spacing increment (slabs and beams)", 25.0, gt=0)
     slab_spacings: list[float] = Field(
@@ -97,7 +128,13 @@ class ReinforcementSettings(_Model):
         "Empty: from the maximum spacing down in the spacing increment.",
         json_schema_extra={"unit": "mm"},
     )
-    max_layers: int = Field(2, title="Maximum bar layers per face (slabs and beams)", ge=1, le=3)
+    max_layers: int = Field(
+        2,
+        title="Maximum bar layers per face (beams, slab meshes)",
+        ge=1,
+        le=3,
+        description="Slab additional bars take as many layers as the design needs, up to mid-depth.",
+    )
     objective: Literal["min_steel", "min_cost"] = Field(
         "min_steel", title="Choose arrangement by", description="Least steel ratio or lowest cost"
     )
@@ -159,6 +196,14 @@ class PileReinforcement(_Model):
         title="Lap length",
         gt=0,
         description="Lap length as a multiple of the bar diameter (45 gives 45φ).",
+        json_schema_extra={"unit": "φ"},
+    )
+    head_anchorage_factor: float = Field(
+        45.0,
+        title="Bars into the element above",
+        ge=0,
+        description="The pile bars run on above the pile head into the beam or slab over it, as a multiple "
+        "of the bar diameter (45 gives 45φ); counted in bar lengths, weights and costs. 0 for none.",
         json_schema_extra={"unit": "φ"},
     )
     max_steel_ratio: float = Field(
@@ -325,6 +370,93 @@ class Cracking(_Model):
     )
 
 
+class ExpansionJoints(_Model):
+    """How Triton places the expansion (movement) joints along a berth. Positions are proposed per
+    section on the Sections tab; they never change the elements' Plaxis results."""
+
+    max_segment: float = _m(
+        "Longest segment between joints",
+        58.0,
+        gt=0,
+        description="No segment of deck and beams is longer than this. 58 m is the office's joint spacing.",
+    )
+    preferred_segment: float | None = _m(
+        "Preferred segment length",
+        None,
+        gt=0,
+        description="Empty: as few joints as the longest segment allows. Given: about this length, so a "
+        "shorter value gives more joints.",
+    )
+    min_segment: float = _m(
+        "Shortest segment",
+        20.0,
+        gt=0,
+        description="No segment (end ones included) shorter than this.",
+    )
+    position: Literal["midway", "at_row", "anywhere"] = Field(
+        "midway",
+        title="Joint position against the pile rows",
+        description="Mid-way between two rows of piles: the deck cantilevers half a bay each side. At a "
+        "row: a doubled row of piles, one each side of the joint. Anywhere: every 0.5 m.",
+    )
+    furniture_clearance: float = _m(
+        "Clear distance from fenders, bollards and other furniture",
+        1.5,
+        ge=0,
+        description="Measured along the berth from the item's centre. Items are the section's furniture "
+        "positions, else the fenders, bollards and other items priced each on the Costing tab.",
+    )
+    at_corners: bool = Field(
+        True,
+        title="A joint at each corner of a corner berth",
+        description="Off: segments may run round a corner (lengths measured along the quay line).",
+    )
+    use_in_restraint: bool = Field(
+        True,
+        title="Beam and slab restraint checks use the segment lengths",
+        description="On: the length between movement joints of each beam and slab is the longest segment "
+        "of its part of the berth (the element's own length is used when there is no joint layout). Off: "
+        "each element's own length between movement joints.",
+    )
+
+
+class ConstructionJointRules(_Model):
+    """How the construction joints set on the elements are checked (EN 1992-1-1 6.2.5). The defaults
+    follow the office's Final Design Report (Appendix 18, shear check at construction joint)."""
+
+    lever_arm: float = Field(
+        0.8,
+        title="Lever arm z / d",
+        gt=0.5,
+        le=0.95,
+        description="z = 0.8 d in the office report; 0.9 d is the usual EN 1992-1-1 value.",
+    )
+    effective_depth: Literal["cover", "bars"] = Field(
+        "cover",
+        title="Effective depth d",
+        description="cover: d = h − cover (office report, 700 − 50 = 650). bars: to the centroid of the "
+        "tension bars.",
+    )
+    sigma_n_area: Literal["d", "h"] = Field(
+        "d",
+        title="σn = N / (b × …)",
+        description="d: N over b d (office report). h: N over the whole joint b h.",
+    )
+    actions: Literal["peak", "strip_mean"] = Field(
+        "peak",
+        title="Slab actions along the joint",
+        description="peak: the largest shear at the joint (office report). strip_mean: the mean over the "
+        "strip width, as the slab design.",
+    )
+    tension: Literal["separate", "add"] = Field(
+        "separate",
+        title="Tension across the joint",
+        description="separate: the joint bars are the shear-friction steel alone, N counted through σn and "
+        "bending checked in the element design (office report). add: the tension steel for N with M is added "
+        "on top (more conservative).",
+    )
+
+
 class DesignSettings(_Model):
     code: Literal["EN 1992 / EN 1993 + BS 6349"] = Field("EN 1992 / EN 1993 + BS 6349", title="Design code")
     design_life_years: int = Field(50, title="Design life", ge=1, json_schema_extra={"unit": "years"})
@@ -334,11 +466,27 @@ class DesignSettings(_Model):
     reinforcement: ReinforcementSettings = Field(default_factory=ReinforcementSettings, title="Reinforcement")
     piles: PileReinforcement = Field(default_factory=PileReinforcement, title="Pile reinforcement")
     cracking: Cracking = Field(default_factory=Cracking, title="Cracking and restraint")
-    plate_positive_moment: Literal["sagging", "hogging"] = Field(
-        "sagging",
+    plate_positive_moment: Literal["auto", "sagging", "hogging"] = Field(
+        "auto",
         title="Positive plate moments (M11, M22) in the workbook",
-        description="Sagging: positive M puts the bottom face of slabs and beams in tension. In the sample "
-        "the deck's M11 peaks negative at every pile head, so positive is sagging there.",
+        description="Auto reads it from each workbook: away from the piles and walls the shears follow the "
+        "slope of the moments, and the load the deck carries between them sets which way, whatever sign "
+        "Plaxis gives the shears (Workbook tab, directions check). Sagging: positive M puts the bottom face "
+        "of slabs and beams in tension; hogging: the top face. The sample model reads as hogging.",
+    )
+    beam_actions: Literal["peak_width", "integrated"] = Field(
+        "peak_width",
+        title="Beam bending and shear from the plates",
+        description="Peak × width: the largest nodal M and Q per metre near each station times the beam "
+        "width, as the calc report takes them. Integrated: the plate results fitted and integrated across "
+        "the model's width (smaller where the mesh is coarse and noisy).",
+    )
+    beam_support_results: Literal["all", "faces"] = Field(
+        "all",
+        title="Beam results over piles and king piles",
+        description="All: every Plaxis result along the beam is designed, over the supports too, as the "
+        "office's beam designs take them. Faces: results inside a pile or king pile are left out as FE "
+        "peaks in the connection; bending is taken at its faces and shear at d (or 2d) from them.",
     )
     shear_check_distance: Literal["d", "2d"] = Field(
         "d", title="Shear checked at", description="Distance from the support face"
@@ -348,8 +496,13 @@ class DesignSettings(_Model):
         100.0,
         ge=0,
         le=1000,
-        description="Piles and king piles use Plaxis results up to this far above their top level, "
-        "taken at the top level. Results higher up are FE peaks inside the connection and are ignored.",
+        description="Piles and king piles are designed up to this far above their top level, at the face "
+        "inside the slab or beam, with the results there at their own level. Results higher up are FE "
+        "peaks inside the connection and are ignored.",
+    )
+    joints: ExpansionJoints = Field(default_factory=ExpansionJoints, title="Expansion joints")
+    construction_joints: ConstructionJointRules = Field(
+        default_factory=ConstructionJointRules, title="Construction joints"
     )
 
 
@@ -372,12 +525,17 @@ class Casing(_Model):
 
     role: Literal["crack_only", "structural"] = Field(
         "crack_only",
-        title="Casing role",
-        description="Crack width only: the casing removes the crack width check, the concrete "
-        "carries all forces. Structural: the casing works with the concrete and forces are "
-        "shared by E·I, as in the combi wall.",
+        title="Is the casing designed?",
+        description="No: the casing only removes the crack width check between its levels, and the "
+        "concrete carries all forces. Yes: the casing works with the concrete; between its levels the "
+        "forces are shared by E·I, as in the combi wall, and the casing itself is checked.",
     )
-    top_level: float = _m("Casing top level", 2.7)
+    top_level: float = _m(
+        "Casing top level",
+        2.7,
+        description="At or above the pile's top level (slab soffit): the casing runs into the slab and "
+        "covers the design top too (soffit + 10 cm), so no crack check there either.",
+    )
     bottom_level: float = _m("Casing bottom level", -1.3)
     thickness: float = _mm("Casing wall thickness", 16.0, gt=0)
     corrosion_loss: float | None = _mm(
@@ -388,16 +546,20 @@ class Casing(_Model):
         None,
         title="Bars welded to the casing at its top",
         ge=0,
-        description="Structural casing only. Where the casing stops, these bars (cover 0, welded to the "
-        "pipe) and the cage carry the forces with no help from the casing.",
+        description="Where the casing stops, these bars (cover 0, welded to the pipe) and the cage carry "
+        "the forces with no help from the casing.",
+        json_schema_extra=STRUCTURAL_CASING,
     )
-    connection_bar_diameter: int = Field(32, title="Welded bar diameter", json_schema_extra={"unit": "mm"})
+    connection_bar_diameter: int = Field(
+        32, title="Welded bar diameter", json_schema_extra={"unit": "mm", **STRUCTURAL_CASING}
+    )
     connection_length: float = _m(
         "Connection zone length",
         0.5,
         gt=0,
         description="Length checked without the casing, from the casing top upward (or the top of the pile "
         "downward when the casing reaches it).",
+        extra=STRUCTURAL_CASING,
     )
 
     @model_validator(mode="after")
@@ -409,11 +571,76 @@ class Casing(_Model):
         return self
 
 
+Surface = Literal["very smooth", "smooth", "rough", "indented"]
+_SURFACE = (
+    "Indented (keyed, e.g. Stremaform, μ 0.9) as the office report. EN 1992-1-1 6.2.5(2): very smooth "
+    "(cast against steel or timber), smooth (slipformed, or left without treatment after vibration), "
+    "rough (at least 3 mm roughness at about 40 mm spacing, e.g. raked or exposed aggregate) or "
+    "indented (shear keys)."
+)
+
+
+class PileJoint(_Model):
+    """A construction joint across the pile at a level: the pile top under the slab or beam, or a pour
+    break."""
+
+    level: float = _m(
+        "Joint level Z", 0.0, description="e.g. the pile top level for the joint into the slab."
+    )
+    surface: Surface = Field("indented", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Pile to slab, pour break.")
+
+
+class BeamJoint(_Model):
+    """A construction joint in a beam: a horizontal joint at a level (the beam cast in lifts, or up to the
+    slab soffit), or a vertical stop end at a position along the beam."""
+
+    kind: Literal["level", "along"] = Field(
+        "level",
+        title="Joint",
+        description="level: horizontal, at level Z. along: vertical, at a position along the beam (X or Y "
+        "along it).",
+    )
+    at: float = _m("Level Z, or position along the beam", 0.0)
+    surface: Surface = Field("indented", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Slab soffit, first lift.")
+
+
+class SlabJoint(_Model):
+    """A construction joint through the slab along a line: at an X or a Y, or at a beam's face (the slab cast
+    against a beam)."""
+
+    line: Literal["at X", "at Y", "beam face"] = Field(
+        "at X",
+        title="Joint line",
+        description="at X: the joint runs along Y at that X (bars along X cross it). at Y: along X at that "
+        "Y. beam face: the slab's joint with the beam named, at the beam's face.",
+    )
+    at: float | None = _m("X or Y of the line", None, description="Not used at a beam face.")
+    beam: str = Field("", title="Beam (beam face)", description="e.g. Front Beam.")
+    start: float | None = _m("From (along the line)", None, description="Empty: the whole slab.")
+    end: float | None = _m("To (along the line)", None)
+    surface: Surface = Field("indented", title="Joint surface", description=_SURFACE)
+    note: str = Field("", title="Note", description="e.g. Pour 1 / pour 2.")
+
+
+_JOINTS = (
+    "Each joint is checked in the design (EN 1992-1-1 6.2.5 shear across it, and the bars crossing it carry "
+    "the tension there); where the bars are not enough, the additional bars at that joint are given."
+)
+
+
 class PileInput(_ConcreteSection):
     kind: Literal["pile"] = "pile"
     diameter: float = _mm("Pile diameter", 1200.0, gt=0)
     cover: float | None = _mm("Cover to links", None, gt=0, description=_PROJECT_VALUE)
-    link_diameter: float = _mm("Link diameter", 12.0, gt=0)
+    link_diameter: float = _mm(
+        "Smallest link diameter",
+        10.0,
+        gt=0,
+        description="The links are designed: from this size up, the first that carries the shear at a "
+        "pitch of 100 mm or more.",
+    )
     count: int | None = Field(
         None,
         title="Number of piles",
@@ -429,17 +656,24 @@ class PileInput(_ConcreteSection):
     head_level: float | None = _m(
         "Top level of the pile (slab soffit)",
         None,
-        description="Results more than the distance set in Design settings (default 10 cm) above it are "
-        "inside the slab and ignored. Empty: every result is used.",
+        description="The pile is designed up to the design top, 10 cm above this (the distance is in "
+        "Design settings); results higher up are inside the slab and ignored. Empty: every result is used.",
     )
     casing: Casing | None = Field(
-        None, title="Steel casing", description="Leave empty for a plain concrete pile."
+        None,
+        title="This pile has a permanent steel casing",
+        description="Tick it and give the casing's top and bottom levels: there is no crack width check "
+        "between them. Leave it unticked for a plain concrete pile.",
+    )
+    construction_joints: list[PileJoint] = Field(
+        default_factory=list, title="Construction joints", description=_JOINTS
     )
 
 
 class CorrosionZone(_Model):
     """Loss of tube wall over one length, from the zone above (or the top) down to ``bottom_level``."""
 
+    name: str = Field("", title="Zone name", description="As the office sheet's columns, e.g. Splash.")
     bottom_level: float = _m("Zone bottom level", 0.0)
     outside: float = _mm("Loss on the outside face", 0.0, ge=0)
     inside: float = _mm("Loss on the inside face", 0.0, ge=0, description="e.g. below the infill")
@@ -449,11 +683,11 @@ def _office_tube_zones() -> list[CorrosionZone]:
     # The office's king pile sheets: splash, immersion, immersion with soil, soil (filled), then the
     # steel-only length below the infill with 1.75 mm lost inside as well. BS 6349-1-4 mean losses.
     return [
-        CorrosionZone(bottom_level=-0.5, outside=4.5),
-        CorrosionZone(bottom_level=-14.5, outside=2.5),
-        CorrosionZone(bottom_level=-16.12, outside=2.5),
-        CorrosionZone(bottom_level=-25.0, outside=1.75),
-        CorrosionZone(bottom_level=-39.0, outside=1.75, inside=1.75),
+        CorrosionZone(name="Splash", bottom_level=-0.5, outside=4.5),
+        CorrosionZone(name="Submerged", bottom_level=-14.5, outside=2.5),
+        CorrosionZone(name="Submerged & soil", bottom_level=-16.12, outside=2.5),
+        CorrosionZone(name="Soil", bottom_level=-25.0, outside=1.75),
+        CorrosionZone(name="Soil (steel only)", bottom_level=-39.0, outside=1.75, inside=1.75),
     ]
 
 
@@ -474,7 +708,12 @@ class CombiWallInput(_Model):
         "inside the front beam and ignored. Empty: every result is used.",
     )
     cover: float | None = _mm("Cover to infill links", None, gt=0, description=_PROJECT_VALUE)
-    link_diameter: float = _mm("Infill link diameter", 12.0, gt=0)
+    link_diameter: float = _mm(
+        "Smallest infill link diameter",
+        10.0,
+        gt=0,
+        description="The links are designed: from this size up, the first that carries the shear.",
+    )
     bar_count: int | None = Field(
         None,
         title="Infill bars in the outer row",
@@ -512,7 +751,30 @@ class CombiWallInput(_Model):
         title="Column buckling length factor",
         gt=0,
         le=2,
-        description="Lcr = factor × the length from the top level to the toe (the lowest result).",
+        description="Lcr = factor × L, L from the king pile top level down to the firm soil level "
+        "(or the toe).",
+    )
+    firm_soil_level: float | None = _m(
+        "Firm soil level (column buckling)",
+        None,
+        description="L of the column buckling check runs from the king pile top level down to here, as the "
+        "office sheet's 'length between the pile head and the firm soil'. Empty: down to the toe.",
+    )
+    column_ei: float | None = Field(
+        None,
+        title="Equivalent EI of the whole king pile",
+        gt=0,
+        json_schema_extra={"unit": "kN·m²"},
+        description="For N_cr = π²·EI/Lcr², e.g. from a SAP frame model of the king pile (the office sheet: "
+        "7.14E+15 N·mm² = 7.14E+06 kN·m²). Empty: the zones' E·I_eff averaged over the length.",
+    )
+    tube_fy: float | None = Field(
+        None,
+        title="Tube yield strength fy",
+        gt=0,
+        json_schema_extra={"unit": "MPa"},
+        description="Empty: from the grade and the wall thickness (EN 10025-2: S355 is 345 MPa over 16 mm). "
+        "The office sheet takes 355 MPa for the 18 mm tube.",
     )
     buckling_curve: Literal["a", "b", "c"] = Field(
         "c",
@@ -560,30 +822,112 @@ def _office_spw_zones() -> list[SheetPileZone]:
     ]
 
 
+class SheetPileIgnore(_Model):
+    """Leave N or V out of the sheet pile checks, for one combination or all of them, where Plaxis
+    gives values the sheet pile does not carry. The result shows both: as Plaxis and as designed."""
+
+    combination: str = Field(
+        "All combinations",
+        title="Combination",
+        description="As in the workbook (e.g. PT-B-Apron), or All combinations.",
+    )
+    ignore_n: bool = Field(False, title="Ignore N")
+    ignore_q: bool = Field(False, title="Ignore Q (shear)")
+
+
+_HIDDEN = {"hidden": True}
+
+
 class SheetPileInput(_Model):
     kind: Literal["sheet_pile_wall"] = "sheet_pile_wall"
-    section_name: str = Field("", title="Sheet pile section", description="e.g. AZ 26-700")
+    section_name: SheetPileSection = Field(
+        DEFAULT_SHEET_PILE, title="Sheet pile section", description="ArcelorMittal AZ range"
+    )
     steel: SheetPileGrade | None = Field(None, title="Steel grade", description=_PROJECT_GRADE)
-    area: float | None = Field(None, title="Area per m", gt=0, json_schema_extra={"unit": "cm²/m"})
-    elastic_modulus: float | None = Field(
-        None, title="Elastic section modulus Wel per m", gt=0, json_schema_extra={"unit": "cm³/m"}
+    # Kept so saved projects still open; the section's catalogue values are used.
+    area: float | None = Field(None, gt=0, json_schema_extra=_HIDDEN)
+    elastic_modulus: float | None = Field(None, gt=0, json_schema_extra=_HIDDEN)
+    plastic_modulus: float | None = Field(None, gt=0, json_schema_extra=_HIDDEN)
+    section_class: Literal[1, 2, 3, 4] = Field(2, json_schema_extra=_HIDDEN)
+    class_from: Literal["auto", "catalogue", "flange"] = Field(
+        "auto",
+        title="Section class",
+        description="flange: from b / tf / ε of the corroded flange (EN 1993-5 Table 5.1), as "
+        "Durability; catalogue: never better than the class ArcelorMittal lists; auto: flange where "
+        "the real flange width is known (AZ 14-770, or given), else catalogue.",
     )
-    plastic_modulus: float | None = Field(
-        None, title="Plastic section modulus Wpl per m", gt=0, json_schema_extra={"unit": "cm³/m"}
+    use_wel_only: bool = Field(
+        False, title="Use Wel only", description="No plastic modulus for class 1 and 2."
     )
-    section_class: Literal[1, 2, 3, 4] = Field(2, title="Section class")
-    corrosion_loss_per_face: float | None = _mm(
-        "Corrosion loss per face", None, ge=0, description=_PROJECT_VALUE
+    flange_width: float | None = _mm(
+        "Flange width b",
+        None,
+        gt=0,
+        description="For the class and the water pressure factor. Empty: the real b for AZ 14-770 "
+        "(351 mm, as Durability), else Triton's estimate (Durability's Sheet pile tab shows b).",
+    )
+    web_angle: float | None = Field(
+        None,
+        title="Web angle α",
+        gt=0,
+        lt=90,
+        description="Empty: Triton's estimate (see flange width).",
+        json_schema_extra={"unit": "°"},
+    )
+    gamma_m0: float = Field(1.0, title="γM0", gt=0, description="EN 1993-5 5.1.1 (4)")
+    gamma_m1: float = Field(1.1, title="γM1", gt=0, description="EN 1993-5 5.1.1 (4); UK NA 1.0")
+    buckling_length: float | None = _m(
+        "Buckling length",
+        None,
+        gt=0,
+        description="EN 1993-5 Figure 5.8; only matters where N is checked. Empty: 0.7 L, L from the "
+        "top of the wall to the firm soil level, as the office's combi sheet.",
+    )
+    firm_soil_level: float | None = _m(
+        "Firm soil level",
+        None,
+        description="For the assumed buckling length. Empty: the toe of the wall in the results.",
+    )
+    eccentricity: float = _mm("Eccentricity of N", 0.0, ge=0, description="Adds N e to M, as Durability.")
+    differential_head: float = _m(
+        "Differential water head",
+        0.0,
+        ge=0,
+        description="Over 5 m, fy for bending is reduced by ρP (EN 1993-5 5.2.4, Table 5.2).",
+    )
+    welded_interlocks: bool = Field(False, title="Welded interlocks", description="ρP = 1.0")
+    top_level: float | None = _m(
+        "Top level of the wall (capping beam soffit)",
+        None,
+        description="Straining actions above this level are ignored, in the design and in the exports. "
+        "Empty: every result is used.",
+    )
+    # The project's single allowance; the design uses the zones.
+    corrosion_loss_per_face: float | None = Field(
+        None, ge=0, title="Corrosion loss per face", json_schema_extra={"unit": "mm", **_HIDDEN}
     )
     corrosion_zones: list[SheetPileZone] = Field(
         default_factory=_office_spw_zones,
-        title="Corrosion zones (Durability)",
-        description="Top down. The export gives the actions of each zone at its bottom level, with these "
-        "losses, as ArcelorMittal Durability takes them. The values are the office's sample run.",
+        title="Corrosion zones",
+        description="Top down, front and back loss of each zone down to its bottom level; the design "
+        "takes front + back off every plate. The values are the office's sample run.",
     )
     shear: Literal["Q_13", "Q_23"] = Field(
-        "Q_13", title="Shear for Durability", description="Q_13: the shear of the vertical bending (M_11)."
+        "Q_13", title="Shear", description="Q_13: the shear of the vertical bending (M_11)."
     )
+    ignore: list[SheetPileIgnore] = Field(
+        default_factory=list,
+        title="Ignore N or Q",
+        description="Where Plaxis values are suspect: the result shows the check with every action "
+        "and the one with these left out.",
+    )
+
+    @field_validator("section_name", mode="before")
+    @classmethod
+    def _known_section(cls, v: Any) -> str:
+        # The field was free text before the design came in: an unknown name falls back to the default.
+        name = _normalise_sheet_pile(v if isinstance(v, str) else None)
+        return name if name in SHEET_PILE_SECTIONS else DEFAULT_SHEET_PILE
 
     @model_validator(mode="after")
     def _zones_descend(self) -> SheetPileInput:
@@ -628,6 +972,113 @@ class CraneArea(_Model):
         return data
 
 
+class SlabVoids(_Model):
+    """Circular voids cast in the slab (e.g. PVC pipes), running across the quay between the beams."""
+
+    diameter: float = _mm("Void diameter", 500.0, gt=0)
+    spacing: float = _mm(
+        "Spacing",
+        700.0,
+        gt=0,
+        description="Centre to centre, across the voids (along the berth when they run across the quay).",
+    )
+    centre_depth: float | None = _mm(
+        "Centre below the top",
+        None,
+        gt=0,
+        description="Depth of the voids' centre below the top of the slab. Empty: mid-depth.",
+    )
+    direction: Literal["X", "Y"] = Field(
+        "X", title="Voids run along", description="The global axis the voids run along (X: across the quay)."
+    )
+    start_offset: float = _m(
+        "Start from the front beam face",
+        1.0,
+        ge=0,
+        description="Solid slab between the front beam and the voids.",
+    )
+    end_offset: float = _m(
+        "End before the rear beam face",
+        1.0,
+        ge=0,
+        description="Solid slab between the voids and the rear beam.",
+    )
+    first_at: float | None = _m(
+        "First void at",
+        None,
+        description="Global coordinate across the voids (Y when they run along X) of one void's centre; "
+        "the others "
+        "follow at the spacing. Empty: half a spacing in from the slab's edge.",
+    )
+    positions: list[float] = Field(
+        default_factory=list,
+        title="Void positions",
+        description="Global coordinates across the voids of every void's centre, when they are not at a "
+        "regular "
+        "spacing. Empty: from the spacing.",
+        json_schema_extra={"unit": "m"},
+    )
+    at_piles: Literal["stop", "leave_out"] = Field(
+        "stop",
+        title="Where a pile passes",
+        description="Stop: the voids stop short of every pile and start again beyond it, so the slab is "
+        "solid over the piles and punching is checked on the solid slab. Leave out: a void that would "
+        "come near a pile is left out along its whole length.",
+    )
+    clear_to_piles: float = _mm(
+        "Clear to the pile faces",
+        150.0,
+        ge=0,
+        description="Solid concrete kept between a pile's face and the nearest void.",
+    )
+
+
+class Manhole(_Model):
+    """An opening in the deck (a manhole or a pit), not in the Plaxis model: the bars it cuts go to
+    trimmer bars each side."""
+
+    name: str = Field("Manhole 1", title="Manhole")
+    x: float = _m("Centre X", 0.0)
+    y: float = _m("Centre Y", 0.0)
+    size_x: float = _mm("Size along X", 1000.0, gt=0, description="Inside size in plan.")
+    size_y: float = _mm("Size along Y", 1000.0, gt=0)
+    depth: float | None = _mm(
+        "Pit depth",
+        None,
+        gt=0,
+        description="Empty: through the slab. Set: a pit from the top with the rest of the slab under it.",
+    )
+    floor_load: float = Field(10.0, title="Load on the pit floor", ge=0, json_schema_extra={"unit": "kPa"})
+
+
+class Channel(_Model):
+    """A service channel cast into the deck, not in the Plaxis model: the slab's actions go round it
+    through its walls and base."""
+
+    name: str = Field("Channel 1", title="Channel")
+    direction: Literal["X", "Y"] = Field("Y", title="Runs along")
+    start: float = _m("From", 0.0, description="Where it starts along its direction (m, model coordinate).")
+    end: float = _m("To", 10.0)
+    at: float = _m("Centre line at", 0.0, description="Its centre line, across its direction (m).")
+    width: float = _mm("Inside width", 600.0, gt=0)
+    depth: float = _mm("Inside depth", 500.0, gt=0, description="From the top of the slab.")
+    walls: float = _mm("Wall thickness", 250.0, gt=0)
+    base: float | None = _mm(
+        "Base thickness",
+        None,
+        gt=0,
+        description="Empty: what the slab leaves under it. Deeper than the slab: the base hangs below the "
+        "soffit.",
+    )
+    floor_load: float = Field(10.0, title="Load in the channel", ge=0, json_schema_extra={"unit": "kPa"})
+
+    @model_validator(mode="after")
+    def _ends(self) -> Channel:
+        if self.end <= self.start:
+            raise ValueError(f"{self.name}: 'To' must be past 'From'")
+        return self
+
+
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
     thickness: float = _mm("Slab thickness", 700.0, gt=0)
@@ -660,9 +1111,17 @@ class SlabInput(_ConcreteSection):
     stations: list[float] = Field(
         default_factory=list,
         title="Station boundaries",
-        description="Distances (m) along the strips from the slab edge at the front beam. Empty: a station "
-        "2 m each side of every row of piles, and the spans between them.",
+        description="Distances (m) from the sea side: from the front wall line (the front beam's centre), "
+        "increasing towards the rear beam. Empty: a station 2 m each side of every row of piles, and the "
+        "spans between them. Stations can also be set on the diagram on the Design tab.",
         json_schema_extra={"unit": "m"},
+    )
+    twisting: Literal["ignore", "wood_armer"] = Field(
+        "ignore",
+        title="Twisting moment Mxy",
+        description="Ignore (the office's method and the AdSec files): M11 with N1 only, M22 with N2 only, "
+        "nothing counted twice. Wood–Armer: Mxy added to both M11 and M22 as design moments, which is safer "
+        "where the slab twists, round the piles.",
     )
     punching_face_beta: Literal["ec2", "office"] = Field(
         "ec2",
@@ -683,12 +1142,21 @@ class SlabInput(_ConcreteSection):
         le=5,
         description="Cells of this size carry either the basic mesh or heavier bars in a zone.",
     )
-    peaks: Literal["design", "average"] = Field(
-        "design",
+    peaks: Literal["peak", "face_mean", "ring_mean", "envelope_face_mean"] = Field(
+        "face_mean",
         title="Moments at the pile faces",
-        description="Design the peaks at the pile faces as they are, or average them over a ring one "
-        "pile diameter wide round each pile.",
+        description="Peak: as they are. Face mean: each face on its own, from the face out to one slab "
+        "thickness over the pile diameter plus the slab thickness each side, per combination. Ring mean: "
+        "all round the pile over one diameter (mixes opposite faces). Envelope then face mean: each node's "
+        "worst value over the combinations, then the face mean. The Method tab explains each.",
     )
+
+    @field_validator("peaks", mode="before")
+    @classmethod
+    def _old_peaks(cls, v: object) -> object:
+        # Saved before the methods were named: "design" was the peak, "average" the default averaging.
+        return {"design": "peak", "average": "face_mean"}.get(v, v) if isinstance(v, str) else v
+
     min_zone_length: float = _m(
         "Shortest additional bars", 2.5, gt=0, description="Shortest length of a zone of additional bars."
     )
@@ -727,10 +1195,39 @@ class SlabInput(_ConcreteSection):
         description="Sloped slab: the depth at the piles when it differs (e.g. 720 mm with 700 mm for "
         "bending). Empty: the slab thickness. Single piles can be set in the punching results.",
     )
+    punching_piles: list[str] = Field(
+        default_factory=list,
+        title="Punching for",
+        description="The pile types checked for punching. Empty: every pile type with heads under the slab "
+        "(not under a beam).",
+    )
+    punching_per: Literal["type", "head"] = Field(
+        "type",
+        title="Punching design",
+        description="One per pile type: every head of a type gets the design of its worst head, as detailed "
+        "on site (each head's own check is still shown). Per head: each head its own links.",
+    )
+    punching_fix: Literal["bars", "report"] = Field(
+        "bars",
+        title="Punching that links cannot carry",
+        description="Bars: where vEd is over kmax·vRd,c, bars are added over the pile (face in tension, both "
+        "ways) until ρl is enough, and links carry the rest. Report: the check fails and says what would fix "
+        "it (more bars, or a thicker slab at the pile).",
+    )
     punching_depths: list[PunchingDepth] = Field(
         default_factory=list,
         title="Slab thickness at single piles",
         description="For punching only, e.g. on a slope.",
+    )
+    manholes: list[Manhole] = Field(
+        default_factory=list,
+        title="Manholes and pits",
+        description="Openings in the deck that the Plaxis model does not have (Openings tab).",
+    )
+    channels: list[Channel] = Field(
+        default_factory=list,
+        title="Service channels",
+        description="Channels cast into the deck that the Plaxis model does not have (Openings tab).",
     )
     crane: list[CraneArea] = Field(
         default_factory=list,
@@ -748,11 +1245,19 @@ class SlabInput(_ConcreteSection):
         ),
     )
     restraint_factor: float | None = Field(
-        None,
+        0.5,
         title="Restraint factor R",
         ge=0,
         le=1,
-        description="Empty: from the length between joints and the thickness (ACI 207.2R).",
+        description="Empty: from the length between joints and the thickness (ACI 207.2R, a wall on its "
+        "base), which gives about 1 for a slab.",
+    )
+    restraint_check: Literal["off", "report", "design"] = Field(
+        "off",
+        title="Restraint cracking (temperature and shrinkage)",
+        description="Off: no check; temperature and shrinkage come in as axial tension in the combinations, "
+        "as the office's slab design. Report only: the restraint crack width of the bars along the quay is "
+        "shown but does not choose the bars. Design: every mesh along the quay must also control it.",
     )
     crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.2, gt=0, le=0.5)
     crack_width_limit_bottom: float = _mm(
@@ -761,6 +1266,22 @@ class SlabInput(_ConcreteSection):
         gt=0,
         le=0.5,
         description="e.g. tighter where the soffit is in the splash zone",
+    )
+    shear_in_tension: Literal["none", "ec2"] = Field(
+        "none",
+        title="Concrete shear resistance in tension",
+        description="None: where the slab is in tension in the direction of the shear, the links carry it "
+        "all, as the office's slab sheets. EC2 6.2.2(1): VRd,c reduced by 0.15·σcp for the tension.",
+    )
+    voids: SlabVoids | None = Field(
+        None,
+        title="Circular voids (PVC pipes)",
+        description="Voids cast in the slab between the beams: bending on the voided section, shear on the "
+        "webs between the voids with links in the webs only; the voids stop short of the piles, so the slab "
+        "is solid over them.",
+    )
+    construction_joints: list[SlabJoint] = Field(
+        default_factory=list, title="Construction joints", description=_JOINTS
     )
 
 
@@ -809,6 +1330,81 @@ class Bollard(_Model):
     lap_length: float = _mm(
         "Lap with the slab bottom bars", 1600.0, gt=0, description="SC-502: at least 1600 mm."
     )
+    line_height: float = _m("Line pull height above the cope", 0.35, gt=0)
+    max_line_angle: float = Field(
+        60.0,
+        title="Line angle above horizontal up to",
+        ge=0,
+        le=90,
+        description="For the uplift on the beam.",
+        json_schema_extra={"unit": "°"},
+    )
+    span: float | None = _m(
+        "Beam span either side (king pile spacing)",
+        None,
+        gt=0,
+        description="Empty: the truss check's king pile spacing, else 3.2 m.",
+    )
+    extra_bar: int = Field(25, title="Extra longitudinal bar", json_schema_extra={"unit": "mm"})
+    extra_link: int = Field(16, title="Extra link bar", json_schema_extra={"unit": "mm"})
+    slab_thickness: float = _mm("Slab thickness beyond the thickening", 700.0, gt=0)
+    thickening: float | None = _mm(
+        "Slab thickness at the bollard",
+        1400.0,
+        gt=0,
+        description="The slab thickened behind the beam at the bollard (the office's 1.4 m). Empty: none.",
+    )
+    thickening_length: float = _m("Thickening length back from the beam", 3.0, gt=0)
+    thickening_width: float = _m("Thickening width along the quay", 4.0, gt=0)
+    slab_bar: int = Field(20, title="Slab mesh bar at the step", json_schema_extra={"unit": "mm"})
+    slab_spacing: float = _mm("Slab mesh spacing at the step", 150.0, gt=0)
+
+
+class BeamRoom(_Model):
+    """A room cut into the beam from the top (e.g. for electrical work), over part of its length.
+
+    The beam keeps a floor under the room and a wall on each side (and a roof when the room does
+    not reach the top); Triton checks that section where the room is and designs its extra bars.
+    """
+
+    name: str = Field("Room 1", title="Room")
+    start: float = _m(
+        "From",
+        0.0,
+        description="Position along the beam where the room starts (m, as on the beam's diagrams).",
+    )
+    end: float = _m("To", 3.0, description="Position along the beam where the room ends (m).")
+    height: float = _mm("Room height", 1700.0, gt=0)
+    width: float = _mm("Room width", 1000.0, gt=0, description="Inside width, across the beam.")
+    bottom: float | None = _mm(
+        "Concrete below",
+        None,
+        gt=0,
+        description="Floor thickness under the room. Empty: beam depth − roof − room height. When set, the "
+        "room height is what is left.",
+    )
+    top: float = _mm(
+        "Roof", 0.0, ge=0, description="Concrete over the room. 0: open at the top (removable covers)."
+    )
+    front_wall: float | None = _mm(
+        "Sea-side wall",
+        None,
+        gt=0,
+        description="Wall thickness on the sea side. Empty: the room is centred (equal walls).",
+    )
+    floor_load: float = Field(
+        10.0,
+        title="Floor load",
+        ge=0,
+        description="Imposed load on the room floor (equipment), characteristic.",
+        json_schema_extra={"unit": "kPa"},
+    )
+
+    @model_validator(mode="after")
+    def _ends(self) -> BeamRoom:
+        if self.end <= self.start:
+            raise ValueError(f"{self.name}: 'To' must be past 'From'")
+        return self
 
 
 class FrontBeamTruss(_Model):
@@ -896,6 +1492,17 @@ class BeamInput(_ConcreteSection):
         description="Front beam: struts from the loads down to the king pile heads, tied by the bottom bars. "
         "Empty: no truss check.",
     )
+    rooms: list[BeamRoom] = Field(
+        default_factory=list,
+        title="Rooms in the beam",
+        description="Rooms cut into the beam from the top, e.g. for electrical work. Each is checked on the "
+        "section left (floor and walls) for the Plaxis actions over its length.",
+    )
+    construction_joints: list[BeamJoint] = Field(
+        default_factory=list,
+        title="Construction joints",
+        description=_JOINTS + " The slab's joint at the beam face is set on the slab.",
+    )
 
 
 ElementInput = Annotated[
@@ -965,10 +1572,12 @@ def default_element(name: str) -> ElementInput | None:
     if cls is None:
         return None
     if cls is BeamInput:
-        # The office's usual sizes: front beam 1.6 m deep, rear beam 2.0 m.
+        # The office's current sizes (width x depth): front beam 2.0 x 1.6 m, rear beam 2.0 x 2.0 m.
         kind = parsed.spec.type.value
         if kind == "front_beam":
-            return BeamInput(kind=kind, depth=1600.0, truss=FrontBeamTruss())
+            return BeamInput(kind=kind, width=2000.0, depth=1600.0, truss=FrontBeamTruss())
+        if kind == "rear_beam":
+            return BeamInput(kind=kind, width=2000.0, depth=2000.0)
         return BeamInput(kind=kind, depth=2000.0)
     return cls()
 
@@ -977,7 +1586,287 @@ def default_element(name: str) -> ElementInput | None:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return clock.stamp()
+
+
+# --- Costing -------------------------------------------------------------------
+
+
+class SteelPrice(_Model):
+    """A priced steel element: a sheet pile section, a tube, a casing and so on."""
+
+    name: str = Field("AZ 26-700", title="Steel element", description="e.g. AZ 26-700, tube 1626 × 18")
+    unit: Literal["t", "m²", "m"] = Field("t", title="Priced per")
+    price: float | None = Field(None, title="Price", ge=0)
+    mass: float | None = Field(
+        None,
+        title="Mass per m² or per m",
+        ge=0,
+        description="For the tonnage when priced per m² (kg/m²) or per m (kg/m).",
+        json_schema_extra={"unit": "kg"},
+    )
+
+
+class PilePrice(_Model):
+    """Bored piles are priced per linear metre with an allowance of reinforcement included."""
+
+    diameter: float = _mm("Pile diameter", 1200.0, gt=0)
+    price_per_m: float | None = Field(None, title="Price per linear metre", ge=0)
+    rebar_included: float = Field(
+        150.0,
+        title="Reinforcement included",
+        ge=0,
+        description="What the price per metre allows for; designed reinforcement above it is added at the "
+        "reinforcement price.",
+        json_schema_extra={"unit": "kg/m"},
+    )
+
+
+def _office_steel_prices() -> list[SteelPrice]:
+    return [SteelPrice(name="AZ 26-700", unit="t", mass=155.2), SteelPrice(name="King pile tube", unit="t")]
+
+
+class Prices(_Model):
+    """Unit prices for the Costing tab. They do not change any design."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _usd_default(cls, data: Any) -> Any:
+        # Saved before USD became the default (2026-09-24): "EGP" was the old default, not a choice.
+        if isinstance(data, dict) and "currency_default" not in data and data.get("currency") == "EGP":
+            data = {**data, "currency": "USD"}
+        return data
+
+    currency: str = Field("USD", title="Currency")
+    currency_default: int = Field(
+        2, json_schema_extra=_HIDDEN, description="Set by Triton: which default the currency was saved with."
+    )
+    concrete_slab: float | None = Field(
+        None, title="Concrete, slab", ge=0, json_schema_extra={"unit": "per m³"}
+    )
+    concrete_beams: float | None = Field(
+        None, title="Concrete, beams", ge=0, json_schema_extra={"unit": "per m³"}
+    )
+    concrete_infill: float | None = Field(
+        None,
+        title="Concrete, combi wall infill",
+        ge=0,
+        description="Empty: the beam concrete price.",
+        json_schema_extra={"unit": "per m³"},
+    )
+    rebar: float | None = Field(
+        None,
+        title="Reinforcement",
+        ge=0,
+        description="Slab, beams, combi infill, and pile reinforcement above what the pile price includes.",
+        json_schema_extra={"unit": "per t"},
+    )
+    steel: float | None = Field(
+        None,
+        title="Structural steel",
+        ge=0,
+        description="For steel elements with no price of their own below.",
+        json_schema_extra={"unit": "per t"},
+    )
+    steel_elements: list[SteelPrice] = Field(
+        default_factory=_office_steel_prices, title="Steel elements (AZ sheet piles, tubes, …)"
+    )
+    piles: list[PilePrice] = Field(
+        default_factory=lambda: [PilePrice()], title="Bored piles, per linear metre with reinforcement"
+    )
+
+
+OFFICE_LINE_STYLE = "T{d}-Reinforcement Section"  # the office's Revit line style for each bar size
+
+
+class BarLayer(_Model):
+    """How one bar size is drawn: its AutoCAD layer and its Revit line style or detail family."""
+
+    diameter: int = Field(16, title="Bar", json_schema_extra={"unit": "mm"})
+    cad_layer: str = Field("T16-Reinforcement Section", title="AutoCAD layer")
+    revit_line_style: str = Field(
+        "T16-Reinforcement Section",
+        title="Revit line style",
+        description="Bars along the view; made if the template lacks it.",
+    )
+    revit_section_type: str = Field(
+        "",
+        title="Revit family type, cut bar",
+        description="Detail component at each cut bar of this size, as 'Family: Type'. Empty: the cut bar "
+        "family below.",
+    )
+    revit_line_type: str = Field(
+        "",
+        title="Revit family type, bar line",
+        description="Line-based detail component for bars along the view, as 'Family: Type'. Empty: a "
+        "detail line in the line style.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _office_names(cls, data):
+        """Projects saved with the first placeholders (REBAR-16) take the office names."""
+        if isinstance(data, dict) and data.get("diameter") is not None:
+            d = data["diameter"]
+            data = dict(data)
+            for k in ("cad_layer", "revit_line_style"):
+                if data.get(k) in (None, "", f"REBAR-{d}"):
+                    data[k] = OFFICE_LINE_STYLE.format(d=d)
+        return data
+
+
+def _office_bar_layers() -> list[BarLayer]:
+    return [BarLayer(diameter=d) for d in BAR_DIAMETERS]
+
+
+class DrawingSettings(_Model):
+    """Names used by the AutoCAD and Revit drawing exports. They do not change any design."""
+
+    bars: list[BarLayer] = Field(
+        default_factory=_office_bar_layers,
+        title="Bars: layer, line style and family type by diameter",
+        description="A size not listed is drawn on T<Ø>-Reinforcement Section.",
+    )
+    cut_bar_family: str = Field(
+        "DET_Rebar_Dot Bar_Dar: Section Bar",
+        title="Revit family, cut bar (dot)",
+        description="'Family: Type'. Its DAR_BAR DIAMETER is set to the bar. Empty or not loaded: a "
+        "filled dot.",
+    )
+    pile_section_family: str = Field(
+        "DET_Round_Col_RFT_Dar: Round Col-RFT",
+        title="Revit family, pile section",
+        description="Placed at each pile cage section with its bar and link parameters set. Empty or not "
+        "loaded: drawn with lines and dots.",
+    )
+    stirrup_family: str = Field(
+        "DET_Rebar_51_Dar 1: Rebar_51",
+        title="Revit family, closed link (beam sections)",
+        description="Its DAR_A and DAR_B are set to the link's outside size. Empty or not loaded: lines.",
+    )
+    additional_bars_x_family: str = Field(
+        "RFT_ADD_MODIFIED: RFT_ADD_TOP HL",
+        title="Revit family, slab additional bars along X",
+        description="On the slab plans, one per zone and bar set (X to the right on the plan).",
+    )
+    additional_bars_y_family: str = Field(
+        "RFT_ADD_MODIFIED: RFT_ADD_TOP VL", title="Revit family, slab additional bars along Y"
+    )
+    lap_factor: float = Field(
+        45.0,
+        title="Additional bars run past their zone by",
+        gt=0,
+        json_schema_extra={"unit": "Ø"},
+        description="Each end; the slab plans give L = zone length + 2 × this × Ø, rounded up to 100 mm.",
+    )
+    pile_into_slab: float = _mm(
+        "Pile head into the slab",
+        100.0,
+        ge=0,
+        description="For the slab section at a pile: bottom bars are cranked over the pile head when it "
+        "sits above them.",
+    )
+    concrete_cad_layer: str = Field("TRITON-CONCRETE", title="AutoCAD layer, concrete outline")
+    concrete_revit_line_style: str = Field("TRITON-CONCRETE", title="Revit line style, concrete outline")
+    zones_cad_layer: str = Field("TRITON-ZONES", title="AutoCAD layer, zones, frames and level marks")
+    zones_revit_line_style: str = Field(
+        "TRITON-ZONES", title="Revit line style, zones, frames and level marks"
+    )
+    text_cad_layer: str = Field("TRITON-TEXT", title="AutoCAD layer, text and dimensions")
+    revit_text_type: str = Field(
+        "", title="Revit text type", description="Empty: the project's default text type."
+    )
+    revit_dimension_type: str = Field(
+        "", title="Revit dimension type", description="Empty: the project's default linear dimension type."
+    )
+    revit_view_prefix: str = Field("Triton", title="Revit drafting view names start with")
+    revit_view_scale: int = Field(
+        50, title="Revit drafting view scale", ge=1, description="1:this, for the one drafting view of a run."
+    )
+
+
+class ElementCosting(_Model):
+    """How many of an element the berth needs, when not as in the design model."""
+
+    spacing: float | None = _m(
+        "Spacing along the berth", None, gt=0, description="Empty: as in the model (its length / count)."
+    )
+    count: int | None = Field(
+        None, title="Number along the berth", ge=0, description="Overrides the spacing."
+    )
+    length: float | None = _m(
+        "Length",
+        None,
+        gt=0,
+        description="Pile or tube length, sheet pile length, or slab width across the quay. Empty: from "
+        "the design.",
+    )
+    steel_element: str = Field("", title="Steel element price", description="A name from the price list.")
+    intermediate_element: str = Field(
+        "", title="Combi wall intermediate sheets", description="A name from the price list, e.g. AZ 26-700."
+    )
+    intermediate_length: float | None = _m("Intermediate sheet length", None, gt=0)
+
+
+class OtherItem(_Model):
+    """Something the berth needs besides the designed elements: fenders, bollards, crane rails, ..."""
+
+    name: str = Field("", title="Item")
+    unit: Literal["each", "m", "lump"] = Field(
+        "each", title="Priced", description="each: per item at a spacing; m: per metre of berth; lump: once."
+    )
+    price: float | None = Field(None, title="Unit price", ge=0)
+    spacing: float | None = _m(
+        "Spacing along the berth",
+        None,
+        gt=0,
+        description="For items priced each: one at each end and at this spacing.",
+    )
+    count: int | None = Field(None, title="Number", ge=0, description="Overrides the spacing.")
+    runs: float = Field(
+        1.0,
+        title="Lines",
+        gt=0,
+        description="For items priced per metre: how many run along the berth (2 rails).",
+    )
+    length: float | None = _m(
+        "Length",
+        None,
+        gt=0,
+        description="For items priced per metre: the length of each line. Empty: the berth.",
+    )
+
+
+def _other_items() -> list[OtherItem]:
+    # Spacings are common for a container berth, not from a drawing: change them to the project's.
+    return [
+        OtherItem(name="Fenders", unit="each", spacing=20.0),
+        OtherItem(name="Bollards", unit="each", spacing=30.0),
+        OtherItem(name="Crane rails", unit="m", runs=2.0),
+        OtherItem(name="Ladders", unit="each", spacing=30.0),
+        OtherItem(name="Storm pins", unit="each"),
+        OtherItem(name="Crane stoppers", unit="each"),
+        OtherItem(name="Crane tie-downs", unit="each"),
+    ]
+
+
+class SectionCosting(_Model):
+    berth_length: float | None = _m(
+        "Berth length of this section",
+        None,
+        gt=0,
+        description="The real berth length (e.g. 500 m), never the model's. Needed for costing.",
+    )
+    model_length: float | None = _m(
+        "Length of berth the model covers",
+        None,
+        gt=0,
+        description="Empty: the front or rear beam's length, else the slab's extent along the berth.",
+    )
+    elements: dict[str, ElementCosting] = Field(default_factory=dict)
+    items: list[OtherItem] = Field(
+        default_factory=_other_items, title="Other items", description="Fenders, bollards, crane rails, ..."
+    )
 
 
 class LoadFactor(_Model):
@@ -988,6 +1877,134 @@ class LoadFactor(_Model):
         description="Workbook sheets whose straining actions are multiplied. X, Y and Z are not changed.",
     )
     note: str = Field("", title="Note", description="e.g. Set B actions to design values")
+    applied_at: str | None = Field(
+        None, title="Applied", description="When this multiplier last changed (set by Triton)."
+    )
+
+
+class CageRow(_Model):
+    """One row of bars of a cage set by the user."""
+
+    count: int = Field(26, title="Bars", ge=1)
+    diameter: int = Field(32, title="Bar", json_schema_extra={"unit": "mm"})
+
+
+class UserCage(_Model):
+    """A pile (or combi wall infill) cage set by the user instead of the one Triton chooses.
+
+    ``row_bars`` sets every row from the outside in, each with its own bar count and size (e.g.
+    26Ø32 + 26Ø25 + 13Ø20). Without it the cage is ``rows`` of ``count`` bars (a half row has half
+    as many), the outer row ``diameter`` and the inner rows ``inner_diameter``.
+    """
+
+    rows: float = Field(1, title="Rows", ge=1, le=4)
+    count: int = Field(26, title="Bars in the outer row", ge=6)
+    diameter: int = Field(32, title="Outer row bar", json_schema_extra={"unit": "mm"})
+    inner_diameter: int | None = Field(
+        None,
+        title="Inner rows bar",
+        description="Empty: the outer row's bar.",
+        json_schema_extra={"unit": "mm"},
+    )
+    row_bars: list[CageRow] | None = Field(
+        None, title="Rows, outer row first", description="Each row with its own bar count and size."
+    )
+    over_limit_with_couplers: bool = Field(
+        False,
+        title="Proceed over the steel limit with couplers",
+        description="Steel over the limit (4%) is accepted for this cage, spliced with couplers at its "
+        "joint (EN 1992-1-1 9.5.2(3)), up to 8%. The zones below are designed as usual.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_rows(cls, data: Any) -> Any:
+        # The summary fields follow the rows: a row with fewer bars than the outer row counts as that
+        # fraction of a row (26 + 26 + 13 bars is 2.5 rows).
+        rows = data.get("row_bars") if isinstance(data, dict) else None
+        if not rows:
+            return data
+        rows = [r.model_dump() if isinstance(r, CageRow) else dict(r) for r in rows]
+        try:
+            n0 = int(rows[0]["count"])
+            share = sum(min(1.0, int(r["count"]) / n0) for r in rows) if n0 > 0 else 1
+        except (KeyError, TypeError, ValueError):
+            return data  # the field checks say what is wrong
+        return {
+            **data,
+            "count": n0,
+            "diameter": rows[0]["diameter"],
+            "inner_diameter": rows[1]["diameter"] if len(rows) > 1 else None,
+            "rows": max(1.0, min(4.0, round(2 * share) / 2)),
+        }
+
+    @model_validator(mode="after")
+    def _rows(self) -> UserCage:
+        if self.row_bars:
+            if len(self.row_bars) > 4:
+                raise ValueError("At most 4 rows of bars.")
+            return self
+        if self.rows not in (1, 1.5, 2, 2.5, 3):
+            raise ValueError("Rows: 1, 1.5, 2, 2.5 or 3.")
+        if self.rows in (1.5, 2.5) and self.count % 2:
+            raise ValueError("A half row sits behind every second bar: use an even number of bars.")
+        return self
+
+    def row_list(self) -> list[tuple[int, int]]:
+        """(bars, bar size) of each row from the outside in."""
+        if self.row_bars:
+            return [(r.count, r.diameter) for r in self.row_bars]
+        inner = self.inner_diameter or self.diameter
+        full, half = int(self.rows), self.rows % 1 > 0
+        out = [(self.count, self.diameter)] + [(self.count, inner)] * (full - 1)
+        return out + [(self.count // 2, inner)] if half else out
+
+
+class BeamFace(_Model):
+    """Bars along one face of a beam set by the user."""
+
+    count: int = Field(10, title="Bars per layer", ge=0)
+    diameter: int = Field(25, title="Bar", json_schema_extra={"unit": "mm"})
+    layers: int = Field(1, title="Layers", ge=1, le=4)
+
+
+class BeamCage(_Model):
+    """A beam's longitudinal bars set by the user instead of the ones Triton chooses."""
+
+    top: BeamFace = Field(default_factory=BeamFace, title="Top")
+    bottom: BeamFace = Field(default_factory=BeamFace, title="Bottom")
+    side: BeamFace = Field(
+        default_factory=lambda: BeamFace(count=4, diameter=20), title="Each side", description="One layer."
+    )
+
+
+class SlabStrips(_Model):
+    """Stations and bars for a slab's column and field strips, set on the Design tab."""
+
+    stations: list[float] | None = Field(
+        None,
+        title="Station boundaries",
+        description="Distances (m) from the sea side. Empty: the slab's own stations.",
+        json_schema_extra={"unit": "m"},
+    )
+    bars: dict[str, str] = Field(
+        default_factory=dict,
+        title="Bars set by the user",
+        description="Additional bars per 'layer|from|to|strip', by label ('mesh only' for none).",
+    )
+    spacing: float | None = Field(
+        None,
+        title="Mesh spacing picked",
+        description="The slab is designed with each mesh spacing in Design settings; this one drives the "
+        "results, drawings, AdSec files and report. Empty: the lighter one.",
+        json_schema_extra={"unit": "mm"},
+    )
+    lines: list[float] | None = Field(
+        None,
+        exclude=True,
+        description="Only while checking moved piles (never saved): the lines of piles the column strips "
+        "were designed on, so the bars stay where they are.",
+    )
 
 
 def _short_id() -> str:
@@ -1018,13 +2035,537 @@ class SheetMapping(_Model):
         return self
 
 
+DEFAULT_COMBINATIONS = [
+    "QP",
+    "PT-B-Apron",
+    "PT-B-Yard",
+    "PT-C-Apron",
+    "PT-C-Yard",
+    "Accidental-Apron",
+    "Accidental-Yard",
+    "Seismic 1",
+    "Seismic 2",
+    "Seismic 3",
+    "Seismic 4",
+]
+
+
+class Alignment(_Model):
+    """The quay's line in plan, for berths that are not one straight line (a corner)."""
+
+    mode: Literal["auto", "straight", "manual"] = Field(
+        "auto",
+        title="Berth alignment",
+        description="Automatic: the straight and inclined parts are found from the front beam's nodes. "
+        "Straight: the whole section is one straight berth. By hand: the corner points below.",
+    )
+    points: list[list[float]] = Field(
+        default_factory=list,
+        title="Alignment points (X, Y)",
+        description="By hand: the start, every corner and the end of the quay's line (the front beam's "
+        "centre line), in plan, m. Each run between two points is a part.",
+    )
+    min_angle: float = Field(
+        2.0,
+        title="Least turn for a corner",
+        gt=0,
+        le=45,
+        json_schema_extra={"unit": "°"},
+        description="Parts that turn by less than this are designed as they are (straight).",
+    )
+    own_axes: list[int] = Field(
+        default_factory=list,
+        title="Parts with results in their own axes",
+        description="Part numbers whose plate results Plaxis gives in the part's own axes (a plate drawn "
+        "along the inclined part): they are turned in plan only. Others are in global X/Y and are "
+        "transformed (M11, M22, M12 together, likewise N and Q).",
+    )
+
+    @field_validator("points")
+    @classmethod
+    def _points(cls, v: list[list[float]]) -> list[list[float]]:
+        for q in v:
+            if len(q) != 2:
+                raise ValueError("Each alignment point is X, Y.")
+        return v
+
+
+class FurnitureAt(_Model):
+    """A fender, bollard, ladder or other item at a chainage along the berth."""
+
+    name: str = Field("", title="Item", description="e.g. Fender, Bollard, Ladder")
+    chainage: float = _m("Chainage along the berth", 0.0, ge=0, description="From the start of the berth.")
+
+
+class SectionJoints(_Model):
+    """The berth the expansion joints are placed along (rules in Design settings)."""
+
+    runs: list[float] = Field(
+        default_factory=list,
+        title="Straight runs of the berth",
+        description="Length of each straight run between corners, in order, m. Empty: the berth length "
+        "from Costing as one run, or for a corner berth the parts found in the model.",
+    )
+    pile_spacing: float | None = _m(
+        "Spacing of the pile rows along the berth",
+        None,
+        gt=0,
+        description="Empty: from the piles in the workbook.",
+    )
+    first_row: float | None = _m(
+        "First pile row from the start of each run",
+        None,
+        ge=0,
+        description="Empty: half the pile row spacing.",
+    )
+    furniture: list[FurnitureAt] = Field(
+        default_factory=list,
+        title="Furniture positions",
+        description="Empty: the items priced each on the Costing tab (fenders, bollards, ...), one at each "
+        "end of the berth and evenly between at their spacing.",
+    )
+    fixed: list[float] = Field(
+        default_factory=list,
+        title="Joints set by hand",
+        description="Chainages (m) that must be joints; Triton places the others round them.",
+    )
+    mode: Literal["auto", "manual"] = Field(
+        "auto",
+        title="Joints",
+        description="Automatic: placed by the rules round any joints set by hand. By hand: only the joints "
+        "set by hand.",
+    )
+
+    @field_validator("runs")
+    @classmethod
+    def _runs(cls, v: list[float]) -> list[float]:
+        if any(x <= 0 for x in v):
+            raise ValueError("Each run of the berth must be longer than 0 m.")
+        return v
+
+
+class WhatIf(_Model):
+    """Bars taken out at one pile connection to see what it does (e.g. the contractor cannot place them).
+    It never changes the design."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:8])
+    group: str = Field(..., title="Pile and element", description="e.g. 'Pile(1)|Deck'")
+    head: int = Field(0, title="Pile number in its element (from 0)", ge=0)
+    bars: list[str] = Field(
+        default_factory=list, title="Slab or beam bars taken out", description="Bar ids from the Clashes tab."
+    )
+    pile_bars: list[str] = Field(
+        default_factory=list, title="Pile bars taken out", description="'row:bar' from the Clashes tab."
+    )
+    note: str = Field("", title="Note", description="e.g. why the bars cannot be placed")
+
+
+class WeldSettings(_Model):
+    """Pile bars welded to the steel tube of a combi wall king pile (the office's report, appendix 2)."""
+
+    welded: bool = Field(True, title="Combi wall bars welded to the tube")
+    filler_fu: float = Field(
+        482.6,
+        title="Filler metal tensile strength",
+        gt=0,
+        json_schema_extra={"unit": "MPa"},
+        description="E70XX: 70 ksi = 482.6 MPa.",
+    )
+    leg: float = _mm("Fillet weld leg", 16.0, gt=0)
+    beta_w: float = Field(
+        0.9, title="Correlation factor βw", gt=0, description="EN 1993-1-8 Table 4.1; 0.9 for S355."
+    )
+    gamma_m2: float = Field(1.25, title="γM2", gt=0)
+
+
+class ClashSettings(_Model):
+    """How the Clashes tab finds clashes between the pile bars and the slab and beam bars."""
+
+    rule: Literal["touch", "ec2"] = Field(
+        "touch",
+        title="A clash is",
+        description="Touch: bars that would overlap (less than the fixing tolerance apart). "
+        "EC2: bars closer than EN 1992-1-1 8.2(2) allows, max(Ø, dg + 5, 20 mm), even if they do not touch.",
+    )
+    fixing_tolerance: float = _mm("Fixing tolerance", 10.0, ge=0, le=50)
+    water_margin: float = Field(
+        0.5,
+        title="Clear height above the highest water",
+        ge=0,
+        description="A front beam soffit or protrusion block less than this above the highest water level "
+        "(MHWS) is flagged: waves and surge reach it.",
+        json_schema_extra={"unit": "m"},
+    )
+    beam_bars: Literal["straight", "l"] = Field(
+        "straight",
+        title="Pile bars into a beam",
+        description="Straight: they stop under the beam's top bars, as the office details them "
+        "(drawing SC-401). L: they turn outwards under the top bars for the rest of their "
+        "anchorage, as into a slab.",
+    )
+    plate_level: Literal["mid", "top"] = Field(
+        "mid",
+        title="Plaxis plates are at the element's",
+        description="Mid-depth (Plaxis) or top of concrete.",
+    )
+    top_levels: dict[str, float] = Field(
+        default_factory=dict, title="Top of concrete by element (m)", description="Overrides the plate level."
+    )
+    mesh_start: dict[str, float] = Field(
+        default_factory=dict,
+        title="Slab mesh shifted by (mm)",
+        description="By 'slab|X' (bars along X) or 'slab|Y': moves where the mesh starts from "
+        "the slab's edge.",
+    )
+    weld: WeldSettings = Field(default_factory=WeldSettings, title="Bars welded to the tube")
+    choices: dict[str, str] = Field(
+        default_factory=dict, title="Solution chosen", description="By 'pile|element': the solution used."
+    )
+    whatifs: list[WhatIf] = Field(default_factory=list, title="Bars taken out (what if)")
+
+
+class Displacement(_Model):
+    """A displacement of the section as received from the geotechnical team, and its limit."""
+
+    what: str = Field("", title="What", description="e.g. Front beam, horizontal; Crane rail, vertical.")
+    value: float = _mm("Displacement", 0.0)
+    limit: float | None = _mm("Limit", None, ge=0, description="Empty: no limit, shown only.")
+    combination: str = Field("", title="Combination or phase")
+    source: str = Field("", title="Source", description="e.g. Geotechnical email of 24 September.")
+
+    @property
+    def passed(self) -> bool | None:
+        return None if self.limit is None else abs(self.value) <= self.limit + 1e-9
+
+
+class DeflectionSettings(_Model):
+    """How the Design tab estimates displacements from the straining actions (no Plaxis displacement
+    run). Not a design input: it never makes the design out of date."""
+
+    toe: Literal["tied", "fixed", "firm_soil"] = Field(
+        "tied",
+        title="Piles and walls",
+        description="Tied at the deck: every pile and wall head under the deck moves the same (the deck is "
+        "stiff in its own plane), by the mean head movement of the piles fixed at their toes; each wall "
+        "is held at its toe (or firm soil level) and rotates about it to meet the deck. Fixed: each "
+        "member on its own, no displacement and no rotation at the toe. Firm soil: each member on its "
+        "own, no displacement at the toe or at the firm soil level.",
+    )
+    firm_soil_level: float | None = _m(
+        "Firm soil level",
+        None,
+        description="Tied: the level each member rotates about (empty: the toe). Firm soil: the second "
+        "level held. Empty: the combi wall's and sheet pile wall's own firm soil level; piles without "
+        "one at the toe.",
+    )
+    stiffness: Literal["gross", "cracked"] = Field(
+        "gross",
+        title="Stiffness",
+        description="Gross: uncracked E·I. Cracked: piles by EN 1992-1-1 7.4.3 (ζ between the uncracked "
+        "and the fully cracked curvature, β 0.5), the combi wall infill at 0.6 Ecm·Ic (EN 1994-1-1 "
+        "6.7.3.3). Steel does not crack; slabs and beams stay gross.",
+    )
+    long_term: bool = Field(
+        False,
+        title="Long term (creep)",
+        description="Concrete at Ec,eff = Ecm / (1 + φ), φ the creep coefficient of Design settings.",
+    )
+    combination: str = Field(
+        "",
+        title="Combination",
+        description="Empty: the QP combination where there is one, else each element's governing phase.",
+    )
+    baseline: str = Field(
+        "",
+        title="Movement from",
+        description="Empty: the total movement since the start of the Plaxis model, construction included. "
+        "A phase or combination (the end of construction): its moments are taken off first, so the "
+        "estimate is the movement after it.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _tied_by_default(cls, data: Any) -> Any:
+        # Saved before 'tied' existed (no baseline key): 'fixed' was only the default then.
+        if isinstance(data, dict) and "baseline" not in data and data.get("toe") == "fixed":
+            data = {**data, "toe": "tied"}
+        return data
+
+
+class ElementCheck(_Model):
+    """The checker's word on one element's design."""
+
+    status: Literal["designed", "comments", "checked", "approved"] = Field("designed", title="Status")
+    by: str = Field("", title="By")
+    comment: str = Field("", title="Comment")
+    at: str | None = Field(None, title="When")
+    design_run_at: str | None = Field(
+        None, description="The design run it was given on: a later design makes it 'on an earlier design'."
+    )
+
+
+class WaterLevel(_Model):
+    """A named water level drawn in the 3D views (HAT, MHWS, MSL, LAT...)."""
+
+    name: str = Field("Water level", title="Name", min_length=1)
+    level: float = _m("Level", 0.0)
+
+
+# The project's tidal bar (Ahmed, 2026-09-25): its only water levels.
+TIDES = [
+    ("MHWS", 0.945),
+    ("MHWN", 0.701),
+    ("MSL", 0.380),
+    ("MLWN", 0.213),
+    ("MLWS", 0.091),
+    ("LAT", 0.0),
+]
+_ASSUMED_WATER = [{"name": "Water level", "level": 0.0}]
+
+
+class SiteView(_Model):
+    """The site round the structure in the 3D views: seabed, water, soil, quay furniture and the STS
+    crane. Only what is drawn: it never changes the design, so it is open while the model is locked."""
+
+    seabed_level: float = _m(
+        "Seabed level in front of the wall",
+        -16.12,
+        description="The dredged level at the quay face.",
+    )
+    water_levels: list[WaterLevel] = Field(
+        default_factory=lambda: [WaterLevel(name=n, level=v) for n, v in TIDES],
+        title="Water levels",
+        description="Each drawn as its own see-through plane on the sea side, switched on and off in the 3D "
+        "view. By default the project's tidal bar (MHWS to LAT).",
+    )
+    soil_level: float | None = _m(
+        "Soil level behind the front wall",
+        None,
+        description="Empty: up to the underside of the deck.",
+    )
+    soil: Literal["hidden", "half", "full"] = Field(
+        "half",
+        title="Soil",
+        description="Hidden, 50% see-through, or full (the parts of the piles and walls in the ground are "
+        "then drawn faint).",
+    )
+    water: bool = Field(True, title="Show the water")
+    water_hidden: list[str] = Field(
+        default_factory=list, title="Water levels switched off", json_schema_extra=_HIDDEN
+    )
+    furniture: bool = Field(True, title="Show the fenders, bollards and crane rails")
+    extrude: bool = Field(
+        True,
+        title="Extrude the elements",
+        description="Draw piles, walls, slabs and beams with their real diameter, thickness and depth; "
+        "off: as the Plaxis plates and lines.",
+    )
+    crane: bool = Field(
+        True,
+        title="Show the STS crane",
+        description="Drawn only where the section has STS cranes (its furniture settings); this only "
+        "hides it.",
+    )
+    existing: Literal["show", "see_through", "hidden"] = Field(
+        "see_through",
+        title="Existing structure",
+        description="Drawn solid, see-through or not at all, where the section has an existing structure "
+        "(Construction sequence tab).",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_water_level(cls, data: Any) -> Any:
+        """Saved with one water level (the first version): it becomes the list, and the assumed 0.0 m
+        the tidal bar. The seabed's first assumed default (-16.0) becomes this project's dredge level,
+        -16.12 m."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "water_level" in data:
+            level = data.pop("water_level")
+            data.setdefault("water_levels", [{"name": "Water level", "level": level}])
+        if data.get("water_levels") == _ASSUMED_WATER:
+            # The level assumed before the tidal bar came: the tidal bar's levels.
+            data.pop("water_levels")
+        if data.get("seabed_level") == -16.0:
+            data["seabed_level"] = -16.12
+        return data
+
+
+_COMBI_ONLY = {"show_when": {"system": ["combi_wall"]}}
+_GRAVITY_ONLY = {"show_when": {"system": ["gravity_wall"]}}
+
+
+class ExistingStructure(_Model):
+    """The quay already on site where the new one is built: drawn in the 3D views and the construction
+    sequence and checked against the new piles and walls. Never a design input."""
+
+    use: bool = Field(False, title="This section has an existing structure")
+    system: Literal["combi_wall", "gravity_wall"] = Field(
+        "combi_wall",
+        title="Existing system",
+        description="Combi wall with tie rods to piles inside, or gravity block wall with quarry run behind.",
+    )
+    edge: float | None = _m(
+        "Existing edge (sea face of its capping beam), inland of the new quay face",
+        None,
+        description="Empty: at the land-side edge of the new steel pipes, so the existing capping "
+        "beam is the "
+        "working platform for the new combi wall.",
+    )
+    cope_level: float | None = _m("Existing cope level", None, description="Empty: the new cope.")
+    dredge_level: float = _m(
+        "Existing dredge level",
+        -14.0,
+        description="The seabed until the new berth is dredged (last step of the sequence).",
+    )
+    capping_width: float = _m("Existing capping beam width", 2.0, gt=0)
+    capping_depth: float = _m("Existing capping beam depth", 1.5, gt=0)
+    wall_diameter: float = Field(
+        1220.0, title="Existing king pile diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+    )
+    wall_toe: float = _m("Existing combi wall toe", -26.0, extra=_COMBI_ONLY)
+    tie_rods: bool = Field(True, title="Tie rods", json_schema_extra=_COMBI_ONLY)
+    tie_rod_length: float = _m("Tie rod length", 36.0, gt=0, extra=_COMBI_ONLY)
+    tie_rod_spacing: float = _m("Tie rods every", 1.4, gt=0, extra=_COMBI_ONLY)
+    tie_rod_diameter: float = Field(
+        75.0, title="Tie rod diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+    )
+    tie_rod_level: float | None = _m(
+        "Tie rod level", None, extra=_COMBI_ONLY, description="Empty: the existing cope less 0.5 m."
+    )
+    tie_rod_fy: float = Field(
+        355.0, title="Tie rod yield strength", gt=0, json_schema_extra={"unit": "MPa", **_COMBI_ONLY}
+    )
+    tie_rod_share: float = Field(
+        0.5,
+        title="Share of the tie rods' stiffness that holds the new wall",
+        gt=0,
+        le=1,
+        json_schema_extra=_COMBI_ONLY,
+        description="Slack, the anchor piles moving and the connection through the new front beam: an "
+        "assumed half by default.",
+    )
+    piles: bool = Field(True, title="Existing piles (slab on piles)", json_schema_extra=_COMBI_ONLY)
+    pile_diameter: float = Field(
+        600.0, title="Existing pile diameter", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+    )
+    pile_toe: float = _m("Existing pile toe", -25.0, extra=_COMBI_ONLY)
+    pile_spacing: float = _m("Existing piles along a row, every", 6.0, gt=0, extra=_COMBI_ONLY)
+    row_spacing: float = _m("Existing pile rows, every", 4.2, gt=0, extra=_COMBI_ONLY)
+    pile_offset: float = _m(
+        "First existing pile along the berth, from the model's start",
+        3.0,
+        extra=_COMBI_ONLY,
+    )
+    first_row: float = _m(
+        "First existing pile row, inland of the existing edge", 5.0, ge=0, extra=_COMBI_ONLY
+    )
+    rows: int = Field(3, title="Existing pile rows under the slab", ge=0, json_schema_extra=_COMBI_ONLY)
+    anchor_row: bool = Field(
+        True,
+        title="Anchor pile row at the tie rods' end",
+        json_schema_extra=_COMBI_ONLY,
+        description="The row the tie rods are anchored to, the tie rod length from the existing wall.",
+    )
+    slab_thickness: float = Field(
+        500.0, title="Existing slab thickness", gt=0, json_schema_extra={"unit": "mm", **_COMBI_ONLY}
+    )
+    block_base_width: float = _m("Block wall width at its base", 10.0, gt=0, extra=_GRAVITY_ONLY)
+    block_top_width: float = _m("Block wall width at its top", 3.0, gt=0, extra=_GRAVITY_ONLY)
+    block_founding: float = _m("Block wall founding level", -15.5, extra=_GRAVITY_ONLY)
+    quarry_slope: float = Field(
+        1.0,
+        title="Quarry run slope behind the blocks (horizontal per 1 vertical)",
+        gt=0,
+        json_schema_extra=_GRAVITY_ONLY,
+    )
+    warehouse: bool = Field(True, title="Warehouses behind the quay")
+    warehouse_distance: float = _m("Warehouses from the existing edge", 21.0, ge=0)
+    warehouse_depth: float = _m("Warehouse depth across the quay", 40.0, gt=0)
+    warehouse_height: float = _m("Warehouse height", 12.0, gt=0)
+    clearance: float = _m(
+        "Clear gap kept from existing piles and tie rods",
+        0.3,
+        ge=0,
+        description="New piles closer than this (face to face) are reported as clashes.",
+    )
+    warehouse_clearance: float = _m(
+        "Working room kept from the warehouses",
+        5.0,
+        ge=0,
+        description="New elements closer than this to a warehouse are flagged for the piling rig.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _first_version(cls, data: Any) -> Any:
+        """Saved by the first version (rows back from the anchor, assumed Ø800 piles): Ahmed's values
+        (2026-09-25) replace the assumed ones."""
+        if isinstance(data, dict) and "last_row" in data:
+            data = {k: v for k, v in data.items() if k != "last_row"}
+            if data.get("pile_diameter") == 800.0:
+                data.pop("pile_diameter")
+        return data
+
+
+SEQUENCE_WORKS = (
+    "steel_pipes",
+    "combi_cages",
+    "combi_infill",
+    "sheet_piles",
+    "demolition",
+    "pile_cages",
+    "pile_concrete",
+    "pile_heads",
+    "front_beam",
+    "rear_beam",
+    "transverse_beam",
+    "slab",
+    "approach_slab",
+    "crane_rail",
+    "tie_downs",
+    "stow_pins",
+    "crane_stoppers",
+    "fenders",
+    "bollards",
+    "sts_crane",
+    "furniture",
+    "dredging",
+)
+
+
+class SequenceStep(_Model):
+    """One step of the construction sequence."""
+
+    work: Literal[SEQUENCE_WORKS] = Field("pile_cages", title="Work")  # type: ignore[valid-type]
+    name: str = Field("", title="Name", description="Empty: the work's own name.")
+    with_previous: bool = Field(False, title="At the same time as the step before")
+
+
+class ConstructionSequence(_Model):
+    steps: list[SequenceStep] = Field(
+        default_factory=list,
+        title="Steps",
+        description="Empty: the default order (pipes, cages, infill, sheet piles, demolition, piles, beams, "
+        "slabs, the furniture item by item ending with the STS crane, dredging).",
+    )
+    cast_above: float = _m(
+        "Piles cast above their cut-off level by", 1.0, ge=0, description="Broken down in their own step."
+    )
+
+
 class Section(_Model):
     """One part of the structure with its own Plaxis workbook, e.g. Section 01a."""
 
     id: str = Field(default_factory=_short_id)
     name: str = Field("Section 1", title="Section name", min_length=1, description="e.g. Section 01a")
     x_min: float | None = _m(
-        "Working zone: X from", None, description="Results outside the working zone are not used (FE edges)."
+        "Working zone: X from",
+        None,
+        description="Older sections only: results outside the working zone are not used. Replaced by the "
+        "edges left out along the berth and across the quay.",
     )
     x_max: float | None = _m("Working zone: X to", None)
     y_min: float | None = _m("Working zone: Y from", None)
@@ -1034,6 +2575,22 @@ class Section(_Model):
         title="Isolated peaks",
         description="Raw: use the values as they are. Average: replace a peak by the mean of the nodes "
         "above and below it.",
+    )
+    end_trim: float = _m(
+        "Leave out along the berth, at each end",
+        2.0,
+        ge=0,
+        description="Results this close to each end of every element along the berth are not used (the FE "
+        "edges; the office leaves out 2 m at each end). Along a corner or an inclined deck it is measured "
+        "along the berth's line, so only the berth's two outer ends are cut, never the corner. Piles are not "
+        "cut. 0: every result is used.",
+    )
+    side_trim: float = _m(
+        "Leave out across the quay, at each side",
+        0.0,
+        ge=0,
+        description="Results this close to each side of every element across the quay (sea side and land "
+        "side) are not used. 0 (the default): none are left out.",
     )
     peak_ratio: float = Field(
         1.5,
@@ -1050,6 +2607,95 @@ class Section(_Model):
     sheet_map: dict[str, SheetMapping] = Field(
         default_factory=dict, title="Sheet mapping", description="Sheets assigned by hand, by sheet name."
     )
+    costing: SectionCosting = Field(default_factory=SectionCosting, title="Costing")
+    alignment: Alignment = Field(default_factory=Alignment, title="Berth alignment")
+    furniture: SectionFurniture = Field(
+        default_factory=SectionFurniture,
+        title="Quay furniture on this berth",
+        description="The items are the project's (Furniture tab); this is only where this berth differs.",
+    )
+    joints: SectionJoints = Field(default_factory=SectionJoints, title="Expansion joints")
+    site: SiteView = Field(
+        default_factory=SiteView,
+        title="Site in the 3D views",
+        description="Seabed, water, soil, furniture and crane as drawn in 3D; never a design input.",
+    )
+    existing: ExistingStructure = Field(
+        default_factory=ExistingStructure,
+        title="Existing structure",
+        description="The quay already on site: drawn, sequenced and checked for clashes; never a "
+        "design input.",
+    )
+    sequence: ConstructionSequence = Field(
+        default_factory=ConstructionSequence,
+        title="Construction sequence",
+        description="The order the works are built in; never a design input.",
+    )
+    user_cages: dict[str, UserCage] = Field(
+        default_factory=dict,
+        title="Cages set by the user",
+        description="Pile or combi wall infill cages set on the Design tab, by element; Check designs "
+        "the element with its cage.",
+    )
+    beam_cages: dict[str, BeamCage] = Field(
+        default_factory=dict,
+        title="Beam bars set by the user",
+        description="By beam: top, bottom and side bars set on the Design tab; Check designs the beam with "
+        "them.",
+    )
+    slab_strips: dict[str, SlabStrips] = Field(
+        default_factory=dict,
+        title="Slab stations and bars set by the user",
+        description="By slab: stations and additional bars set on the Design tab; Re-check designs the "
+        "slab with them.",
+    )
+    displacements: list[Displacement] = Field(
+        default_factory=list,
+        title="Displacements",
+        description="Values received from the geotechnical team (not read from the workbook), each with its "
+        "limit; checked as typed, so they are open while the model is locked.",
+    )
+    deflection: DeflectionSettings = Field(
+        default_factory=DeflectionSettings,
+        title="Estimated displacements",
+        description="How displacements are estimated from the straining actions on the Design tab; not a "
+        "design input, so it is open while the model is locked.",
+    )
+    checks: dict[str, ElementCheck] = Field(
+        default_factory=dict,
+        title="Checking",
+        description="By element: designed, returned with comments, checked or approved, by whom and when.",
+    )
+    clashes: ClashSettings = Field(
+        default_factory=ClashSettings,
+        title="Reinforcement clashes",
+        description="Clashes tab settings, solutions chosen and bars taken out. It never changes the design.",
+    )
+    combinations: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_COMBINATIONS),
+        title="Load combinations",
+        description="The combinations this section's workbook should have. An upload is checked against "
+        "them first, and sheets are mapped only to them.",
+    )
+    review: dict[str, Literal["accept", "reject"]] = Field(
+        default_factory=dict,
+        title="Reviewed warnings",
+        description="The user's decision on each workbook warning, by its id.",
+    )
+    combination_map: dict[str, str] = Field(
+        default_factory=dict,
+        title="Workbook combinations read as",
+        description="A combination as spelled in the workbook, and the defined one it is (empty: left out).",
+    )
+
+    @field_validator("combinations")
+    @classmethod
+    def _combinations(cls, v: list[str]) -> list[str]:
+        out: list[str] = []
+        for c in (x.strip() for x in v):
+            if c and c.lower() not in {o.lower() for o in out}:
+                out.append(c)
+        return out
 
     @model_validator(mode="after")
     def _zone(self) -> Section:
@@ -1136,13 +2782,131 @@ class Section(_Model):
         return added
 
 
+class Ledge(_Model):
+    """The ledge (nib) on the rear beam that the approach slab rests on, across the expansion joint."""
+
+    projection: float = _mm("Projection from the rear beam face", 400.0, gt=0)
+    depth: float = _mm("Depth at the beam face", 600.0, gt=0)
+    top_below_beam_top: float | None = _mm(
+        "Ledge top below the rear beam top",
+        None,
+        ge=0,
+        description="Empty: the approach slab thickness plus the bearing thickness, so the slab's top "
+        "is level with the beam's.",
+    )
+    bearing_width: float = _mm(
+        "Bearing strip width",
+        200.0,
+        gt=0,
+        description="Elastomeric strip under the slab end, across the ledge.",
+    )
+    bearing_thickness: float = _mm("Bearing strip thickness", 20.0, ge=0)
+    edge_distance: float = _mm("Bearing strip to the ledge tip", 50.0, ge=0)
+    cover: float | None = _mm("Cover", None, gt=0, description="Empty: the project's beam cover.")
+    horizontal_ratio: float = Field(
+        0.2,
+        title="Horizontal force H / vertical load F",
+        ge=0,
+        le=1,
+        description="EN 1992-1-1 J.3: at least 0.2 F for restraint and bearing friction.",
+    )
+    crack_width_limit: float = _mm("Crack width limit wk (QP)", 0.2, gt=0, le=0.5)
+
+
+class ApproachSlabInput(_Model):
+    """The approach slab between the quay and the existing slab on grade.
+
+    One for the whole project (typical); each section designs it with its own rear beam. Plaxis does
+    not model it, so its size and loads are entered here.
+    """
+
+    length: float = _m(
+        "Length (rear beam to the slab on grade)",
+        6.0,
+        gt=0,
+        description="From the bearing line on the ledge to the far end, which rests on the existing slab on "
+        "grade or the ground.",
+    )
+    thickness: float = _mm("Thickness", 400.0, gt=0)
+    concrete: ConcreteGrade | None = Field(None, title="Concrete grade", description=_PROJECT_GRADE)
+    cover_top: float | None = _mm(
+        "Cover, top", None, gt=0, description="Empty: the project's slab top cover."
+    )
+    cover_bottom: float = _mm("Cover, bottom (against the ground)", 75.0, gt=0)
+    joint_width: float = _mm("Expansion joint at the rear beam", 25.0, ge=0)
+    unsupported_length: float | None = _m(
+        "Length with no ground support",
+        None,
+        ge=0,
+        description="From the ledge, where the fill may settle away from the slab. Empty: the whole "
+        "length, so "
+        "the slab spans from the ledge to its far end. Beyond it the slab rests on the ground (springs).",
+    )
+    subgrade_modulus: float = Field(
+        20000.0,
+        title="Modulus of subgrade reaction",
+        gt=0,
+        description="Where the slab rests on the ground.",
+        json_schema_extra={"unit": "kN/m³"},
+    )
+    unit_weight: float = Field(
+        25.0, title="Reinforced concrete weight", gt=0, json_schema_extra={"unit": "kN/m³"}
+    )
+    surfacing: float = Field(
+        2.0, title="Surfacing and finishes", ge=0, description="Permanent.", json_schema_extra={"unit": "kPa"}
+    )
+    surcharge: float = Field(
+        35.0, title="Surcharge", ge=0, description="The office's 3.5 t/m².", json_schema_extra={"unit": "kPa"}
+    )
+    wheel_load: float = Field(
+        150.0,
+        title="Wheel or outrigger load",
+        ge=0,
+        description="Characteristic, dynamic factor included; 150 kN is a wheel of the EN 1991-2 tandem "
+        "(300 kN axle). 0: none.",
+        json_schema_extra={"unit": "kN"},
+    )
+    wheel_contact: float = _mm("Wheel contact width", 400.0, gt=0)
+    gamma_g: float = Field(1.35, title="γG permanent", ge=1)
+    gamma_q: float = Field(1.5, title="γQ variable (surcharge and wheel)", ge=1)
+    psi2: float = Field(
+        0.6,
+        title="ψ2 of the surcharge (QP)",
+        ge=0,
+        le=1,
+        description="The wheel is traffic: ψ2 = 0 in the QP combination.",
+    )
+    crack_width_limit: float = _mm("Crack width limit wk (QP), top face", 0.2, gt=0, le=0.5)
+    crack_width_limit_bottom: float = _mm("Crack width limit wk (QP), bottom face", 0.2, gt=0, le=0.5)
+    ledge: Ledge = Field(default_factory=Ledge, title="Ledge on the rear beam")
+
+
 class Project(_Model):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
     info: ProjectInfo = Field(default_factory=ProjectInfo, title="Project")
     design: DesignSettings = Field(default_factory=DesignSettings, title="Design settings")
+    prices: Prices = Field(default_factory=Prices, title="Prices")
+    drawings: DrawingSettings = Field(default_factory=DrawingSettings, title="Drawings (AutoCAD and Revit)")
+    furniture: QuayFurniture = Field(
+        default_factory=QuayFurniture,
+        title="Quay furniture",
+        description="Fenders, bollards, ladders, storm pins, crane rails and stoppers, tie rods: the same "
+        "on every section's berth.",
+    )
     sections: list[Section] = Field(default_factory=lambda: [Section()], title="Sections", min_length=1)
+    approach: ApproachSlabInput | None = Field(
+        None,
+        title="Approach slab and rear beam ledge",
+        description="One for the whole project; each section designs it with its own rear beam, and adds the "
+        "ledge's load and torsion to that beam. Empty: no approach slab.",
+    )
+    locked: bool = Field(
+        False,
+        title="Locked",
+        description="Set when the model is designed: its inputs cannot change until it is unlocked to edit.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -1167,6 +2931,22 @@ class Project(_Model):
         elif isinstance(data, dict) and isinstance(data.get("info"), dict) and "section" in data["info"]:
             data = dict(data)
             data["info"] = {k: v for k, v in data["info"].items() if k != "section"}
+        if isinstance(data, dict) and "revisions" in data:  # issued revisions were dropped
+            data = {k: v for k, v in data.items() if k != "revisions"}
+        fur = data.get("furniture") if isinstance(data, dict) else None
+        off = [
+            k for k in ("protrusion", "sts_crane") if isinstance(fur, dict) and k in fur and fur[k] is None
+        ]
+        if off and isinstance(data.get("sections"), list):
+            # The protrusion and STS crane ticks were the project's: unticked there, unticked on every
+            # section.
+            data = dict(data)
+            data["sections"] = [
+                {**sec, "furniture": {**(sec.get("furniture") or {}), **{k: False for k in off}}}
+                if isinstance(sec, dict)
+                else sec
+                for sec in data["sections"]
+            ]
         return data
 
     @field_validator("id")

@@ -1,0 +1,1230 @@
+// ===========================================================================
+//  TRITON - DRAW BARS FROM A .crm FILE - for a paste-in code runner (DevKit)
+//  Revit 2022 and later (made for 2024). Statements only - no using lines,
+//  no namespace.
+// ---------------------------------------------------------------------------
+//  Asks for a Triton drawings file (.crm: Triton, Design tab > Drawings >
+//  Revit), lists its drawings, and draws the ones you tick as detail items:
+//
+//    * all in ONE new drafting view for the run (the default), each drawing
+//      in its frame with its caption under it and a base point (BP) to copy
+//      it from, a row per element; or
+//    * each in its own drafting view "Triton - <section> - <drawing>". A view
+//      that is already there is emptied and drawn again, so views placed on
+//      sheets stay on them; or
+//    * into the view that is open, the top left at a point you click.
+//
+//  Bars and links are detail lines in the line style Triton names for their
+//  size (T32-Reinforcement Section...). The office families are placed with
+//  their parameters set: pile sections (DET_Round_Col_RFT_Dar), cut bars
+//  (DET_Rebar_Dot Bar_Dar), beam links (DET_Rebar_51_Dar) and slab
+//  additional bars (RFT_ADD_MODIFIED). A family that is not loaded, or
+//  cannot be placed, is drawn with lines and dots instead. Dimensions are
+//  Revit dimensions. The summary at the end lists what was missing and, for
+//  a parameter it could not find, the parameters the family does have.
+// ===========================================================================
+
+Autodesk.Revit.DB.Document theDoc = doc;
+var theUiDoc = new Autodesk.Revit.UI.UIDocument(theDoc);
+
+// --------------------------------------------------------------- settings --
+
+// Left as it is, a file picker opens. Set askForFile to false to use the
+// path below as given.
+bool askForFile = true;
+string crmPath = @"C:\Temp\Section 01a-drawings.crm";
+
+// ===========================================================================
+
+var inv = System.Globalization.CultureInfo.InvariantCulture;
+const double FT = 304.8;   // mm per foot: Revit works in feet
+bool cancelled = false;
+
+// ------------------------------------------------------------- the file --
+
+if (askForFile)
+{
+    var open = new System.Windows.Forms.OpenFileDialog();
+    open.Title = "Triton drawings file";
+    open.Filter = "Triton drawings (*.crm)|*.crm|Older Triton drawings (*.json)|*.json|All files (*.*)|*.*";
+    try
+    {
+        string startIn = System.IO.Path.GetDirectoryName(crmPath);
+        if (System.IO.Directory.Exists(startIn)) open.InitialDirectory = startIn;
+    }
+    catch { }
+    if (open.ShowDialog() == System.Windows.Forms.DialogResult.OK) crmPath = open.FileName;
+    else cancelled = true;
+    open.Dispose();
+}
+
+// A small JSON reader, so nothing else has to be installed: objects become
+// Dictionary<string, object>, arrays List<object>, numbers double.
+string text = "";
+int[] at = new int[] { 0 };
+System.Func<object> readValue = null;
+System.Action skip = delegate ()
+{ while (at[0] < text.Length && char.IsWhiteSpace(text[at[0]])) at[0]++; };
+System.Func<string> readString = delegate ()
+{
+    var b = new System.Text.StringBuilder();
+    at[0]++;   // the opening quote
+    while (text[at[0]] != '"')
+    {
+        char c = text[at[0]++];
+        if (c != '\\') { b.Append(c); continue; }
+        char e = text[at[0]++];
+        if (e == 'n') b.Append('\n');
+        else if (e == 't') b.Append('\t');
+        else if (e == 'r') b.Append('\r');
+        else if (e == 'b') b.Append('\b');
+        else if (e == 'f') b.Append('\f');
+        else if (e == 'u')
+        {
+            b.Append((char)int.Parse(text.Substring(at[0], 4), System.Globalization.NumberStyles.HexNumber, inv));
+            at[0] += 4;
+        }
+        else b.Append(e);
+    }
+    at[0]++;
+    return b.ToString();
+};
+readValue = delegate ()
+{
+    skip();
+    char c = text[at[0]];
+    if (c == '{')
+    {
+        var d = new System.Collections.Generic.Dictionary<string, object>();
+        at[0]++;
+        skip();
+        if (text[at[0]] == '}') { at[0]++; return d; }
+        while (true)
+        {
+            skip();
+            string key = readString();
+            skip();
+            at[0]++;   // the colon
+            d[key] = readValue();
+            skip();
+            if (text[at[0]++] == '}') return d;
+        }
+    }
+    if (c == '[')
+    {
+        var a = new System.Collections.Generic.List<object>();
+        at[0]++;
+        skip();
+        if (text[at[0]] == ']') { at[0]++; return a; }
+        while (true)
+        {
+            a.Add(readValue());
+            skip();
+            if (text[at[0]++] == ']') return a;
+        }
+    }
+    if (c == '"') return readString();
+    if (string.CompareOrdinal(text, at[0], "true", 0, 4) == 0) { at[0] += 4; return true; }
+    if (string.CompareOrdinal(text, at[0], "false", 0, 5) == 0) { at[0] += 5; return false; }
+    if (string.CompareOrdinal(text, at[0], "null", 0, 4) == 0) { at[0] += 4; return null; }
+    int start = at[0];
+    while (at[0] < text.Length && "+-0123456789.eE".IndexOf(text[at[0]]) >= 0) at[0]++;
+    return double.Parse(text.Substring(start, at[0] - start), System.Globalization.NumberStyles.Float, inv);
+};
+
+// Reading values out of what the reader returns.
+System.Func<object, string, object> get = delegate (object o, string key)
+{
+    var d = o as System.Collections.Generic.Dictionary<string, object>;
+    object v = null;
+    if (d != null) d.TryGetValue(key, out v);
+    return v;
+};
+System.Func<object, string, string> str = delegate (object o, string key)
+{
+    object v = get(o, key);
+    return v == null ? "" : System.Convert.ToString(v, inv);
+};
+System.Func<object, string, double> num = delegate (object o, string key)
+{
+    object v = get(o, key);
+    return v is double ? (double)v : 0.0;
+};
+System.Func<object, string, System.Collections.Generic.List<object>> list = delegate (object o, string key)
+{
+    return get(o, key) as System.Collections.Generic.List<object> ?? new System.Collections.Generic.List<object>();
+};
+System.Func<object, string, int, double> coord = delegate (object o, string key, int i)
+{
+    var l = get(o, key) as System.Collections.Generic.List<object>;
+    return l != null && l.Count > i && l[i] is double ? (double)l[i] : 0.0;
+};
+
+object data = null;
+if (!cancelled)
+{
+    try
+    {
+        text = System.IO.File.ReadAllText(crmPath);
+        data = readValue();
+        string fmt = str(data, "format");
+        if (fmt != "triton.drawings/2" && fmt != "triton.drawings/1")
+            throw new System.IO.InvalidDataException("This is not a Triton drawings file (Design tab > Drawings > Revit).");
+    }
+    catch (System.Exception ex)
+    {
+        Autodesk.Revit.UI.TaskDialog.Show("Triton", "Could not read " + crmPath + ":\n" + ex.Message);
+        cancelled = true;
+    }
+}
+
+var views = new System.Collections.Generic.List<object>();
+if (!cancelled)
+{
+    views = list(data, "views");
+    if (views.Count == 0)
+    {
+        Autodesk.Revit.UI.TaskDialog.Show("Triton", "The file has no views to draw.");
+        cancelled = true;
+    }
+}
+
+// ------------------------------------------------------ which views, where --
+
+Autodesk.Revit.DB.View active = theDoc.ActiveView;
+var detailable = new System.Collections.Generic.List<Autodesk.Revit.DB.ViewType>
+{
+    Autodesk.Revit.DB.ViewType.DraftingView, Autodesk.Revit.DB.ViewType.FloorPlan,
+    Autodesk.Revit.DB.ViewType.CeilingPlan, Autodesk.Revit.DB.ViewType.EngineeringPlan,
+    Autodesk.Revit.DB.ViewType.AreaPlan, Autodesk.Revit.DB.ViewType.Section,
+    Autodesk.Revit.DB.ViewType.Elevation, Autodesk.Revit.DB.ViewType.Detail,
+    Autodesk.Revit.DB.ViewType.Legend,
+};
+bool canUseActive = active != null && !active.IsTemplate && detailable.Contains(active.ViewType);
+var chosen = new System.Collections.Generic.List<object>();
+bool intoActive = false;
+bool intoOne = true;
+
+if (!cancelled)
+{
+    var form = new System.Windows.Forms.Form();
+    form.Text = "Triton drawings: " + str(data, "project") + " " + str(data, "section");
+    form.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
+    form.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+    form.MaximizeBox = false;
+    form.MinimizeBox = false;
+    form.ClientSize = new System.Drawing.Size(560, 604);
+
+    var info = new System.Windows.Forms.Label();
+    info.SetBounds(12, 10, 536, 34);
+    info.Text = "Tick the views to draw, from:\n" + crmPath;
+    form.Controls.Add(info);
+
+    var box = new System.Windows.Forms.CheckedListBox();
+    box.SetBounds(12, 50, 536, 396);
+    box.CheckOnClick = true;
+    foreach (object v in views) box.Items.Add(str(v, "name"), true);
+    form.Controls.Add(box);
+
+    var all = new System.Windows.Forms.Button();
+    all.Text = "All";
+    all.SetBounds(12, 454, 70, 26);
+    all.Click += delegate (object sender, System.EventArgs args)
+    { for (int i = 0; i < box.Items.Count; i++) box.SetItemChecked(i, true); };
+    form.Controls.Add(all);
+
+    var none = new System.Windows.Forms.Button();
+    none.Text = "None";
+    none.SetBounds(90, 454, 70, 26);
+    none.Click += delegate (object sender, System.EventArgs args)
+    { for (int i = 0; i < box.Items.Count; i++) box.SetItemChecked(i, false); };
+    form.Controls.Add(none);
+
+    var oneView = new System.Windows.Forms.RadioButton();
+    oneView.Text = "One new drafting view for this run, every drawing in its frame";
+    oneView.SetBounds(12, 490, 536, 22);
+    oneView.Checked = true;
+    form.Controls.Add(oneView);
+
+    var ownViews = new System.Windows.Forms.RadioButton();
+    ownViews.Text = "A drafting view for each (drawn again if it is already there)";
+    ownViews.SetBounds(12, 512, 536, 22);
+    form.Controls.Add(ownViews);
+
+    var activeView = new System.Windows.Forms.RadioButton();
+    activeView.Text = canUseActive
+        ? "The open view \"" + active.Name + "\", at a point you click"
+        : "The open view (open a drafting, plan, section or detail view to use this)";
+    activeView.Enabled = canUseActive;
+    activeView.SetBounds(12, 534, 536, 22);
+    form.Controls.Add(activeView);
+
+    var ok = new System.Windows.Forms.Button();
+    ok.Text = "Draw";
+    ok.DialogResult = System.Windows.Forms.DialogResult.OK;
+    ok.SetBounds(378, 564, 80, 28);
+    form.Controls.Add(ok);
+
+    var cancel = new System.Windows.Forms.Button();
+    cancel.Text = "Cancel";
+    cancel.DialogResult = System.Windows.Forms.DialogResult.Cancel;
+    cancel.SetBounds(466, 564, 80, 28);
+    form.Controls.Add(cancel);
+
+    form.AcceptButton = ok;
+    form.CancelButton = cancel;
+
+    if (form.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+    {
+        for (int i = 0; i < box.Items.Count; i++)
+            if (box.GetItemChecked(i)) chosen.Add(views[i]);
+        intoActive = activeView.Checked;
+        intoOne = oneView.Checked;
+    }
+    else cancelled = true;
+    form.Dispose();
+
+    if (!cancelled && chosen.Count == 0)
+    {
+        Autodesk.Revit.UI.TaskDialog.Show("Triton", "No views were ticked.");
+        cancelled = true;
+    }
+}
+
+Autodesk.Revit.DB.XYZ corner = Autodesk.Revit.DB.XYZ.Zero;
+if (!cancelled && intoActive)
+{
+    try
+    {
+        corner = theUiDoc.Selection.PickPoint("Click where the top left of the Triton drawing goes");
+    }
+    catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+    {
+        cancelled = true;
+    }
+    catch (Autodesk.Revit.Exceptions.InvalidOperationException)
+    {
+        corner = active.Origin;   // no work plane to click on: the view's origin
+    }
+}
+
+// ------------------------------------------------------------- drawing --
+
+if (!cancelled)
+{
+    var layers = get(data, "layers");
+    System.Func<string, string, string> layerName = delegate (string key, string what)
+    { return str(get(layers, key), what); };
+
+    var made = new System.Collections.Generic.List<string>();
+    var missing = new System.Collections.Generic.List<string>();
+    var failures = new System.Collections.Generic.List<string>();
+    int lines = 0, bars = 0, texts = 0, newViews = 0, redrawn = 0;
+    Autodesk.Revit.DB.View firstView = null;
+
+    // Colours for line styles this script makes, by bar size.
+    var colours = new System.Collections.Generic.Dictionary<int, byte[]>();
+    colours[8] = new byte[] { 128, 128, 128 }; colours[10] = new byte[] { 255, 127, 0 };
+    colours[12] = new byte[] { 191, 127, 0 }; colours[16] = new byte[] { 0, 160, 0 };
+    colours[20] = new byte[] { 0, 170, 170 }; colours[25] = new byte[] { 0, 0, 255 };
+    colours[28] = new byte[] { 160, 0, 160 }; colours[32] = new byte[] { 220, 0, 0 };
+    colours[40] = new byte[] { 120, 60, 0 };
+
+    Autodesk.Revit.DB.Category linesCat =
+        Autodesk.Revit.DB.Category.GetCategory(theDoc, Autodesk.Revit.DB.BuiltInCategory.OST_Lines);
+    var subs = new System.Collections.Generic.Dictionary<string, Autodesk.Revit.DB.Category>();
+    foreach (Autodesk.Revit.DB.Category c in linesCat.SubCategories) subs[c.Name] = c;
+    var styles = new System.Collections.Generic.Dictionary<string, Autodesk.Revit.DB.GraphicsStyle>();
+    var symbols = new System.Collections.Generic.Dictionary<string, Autodesk.Revit.DB.FamilySymbol>();
+
+    // The line style for a layer key (bar-16, concrete, zones), made if missing.
+    System.Func<string, Autodesk.Revit.DB.GraphicsStyle> style = delegate (string key)
+    {
+        Autodesk.Revit.DB.GraphicsStyle gs;
+        if (styles.TryGetValue(key, out gs)) return gs;
+        string name = layerName(key, "revit_line_style");
+        if (string.IsNullOrWhiteSpace(name)) name = key;
+        Autodesk.Revit.DB.Category sub;
+        if (!subs.TryGetValue(name, out sub))
+        {
+            sub = theDoc.Settings.Categories.NewSubcategory(linesCat, name);
+            int d = (int)num(get(layers, key), "diameter_mm");
+            byte[] rgb = colours.ContainsKey(d) ? colours[d] : new byte[] { 0, 0, 0 };
+            sub.LineColor = new Autodesk.Revit.DB.Color(rgb[0], rgb[1], rgb[2]);
+            sub.SetLineWeight(key.StartsWith("bar-") ? 3 : 1, Autodesk.Revit.DB.GraphicsStyleType.Projection);
+            subs[name] = sub;
+            made.Add(name);
+        }
+        gs = sub.GetGraphicsStyle(Autodesk.Revit.DB.GraphicsStyleType.Projection);
+        styles[key] = gs;
+        return gs;
+    };
+
+    // A detail component type by "Family: Type", or by the type name alone.
+    System.Func<string, Autodesk.Revit.DB.FamilySymbol> symbol = delegate (string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        Autodesk.Revit.DB.FamilySymbol s;
+        if (symbols.TryGetValue(name, out s)) return s;
+        s = null;
+        foreach (Autodesk.Revit.DB.Element e in new Autodesk.Revit.DB.FilteredElementCollector(theDoc)
+            .OfClass(typeof(Autodesk.Revit.DB.FamilySymbol)))
+        {
+            var fs = e as Autodesk.Revit.DB.FamilySymbol;
+            if (fs != null && (fs.FamilyName + ": " + fs.Name == name || fs.Name == name)) { s = fs; break; }
+        }
+        if (s == null) missing.Add(name);
+        else if (!s.IsActive && theDoc.IsModifiable) s.Activate();
+        symbols[name] = s;
+        return s;
+    };
+
+    Autodesk.Revit.DB.ElementId textType = theDoc.GetDefaultElementTypeId(Autodesk.Revit.DB.ElementTypeGroup.TextNoteType);
+    string textTypeName = layerName("text", "revit_text_type");
+    if (!string.IsNullOrWhiteSpace(textTypeName))
+    {
+        bool found = false;
+        foreach (Autodesk.Revit.DB.Element e in new Autodesk.Revit.DB.FilteredElementCollector(theDoc)
+            .OfClass(typeof(Autodesk.Revit.DB.TextNoteType)))
+            if (e.Name == textTypeName) { textType = e.Id; found = true; break; }
+        if (!found) missing.Add(textTypeName);
+    }
+
+    Autodesk.Revit.DB.ElementId fillType = null;
+    foreach (Autodesk.Revit.DB.Element e in new Autodesk.Revit.DB.FilteredElementCollector(theDoc)
+        .OfClass(typeof(Autodesk.Revit.DB.FilledRegionType)))
+    {
+        if (fillType == null) fillType = e.Id;
+        if (e.Name.ToUpperInvariant().Contains("SOLID")) { fillType = e.Id; break; }
+    }
+
+    // Where a point of a Triton view (mm) lands: origin + right * x + up * y.
+    Autodesk.Revit.DB.XYZ origin = Autodesk.Revit.DB.XYZ.Zero;
+    Autodesk.Revit.DB.XYZ right = Autodesk.Revit.DB.XYZ.BasisX;
+    Autodesk.Revit.DB.XYZ up = Autodesk.Revit.DB.XYZ.BasisY;
+    double dx = 0, dy = 0;
+    System.Func<double, double, Autodesk.Revit.DB.XYZ> pt = delegate (double x, double y)
+    { return origin + right.Multiply((x + dx) / FT) + up.Multiply((y + dy) / FT); };
+
+    System.Action<Autodesk.Revit.DB.View, string, Autodesk.Revit.DB.XYZ, Autodesk.Revit.DB.XYZ> drawLine =
+        delegate (Autodesk.Revit.DB.View view, string key, Autodesk.Revit.DB.XYZ p, Autodesk.Revit.DB.XYZ q)
+        {
+            if (p.DistanceTo(q) * FT < 1.0) return;   // Revit refuses shorter lines
+            var line = Autodesk.Revit.DB.Line.CreateBound(p, q);
+            var fam = symbol(layerName(key, "revit_line_type"));
+            if (fam != null) theDoc.Create.NewFamilyInstance(line, fam, view);
+            else theDoc.Create.NewDetailCurve(view, line).LineStyle = style(key);
+            lines++;
+        };
+
+    System.Func<Autodesk.Revit.DB.XYZ, double, Autodesk.Revit.DB.Arc[]> halves =
+        delegate (Autodesk.Revit.DB.XYZ c, double rMm)
+        {
+            return new Autodesk.Revit.DB.Arc[]
+            {
+                Autodesk.Revit.DB.Arc.Create(c, rMm / FT, 0, System.Math.PI, right, up),
+                Autodesk.Revit.DB.Arc.Create(c, rMm / FT, System.Math.PI, 2 * System.Math.PI, right, up),
+            };
+        };
+
+    System.Action<Autodesk.Revit.DB.View, string, Autodesk.Revit.DB.XYZ, double> drawCircle =
+        delegate (Autodesk.Revit.DB.View view, string key, Autodesk.Revit.DB.XYZ c, double rMm)
+        {
+            foreach (var arc in halves(c, rMm)) theDoc.Create.NewDetailCurve(view, arc).LineStyle = style(key);
+            lines++;
+        };
+
+    // ---- family parameters ----
+    // A parameter from the file: "names" (the first of "A|B" the family has) and
+    // a length "mm", a count "n" or a "text". Lengths go to Revit in feet.
+    var paramNotes = new System.Collections.Generic.List<string>();
+    var noted = new System.Collections.Generic.HashSet<string>();
+    System.Action<string> note = delegate (string line)
+    { if (noted.Add(line)) paramNotes.Add(line); };
+
+    // Whether a parameter's values are lengths in mm (length, bar diameter, reinforcement spacing,
+    // cover...): its spec can be shown in millimetres.
+    System.Func<Autodesk.Revit.DB.Parameter, bool> inMm = delegate (Autodesk.Revit.DB.Parameter p)
+    {
+        try
+        {
+            Autodesk.Revit.DB.ForgeTypeId spec = p.Definition.GetDataType();
+            if (spec == Autodesk.Revit.DB.SpecTypeId.Length) return true;
+            if (!Autodesk.Revit.DB.UnitUtils.IsMeasurableSpec(spec)) return false;
+            foreach (Autodesk.Revit.DB.ForgeTypeId u in Autodesk.Revit.DB.UnitUtils.GetValidUnits(spec))
+                if (u == Autodesk.Revit.DB.UnitTypeId.Millimeters) return true;
+            return false;
+        }
+        catch { return true; }
+    };
+
+    System.Func<Autodesk.Revit.DB.Element, object, bool> setParam = delegate (Autodesk.Revit.DB.Element el, object prm)
+    {
+        foreach (string n in str(prm, "names").Split('|'))
+        {
+            Autodesk.Revit.DB.Parameter p = el.LookupParameter(n.Trim());
+            if (p == null || p.IsReadOnly) continue;
+            bool hasMm = get(prm, "mm") != null, hasN = get(prm, "n") != null;
+            bool onlyYesNo = str(prm, "only") == "yesno";   // e.g. a ring that is not there: only a Yes/No is set
+            double mm = num(prm, "mm"), cnt = num(prm, "n");
+            try
+            {
+                if (onlyYesNo && p.StorageType != Autodesk.Revit.DB.StorageType.Integer) return true;
+                if (p.StorageType == Autodesk.Revit.DB.StorageType.Double)
+                {
+                    // Any spec measured in millimetres (length, bar diameter, bar spacing, cover...)
+                    // goes to Revit in its internal units (feet); a number goes as it is.
+                    if (!hasMm && !hasN) continue;
+                    double val = hasMm ? mm : cnt;
+                    p.Set(inMm(p) ? Autodesk.Revit.DB.UnitUtils.ConvertToInternalUnits(val, Autodesk.Revit.DB.UnitTypeId.Millimeters) : val);
+                }
+                else if (p.StorageType == Autodesk.Revit.DB.StorageType.Integer)
+                {
+                    bool yesNo = false;
+                    try { yesNo = p.Definition.GetDataType() == Autodesk.Revit.DB.SpecTypeId.Boolean.YesNo; } catch { }
+                    if (yesNo) p.Set((hasN ? cnt : mm) > 0 ? 1 : 0);   // a count of 0: not there
+                    else if (onlyYesNo) return true;
+                    else if (hasN) p.Set((int)System.Math.Round(cnt));
+                    else if (hasMm) p.Set((int)System.Math.Round(mm));
+                    else continue;
+                }
+                else if (p.StorageType == Autodesk.Revit.DB.StorageType.String)
+                {
+                    if (get(prm, "text") != null) p.Set(str(prm, "text"));
+                    else if (hasN) p.Set(((int)cnt).ToString(inv));
+                    else if (hasMm) p.Set(mm.ToString("0", inv));
+                    else continue;
+                }
+                else continue;
+                return true;
+            }
+            catch (System.Exception) { }
+        }
+        return false;
+    };
+
+    // The parameters a family has, for the summary when one is not found.
+    System.Func<Autodesk.Revit.DB.Element, string> paramList = delegate (Autodesk.Revit.DB.Element el)
+    {
+        var names = new System.Collections.Generic.SortedSet<string>();
+        foreach (Autodesk.Revit.DB.Parameter p in el.Parameters)
+            if (!p.IsReadOnly) names.Add(p.Definition.Name);
+        return string.Join(", ", names);
+    };
+
+    // Values on type parameters need a type of their own: one per set of
+    // values, named after them, made from the family's type the first time.
+    System.Func<Autodesk.Revit.DB.FamilySymbol, System.Collections.Generic.List<object>, bool> hasTypeParam =
+        delegate (Autodesk.Revit.DB.FamilySymbol sym, System.Collections.Generic.List<object> prms)
+        {
+            foreach (object prm in prms)
+                foreach (string n in str(prm, "names").Split('|'))
+                    if (sym.LookupParameter(n.Trim()) != null) return true;
+            return false;
+        };
+    System.Func<Autodesk.Revit.DB.FamilySymbol, System.Collections.Generic.List<object>, string> typeKey =
+        delegate (Autodesk.Revit.DB.FamilySymbol sym, System.Collections.Generic.List<object> prms)
+        {
+            var key = new System.Collections.Generic.List<string>();
+            foreach (object prm in prms)
+            {
+                foreach (string n in str(prm, "names").Split('|'))
+                {
+                    if (sym.LookupParameter(n.Trim()) == null) continue;
+                    string val = get(prm, "text") != null ? str(prm, "text")
+                        : get(prm, "n") != null ? ((int)num(prm, "n")).ToString(inv)
+                        : num(prm, "mm").ToString("0", inv);
+                    // A size switch that is off is set on the type but left out of its name.
+                    if (!(str(prm, "only") == "yesno" && val == "0"))
+                        key.Add(n.Trim().Replace("DAR_", "") + " " + val);
+                    else key.Add("");
+                    break;
+                }
+            }
+            key.RemoveAll(delegate (string k) { return k == ""; });
+            return key.Count == 0 && hasTypeParam(sym, prms) ? "defaults" : string.Join(" ", key);
+        };
+    System.Func<Autodesk.Revit.DB.FamilySymbol, System.Collections.Generic.List<object>, Autodesk.Revit.DB.FamilySymbol> makeType =
+        delegate (Autodesk.Revit.DB.FamilySymbol sym, System.Collections.Generic.List<object> prms)
+        {
+            var onType = new System.Collections.Generic.List<object>();
+            foreach (object prm in prms)
+                foreach (string n in str(prm, "names").Split('|'))
+                    if (sym.LookupParameter(n.Trim()) != null) { onType.Add(prm); break; }
+            if (onType.Count == 0) return sym;
+            string name = sym.Name + " - Triton " + typeKey(sym, prms);
+            foreach (Autodesk.Revit.DB.ElementId id in sym.Family.GetFamilySymbolIds())
+            {
+                var t = theDoc.GetElement(id) as Autodesk.Revit.DB.FamilySymbol;
+                if (t != null && t.Name == name)
+                {
+                    foreach (object prm in onType) setParam(t, prm);   // made by an older run: values again
+                    if (!t.IsActive) t.Activate();
+                    return t;
+                }
+            }
+            var dup = sym.Duplicate(name) as Autodesk.Revit.DB.FamilySymbol;
+            foreach (object prm in onType) setParam(dup, prm);
+            if (!dup.IsActive) dup.Activate();
+            return dup;
+        };
+
+    // Revit's errors and warnings, handled here instead of in a dialog. While
+    // types are tried, an error undoes that one try; while drawing, whatever
+    // Revit cannot make is removed and listed in the summary.
+    var failTexts = new System.Collections.Generic.List<string>();
+    bool undoOnError = false;
+    System.EventHandler<Autodesk.Revit.DB.Events.FailuresProcessingEventArgs> onFailures =
+        delegate (object sender, Autodesk.Revit.DB.Events.FailuresProcessingEventArgs e)
+        {
+            var fa = e.GetFailuresAccessor();
+            bool error = false;
+            var kill = new System.Collections.Generic.List<Autodesk.Revit.DB.ElementId>();
+            foreach (Autodesk.Revit.DB.FailureMessageAccessor m in fa.GetFailureMessages())
+            {
+                if (m.GetSeverity() == Autodesk.Revit.DB.FailureSeverity.Warning) { fa.DeleteWarning(m); continue; }
+                error = true;
+                failTexts.Add(m.GetDescriptionText());
+                foreach (Autodesk.Revit.DB.ElementId id in m.GetFailingElementIds()) kill.Add(id);
+            }
+            if (!error) { e.SetProcessingResult(Autodesk.Revit.DB.FailureProcessingResult.Continue); return; }
+            if (undoOnError || kill.Count == 0)
+            {
+                e.SetProcessingResult(Autodesk.Revit.DB.FailureProcessingResult.ProceedWithRollBack);
+                return;
+            }
+            try
+            {
+                fa.DeleteElements(kill);
+                e.SetProcessingResult(Autodesk.Revit.DB.FailureProcessingResult.ProceedWithCommit);
+            }
+            catch (System.Exception) { e.SetProcessingResult(Autodesk.Revit.DB.FailureProcessingResult.ProceedWithRollBack); }
+        };
+
+    // The type for a set of values: made once and tried on its own first (when
+    // this code runs its own transactions), so a type Revit cannot make is
+    // drawn with lines instead of stopping the whole run. Null: no type.
+    bool ownTransactions = !theDoc.IsModifiable;
+    var typeCache = new System.Collections.Generic.Dictionary<string, Autodesk.Revit.DB.FamilySymbol>();
+    System.Func<Autodesk.Revit.DB.FamilySymbol, System.Collections.Generic.List<object>, Autodesk.Revit.DB.FamilySymbol> typeFor =
+        delegate (Autodesk.Revit.DB.FamilySymbol sym, System.Collections.Generic.List<object> prms)
+        {
+            string key = typeKey(sym, prms);
+            if (key == "") return sym;
+            string cacheKey = sym.FamilyName + ": " + sym.Name + " | " + key;
+            Autodesk.Revit.DB.FamilySymbol result;
+            if (typeCache.TryGetValue(cacheKey, out result)) return result;
+            result = null;
+            if (ownTransactions && !theDoc.IsModifiable)
+            {
+                failTexts.Clear();
+                undoOnError = true;
+                var t = new Autodesk.Revit.DB.Transaction(theDoc, "Triton type");
+                t.Start();
+                bool ok = true;
+                try { result = makeType(sym, prms); theDoc.Regenerate(); }
+                catch (System.Exception ex) { ok = false; failTexts.Add(ex.Message); }
+                if (ok && t.Commit() == Autodesk.Revit.DB.TransactionStatus.Committed && failTexts.Count == 0) { }
+                else
+                {
+                    if (t.GetStatus() == Autodesk.Revit.DB.TransactionStatus.Started) t.RollBack();
+                    result = null;
+                    note(sym.FamilyName + ": Revit could not make the type with " + key + " ("
+                        + string.Join("; ", failTexts.ToArray()) + "), drawn with lines instead. Its type parameters: "
+                        + paramList(sym));
+                }
+                undoOnError = false;
+                failTexts.Clear();
+            }
+            else
+            {
+                try { result = makeType(sym, prms); }
+                catch (System.Exception ex) { note(sym.FamilyName + ": " + ex.Message + ", drawn with lines instead"); }
+            }
+            typeCache[cacheKey] = result;
+            return result;
+        };
+    // The office's bar families show their size by switches T8, T10 ... T32 (Yes/No): the one for
+    // the bar on, the others off. The size parameter is set too where the family has one.
+    int[] SIZES = { 8, 10, 12, 16, 20, 25, 28, 32 };
+    System.Func<double, System.Collections.Generic.List<object>> sizeParams = delegate (double dMm)
+    {
+        var size = new System.Collections.Generic.Dictionary<string, object>();
+        size["names"] = string.IsNullOrWhiteSpace(str(data, "bar_param")) ? "DAR_BAR DIAMETER" : str(data, "bar_param");
+        size["mm"] = dMm;
+        var outList = new System.Collections.Generic.List<object> { size };
+        foreach (int t in SIZES)
+        {
+            var sw = new System.Collections.Generic.Dictionary<string, object>();
+            sw["names"] = "T" + t.ToString(inv);
+            sw["n"] = (double)(System.Math.Abs(t - dMm) < 0.5 ? 1 : 0);
+            sw["only"] = "yesno";
+            outList.Add(sw);
+        }
+        return outList;
+    };
+
+    // Places a family item; false when it could not (the caller draws its fallback).
+    // What was placed, to draw with lines anything Revit removes when the drawing is committed.
+    Autodesk.Revit.DB.ElementId lastPlaced = null;
+    int turned = 0;
+    var turnOf = new System.Collections.Generic.Dictionary<string, bool>();   // per type: comes out turned
+    var placedList = new System.Collections.Generic.List<object[]>();
+    System.Func<object, string> values = delegate (object it)
+    {
+        var parts = new System.Collections.Generic.List<string>();
+        foreach (object prm in list(it, "params"))
+        {
+            string val = get(prm, "text") != null ? str(prm, "text")
+                : get(prm, "n") != null ? ((int)num(prm, "n")).ToString(inv)
+                : num(prm, "mm").ToString("0", inv);
+            parts.Add(str(prm, "names").Split('|')[0] + "=" + val);
+        }
+        return string.Join(", ", parts.ToArray());
+    };
+    System.Func<Autodesk.Revit.DB.View, object, bool> placeFamily = delegate (Autodesk.Revit.DB.View view, object it)
+    {
+        var sym = symbol(str(it, "family"));
+        if (sym == null) return false;
+        Autodesk.Revit.DB.FamilyInstance inst = null;
+        try
+        {
+            var prms = list(it, "params");
+            var typed = typeFor(sym, prms);
+            if (typed == null) return false;
+            if (!typed.IsActive) typed.Activate();
+            Autodesk.Revit.DB.XYZ where = pt(coord(it, "at", 0), coord(it, "at", 1));
+            inst = theDoc.Create.NewFamilyInstance(where, typed, view);
+            foreach (object prm in prms)
+            {
+                if (setParam(inst, prm)) continue;
+                bool onType = false;
+                foreach (string n in str(prm, "names").Split('|'))
+                    if (typed.LookupParameter(n.Trim()) != null) onType = true;
+                if (onType) continue;
+                if (str(prm, "only") == "yesno")
+                {
+                    if (num(prm, "n") <= 0) continue;   // a size switch the family does not have, left off
+                    // The family has no switch for this size: it cannot show the bar, lines instead.
+                    note(sym.FamilyName + ": no size switch " + str(prm, "names") + ", drawn with lines instead");
+                    theDoc.Delete(inst.Id);
+                    return false;
+                }
+                note(sym.FamilyName + ": no parameter " + str(prm, "names").Replace("|", " or ")
+                    + ". It has: " + paramList(inst));
+            }
+            double rot = num(it, "rot");
+            if (System.Math.Abs(rot) > 1e-6)
+                Autodesk.Revit.DB.ElementTransformUtils.RotateElement(theDoc, inst.Id,
+                    Autodesk.Revit.DB.Line.CreateBound(where, where + view.ViewDirection), rot * System.Math.PI / 180.0);
+            if (str(it, "align") == "center")
+            {
+                theDoc.Regenerate();
+                var bb = inst.get_BoundingBox(view);
+                if (bb != null)
+                {
+                    var c = (bb.Min + bb.Max) * 0.5;
+                    var move = where - c;
+                    move = move - view.ViewDirection.Multiply(move.DotProduct(view.ViewDirection));
+                    if (move.GetLength() > 1e-9)
+                        Autodesk.Revit.DB.ElementTransformUtils.MoveElement(theDoc, inst.Id, move);
+                }
+            }
+            // The drawing says how big the family should come out across and up the view ("expect_mm"):
+            // one that comes out turned (a bar family drawing its bar the other way) is turned back.
+            // Only where the view's right is along a model axis (a drafting view, an unrotated plan):
+            // Revit's box round an element is along the model axes. A type turned once is turned
+            // every time, also where its box is near square and cannot tell.
+            bool axisView = System.Math.Abs(view.RightDirection.X) > 0.999 || System.Math.Abs(view.RightDirection.Y) > 0.999
+                || System.Math.Abs(view.RightDirection.Z) > 0.999;
+            if (get(it, "expect_mm") != null && axisView)
+            {
+                theDoc.Regenerate();
+                var bb = inst.get_BoundingBox(view);
+                bool turn = false, known = turnOf.TryGetValue(typed.Id.ToString(), out turn);
+                if (bb != null)
+                {
+                    var d = bb.Max - bb.Min;
+                    double w = System.Math.Abs(d.DotProduct(view.RightDirection)) * FT;
+                    double h = System.Math.Abs(d.DotProduct(view.UpDirection)) * FT;
+                    double ex = coord(it, "expect_mm", 0), ey = coord(it, "expect_mm", 1);
+                    double straight = System.Math.Abs(w - ex) + System.Math.Abs(h - ey);
+                    double across = System.Math.Abs(w - ey) + System.Math.Abs(h - ex);
+                    if (System.Math.Abs(ex - ey) > 0.25 * System.Math.Max(ex, ey)
+                        && System.Math.Min(straight, across) < 0.5 * System.Math.Max(straight, across))
+                    {
+                        turn = across < straight;
+                        known = true;
+                        turnOf[typed.Id.ToString()] = turn;
+                    }
+                    if (known && turn)
+                    {
+                        var c = (bb.Min + bb.Max) * 0.5;
+                        Autodesk.Revit.DB.ElementTransformUtils.RotateElement(theDoc, inst.Id,
+                            Autodesk.Revit.DB.Line.CreateBound(c, c + view.ViewDirection), System.Math.PI / 2);
+                        turned++;
+                    }
+                }
+            }
+            lastPlaced = inst.Id;
+            return true;
+        }
+        catch (System.Exception ex)
+        {
+            note(sym.FamilyName + ": could not be placed (" + ex.Message + "), drawn with lines instead");
+            if (inst != null) try { theDoc.Delete(inst.Id); } catch { }
+            return false;
+        }
+    };
+
+    System.Action<Autodesk.Revit.DB.View, string, Autodesk.Revit.DB.XYZ, double> drawBar =
+        delegate (Autodesk.Revit.DB.View view, string key, Autodesk.Revit.DB.XYZ c, double dMm)
+        {
+            bars++;
+            var fam = symbol(layerName(key, "revit_section_type"));
+            bool hasSwitch = false;
+            foreach (int t in SIZES) if (System.Math.Abs(t - dMm) < 0.5) hasSwitch = true;
+            if (fam != null && !hasSwitch)
+            {
+                note(fam.FamilyName + ": no size switch T" + dMm.ToString("0", inv) + ", filled dots drawn instead");
+                fam = null;
+            }
+            if (fam != null)
+            {
+                try
+                {
+                    var prms = sizeParams(dMm);
+                    var typed = typeFor(fam, prms);
+                    if (typed != null)
+                    {
+                        if (!typed.IsActive) typed.Activate();
+                        var inst = theDoc.Create.NewFamilyInstance(c, typed, view);
+                        bool sized = false;
+                        foreach (object prm in prms)
+                        {
+                            bool isSwitch = str(prm, "only") == "yesno";
+                            if (setParam(inst, prm) && (!isSwitch || num(prm, "n") > 0)) sized = true;
+                        }
+                        if (!sized && !hasTypeParam(fam, prms))
+                            note(fam.FamilyName + ": no size parameter (" + str(prms[0], "names").Replace("|", " or ")
+                                + " or T8...T32). It has: " + paramList(inst));
+                        return;
+                    }
+                }
+                catch (System.Exception ex) { note(fam.FamilyName + ": " + ex.Message + ", dots drawn instead"); }
+            }
+            if (fillType != null)
+            {
+                try
+                {
+                    var loop = new Autodesk.Revit.DB.CurveLoop();
+                    foreach (var arc in halves(c, dMm / 2)) loop.Append(arc);
+                    var region = Autodesk.Revit.DB.FilledRegion.Create(theDoc, fillType, view.Id,
+                        new System.Collections.Generic.List<Autodesk.Revit.DB.CurveLoop> { loop });
+                    try { region.SetLineStyleId(style(key).Id); } catch { }
+                    return;
+                }
+                catch (Autodesk.Revit.Exceptions.ApplicationException) { }
+            }
+            drawCircle(view, key, c, dMm / 2);
+        };
+
+    // ---- dimensions ----
+    Autodesk.Revit.DB.DimensionType dimType = null;
+    string dimTypeName = layerName("dims", "revit_dimension_type");
+    if (!string.IsNullOrWhiteSpace(dimTypeName))
+    {
+        foreach (Autodesk.Revit.DB.Element e in new Autodesk.Revit.DB.FilteredElementCollector(theDoc)
+            .OfClass(typeof(Autodesk.Revit.DB.DimensionType)))
+            if (e.Name == dimTypeName) { dimType = e as Autodesk.Revit.DB.DimensionType; break; }
+        if (dimType == null) missing.Add(dimTypeName);
+    }
+    int dims = 0, families = 0, fallbacks = 0;
+
+    // A Revit dimension between two short detail lines square to it; false if Revit refuses.
+    System.Func<Autodesk.Revit.DB.View, object, bool> drawDim = delegate (Autodesk.Revit.DB.View view, object it)
+    {
+        double ax = coord(it, "a", 0), ay = coord(it, "a", 1), bx = coord(it, "b", 0), by = coord(it, "b", 1);
+        double off = num(it, "off"), len = System.Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+        if (len < 1.0 || System.Math.Abs(off) < 1.0) return false;
+        double ux = (bx - ax) / len, uy = (by - ay) / len, nx = -uy, ny = ux;
+        var witnesses = new System.Collections.Generic.List<Autodesk.Revit.DB.ElementId>();
+        try
+        {
+            var refs = new Autodesk.Revit.DB.ReferenceArray();
+            foreach (double[] q in new double[][] { new double[] { ax, ay }, new double[] { bx, by } })
+            {
+                var w = theDoc.Create.NewDetailCurve(view, Autodesk.Revit.DB.Line.CreateBound(
+                    pt(q[0] + nx * off * 0.2, q[1] + ny * off * 0.2), pt(q[0] + nx * off, q[1] + ny * off)));
+                w.LineStyle = style("dims");
+                witnesses.Add(w.Id);
+                refs.Append(w.GeometryCurve.Reference);
+            }
+            var line = Autodesk.Revit.DB.Line.CreateBound(pt(ax + nx * off, ay + ny * off), pt(bx + nx * off, by + ny * off));
+            var dim = theDoc.Create.NewDimension(view, line, refs);
+            if (dim == null) throw new System.InvalidOperationException("no dimension");
+            if (dimType != null) dim.DimensionType = dimType;
+            dims++;
+            return true;
+        }
+        catch (System.Exception)
+        {
+            if (witnesses.Count > 0) try { theDoc.Delete(witnesses); } catch { }
+            return false;
+        }
+    };
+
+    System.Action<Autodesk.Revit.DB.View, System.Collections.Generic.List<object>> drawItems = null;
+    drawItems = delegate (Autodesk.Revit.DB.View view, System.Collections.Generic.List<object> items)
+    {
+        foreach (object it in items)
+        {
+            string type = str(it, "type"), key = str(it, "layer");
+            if (type == "family")
+            {
+                if (placeFamily(view, it))
+                {
+                    families++;
+                    placedList.Add(new object[] { lastPlaced, view.Id, it, dx, dy });
+                }
+                else { fallbacks++; drawItems(view, list(it, "fallback")); }
+            }
+            else if (type == "dim")
+            {
+                if (!drawDim(view, it)) drawItems(view, list(it, "fallback"));
+            }
+            else if (type == "line")
+                drawLine(view, key, pt(coord(it, "a", 0), coord(it, "a", 1)), pt(coord(it, "b", 0), coord(it, "b", 1)));
+            else if (type == "rect")
+            {
+                double ax = coord(it, "a", 0), ay = coord(it, "a", 1), bx = coord(it, "b", 0), by = coord(it, "b", 1);
+                drawLine(view, key, pt(ax, ay), pt(bx, ay));
+                drawLine(view, key, pt(bx, ay), pt(bx, by));
+                drawLine(view, key, pt(bx, by), pt(ax, by));
+                drawLine(view, key, pt(ax, by), pt(ax, ay));
+            }
+            else if (type == "circle")
+                drawCircle(view, key, pt(coord(it, "c", 0), coord(it, "c", 1)), num(it, "r"));
+            else if (type == "bar")
+                drawBar(view, key, pt(coord(it, "c", 0), coord(it, "c", 1)), num(it, "d"));
+            else if (type == "text")
+            {
+                // Triton gives the text's bottom left; a text note is placed by its top left.
+                double rot = get(it, "rot") != null ? num(it, "rot") * System.Math.PI / 180.0 : 0.0;
+                double th = num(it, "h");
+                Autodesk.Revit.DB.XYZ tl = pt(coord(it, "at", 0) - th * System.Math.Sin(rot),
+                    coord(it, "at", 1) + th * System.Math.Cos(rot));
+                if (rot == 0.0)
+                    Autodesk.Revit.DB.TextNote.Create(theDoc, view.Id, tl, str(it, "text"), textType);
+                else
+                {
+                    Autodesk.Revit.DB.TextNoteOptions opts = new Autodesk.Revit.DB.TextNoteOptions(textType);
+                    opts.Rotation = rot;
+                    opts.HorizontalAlignment = Autodesk.Revit.DB.HorizontalTextAlignment.Left;
+                    Autodesk.Revit.DB.TextNote.Create(theDoc, view.Id, tl, str(it, "text"), opts);
+                }
+                texts++;
+            }
+            else if (get(it, "fallback") != null)
+                drawItems(view, list(it, "fallback"));
+        }
+    };
+    System.Action<Autodesk.Revit.DB.View, object> drawView = delegate (Autodesk.Revit.DB.View view, object v)
+    { drawItems(view, list(v, "items")); };
+
+    System.Func<string, string> clean = delegate (string name)
+    {
+        foreach (char bad in "\\:{}[]|;<>?`~") name = name.Replace(bad, '_');
+        return name;
+    };
+    System.Func<Autodesk.Revit.DB.ElementId> draftingType = delegate ()
+    {
+        foreach (Autodesk.Revit.DB.Element e in new Autodesk.Revit.DB.FilteredElementCollector(theDoc)
+            .OfClass(typeof(Autodesk.Revit.DB.ViewFamilyType)))
+        {
+            var t = e as Autodesk.Revit.DB.ViewFamilyType;
+            if (t != null && t.ViewFamily == Autodesk.Revit.DB.ViewFamily.Drafting) return t.Id;
+        }
+        return null;
+    };
+    string prefix = str(data, "view_prefix");
+    if (string.IsNullOrWhiteSpace(prefix)) prefix = "Triton";
+
+    // The drafting view for a Triton view: the one of the same name, emptied, or a new one.
+    System.Func<object, Autodesk.Revit.DB.View> draftingView = delegate (object v)
+    {
+        var parts = new System.Collections.Generic.List<string> { prefix };
+        if (!string.IsNullOrWhiteSpace(str(data, "section"))) parts.Add(str(data, "section"));
+        parts.Add(str(v, "name"));
+        string name = clean(string.Join(" - ", parts.ToArray()));
+        foreach (Autodesk.Revit.DB.Element e in new Autodesk.Revit.DB.FilteredElementCollector(theDoc)
+            .OfClass(typeof(Autodesk.Revit.DB.ViewDrafting)))
+        {
+            var old = e as Autodesk.Revit.DB.ViewDrafting;
+            if (old == null || old.IsTemplate || old.Name != name) continue;
+            var ids = new System.Collections.Generic.List<Autodesk.Revit.DB.ElementId>();
+            foreach (Autodesk.Revit.DB.Element x in new Autodesk.Revit.DB.FilteredElementCollector(theDoc, old.Id)
+                .WhereElementIsNotElementType())
+                if (x is Autodesk.Revit.DB.CurveElement || x is Autodesk.Revit.DB.TextNote || x is Autodesk.Revit.DB.Dimension
+                    || x is Autodesk.Revit.DB.FamilyInstance || x is Autodesk.Revit.DB.FilledRegion)
+                    ids.Add(x.Id);
+            if (ids.Count > 0) theDoc.Delete(ids);
+            redrawn++;
+            return old;
+        }
+        var view = Autodesk.Revit.DB.ViewDrafting.Create(theDoc, draftingType());
+        view.Name = name;
+        view.Scale = System.Math.Max(1, (int)num(v, "scale"));
+        newViews++;
+        return view;
+    };
+
+    // Each drawing's place in one drawing of the run: its "at" (older files: a row).
+    var offsets = new System.Collections.Generic.List<double[]>();
+    {
+        double x = 0, y = 0, rowH = 0;
+        foreach (object v in chosen)
+        {
+            double x0 = coord(v, "box", 0), y0 = coord(v, "box", 1), x1 = coord(v, "box", 2), y1 = coord(v, "box", 3);
+            if (get(v, "at") != null) { offsets.Add(new double[] { coord(v, "at", 0), coord(v, "at", 1) }); continue; }
+            if (x > 0 && x + (x1 - x0) > 120000) { x = 0; y -= rowH + 6000; rowH = 0; }
+            offsets.Add(new double[] { x - x0, y - y1 });
+            x += (x1 - x0) + 3000;
+            rowH = System.Math.Max(rowH, y1 - y0);
+        }
+    }
+    // The top left of what was ticked, so it starts at the clicked point / the view's origin.
+    double left = double.MaxValue, topY = double.MinValue;
+    for (int i = 0; i < chosen.Count; i++)
+    {
+        left = System.Math.Min(left, coord(chosen[i], "box", 0) + offsets[i][0]);
+        topY = System.Math.Max(topY, coord(chosen[i], "box", 3) + offsets[i][1]);
+    }
+
+    System.Action<System.Collections.Generic.List<object>, System.Collections.Generic.SortedSet<string>> collectFamilies = null;
+    collectFamilies = delegate (System.Collections.Generic.List<object> items, System.Collections.Generic.SortedSet<string> into)
+    {
+        foreach (object it in items)
+        {
+            string type = str(it, "type");
+            if (type == "family" && !string.IsNullOrWhiteSpace(str(it, "family"))) into.Add(str(it, "family"));
+            else if (type == "bar")
+            {
+                string sec = layerName(str(it, "layer"), "revit_section_type");
+                if (!string.IsNullOrWhiteSpace(sec)) into.Add(sec);
+            }
+            if (get(it, "fallback") != null) collectFamilies(list(it, "fallback"), into);
+        }
+    };
+
+    string firstViewName = "";
+    theDoc.Application.FailuresProcessing += onFailures;
+
+    // First every type the drawings need, each tried on its own.
+    if (ownTransactions)
+    {
+        System.Action<System.Collections.Generic.List<object>> prepare = null;
+        prepare = delegate (System.Collections.Generic.List<object> items)
+        {
+            foreach (object it in items)
+            {
+                string type = str(it, "type");
+                if (type == "family")
+                {
+                    var sym = symbol(str(it, "family"));
+                    if (sym != null) typeFor(sym, list(it, "params"));
+                    prepare(list(it, "fallback"));
+                }
+                else if (type == "bar")
+                {
+                    var fam = symbol(layerName(str(it, "layer"), "revit_section_type"));
+                    bool known = false;
+                    foreach (int sz in SIZES) if (System.Math.Abs(sz - num(it, "d")) < 0.5) known = true;
+                    if (fam != null && known) typeFor(fam, sizeParams(num(it, "d")));
+                }
+            }
+        };
+        try { foreach (object v in chosen) prepare(list(v, "items")); }
+        catch (System.Exception ex) { note("Trying the family types: " + ex.Message); }
+    }
+
+    // A report of the office families as they are inside (each parameter: type or instance, its
+    // kind, its formula, its value), written next to the .crm file, for Triton to read when a family
+    // does not come out right. Only when no transaction is open (Revit opens families then only).
+    string familyReport = "";
+    if (!theDoc.IsModifiable)
+    {
+        var rep = new System.Text.StringBuilder();
+        var famNames = new System.Collections.Generic.SortedSet<string>();
+        foreach (object v in chosen) collectFamilies(list(v, "items"), famNames);
+        foreach (string fname in famNames)
+        {
+            var sym = symbol(fname);
+            if (sym == null) continue;
+            Autodesk.Revit.DB.Document famDoc = null;
+            try
+            {
+                famDoc = theDoc.EditFamily(sym.Family);
+                var fm = famDoc.FamilyManager;
+                rep.AppendLine("== " + fname + " (types in the family: " + fm.Types.Size + ")");
+                foreach (Autodesk.Revit.DB.FamilyParameter fp in fm.Parameters)
+                {
+                    string kind = "";
+                    try { kind = fp.Definition.GetDataType().TypeId; } catch { }
+                    string val = "";
+                    try { if (fm.CurrentType != null && fm.CurrentType.HasValue(fp)) val = fm.CurrentType.AsValueString(fp); } catch { }
+                    rep.AppendLine(string.Format(inv, "{0} | {1}{2} | {3} | {4} | {5}",
+                        fp.Definition.Name, fp.IsInstance ? "instance" : "type", fp.IsShared ? ", shared" : "",
+                        kind, fp.Formula ?? "", val));
+                }
+            }
+            catch (System.Exception ex) { rep.AppendLine("== " + fname + ": could not be opened (" + ex.Message + ")"); }
+            finally { if (famDoc != null) try { famDoc.Close(false); } catch { } }
+        }
+        try
+        {
+            familyReport = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(crmPath),
+                System.IO.Path.GetFileNameWithoutExtension(crmPath) + " - families.txt");
+            System.IO.File.WriteAllText(familyReport, rep.ToString());
+        }
+        catch { familyReport = ""; }
+    }
+
+    // Your runner may already have a transaction open; if not, this opens one.
+    Autodesk.Revit.DB.Transaction tx = null;
+    if (!theDoc.IsModifiable)
+    {
+        tx = new Autodesk.Revit.DB.Transaction(theDoc, "Triton drawings");
+        tx.Start();
+    }
+    failTexts.Clear();
+    try
+    {
+        if (intoActive || intoOne)
+        {
+            Autodesk.Revit.DB.View target = active;
+            if (intoOne)
+            {
+                var names = new System.Collections.Generic.SortedSet<string>();
+                foreach (object v in chosen) names.Add(str(v, "element"));
+                string what = names.Count == 1 ? string.Join("", names) : names.Count <= 3 ? string.Join(", ", names) : "All";
+                var parts = new System.Collections.Generic.List<string> { prefix };
+                if (!string.IsNullOrWhiteSpace(str(data, "section"))) parts.Add(str(data, "section"));
+                parts.Add(what);
+                parts.Add(System.DateTime.Now.ToString("yyyy-MM-dd HH.mm", inv));
+                string name = clean(string.Join(" - ", parts.ToArray()));
+                var view = Autodesk.Revit.DB.ViewDrafting.Create(theDoc, draftingType());
+                for (int k = 1; k <= 20; k++)
+                {
+                    try { view.Name = k == 1 ? name : name + " (" + k + ")"; break; }
+                    catch (Autodesk.Revit.Exceptions.ArgumentException) { }
+                }
+                int scale = (int)num(data, "view_scale");
+                view.Scale = scale > 0 ? scale : 50;
+                newViews++;
+                target = view;
+                firstView = view;
+                firstViewName = view.Name;
+                origin = Autodesk.Revit.DB.XYZ.Zero;
+            }
+            else
+            {
+                origin = corner;
+                right = active.RightDirection;
+                up = active.UpDirection;
+            }
+            for (int i = 0; i < chosen.Count; i++)
+            {
+                dx = offsets[i][0] - left;
+                dy = offsets[i][1] - topY;
+                drawView(target, chosen[i]);
+            }
+        }
+        else
+        {
+            foreach (object v in chosen)
+            {
+                var view = draftingView(v);
+                if (firstView == null) firstView = view;
+                dx = 0;
+                dy = 0;
+                drawView(view, v);
+            }
+        }
+        if (tx != null && tx.Commit() != Autodesk.Revit.DB.TransactionStatus.Committed)
+            failures.Add("Revit undid the drawing: " + string.Join("; ", failTexts.ToArray()));
+        else if (failTexts.Count > 0)
+        {
+            note("Revit removed what it could not make: " + string.Join("; ", failTexts.ToArray()));
+            var gone = new System.Collections.Generic.List<object[]>();
+            foreach (object[] pl in placedList)
+                if (theDoc.GetElement((Autodesk.Revit.DB.ElementId)pl[0]) == null) gone.Add(pl);
+            foreach (object[] pl in gone)
+                note(str(pl[2], "family") + " could not be made with " + values(pl[2]));
+            if (gone.Count > 0 && tx != null)
+            {
+                failTexts.Clear();
+                var t2 = new Autodesk.Revit.DB.Transaction(theDoc, "Triton drawings, lines for what Revit removed");
+                t2.Start();
+                foreach (object[] pl in gone)
+                {
+                    var v2 = theDoc.GetElement((Autodesk.Revit.DB.ElementId)pl[1]) as Autodesk.Revit.DB.View;
+                    if (v2 == null) continue;
+                    dx = (double)pl[3];
+                    dy = (double)pl[4];
+                    drawItems(v2, list(pl[2], "fallback"));
+                    families--;
+                    fallbacks++;
+                }
+                t2.Commit();
+            }
+        }
+    }
+    catch (System.Exception ex)
+    {
+        if (tx != null && tx.GetStatus() == Autodesk.Revit.DB.TransactionStatus.Started) tx.RollBack();
+        failures.Add(ex.Message);
+    }
+    finally
+    {
+        theDoc.Application.FailuresProcessing -= onFailures;
+    }
+    if (failures.Count > 0) firstView = null;
+
+    var done = new Autodesk.Revit.UI.TaskDialog("Triton");
+    if (failures.Count > 0)
+    {
+        done.MainInstruction = "Nothing was drawn.";
+        done.MainContent = string.Join("\n", failures.ToArray());
+    }
+    else
+    {
+        done.MainInstruction = intoActive
+            ? string.Format(inv, "{0} Triton drawing(s) drawn in {1}.", chosen.Count, active.Name)
+            : intoOne
+                ? string.Format(inv, "{0} Triton drawing(s) drawn in the new drafting view {1}.", chosen.Count, firstViewName)
+                : string.Format(inv, "{0} drafting view(s) made, {1} drawn again.", newViews, redrawn);
+        var content = new System.Text.StringBuilder();
+        content.AppendLine(string.Format(inv, "{0} lines, {1} cut bars, {2} texts, {3} dimensions, {4} office families ({5} drawn with lines instead).",
+            lines, bars, texts, dims, families, fallbacks));
+        if (familyReport != "")
+            content.AppendLine("\nIf a family does not come out right, send Triton this file: " + familyReport);
+        if (turned > 0)
+            content.AppendLine(string.Format(inv, "\n{0} office families came out turned and were turned back.", turned));
+        if (made.Count > 0)
+            content.AppendLine("\nLine styles made (not in the model yet): " + string.Join(", ", made.ToArray()));
+        if (missing.Count > 0)
+            content.AppendLine("\nNot loaded, drawn with lines or dots instead: " + string.Join(", ", missing.ToArray()));
+        if (paramNotes.Count > 0)
+            content.AppendLine("\nPlease send these to Triton:\n" + string.Join("\n", paramNotes.ToArray()));
+        done.MainContent = content.ToString();
+    }
+    done.Show();
+    if (firstView != null && failures.Count == 0)
+    {
+        try { theUiDoc.ActiveView = firstView; } catch { }
+    }
+}
+
+// If your tool complains that not all code paths return a value:
+// return Autodesk.Revit.UI.Result.Succeeded;
