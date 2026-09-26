@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .furniture_inputs import costing_left_out
-from .project import BeamInput, Project, Section, SlabInput
+from .project import BeamInput, CombiWallInput, PileInput, Project, Section, SlabInput
 
 _SECTION_OWN = {
     "id",
@@ -158,13 +158,35 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
     return parts
 
 
+SUPPORTS = "piles and walls under it"
+
+
+def supports(section: Section) -> dict[str, str]:
+    """What each beam and slab takes from the other elements: the piles' and king piles' sizes and
+    head levels (supports, punching) and which elements the section has. A change there redesigns
+    the beams and slabs, as their own inputs do."""
+    under = [
+        [name, type(e).__name__]
+        + (
+            [e.diameter, e.head_level]
+            if isinstance(e, PileInput)
+            else [e.tube_diameter]
+            if isinstance(e, CombiWallInput)
+            else []
+        )
+        for name, e in section.elements.items()
+    ]
+    h = _hash(under)
+    return {n: h for n, e in section.elements.items() if isinstance(e, (BeamInput, SlabInput))}
+
+
 def _diff(then: dict[str, str], now: dict[str, str]) -> list[str]:
     out = []
     for part in list(now) + [p for p in then if p not in now]:
         if then.get(part) == now.get(part):
             continue
         if part not in then:
-            if part in ("load combinations", "reviewed warnings", "expansion joints"):
+            if part in ("load combinations", "reviewed warnings", "expansion joints", SUPPORTS):
                 continue  # designed before these were kept
             out.append(f"{part} (added)")
         elif part not in now:
@@ -174,10 +196,17 @@ def _diff(then: dict[str, str], now: dict[str, str]) -> list[str]:
     return out
 
 
-def element_inputs(now: dict[str, str], elements: Iterable[str], names: Iterable[str]) -> dict:
-    """What each of ``names`` was designed from: the section-wide parts and its own."""
+def element_inputs(
+    now: dict[str, str], elements: Iterable[str], names: Iterable[str], under: dict[str, str] | None = None
+) -> dict:
+    """What each of ``names`` was designed from: the section-wide parts, its own and, for a beam or
+    slab, the elements under it (``under``, from :func:`supports`)."""
     shared = {k: v for k, v in now.items() if k not in set(elements)}
-    return {n: {**shared, **({n: now[n]} if n in now else {})} for n in names}
+    under = under or {}
+    return {
+        n: {**shared, **({n: now[n]} if n in now else {}), **({SUPPORTS: under[n]} if n in under else {})}
+        for n in names
+    }
 
 
 def _by_element(results: dict[str, Any], elements: Iterable[str]) -> dict[str, dict[str, str]] | None:
@@ -201,10 +230,14 @@ def _designed(results: dict[str, Any]) -> list[dict]:
     return [e for k in KINDS for e in results.get(k) or []]
 
 
-def status(results: dict[str, Any], now: dict[str, str], elements: Iterable[str]) -> tuple[list | None, list]:
+def status(
+    results: dict[str, Any], now: dict[str, str], elements: Iterable[str], under: dict[str, str] | None = None
+) -> tuple[list | None, list]:
     """What changed since the results were designed ([] = up to date, None for results designed
-    before fingerprints were kept), and the elements whose results are out of date."""
+    before fingerprints were kept), and the elements whose results are out of date. ``under``: the
+    beams' and slabs' supports now (:func:`supports`), compared where the results kept them."""
     elements = list(elements)
+    under = under or {}
     by = _by_element(results, elements)
     if by is None:
         return None, []
@@ -212,7 +245,10 @@ def status(results: dict[str, Any], now: dict[str, str], elements: Iterable[str]
     changed: list[str] = []
     stale: list[str] = []
     for name, then in by.items():
-        diff = _diff(then, {**shared, name: now[name]} if name in now else shared)
+        own = {**shared, name: now[name]} if name in now else dict(shared)
+        if name in under:
+            own[SUPPORTS] = under[name]
+        diff = _diff(then, own)
         if diff:
             stale.append(name)
         changed += [d for d in diff if d not in changed]
@@ -221,6 +257,18 @@ def status(results: dict[str, Any], now: dict[str, str], elements: Iterable[str]
             changed.append(f"{name} (added)")
             stale.append(name)
     return changed, stale
+
+
+def to_redesign(results: dict[str, Any] | None, now: dict[str, str], elements: Iterable[str], under: dict):
+    """The elements a design of only what changed takes: those out of date (their inputs, or what
+    they depend on, changed; or never designed), or None for all of them (no results to keep, or
+    results designed before fingerprints were kept)."""
+    if not results:
+        return None
+    changed, stale = status(results, now, elements, under)
+    if changed is None:
+        return None
+    return [n for n in elements if n in stale]
 
 
 def changes(results: dict[str, Any], now: dict[str, str]) -> list[str] | None:
@@ -233,5 +281,7 @@ def changes(results: dict[str, Any], now: dict[str, str]) -> list[str] | None:
 def with_status(project: Project, section: Section, results: dict[str, Any], workbook: dict | None) -> dict:
     """The results with ``changed``: what changed since they were designed ([] = up to date), and
     ``stale``: the elements whose results are out of date."""
-    changed, stale = status(results, fingerprint(project, section, workbook), names(project, section))
+    changed, stale = status(
+        results, fingerprint(project, section, workbook), names(project, section), supports(section)
+    )
     return {**results, "changed": changed, "stale": stale}

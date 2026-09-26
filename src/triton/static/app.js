@@ -2829,9 +2829,14 @@ async function renderDesignTab(host) {
       <label class="chip" title="The full design (bars, cages, every check) without drawings, AdSec files and clash checks"><input type="radio" name="design-mode" value="standard" ${designMode() === "standard" ? "checked" : ""}> Standard (no drawings, AdSec or clashes)</label>
       <span class="status" id="design-mode-note"></span>
       </div>
+      <div class="row pick-row" id="design-scope">
+      <span>Again</span>
+      <label class="chip" title="Designed before: only the elements whose inputs changed since, and those that depend on them (a beam or slab on the piles under it), are designed again; the others keep their results"><input type="radio" name="design-scope" value="changed" ${designScope() === "changed" ? "checked" : ""}> Only what changed</label>
+      <label class="chip" title="Every element designed again from the beginning"><input type="radio" name="design-scope" value="all" ${designScope() === "all" ? "checked" : ""}> Everything</label>
+      </div>
       <div class="row">
       <button id="run-design" ${units.length ? "" : "disabled"}>Design</button>
-      ${state.project.sections.length > 1 ? `<button class="quiet" id="run-all" title="Every section, one after another, each with all its elements. With the server's runner on you can close the page; otherwise keep it open (opening the project again carries on).">Design all ${state.project.sections.length} sections</button>` : ""}
+      ${state.project.sections.length > 1 ? `<button class="quiet" id="run-all" title="Every section, one after another: only what changed in each, or every element, as picked under Again. With the server's runner on you can close the page; otherwise keep it open (opening the project again carries on).">Design all ${state.project.sections.length} sections</button>` : ""}
       <span class="status" id="design-status">${units.length ? "" : "Add pile, combi wall, beam or slab elements first."}</span>
       </div>
       <div data-slot="design-all"></div>
@@ -2872,6 +2877,13 @@ async function renderDesignTab(host) {
           : "Bars, cages, drawings, AdSec files and clash checks.";
   };
   modeNote();
+  document.querySelectorAll('input[name="design-scope"]').forEach(
+    (r) =>
+      (r.onchange = () => {
+        setDesignScope(r.value);
+        drawPick();
+      })
+  );
   document.querySelectorAll('input[name="design-mode"]').forEach(
     (r) =>
       (r.onchange = () => {
@@ -2936,7 +2948,7 @@ async function renderDesignTab(host) {
       };
     const n = picked?.length;
     const how = designMode() === "standard" ? " (Standard)" : "";
-    run.textContent = busyWith(`design-${section.id}`) ? "Designing…" : (n ? `Design ${n} element${n === 1 ? "" : "s"}` : "Design all elements") + how;
+    run.textContent = busyWith(`design-${section.id}`) ? "Designing…" : (n ? `Design ${n} element${n === 1 ? "" : "s"}` : designScope() === "changed" ? "Design what changed" : "Design all elements") + how;
     run.disabled = !units.length || busyWith(`design-${section.id}`);
   };
   drawPick();
@@ -2956,7 +2968,7 @@ async function renderDesignTab(host) {
       view.changed = [];
       drawResults(view);
       out.insertAdjacentHTML("afterbegin", `<p class="status">New results so far: ${done.size} element${done.size === 1 ? "" : "s"}. Still designing…</p>`);
-    }, designMode());
+    }, designMode(), undefined, !picked && designScope() === "changed");
     drawPick();
     await job;
     drawPick();
@@ -2970,7 +2982,7 @@ async function renderDesignTab(host) {
       if (state.errors?.length) return;
       runAll.disabled = true;
       const project = state.project;
-      await designAll(project, designMode());
+      await designAll(project, designMode(), designScope() === "changed");
       if (document.body.contains(runAll)) runAll.disabled = false;
     };
   }
@@ -3027,7 +3039,30 @@ function setDesignMode(mode) {
   }
 }
 
-async function designJob(section, chosen, onResults, mode = "detailed", pid = state.project.id) {
+// Designed again: only what changed (the default) or everything, the last one picked in this browser.
+function designScope() {
+  if (!state.designScope) {
+    try {
+      state.designScope = localStorage.getItem("triton-design-scope") === "all" ? "all" : "changed";
+    } catch {
+      state.designScope = "changed";
+    }
+  }
+  return state.designScope;
+}
+
+function setDesignScope(scope) {
+  state.designScope = scope === "all" ? "all" : "changed";
+  try {
+    localStorage.setItem("triton-design-scope", state.designScope);
+  } catch {
+    /* private window: kept for this visit */
+  }
+}
+
+// ``changedOnly``: with nothing picked, the server designs only the elements whose inputs changed
+// (and those depending on them); the others are listed as kept with their earlier results.
+async function designJob(section, chosen, onResults, mode = "detailed", pid = state.project.id, changedOnly = false) {
   const url = `${ROOT}/api/projects/${pid}/sections/${section.id}`;
   const key = `design-${pid}-${section.id}`;
   const names = chosen || designUnits(section, state?.project?.id === pid ? state.project : null);
@@ -3071,8 +3106,20 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
     for (;;) {
       if (job.stopped) throw new Error("Stopped.");
       // Not sent again after Stop, even when the host cut the request off.
-      res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3, mode, run: WINDOW_ID }) })));
+      const first = !res;
+      res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3, mode, run: WINDOW_ID, changed_only: changedOnly && !ask }) })));
       const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"].flatMap((k) => res[k] || []);
+      if (first && changedOnly && !ask) {
+        // The elements that did not change keep their results: listed as kept, safe or not.
+        const taken = new Set([...res.designed, ...res.left]);
+        for (const s of job.steps) {
+          if (taken.has(s.name)) continue;
+          const r = all.find((x) => x.element === s.name);
+          Object.assign(s, { state: "done", fraction: 1, kept: true, note: !r ? "Unchanged" : r.passed === false ? "Unchanged: kept, unsafe" : "Unchanged: kept" });
+          if (r?.passed === false) s.bad = true;
+        }
+        job.steps.sort((a, b) => (b.kept ? 1 : 0) - (a.kept ? 1 : 0)); // the kept ones first, then the ones designed
+      }
       for (const n of res.designed) {
         if (res.left.includes(n)) continue; // still to come in a later step
         const s = step(n);
@@ -3098,7 +3145,10 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
     }
     for (const s of job.steps) if (s.state !== "done") Object.assign(s, { state: "done", note: "Nothing to design" });
     const bad = job.steps.filter((s) => s.bad).length;
-    jobDone(job, "done", `Designed ${job.steps.length} element${job.steps.length === 1 ? "" : "s"}${bad ? `, ${bad} unsafe` : ", all safe"}.`);
+    const made = job.steps.filter((s) => !s.kept).length;
+    const kept = job.steps.length - made;
+    if (res?.unchanged) jobDone(job, "done", `Nothing changed since the last design: all ${kept} element${kept === 1 ? "" : "s"} keep their results${bad ? `, ${bad} unsafe` : ", all safe"}.`);
+    else jobDone(job, "done", `Designed ${made} element${made === 1 ? "" : "s"}${kept ? ` (${kept} unchanged, kept)` : ""}${bad ? `, ${bad} unsafe` : ", all safe"}.`);
     if (state?.project.id === pid) {
       lockSection(section.id);
       if (location.hash.startsWith(`#/project/${pid}/`)) route();
@@ -3154,7 +3204,7 @@ function keepQueue(q) {
 
 const allRunning = () => JOBS.find((j) => j.slot === "design-all" && j.state === "running");
 
-async function designAllSections(project, ids, mode, resumed = false) {
+async function designAllSections(project, ids, mode, resumed = false, changedOnly = false) {
   if (allRunning()) return;
   const sections = ids.map((id) => project.sections.find((s) => s.id === id)).filter(Boolean);
   const job = newJob({
@@ -3164,7 +3214,7 @@ async function designAllSections(project, ids, mode, resumed = false) {
     home: `#/project/${project.id}/design`,
     steps: sections.map((s) => ({ label: s.name, name: s.id, state: "waiting" })),
   });
-  const queue = { pid: project.id, ids: sections.map((s) => s.id), mode, made: savedQueue()?.made || Date.now(), window: WINDOW_ID, alive: Date.now() };
+  const queue = { pid: project.id, ids: sections.map((s) => s.id), mode, changedOnly, made: savedQueue()?.made || Date.now(), window: WINDOW_ID, alive: Date.now() };
   keepQueue(queue);
   let current = null;
   job.stop = async () => {
@@ -3205,7 +3255,7 @@ async function designAllSections(project, ids, mode, resumed = false) {
       let one = null;
       // A window closed mid-design holds its section on the server for up to two minutes.
       for (let tries = 0; ; tries++) {
-        const run = designJob(s, null, null, mode, project.id);
+        const run = designJob(s, null, null, mode, project.id, changedOnly);
         current = JOBS.find((j) => j.slot === `design-${s.id}` && j.state === "running");
         one = await run;
         current = null;
@@ -3218,7 +3268,8 @@ async function designAllSections(project, ids, mode, resumed = false) {
         break;
       }
       const bad = one.steps.filter((x) => x.bad).length;
-      if (one.state === "done") Object.assign(step, { state: "done", note: bad ? `${bad} unsafe` : "All safe", bad: bad > 0 });
+      const kept = one.steps.every((x) => x.kept) ? "Nothing changed: results kept. " : "";
+      if (one.state === "done") Object.assign(step, { state: "done", note: kept + (bad ? `${bad} unsafe` : "All safe"), bad: bad > 0 });
       else {
         failed++;
         Object.assign(step, { state: "done", note: one.state === "failed" ? "Failed" : "Stopped", bad: true, detail: one.message });
@@ -3317,17 +3368,17 @@ async function followServerQueue(project, first = null) {
 }
 
 // Design all sections: on the server when its runner is on, else from this page.
-async function designAll(project, mode) {
+async function designAll(project, mode, changedOnly = false) {
   const on = await api(`${ROOT}/api/runner`).then((r) => r.on).catch(() => false);
   if (on) {
-    const q = await api(`${ROOT}/api/projects/${project.id}/design-all`, { method: "POST", body: JSON.stringify({ mode }) }).catch((e) => {
+    const q = await api(`${ROOT}/api/projects/${project.id}/design-all`, { method: "POST", body: JSON.stringify({ mode, changed_only: changedOnly }) }).catch((e) => {
       alert(e.message);
       return null;
     });
     if (q) await followServerQueue(project, q);
     return;
   }
-  await designAllSections(project, project.sections.map((s) => s.id), mode);
+  await designAllSections(project, project.sections.map((s) => s.id), mode, false, changedOnly);
 }
 
 function resumeQueue(project) {
@@ -3335,7 +3386,7 @@ function resumeQueue(project) {
   const q = savedQueue();
   if (!q || q.pid !== project.id || allRunning() || !q.ids?.length) return;
   if (q.window !== WINDOW_ID && Date.now() - q.alive < QUEUE_QUIET) return; // still running in another window
-  designAllSections(project, q.ids, q.mode, true);
+  designAllSections(project, q.ids, q.mode, true, !!q.changedOnly);
 }
 
 // Every time is shown in Cairo, whatever the browser's own zone; stamps carry their offset.
