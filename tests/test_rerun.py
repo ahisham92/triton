@@ -33,7 +33,8 @@ def xlsx_bytes(sheets):
 def designed(client, monkeypatch):
     """A section with two piles, a front beam and a deck, designed once; ``asked`` lists what each
     later design ran (None: everything)."""
-    p = client.post("/api/projects", json={"element_names": ["Pile(1)", "Pile(2)", "Front Beam", "Deck"]}).json()
+    names = ["Pile(1)", "Pile(2)", "Front Beam", "Deck"]
+    p = client.post("/api/projects", json={"element_names": names}).json()
     url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
     sheets = {f"Pile({i})-{c}": pile_sheet() for i in (1, 2) for c in ("PT-B-Apron", "QP")}
     sheets |= {f"{e}-{c}": plate_sheet() for e in ("Front Beam", "Deck") for c in ("PT-B-Apron", "QP")}
@@ -118,3 +119,24 @@ def test_design_all_takes_only_what_changed(client, designed, monkeypatch):
     runner.work(pid)
     assert asked == []
     assert runner.load(pid)["sections"][0]["note"] == "Nothing changed: results kept"
+
+
+def test_unlocked_with_no_change_locks_again_at_once(client, designed):
+    pid, url, asked = designed
+    edit(client, pid, "Pile(1)")  # unlocked, nothing changed
+    assert not client.get(f"/api/projects/{pid}").json()["sections"][0]["locked"]
+    r = client.post(f"{url}/design", json={"changed_only": True}).json()
+    assert r["unchanged"] and r["locked"] and asked == []
+    assert client.get(f"/api/projects/{pid}").json()["sections"][0]["locked"]
+
+
+def test_a_new_workbook_redesigns_everything(client, designed):
+    pid, url, asked = designed
+    sid = url.rsplit("/", 1)[1]
+    s = api.store()
+    results = s.load_results(pid, sid)
+    for inputs in results["element_inputs"].values():
+        inputs["workbook"] = "an earlier upload"
+    s.save_results(pid, sid, results)
+    client.post(f"{url}/design", json={"changed_only": True})
+    assert asked == [["Deck", "Front Beam", "Pile(1)", "Pile(2)"]]
