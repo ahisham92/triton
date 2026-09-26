@@ -105,3 +105,16 @@ def test_a_restarted_runner_starts_again_the_section_it_was_on(client):
     runner._update(pid, lambda q: q["sections"][0].update(state="running"))
     runner._update(pid, runner._requeue)
     assert runner.load(pid)["sections"][0]["state"] == "waiting"
+
+
+def test_the_runner_starts_again_after_a_site_update(client, monkeypatch):
+    """An update between sections: the runner lets go (and is started again on the new code); the
+    sections left stay queued."""
+    pid, ids = three_sections(client)
+    runner._beat_file().touch()
+    client.post(f"/api/projects/{pid}/design-all")
+    calls = iter([False, True])
+    runner.work(pid, updated=lambda: next(calls, True))
+    states = [s["state"] for s in runner.load(pid)["sections"]]
+    assert states == ["done", "waiting", "waiting"] and runner._next() == pid
+    assert runner.code_stamp() == runner.code_stamp()

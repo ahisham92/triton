@@ -137,9 +137,19 @@ def design_one(project_id: str, section_id: str, mode: str, sleep=time.sleep) ->
     return "failed", "Another window kept designing it."
 
 
-def work(project_id: str, data: str | Path | None = None, sleep=time.sleep) -> None:
-    """Design the queue's waiting sections one after another, until it is done or stopped."""
+def code_stamp() -> str:
+    """Which Triton code is on disk: a site update (git pull) changes it."""
+    here = Path(__file__).parent
+    files = sorted(here.rglob("*.py"))
+    return "|".join(f"{f.relative_to(here)}:{f.stat().st_mtime_ns}:{f.stat().st_size}" for f in files)
+
+
+def work(project_id: str, data: str | Path | None = None, sleep=time.sleep, updated=lambda: False) -> None:
+    """Design the queue's waiting sections one after another, until it is done or stopped (or the
+    code was updated: the runner starts again on the new code and carries on)."""
     while True:
+        if updated():
+            return
         q = load(project_id, data)
         if q is None or q.get("stop"):
             return
@@ -192,13 +202,23 @@ def run_forever(data: str | Path | None = None, idle_s: float = 5.0) -> None:  #
                 continue
             _update(pid, _requeue, data)
         print(f"Triton runner on, queue in {folder(data)}", flush=True)
+        started = code_stamp()
+
+        def updated() -> bool:
+            return code_stamp() != started
+
         while True:
+            if updated():
+                # A site update: stop, and PythonAnywhere starts the task again on the new code (the
+                # queue carries on from the section it was on).
+                print(f"{time.strftime('%H:%M:%S')} Triton was updated: starting again", flush=True)
+                raise SystemExit(3)
             pid = _next(data)
             if pid is None:
                 time.sleep(idle_s)
                 continue
             print(f"{time.strftime('%H:%M:%S')} designing project {pid}", flush=True)
-            work(pid, data)
+            work(pid, data, updated=updated)
 
 
 def _requeue(q: dict[str, Any]) -> None:
