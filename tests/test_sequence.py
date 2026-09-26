@@ -9,6 +9,7 @@ from test_furniture import geometry, project
 
 from triton import existing, fresh, furniture, sequence, site3d
 from triton.api import app, store
+from triton.project import SequenceStep
 
 
 def _setup(system="combi_wall"):
@@ -25,7 +26,18 @@ def test_default_order_and_stages():
     out = sequence.stages(p, s, g)
     works = [st["work"] for st in out["steps"]]
     assert works[:4] == ["steel_pipes", "combi_cages", "combi_infill", "demolition"]
-    assert works[-2:] == ["furniture", "dredging"] and "sheet_piles" not in works  # no sheet pile wall here
+    # The furniture item by item, ending with the STS crane (Ahmed 09-26), then the dredging.
+    assert works[-8:] == [
+        "crane_rail",
+        "tie_downs",
+        "stow_pins",
+        "crane_stoppers",
+        "fenders",
+        "bollards",
+        "sts_crane",
+        "dredging",
+    ]
+    assert "sheet_piles" not in works  # no sheet pile wall here
     # Front and rear beams at the same time: one stage.
     beams = next(st for st in out["stages"] if any(x["work"] == "front_beam" for x in st["steps"]))
     assert {x["work"] for x in beams["steps"]} == {"front_beam", "rear_beam"}
@@ -36,6 +48,10 @@ def test_default_order_and_stages():
     cast = next(st for st in out["stages"] if st["steps"][0]["work"] == "pile_concrete")
     assert cast["elements"]["Pile(1)"] == "cast_high" and cast["demolished"]
     assert out["stages"][-1]["seabed"] == -16.12
+    rail = next(st for st in out["stages"] if st["steps"][0]["work"] == "crane_rail")
+    assert rail["furniture"] == ["crane_rails"]
+    crane = next(st for st in out["stages"] if st["steps"][0]["work"] == "sts_crane")
+    assert {"fenders", "ladders", "bollards", "tie_downs", "sts_crane"} <= set(crane["furniture"])
     # No existing structure: no demolition step.
     s.existing.use = False
     assert "demolition" not in [st.work for st in sequence.default_steps(p, s)]
@@ -140,3 +156,26 @@ def test_sequence_endpoint_open_while_locked(tmp_path, monkeypatch):
     out = client.get(f"/api/projects/{p.id}/sections/{s.id}/sequence").json()
     assert out["default"] is False and len(out["stages"]) == 1
     assert out["existing"]["counts"]["clash"] > 0 and out["existing"]["tie_rods"]["use"]
+
+
+def test_no_sts_crane_no_crane_steps():
+    """A section without STS cranes has none of the crane's items (furniture.for_section), so none of
+    their steps; the fenders and bollards stay."""
+    p, s, _, _ = _setup()
+    s.furniture.sts_crane = False
+    works = [st.work for st in sequence.default_steps(p, s)]
+    assert {"fenders", "bollards"} <= set(works)
+    assert not {"crane_rail", "tie_downs", "stow_pins", "crane_stoppers", "sts_crane"} & set(works)
+    f = furniture.for_section(p.furniture, s.furniture)
+    for w, (item, _) in sequence.FURNITURE.items():
+        assert (w in works) == (getattr(f, item) is not None)
+    # No furniture at all on the section: no furniture steps.
+    s.furniture.use = False
+    assert not set(sequence.FURNITURE) & {st.work for st in sequence.default_steps(p, s)}
+
+
+def test_older_furniture_step_installs_everything():
+    p, s, g, _ = _setup()
+    s.sequence.steps = [SequenceStep(work="furniture")]
+    out = sequence.stages(p, s, g)
+    assert out["stages"][0]["furniture"] == sequence.ALL_FURNITURE

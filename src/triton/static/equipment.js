@@ -1,14 +1,16 @@
 // The construction sequence's plant and people, drawn round the work of a stage: a crawler crane with a
 // vibro hammer for the steel pipes and sheet piles, a crane lifting the cages, a piling rig boring the
 // piles, a concrete pump and truck mixers for every pour, an excavator with a breaker for the demolition
-// and the pile heads, a mobile crane for the furniture and a cutter suction dredger. Sizes are typical
+// and the pile heads, crawler cranes and crews for the furniture item by item, the heavy-lift ship that
+// brings the STS crane (berthed alongside, skid rails from its deck to the quay rails, the crane pulled
+// across by strand jacks) and a cutter suction dredger. Sizes are typical
 // ones, for show only (m). Everything is boxes and lines on the berth frame: s along the berth from its
 // start, d inland from the quay face.
 
 const C = {
   track: "#27272a", crane: "#dc2626", rig: "#f59e0b", body: "#fbbf24", cab: "#334155", steel: "#52525b",
   cage: "#b45309", pump: "#facc15", truck: "#e5e7eb", drum: "#d4d4d8", exc: "#f59e0b", hull: "#b91c1c",
-  deck: "#f4f4f5", vest: "#f97316", helmet: "#ffffff", legs: "#1e3a8a", concrete: "#9ca3af",
+  deck: "#f4f4f5", ship: "#1f2937", shipDeck: "#6b7280", rail: "#111827", tug: "#ea580c", vest: "#f97316", helmet: "#ffffff", legs: "#1e3a8a", concrete: "#9ca3af",
 };
 
 export function frameOf(site) {
@@ -112,6 +114,34 @@ function dredger(K, s, bow, sea, bed, tip) {
   K.line([s, stern, sea + 0.8], [s + 12, stern - 30, sea + 0.3], C.track, 2, 0.8, `${tip}: floating discharge pipe`);
 }
 
+// A heavy-lift ship alongside, its side at d = side (sea side of the fenders), deck level with the
+// cope (ballasted to line up with the quay for the skid-off), from s0 to s1 along the berth. The hull
+// is thin plates in tiles, so it sorts among the crane's lines instead of hiding them.
+function heavyLiftShip(K, s0, s1, side, beam, water, deck, tip) {
+  const far = side - beam;
+  const T = 8;
+  const cuts = (a, b) => {
+    const n = Math.max(1, Math.round((b - a) / T));
+    return Array.from({ length: n }, (_, i) => [a + ((b - a) * i) / n, a + ((b - a) * (i + 1)) / n]);
+  };
+  const low = water - 1.5;
+  for (const [a, b] of cuts(s0, s1)) {
+    for (const [c, d] of cuts(far, side)) K.box(a, b, c, d, deck - 0.3, deck, C.shipDeck, `${tip}: deck`);
+    K.box(a, b, far, far + 0.3, low, deck + 1.2, C.ship, `${tip}: hull`);
+    K.box(a, b, side - 0.3, side, low, deck + 1.2, C.ship, `${tip}: hull`);
+  }
+  for (const [c, d] of cuts(far, side)) K.box(s1, s1 + 0.3, c, d, low, deck + 1.2, C.ship, `${tip}: bow`);
+  // The stern: the accommodation and bridge.
+  for (const [c, d] of cuts(far, side)) K.box(s0 - 0.3, s0, c, d, low, deck + 1.2, C.ship, `${tip}: stern`);
+  K.box(s0 - 10, s0, far + 8, side - 8, deck, deck + 12, C.deck, `${tip}: accommodation and bridge`);
+  K.box(s0 - 8, s0 - 3, far + 12, side - 12, deck + 12, deck + 14, C.cab, `${tip}: wheelhouse`);
+  // A tug holding her against the fenders.
+  const t = (far + side) / 2;
+  K.box(s1 + 14, s1 + 30, t - 4, t + 4, water - 1, water + 2.5, C.tug, "Tug");
+  K.box(s1 + 22, s1 + 27, t - 2.5, t + 2.5, water + 2.5, water + 6, C.deck, "Tug: wheelhouse");
+  K.line([s1 + 14, t, water + 2], [s1, t, deck], C.track, 1, null, "Tug: towline");
+}
+
 function worker(K, s, d, z, n) {
   const tip = "Worker";
   K.line([s - 0.12, d, z], [s - 0.12, d, z + 0.85], C.legs, 2, 0.16, tip);
@@ -142,6 +172,13 @@ export const LABEL = {
   transverse_beam: "Concrete pump and truck mixers",
   slab: "Concrete pump and truck mixers",
   approach_slab: "Concrete pump and truck mixers",
+  crane_rail: "Crawler crane laying the rail lengths, crew clipping them to the sole plates",
+  tie_downs: "Crew setting the tie-down plates",
+  stow_pins: "Crew fixing the stow pin sockets",
+  crane_stoppers: "Crawler crane lifting the crane stoppers",
+  fenders: "Crawler crane hanging the fenders",
+  bollards: "Crawler crane placing the bollards",
+  sts_crane: "Heavy-lift ship, skid rails and strand jacks pushing the STS crane onto the quay",
   furniture: "Mobile crane placing the fenders",
   dredging: "Cutter suction dredger",
 };
@@ -165,6 +202,82 @@ export function plant(work, spot, t, ctx) {
     excavator(K, along + 4.5, d + 6, z, along + 0.3, d, (ex?.cope ?? z), tip);
     K.box(along + 9, along + 16, d + 7, d + 10, z, z + 3.0, C.cage, "Dump truck taking the broken concrete");
     crew(K, along + 5, d + 2.5, z, 2, 1);
+    return K;
+  }
+  const rf = ctx.rails?.[0] ?? 1.5;
+  const rr = ctx.rails?.[1] ?? rf + 30;
+  const cope = ctx.cope;
+  if (work === "crane_rail") {
+    // Both rails laid together from the berth start: a crane between them, spare lengths beside it.
+    crawlerCrane(K, along + 4, (rf + rr) / 2, cope, along + 2, rf, cope + 1.5, tip);
+    K.line([along - 6, rf, cope + 1.5], [along + 6, rf, cope + 1.5], C.rail, 3, 0.2, "Rail length being lowered");
+    K.line([along + 2, rf, cope + 1.5 + 6], [along - 2, rf, cope + 1.5], C.track, 1, null, "Spreader slings");
+    for (const k of [0, 1, 2]) K.box(along + 10, along + 22, rr - 6 + k * 0.4, rr - 5.8 + k * 0.4, cope, cope + 0.2, C.rail, "Rail lengths waiting");
+    crew(K, along - 2, rf + 1, cope, 3, 1);
+    crew(K, along, rr - 1, cope, 3, 3);
+    return K;
+  }
+  if (work === "tie_downs" || work === "stow_pins") {
+    // Small works at the rails: a flatbed with the plates or sockets, a core drill, a crew each rail.
+    K.box(along + 3, along + 11, (rf + rr) / 2 - 1.2, (rf + rr) / 2 + 1.2, cope + 0.4, cope + 1.4, C.steel, `${tip}: flatbed truck`);
+    K.box(along + 11, along + 13, (rf + rr) / 2 - 1.2, (rf + rr) / 2 + 1.2, cope + 0.4, cope + 3.0, C.truck, `${tip}: cab`);
+    for (const d of [rf, rr]) {
+      K.line([along, d + 1.2, cope], [along, d + 1.2, cope + 1.6], C.steel, 3, 0.2, work === "stow_pins" ? "Core drill for the socket" : "Drill for the anchor bolts");
+      crew(K, along + 1, d + 2, cope, 2, work === "stow_pins" ? 4 : 2);
+    }
+    return K;
+  }
+  if (work === "crane_stoppers") {
+    const end = t < 0.5 ? s0 + 2 : s1 - 2;
+    crawlerCrane(K, end + (t < 0.5 ? 6 : -6), (rf + rr) / 2, cope, end, rf, cope + 2.2, tip);
+    K.box(end - 0.6, end + 0.6, rf - 0.6, rf + 0.6, cope + 0.8, cope + 2.2, "#b91c1c", "Crane stopper being lifted");
+    crew(K, end, rf + 2, cope, 3, 0);
+    crew(K, end, rr - 2, cope, 2, 5);
+    return K;
+  }
+  if (work === "bollards") {
+    crawlerCrane(K, along + 5, 9, cope, along, 1.0, cope + 1.5, tip);
+    K.box(along - 0.4, along + 0.4, 0.6, 1.4, cope + 0.5, cope + 1.5, "#4b5563", "Bollard being placed");
+    crew(K, along + 1.5, 2.5, cope, 3, 2);
+    return K;
+  }
+  if (work === "sts_crane") {
+    // Ahmed (2026-09-26): a ship berths alongside, 3 to 4 rails are laid from her deck to the quay and
+    // the crane is pushed across onto the quay. t 0-0.3 she comes in, 0.3-0.45 the skid rails go down,
+    // 0.45-0.95 the crane goes across (ctx.crane_shift), then she casts off.
+    const cr = ctx.crane;
+    if (!cr) return K;
+    const side = -3.0; // the fenders' faces
+    const beam = cr.beam;
+    const come = t < 0.3 ? (1 - t / 0.3) * 70 : 0;
+    const mid = (cr.legs[0] + cr.legs[1]) / 2;
+    heavyLiftShip(K, mid - 36, mid + 36, side - come, beam, ctx.water, cope, "Heavy-lift ship bringing the STS crane");
+    if (t >= 0.3) {
+      const k = Math.min(1, (t - 0.3) / 0.15);
+      const far = side - beam + 2;
+      const near = rr + 3;
+      const reach = far + (near - far) * k;
+      // In 4 m lengths, so they sort among the deck's tiles.
+      for (const leg of cr.legs)
+        for (const o of [-0.8, 0.8])
+          for (let a = far; a < reach; a += 4)
+            K.line([leg + o, a, cope + 0.12], [leg + o, Math.min(a + 4, reach), cope + 0.12], C.rail, 3, 0.3, "Skid rail from the ship's deck to the quay rails");
+      if (k >= 1)
+        for (const leg of cr.legs) {
+          K.box(leg - 1.2, leg + 1.2, near, near + 2.0, cope, cope + 1.4, C.pump, "Strand jack pulling the crane across");
+          K.line([leg, near, cope + 0.9], [leg, rr - (ctx.crane_shift || 0), cope + 0.9], C.track, 1, null, "Strands to the crane's rear legs");
+        }
+      crew(K, cr.legs[0], rr + 1, cope, 3, 1);
+      crew(K, cr.legs[1], rr + 1, cope, 3, 4);
+      crew(K, cr.legs[0] + 3, rf, cope, 2, 2);
+    }
+    return K;
+  }
+  if (work === "fenders") {
+    const d = 6;
+    crawlerCrane(K, along, d + 2, cope, along, -1.2, cope - 0.5, tip);
+    K.box(along - 1.0, along + 1.0, -2.2, -0.2, cope - 2.5, cope - 0.5, C.track, "Fender being hung");
+    crew(K, along + 1.5, 1.2, cope, 3, 2);
     return K;
   }
   if (work === "furniture") {

@@ -89,6 +89,22 @@ export async function renderSequence(host, h) {
     transverse_beam: "transverse_beam", slab: "slab" };
   const kindOf = (e) => e.type;
   const sdOf = (x, y) => (F ? F.sd(x, y) : [y, x]);
+  const FURN_KINDS = { crane_rail: ["crane_rails"], tie_downs: ["tie_downs"], stow_pins: ["storm_pins"],
+    crane_stoppers: ["crane_stoppers"], fenders: ["fenders", "fender_blocks", "ladders"], bollards: ["bollards"],
+    sts_crane: ["sts_crane"], furniture: ["crane_rails", "tie_downs", "storm_pins", "crane_stoppers", "fenders", "fender_blocks", "ladders", "bollards", "sts_crane"] };
+  // The crane rails' distances in from the face, sea side first.
+  const railsD = () => (F ? (site.rails || []).map((r) => F.sd(r.line[0][0], r.line[0][1])[1]).sort((a, b) => a - b) : []);
+  // The STS crane: its two leg lines along the berth, and how far out it stands on the ship (its rear
+  // legs 2 m inside the ship's side at the fenders, 3 m off the face), the ship wide enough for it.
+  const craneOf = () => {
+    if (!F || !site?.crane?.lines) return null;
+    const pts = site.crane.lines.slice(0, 4).map(([a]) => F.sd(a[0], a[1]));
+    const legs = [...new Set(pts.map((p) => Math.round(p[0] * 100) / 100))].sort((a, b) => a - b);
+    const ds = pts.map((p) => p[1]);
+    const rf = Math.min(...ds);
+    const rr = Math.max(...ds);
+    return { legs: [legs[0], legs[legs.length - 1]], rf, rr, shift: rr + 3 + 2, beam: Math.max(40, rr - rf + 10) };
+  };
   let t = 1; // how far through the stage shown
   let crewOn = true;
 
@@ -184,6 +200,19 @@ export async function renderSequence(host, h) {
     const ex = site?.existing;
     const demolishing = st.steps.some((s) => s.work === "demolition") && t < 1;
     const stage = { ...st, demolished: demolishing ? false : st.demolished, demolish_t: demolishing ? t : null };
+    // Furniture: the items of the work under way show up to where it has got along the berth; the STS
+    // crane comes on its ship and is pushed across (triton/sequence.py FURNITURE).
+    const furn = st.steps.map((s) => s.work).filter((w) => FURN_KINDS[w]);
+    if (t < 1 && furn.length && site?.frame) {
+      const [a0, a1] = site.frame.s;
+      stage.furniture_upto = { kinds: furn.filter((w) => w !== "sts_crane").flatMap((w) => FURN_KINDS[w]), s: a0 + (a1 - a0) * t };
+    }
+    const cr = craneOf();
+    if (cr && furn.includes("sts_crane") && t < 1) {
+      const come = t < 0.3 ? (1 - t / 0.3) * 70 : 0;
+      const k = t < 0.45 ? 0 : t > 0.95 ? 1 : (t - 0.45) / 0.5;
+      stage.crane_shift = (cr.shift + come) * (1 - (k * k * (3 - 2 * k)));
+    }
     const dredging = st.steps.some((s) => s.work === "dredging");
     const before = n > 1 ? stages[n - 2].seabed : st.seabed;
     if (dredging) stage.seabed = before + (st.seabed - before) * t;
@@ -191,7 +220,7 @@ export async function renderSequence(host, h) {
       const deck = prev[Object.keys(prev).find((k) => /slab/i.test(geo.elements.find((g) => g.element === k)?.type || ""))] === "done";
       const platform = ex && !stage.demolished ? ex.cope : deck ? L.cope : L.ground;
       const ctx = { F, platform, cope: L.cope, water: Math.max(...(L.water || [0])), before, after: st.seabed,
-        extent: site.frame.s, existing: ex };
+        extent: site.frame.s, existing: ex, rails: railsD(), crane: cr, crane_shift: stage.crane_shift || 0 };
       for (const s of st.steps) {
         const sp = spots[s.work];
         const K = plant(s.work, sp ? { ...sp } : null, t, { ...ctx, rear: sp?.rear });
@@ -219,6 +248,21 @@ export async function renderSequence(host, h) {
     scene.caption = [`Stage ${n} of ${stages.length}: ${st.steps.map((x) => x.name).join(" + ")}`, `${h.section().name || ""}`];
     if (fresh) view.setScene(scene);
     else view.update(scene);
+    // The STS crane's stage: the view widens to take in the crane on its ship, and back after.
+    const cr = craneOf();
+    const wide = !!cr && st.steps.some((s) => s.work === "sts_crane");
+    if (wide !== !!view.fitExtra?.length || (fresh && wide)) {
+      const z = site.levels.cope ?? 0;
+      // The ship alongside, and the crane (boom and all) on the quay and on the ship.
+      const fr = site.frame;
+      const out = (p, sh) => (fr.across === "X" ? [p[0] - fr.inland * sh, p[1], p[2]] : [p[0], p[1] - fr.inland * sh, p[2]]);
+      const pts = site.crane.lines.flat();
+      view.fitExtra = wide
+        ? [...[[cr.legs[0] - 46, -cr.beam - 5, z], [cr.legs[1] + 36, -cr.beam - 5, z]].map(([s, d, zz]) => F.at(s, d, zz)),
+            ...pts, ...pts.map((p) => out(p, cr.shift))]
+        : [];
+      view.fit(view.fitExtra);
+    }
     $("[data-title]").textContent = `Stage ${n} of ${stages.length}: ${st.steps.map((s) => s.name).join(" + ")}`;
     const built = Object.entries(st.elements).map(([k, v]) => `${esc(k)}: ${STATE_WORDS[v]}`);
     $("[data-what]").innerHTML = [
@@ -366,7 +410,7 @@ export async function renderSequence(host, h) {
     [s[i + 1], s[i]] = [s[i], s[i + 1]];
   })));
   box.querySelectorAll("[data-del]").forEach((el) => (el.onclick = () => edit((s) => s.splice(+el.dataset.del, 1))));
-  box.querySelector("[data-add]").onclick = () => edit((s) => s.push({ work: "furniture", name: "", with_previous: false }));
+  box.querySelector("[data-add]").onclick = () => edit((s) => s.push({ work: "fenders", name: "", with_previous: false }));
   const reset = box.querySelector("[data-reset]");
   if (reset) reset.onclick = () => edit((s) => s.splice(0, s.length)).then(() => {});
   box.querySelector("[data-above]").onchange = (e) => {
