@@ -1264,6 +1264,47 @@ def _design_step(project_id, section_id, project, section, workbook, summary, bo
     return new, results, now, every, handled
 
 
+class FinishRequest(BaseModel):
+    elements: list[str] | None = Field(None, description="The elements to finish; empty: every one.")
+
+
+@app.post(SECTION + "/design/finish")
+def finish_in_detailed(project_id: str, section_id: str, body: FinishRequest | None = None) -> dict:
+    """Elements designed in Standard mode taken as Detailed without designing them again: a Standard
+    design is the same run, so while nothing changed since (inputs, bars, workbook) their results
+    stand and only the drawings, AdSec files and clash checks are opened to them. Out-of-date ones
+    are left as they are and listed in ``redesign``."""
+    body = body or FinishRequest()
+    project = _get(project_id)
+    section = _section(project, section_id)
+    summary = store().workbook_summary(project_id, section_id)
+    every = fresh.names(project, section)
+    now = fresh.fingerprint(project, section, summary)
+    with store().section_lock(project_id, section_id):
+        results = store().load_results(project_id, section_id)
+        if results is None:
+            raise HTTPException(404, "This section has not been designed yet.")
+        _, stale = fresh.status(results, now, every)
+        asked = None if not body.elements else set(body.elements)
+        finished, redesign = [], []
+        for kind in fresh.KINDS:
+            for e in results.get(kind) or []:
+                name = e.get("element")
+                if not standard_mod.is_standard(e) or (asked is not None and name not in asked):
+                    continue
+                if name in stale:
+                    if name not in redesign:
+                        redesign.append(name)
+                    continue
+                standard_mod.unmark(e)
+                if name not in finished:
+                    finished.append(name)
+        if finished:
+            store().save_results(project_id, section_id, results)
+    changed, stale = fresh.status(results, now, every)
+    return {**results, "changed": changed, "stale": stale, "finished": finished, "redesign": redesign}
+
+
 DESIGN_HOLD_S = 120  # a design run silent for this long (window closed) no longer holds its section
 BUSY = (
     "This section is being designed in another window or tab. Wait for it to finish, or press Stop "

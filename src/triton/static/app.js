@@ -2728,7 +2728,7 @@ async function renderDesignTab(host) {
           <input type="checkbox" data-pick="${esc(n)}" ${picked?.includes(n) ? "checked" : ""}> ${esc(n)}</label>`)
         .join("")}
       ${stale.length ? `<button class="quiet small" id="pick-stale">Only the ${stale.length} out of date</button>` : ""}
-      ${quick.length && designMode() === "detailed" ? `<button class="quiet small" id="pick-standard" title="Ticks the elements whose last design was Standard, to design them again in Detailed">Tick the ${quick.length === 1 ? "element" : `${quick.length} elements`} last designed in Standard</button>` : ""}`;
+      ${quick.length ? `<button class="quiet small" id="pick-standard" title="A Standard design is the same run as Detailed: while nothing has changed since, its results are kept and the drawings, AdSec files and clash checks open to them, with no new design">Finish ${quick.length === 1 ? `${esc(quick[0])}` : `the ${quick.length} Standard elements`} in Detailed</button>` : ""}`;
     box.querySelectorAll("[data-pick]").forEach(
       (c) =>
         (c.onchange = () => {
@@ -2743,9 +2743,27 @@ async function renderDesignTab(host) {
     );
     const toDetail = box.querySelector("#pick-standard");
     if (toDetail)
-      toDetail.onclick = () => {
-        state.designPick[section.id] = quick.filter((n) => units.includes(n));
-        drawPick();
+      toDetail.onclick = async () => {
+        toDetail.disabled = true;
+        const status = document.getElementById("design-status");
+        try {
+          const res = await api(`${url}/design/finish`, { method: "POST", body: JSON.stringify({}) });
+          quick = res.redesign || [];
+          stale = res.stale || [];
+          const done = res.finished || [];
+          if (quick.length) state.designPick[section.id] = quick.filter((n) => units.includes(n));
+          if (status)
+            status.textContent = [
+              done.length ? `${done.join(", ")} finished in Detailed: no new design, the same results, now with drawings, AdSec files and clash checks.` : "",
+              quick.length ? `${quick.join(", ")} changed since the Standard design, so ${quick.length === 1 ? "it is" : "they are"} ticked: press Design to design ${quick.length === 1 ? "it" : "them"} in Detailed.` : "",
+            ].filter(Boolean).join(" ");
+          drawPick();
+          renderResults(res);
+          if (done.length) prepareTabs(state.project.id, section); // Clashes now take them too
+        } catch (e) {
+          if (status) status.textContent = e.message;
+          toDetail.disabled = false;
+        }
       };
     const only = box.querySelector("#pick-stale");
     if (only)
