@@ -1226,14 +1226,15 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
     body = body or DesignRequest()
     project = _get(project_id)
     section = _section(project, section_id)
-    workbook = _workbook(project_id, section)
-    if workbook is None:
-        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
     only = None if body.elements is None else [n for n in body.elements if n]
     if only is None and body.changed_only:
+        # Before the workbook is read: with nothing changed the results stand as they are, at once.
         only = _changed_elements(project_id, section_id, project, section, body.mode)
         if only == []:
             return _nothing_changed(project_id, section_id, project, section)
+    workbook = _workbook(project_id, section)
+    if workbook is None:
+        raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
     deadline = time.monotonic() + body.budget_s if body.budget_s else None
     # The workbook as it was when the design started: one replaced meanwhile leaves these results
     # marked out of date rather than passing for the new one's.
@@ -1279,9 +1280,12 @@ def _changed_elements(project_id, section_id, project, section, mode) -> list[st
 
 
 def _nothing_changed(project_id, section_id, project, section) -> dict:
-    """The answer of a design of only what changed when nothing did: the results as they are."""
+    """The answer of a design of only what changed when nothing did: the results as they are, and
+    the section locked again (unlocked and designed with no change: finished at once)."""
+    if not section.locked:
+        _lock_model(project_id, section_id)
     _, _, results = _results(project_id, section_id)
-    return {**results, "designed": [], "left": [], "locked": section.locked, "unchanged": True}
+    return {**results, "designed": [], "left": [], "locked": True, "unchanged": True}
 
 
 def _design_step(project_id, section_id, project, section, workbook, summary, body, only, deadline, key):
