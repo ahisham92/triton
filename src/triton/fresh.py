@@ -13,6 +13,7 @@ import json
 from collections.abc import Iterable
 from typing import Any
 
+from .furniture_inputs import costing_left_out
 from .project import BeamInput, Project, Section, SlabInput
 
 _SECTION_OWN = {
@@ -114,7 +115,9 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
                 [
                     i.model_dump(mode="json")
                     for i in c.items
-                    if i.unit == "each" and (berth or i.name not in _NEW)
+                    if i.unit == "each"
+                    and (berth or i.name not in _NEW)
+                    and i.name.strip().lower() not in costing_left_out(section.furniture)
                 ],
             ]
             # Only when the Furniture tab places something, so earlier designs keep their hash.

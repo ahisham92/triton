@@ -371,3 +371,27 @@ def test_the_report_fender_and_the_tie_downs():
     p.sections[0].furniture.protrusion = True
     lay = F.design(p, p.sections[0], geometry())["layout"]
     assert not any("Combi Wall" in " ".join(it["clashes"]) for it in lay["items"]["fenders"])
+
+
+def test_no_crane_leaves_out_what_comes_with_it():
+    from triton.costing import cost_section
+    from triton.joints import furniture_from_costing
+
+    p = project()
+    s = p.sections[0]
+    s.furniture.sts_crane = False
+    res = F.design(p, s, geometry())
+    crane = {"crane_rails", "crane_stoppers", "storm_pins", "tie_downs", "sts_clearance"}
+    assert not crane & set(res["layout"]["counts"]) and not crane & {i["item"] for i in res["items"]}
+    assert {"fenders", "bollards"} <= set(res["layout"]["counts"])
+    assert not any("rail" in a.lower() or "stopper" in a.lower() for a in res["assumptions"])
+    # The joints keep clear of fenders, bollards and ladders only.
+    assert {n["name"] for n in F.nominal(p.furniture, s.furniture, 300.0)} == {"Fender", "Bollard", "Ladder"}
+    assert not {"Crane stoppers", "Storm pins", "Crane tie-downs"} & {
+        x["name"] for x in furniture_from_costing(s, 300.0)
+    }
+    out = cost_section(p, s, {})
+    assert not {"Crane rails", "Crane stoppers", "Storm pins", "Crane tie-downs"} & {
+        r["element"] for r in out["rows"]
+    }
+    assert any("No STS crane" in n for n in out["notes"])

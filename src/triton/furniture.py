@@ -25,7 +25,7 @@ from typing import Any
 
 from .design import furniture as fd
 from .design import protrusion
-from .furniture_inputs import QuayFurniture, SectionFurniture
+from .furniture_inputs import QuayFurniture, SectionFurniture, crane_items_off
 from .project import BeamInput, CombiWallInput, PileInput, Project, Section, with_project_grades
 
 TOP_BARS = 150.0
@@ -247,6 +247,7 @@ def nominal(f: QuayFurniture, sf: SectionFurniture, length: float) -> list[dict[
     keep clear of."""
     if not sf.use or length <= 0:
         return []
+    f = for_section(f, sf)
     out: list[tuple[str, float]] = []
     fenders = evenly(length, f.fenders.end_distance, f.fenders.spacing) if f.fenders else []
     out += [("Fender", s) for s in fenders]
@@ -362,8 +363,9 @@ def _place(it: Item, placed, joints, heads, rails, rules, length: float) -> Item
 
 def for_section(f: QuayFurniture, sf: SectionFurniture) -> QuayFurniture:
     """The project's furniture as this section has it: the protrusion and the STS crane only where the
-    section ticks them (null otherwise)."""
+    section ticks them (null otherwise); with no crane, nor the rails, stoppers, stow pins and tie-downs."""
     off = {k: None for k in ("protrusion", "sts_crane") if not getattr(sf, k)}
+    off.update({k: None for k in crane_items_off(sf)})
     return f.model_copy(update=off) if off else f
 
 
