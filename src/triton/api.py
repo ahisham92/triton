@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import (
     adsec,
+    atomic,
     checker,
     clash_report,
     deformed,
@@ -333,6 +334,11 @@ def _unlocked(project: Project) -> Project:
 
 @app.put("/api/projects/{project_id}")
 def update_project(project_id: str, body: Project) -> Project:
+    with store().project_lock(project_id):
+        return _update_project(project_id, body)
+
+
+def _update_project(project_id: str, body: Project) -> Project:
     existing = _get(project_id)
     if body.id != project_id:
         raise HTTPException(400, "Project id in the body does not match the URL.")
@@ -372,23 +378,28 @@ def _drop_stale(project_id: str, project: Project) -> None:
     date: only what a change affects goes (all of a section's for a shared input), so the others can
     still be used and the changed elements designed on their own."""
     for section in project.sections:
-        results = store().load_results(project_id, section.id)
-        if not results:
-            continue
-        now = fresh.fingerprint(project, section, store().workbook_summary(project_id, section.id))
-        changed, stale = fresh.status(results, now, fresh.names(project, section))
-        designed = {e["element"] for e in fresh._designed(results)}
-        gone = designed & set(stale)
-        if changed is None or not gone:
-            continue
-        if gone == designed:
-            store().delete_results(project_id, section.id)
-            continue
-        for kind in fresh.KINDS:
-            results[kind] = [e for e in results.get(kind) or [] if e["element"] not in gone]
-        for name in gone:
-            (results.get("element_inputs") or {}).pop(name, None)
-        store().save_results(project_id, section.id, results)
+        with store().section_lock(project_id, section.id):
+            _drop_stale_section(project_id, project, section)
+
+
+def _drop_stale_section(project_id: str, project: Project, section: Section) -> None:
+    results = store().load_results(project_id, section.id)
+    if not results:
+        return
+    now = fresh.fingerprint(project, section, store().workbook_summary(project_id, section.id))
+    changed, stale = fresh.status(results, now, fresh.names(project, section))
+    designed = {e["element"] for e in fresh._designed(results)}
+    gone = designed & set(stale)
+    if changed is None or not gone:
+        return
+    if gone == designed:
+        store().delete_results(project_id, section.id)
+        return
+    for kind in fresh.KINDS:
+        results[kind] = [e for e in results.get(kind) or [] if e["element"] not in gone]
+    for name in gone:
+        (results.get("element_inputs") or {}).pop(name, None)
+    store().save_results(project_id, section.id, results)
 
 
 @app.get("/api/projects/{project_id}/storage")
@@ -546,11 +557,9 @@ class _Progress:
         if now - self.written < 0.5 and 0 < fraction < 1:
             return
         self.written = now
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps({"fraction": round(fraction, 4), "step": step, "started": self.started}), "utf-8"
+        atomic.write_text(
+            self.path, json.dumps({"fraction": round(fraction, 4), "step": step, "started": self.started})
         )
-        tmp.replace(self.path)
 
     def __enter__(self) -> _Progress:
         return self
@@ -1142,6 +1151,12 @@ class DesignRequest(BaseModel):
         description="Detailed: the full design (bars, cages, drawings, AdSec). Standard: a quicker "
         "overview, whether each element works, its utilisation and steel ratio.",
     )
+    run: str | None = Field(
+        None,
+        pattern=r"^[0-9A-Za-z_-]{1,40}$",
+        description="Which window runs this design, the same on each of its steps; another window "
+        "asking to design the section meanwhile is told it is busy.",
+    )
 
 
 def _merge(
@@ -1176,7 +1191,41 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
     only = None if body.elements is None else [n for n in body.elements if n]
     deadline = time.monotonic() + body.budget_s if body.budget_s else None
-    with _Progress(f"design-{project_id}-{section_id}") as tell:
+    # The workbook as it was when the design started: one replaced meanwhile leaves these results
+    # marked out of date rather than passing for the new one's.
+    summary = store().workbook_summary(project_id, section_id)
+    key = f"design-{project_id}-{section_id}"
+    owner = _hold_section(key, body.run)
+    try:
+        new, results, now, every, handled = _design_step(
+            project_id, section_id, project, section, workbook, summary, body, only, deadline, key
+        )
+    except BaseException:
+        if owner is not None:
+            owner.unlink(missing_ok=True)  # stopped or failed: the section is free again
+        raise
+    if owner is not None:
+        if not new["left"] or new.get("stopped"):
+            owner.unlink(missing_ok=True)  # done: the section is free again
+        else:
+            atomic.write_text(owner, json.dumps({"run": body.run, "at": time.time()}))
+    if not project.locked:
+        _lock_model(project_id)
+    changed, stale = fresh.status(results, now, every)
+    return {
+        **results,
+        "changed": changed,
+        "stale": stale,
+        "designed": handled,
+        "left": new["left"],
+        "locked": True,
+        **({"stopped": True} if new.get("stopped") else {}),
+    }
+
+
+def _design_step(project_id, section_id, project, section, workbook, summary, body, only, deadline, key):
+    """One step of a design: the elements that fit in the time asked for, merged into the results."""
+    with _Progress(key) as tell:
         with stop_mod.watching(tell.asked):
             new = run_section(
                 project.design,
@@ -1191,37 +1240,63 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
             )
         tell.stoppable = False  # what was designed is kept, even if Stop comes now
         every = fresh.names(project, section)
-        summary = store().workbook_summary(project_id, section_id)
         now = fresh.fingerprint(project, section, summary)
-        old = store().load_results(project_id, section_id)
         handled = new["designed"]
-        if only is None and not new["left"] and not new.get("stopped"):
-            old = None  # everything designed again: nothing earlier stays
-        results = _merge(old, new, handled, section, every)
-        # Slab or beam over each pile, L or straight bars, and the real top bar lengths and weights.
-        apply_connections(results, section.clashes)
-        spws = {e["element"] for e in results["sheet_pile_walls"]}
-        earlier = (fresh._by_element(old, every) or {}) if old else {}
-        results["element_inputs"] = {
-            **{k: v for k, v in earlier.items() if k in every or k in spws},
-            **fresh.element_inputs(now, every, handled),
-        }
-        results["inputs"] = now
         tell(0.97, "Saving")
-        store().save_results(project_id, section_id, results)
-    if not project.locked:
-        project.locked = True
-        store().save(project)
-    changed, stale = fresh.status(results, now, every)
-    return {
-        **results,
-        "changed": changed,
-        "stale": stale,
-        "designed": handled,
-        "left": new["left"],
-        "locked": True,
-        **({"stopped": True} if new.get("stopped") else {}),
-    }
+        # Read, add to and save the results in one go: another design of this section (another
+        # window) waits here, and each keeps the elements the other saved.
+        with store().section_lock(project_id, section_id):
+            old = store().load_results(project_id, section_id)
+            if only is None and not new["left"] and not new.get("stopped"):
+                old = None  # everything designed again: nothing earlier stays
+            results = _merge(old, new, handled, section, every)
+            # Slab or beam over each pile, L or straight bars, and the real top bar lengths and weights.
+            apply_connections(results, section.clashes)
+            spws = {e["element"] for e in results["sheet_pile_walls"]}
+            earlier = (fresh._by_element(old, every) or {}) if old else {}
+            results["element_inputs"] = {
+                **{k: v for k, v in earlier.items() if k in every or k in spws},
+                **fresh.element_inputs(now, every, handled),
+            }
+            results["inputs"] = now
+            store().save_results(project_id, section_id, results)
+    return new, results, now, every, handled
+
+
+DESIGN_HOLD_S = 120  # a design run silent for this long (window closed) no longer holds its section
+BUSY = (
+    "This section is being designed in another window or tab. Wait for it to finish, or press Stop "
+    "there, then design again."
+)
+
+
+def _hold_section(key: str, run: str | None) -> Path | None:
+    """Claim the section's design for window ``run`` (each step of a run claims it again). Another
+    window's run that is still going holds it: 409. Returns the claim, None when no window was named."""
+    if not run:
+        return None
+    owner = _progress_path(key).with_suffix(".owner")
+    with atomic.locked(owner.with_suffix(".lock")):
+        try:
+            held = json.loads(owner.read_text("utf-8"))
+        except (OSError, ValueError):
+            held = {}
+        progress = _progress_path(key)
+        alive = max([held.get("at", 0)] + ([progress.stat().st_mtime] if progress.exists() else []))
+        if held.get("run") not in (None, run) and time.time() - alive < DESIGN_HOLD_S:
+            raise HTTPException(409, BUSY)
+        atomic.write_text(owner, json.dumps({"run": run, "at": time.time()}))
+    return owner
+
+
+def _lock_model(project_id: str) -> None:
+    """Lock the model, on the project as it is saved now: a page's edits saved while the design ran
+    are kept, not overwritten by the copy the design started from."""
+    with store().project_lock(project_id):
+        project = _get(project_id)
+        if not project.locked:
+            project.locked = True
+            store().save(project)
 
 
 def _results(project_id: str, section_id: str) -> tuple[Project, Section, dict]:
@@ -1543,6 +1618,11 @@ def run_trials(project_id: str, section_id: str, body: TrialRequest) -> dict:
 def use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
     """Give the element the trial's size and take the trial's design as its result. The bars set by
     hand for its old size go, as the trial picked its own."""
+    with store().project_lock(project_id), store().section_lock(project_id, section_id):
+        return _use_trial(project_id, section_id, body)
+
+
+def _use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
     project = _get(project_id)
     section = _section(project, section_id)
     element = _trial_element(section, body.element)

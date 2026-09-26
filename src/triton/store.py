@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from . import clock
+from . import atomic, clock
 from .project import Project, _now
 from .validation import ImportResult
 
@@ -83,8 +83,11 @@ def housekeeping(data: str | Path | None = None, force: bool = False) -> dict[st
         for f in progress.glob("*.json"):
             if now - f.stat().st_mtime > PROGRESS_MAX_AGE:
                 drop(f)
+    for f in progress.glob("*.tmp") if progress.is_dir() else []:
+        if now - f.stat().st_mtime > TMP_MAX_AGE:
+            drop(f)
     projects = root / "projects"
-    for pattern in ("*.tmp", "*/*/*.tmp", "*/*/raw/*.tmp"):
+    for pattern in ("*.tmp", "*/*/*.tmp", "*/*/*/*.tmp"):
         for f in projects.glob(pattern):
             if f.is_file() and now - f.stat().st_mtime > TMP_MAX_AGE:
                 drop(f)
@@ -113,10 +116,7 @@ class ProjectStore:
 
     def save(self, project: Project) -> Project:
         project.updated_at = _now()
-        path = self._path(project.id)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(project.model_dump_json(indent=2), "utf-8")
-        tmp.replace(path)
+        atomic.write_text(self._path(project.id), project.model_dump_json(indent=2))
         return project
 
     def duplicate(self, project_id: str, name: str) -> Project:
@@ -128,17 +128,29 @@ class ProjectStore:
         src, dst = self.root / project_id, self.root / project.id
         try:
             if src.is_dir():
-                shutil.copytree(src, dst, ignore=shutil.ignore_patterns("*.tmp", "revisions", "views"))
+                shutil.copytree(
+                    src, dst, ignore=shutil.ignore_patterns("*.tmp", "*.lock", "revisions", "views")
+                )
             return self.save(project)
         except BaseException:
             shutil.rmtree(dst, ignore_errors=True)
             raise
+
+    def project_lock(self, project_id: str):
+        """Held while a request reads the project file, changes it and saves it again."""
+        return atomic.locked(self._path(project_id).with_suffix(".lock"))
+
+    def section_lock(self, project_id: str, section_id: str):
+        """Held while a request reads a section's results, adds to them and saves them again, so
+        two designs of the section at once each keep what the other added."""
+        return atomic.locked(self._dir(project_id, section_id) / ".lock")
 
     def delete(self, project_id: str) -> None:
         path = self._path(project_id)
         if not path.exists():
             raise ProjectNotFound(project_id)
         path.unlink()
+        path.with_suffix(".lock").unlink(missing_ok=True)
         shutil.rmtree(self.root / project_id, ignore_errors=True)
 
     # --- Files kept for each section: the checked workbook and design results.
@@ -180,9 +192,10 @@ class ProjectStore:
             else:
                 self._save_raw(d, name, raw[name])
         # Only this app writes these pickles, from workbooks the user uploaded. Compressed: about half.
-        with gzip.open(d / "workbook.pkl.gz.tmp", "wb", compresslevel=1) as f:
+        tmp = atomic.tmp_for(d / "workbook.pkl.gz")
+        with gzip.open(tmp, "wb", compresslevel=1) as f:
             pickle.dump(result, f, protocol=pickle.HIGHEST_PROTOCOL)
-        (d / "workbook.pkl.gz.tmp").replace(d / "workbook.pkl.gz")
+        tmp.replace(d / "workbook.pkl.gz")
         (d / "workbook.pkl").unlink(missing_ok=True)  # the uncompressed copy of an earlier upload
         now = _now()
         names = [sh.name for sh in result.sheets]
@@ -205,9 +218,10 @@ class ProjectStore:
             **result.summary(),
             "sources": sources,
         }
-        self._write_json(d / "workbook.json", summary)
-        # Every result depends on the workbook: none of them is kept once it changes.
-        (d / "results.json").unlink(missing_ok=True)
+        with self.section_lock(project_id, section_id):
+            self._write_json(d / "workbook.json", summary)
+            # Every result depends on the workbook: none of them is kept once it changes.
+            (d / "results.json").unlink(missing_ok=True)
         return summary
 
     def delete_workbook(self, project_id: str, section_id: str) -> None:
@@ -253,9 +267,10 @@ class ProjectStore:
     def _save_raw(self, d: Path, sheet: str, rows: list) -> None:
         path = self._raw_path(d, sheet)
         path.parent.mkdir(exist_ok=True)
-        with gzip.open(path.with_suffix(".tmp"), "wb", compresslevel=3) as f:
+        tmp = atomic.tmp_for(path)
+        with gzip.open(tmp, "wb", compresslevel=3) as f:
             pickle.dump(rows, f, protocol=pickle.HIGHEST_PROTOCOL)
-        path.with_suffix(".tmp").replace(path)
+        tmp.replace(path)
 
     def load_raw(self, project_id: str, section_id: str, sheet: str) -> list | None:
         """A sheet's rows as they were read, or None for workbooks uploaded before they were kept."""
@@ -306,9 +321,7 @@ class ProjectStore:
 
     @staticmethod
     def _write_json(path: Path, data: Any) -> None:
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, default=str), "utf-8")
-        tmp.replace(path)
+        atomic.write_text(path, json.dumps(data, default=str))
 
 
 def _upgrade(results: Any) -> Any:

@@ -39,7 +39,7 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, field_validator
 
-from . import fresh
+from . import atomic, fresh
 from .alignment import combine_parts
 from .axes import infer_axes, sag_factor
 from .design.grillage import Grid, Solver, Spring, actions, sample
@@ -601,9 +601,7 @@ def load_run(d: Path, key: str) -> dict[str, Any] | None:
 def _save_run(d: Path, key: str, run: dict[str, Any]) -> None:
     (d / "moved").mkdir(exist_ok=True)
     path = _design_path(d, key)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_bytes(gzip.compress(json.dumps(run, default=str).encode(), 5))
-    tmp.replace(path)
+    atomic.write_bytes(path, gzip.compress(json.dumps(run, default=str).encode(), 5))
 
 
 def prune(d: Path, data: dict[str, Any]) -> None:

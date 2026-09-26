@@ -16,6 +16,7 @@ import time
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 
+from . import atomic
 from .importer import SheetData, clean_sheet
 from .reader import Row, read_sheets, sheet_names, sheet_weights
 from .validation import CHECKER_SHEET, ImportResult, collect
@@ -59,14 +60,12 @@ def _state(work: Path, path: Path) -> dict:
 
 
 def _save(work: Path, state: dict) -> None:
-    tmp = work / (STATE + ".tmp")
-    tmp.write_text(json.dumps(state), "utf-8")
-    tmp.replace(work / STATE)
+    atomic.write_text(work / STATE, json.dumps(state))
 
 
 def _dump(path: Path, value: object, zipped: bool = False) -> None:
     path.parent.mkdir(exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = atomic.tmp_for(path)
     with gzip.open(tmp, "wb", compresslevel=3) if zipped else tmp.open("wb") as f:
         pickle.dump(value, f, protocol=pickle.HIGHEST_PROTOCOL)
     tmp.replace(path)

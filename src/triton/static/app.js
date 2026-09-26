@@ -56,6 +56,8 @@ async function again(fn, tries = 4) {
 
 // Uploads and designs under way, whatever page is open (see "long work" below).
 const JOBS = [];
+// This window, so a design of a section running in another window or tab is not started again here.
+const WINDOW_ID = Math.random().toString(36).slice(2, 12) || "w";
 // Sections whose workbook was opened on this visit: their Workbook tab opens it straight away.
 const OPENED = new Set();
 let state = null; // the open project: { project, sectionId, dirty, errors }
@@ -2864,7 +2866,7 @@ async function designJob(section, chosen, onResults, mode = "detailed") {
     for (;;) {
       if (job.stopped) throw new Error("Stopped.");
       // Not sent again after Stop, even when the host cut the request off.
-      res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3, mode }) })));
+      res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3, mode, run: WINDOW_ID }) })));
       const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"].flatMap((k) => res[k] || []);
       for (const n of res.designed) {
         const s = step(n);

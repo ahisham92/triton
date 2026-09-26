@@ -18,6 +18,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from . import atomic
+
 FOLDER = "views"
 
 
@@ -52,7 +54,7 @@ def get(d: Path, name: str, k: str) -> Any | None:
 def put(d: Path, name: str, k: str, data: Any) -> None:
     path = _file(d, name, "json.gz")
     path.parent.mkdir(exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = atomic.tmp_for(path)
     with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=3) as f:
         json.dump({"key": k, "data": data}, f, default=str)
     tmp.replace(path)
@@ -80,7 +82,7 @@ def get_object(d: Path, name: str, k: str) -> Any | None:
 def put_object(d: Path, name: str, k: str, obj: Any) -> None:
     path = _file(d, name, "pkl.gz")
     path.parent.mkdir(exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = atomic.tmp_for(path)
     with gzip.open(tmp, "wb", compresslevel=3) as f:
         pickle.dump((k, obj), f, protocol=pickle.HIGHEST_PROTOCOL)
     tmp.replace(path)

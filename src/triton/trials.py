@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import fresh
+from . import atomic, fresh
 from .alignment import combine_parts
 from .costing import cost_section, model_length, slab_links
 from .design.runner import run_section
@@ -166,9 +166,7 @@ def load(d: Path) -> dict[str, Any]:
 
 
 def save(d: Path, data: dict[str, Any]) -> None:
-    tmp = _file(d).with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, default=str), "utf-8")
-    tmp.replace(_file(d))
+    atomic.write_text(_file(d), json.dumps(data, default=str))
 
 
 def load_design(d: Path, key: str) -> dict[str, Any] | None:
@@ -190,9 +188,7 @@ def _read_design(path: str, stamp: int) -> bytes:
 def _save_design(d: Path, key: str, design: dict[str, Any]) -> None:
     (d / "trials").mkdir(exist_ok=True)
     path = d / "trials" / f"{key}.json.gz"
-    tmp = path.with_suffix(".tmp")
-    tmp.write_bytes(gzip.compress(json.dumps(design, default=str).encode(), 5))
-    tmp.replace(path)
+    atomic.write_bytes(path, gzip.compress(json.dumps(design, default=str).encode(), 5))
 
 
 def prune(d: Path, data: dict[str, Any]) -> None:
