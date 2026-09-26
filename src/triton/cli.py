@@ -26,12 +26,15 @@ def main(argv: list[str] | None = None) -> int:
         "runner", help="Design what the page queued (Design all sections), with no page open."
     )
     runner.add_argument("--data", help="The same data folder as the web app (default: TRITON_DATA_DIR).")
+    runner.add_argument(
+        "--workers", type=int, default=2, help="Sections designed at the same time (default 2)."
+    )
     args = parser.parse_args(argv)
 
     if args.command == "runner":
         from .runner import run_forever
 
-        run_forever(args.data)
+        run_forever(args.data, workers=args.workers)
         return 0
 
     if args.command == "serve":
