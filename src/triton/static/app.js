@@ -10,7 +10,7 @@ import { APPROACH, approachCard, approachPanel } from "./approach.js";
 import { renderFurniture } from "./furniture.js";
 import { renderMovedPiles } from "./moved.js";
 import { renderSequence } from "./sequence.js";
-import { smooth } from "./progress.js";
+import { smooth, voyageHtml } from "./progress.js";
 import { tubeZonesHtml } from "./tubeview.js";
 import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
 import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
@@ -1610,7 +1610,7 @@ function jobCardHtml(job, inDock) {
   return `<div class="job ${job.state}" data-job="${job.id}" data-sig="${job.state}:${job.steps.length}">
     <div class="job-head"><span class="job-title">${esc(job.title)}</span><span class="job-pct"></span>
       ${job.state === "running" ? `<button class="quiet small" data-job-stop>Stop</button>` : `<button class="x" data-job-close title="Close">×</button>`}</div>
-    <div class="bar big"><i></i></div>
+    ${voyageHtml()}
     <div class="job-sub"><span></span>${inDock && job.home ? ` <a href="${job.home}">Open</a>` : ""}</div>
     <ol class="job-steps${job.steps.length > 5 ? " many" : ""}">${job.steps
       .map((s) => `<li><span class="step-name">${esc(s.label)}</span><span class="bar"><i></i></span><span class="step-note"></span></li>`)
@@ -3800,7 +3800,7 @@ function startLoad(full, stamp, progress) {
 // estimate from last time.
 function loadingCard(box, title, run, full) {
   box.innerHTML = `<div class="job running loading-card"><div class="job-head"><span class="job-title">${esc(title)}</span>
-    <span class="job-pct"></span></div><div class="bar big"><i></i></div><div class="job-sub"><span></span></div></div>`;
+    <span class="job-pct"></span></div>${voyageHtml()}<div class="job-sub"><span></span></div></div>`;
   const pct = box.querySelector(".job-pct");
   const bar = box.querySelector(".bar.big i");
   const sub = box.querySelector(".job-sub span");
