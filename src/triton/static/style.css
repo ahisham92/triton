@@ -596,3 +596,16 @@ h1 { color: var(--brand); }
 .page-step.bad .n { background: var(--err); color: #fff; }
 .page-step.all { padding-left: 12px; border-style: dashed; }
 .page-nav { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--line); }
+/* A line and a drawing at the top of each form page. */
+.page-art { background: linear-gradient(180deg, var(--brand-soft), transparent); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.page-intro { margin: 0 0 6px; color: var(--text); font-size: 14px; }
+.page-pic { overflow-x: auto; }
+.page-art-svg { width: 100%; max-width: 680px; height: auto; display: block; }
+.page-art-svg .pa-t { font-size: 12px; font-weight: 700; fill: var(--text); }
+.page-art-svg .pa-s { font-size: 11px; fill: var(--muted); }
+.page-art-svg .pa-big { font-size: 15px; font-weight: 800; }
+.page-art-svg .pa-strong { font-size: 12px; font-weight: 700; fill: var(--text); }
+.page-art-svg .pa-dim { font-size: 10.5px; fill: var(--muted); }
+fieldset.section-pages { border: 0; padding: 0; margin: 0; background: transparent; }
+fieldset.section-pages > .fields { display: block; }
+fieldset.section-pages > .fields > .full + .full { margin-top: 12px; }

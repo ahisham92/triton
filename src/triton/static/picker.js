@@ -290,19 +290,59 @@ export function setFolded(box, folded) {
 // A long form in pages: each group of fields (a nested fieldset) is a page of its own and the loose
 // fields before it are "General"; numbered steps on top, Previous / Next below, and "All on one page"
 // to see everything at once. Pages with a field in error get a red mark. Only forms with 3+ pages.
-export function pageForm(fs, key, { minPages = 3 } = {}) {
+export function pageForm(fs, key, { minPages = 3, plan = null, obj = null, ctx = {} } = {}) {
   const grid = fs.querySelector(":scope > .fields");
   if (!grid) return fs;
-  // Loose fields (wherever they sit) all go on the first page, "General".
-  const general = { title: "General", els: [] };
-  const pages = [general];
+  const keyOf = (el) => el.dataset.key || (el.dataset.path || "").split(".").pop();
+  const titleOf = (el) => el.classList.contains("full") ? el.querySelector(":scope > fieldset > legend, :scope > .toggle")?.textContent.trim().split("\n")[0].trim() : null;
+  const planned = (plan || []).map((p) => ({ ...p, els: [] }));
+  const own = [];
+  const rest = { title: plan ? "Other settings" : "General", els: [] };
   for (const el of [...grid.children]) {
-    const inner = el.classList.contains("full") ? el.querySelector(":scope > fieldset > legend, :scope > .toggle") : null;
-    if (inner) pages.push({ title: inner.textContent.trim().split("\n")[0].trim(), els: [el] });
-    else general.els.push(el);
+    const k = keyOf(el);
+    const home = planned.find((p) => p.keys.includes(k));
+    const title = titleOf(el);
+    if (home) home.els.push(el);
+    else if (title) own.push({ title, els: [el] });
+    else rest.els.push(el);
   }
-  if (!general.els.length) pages.shift();
-  if (pages.length < minPages) return fs;
+  const pages = plan ? [...planned.filter((p) => p.els.length), ...own, ...(rest.els.length ? [rest] : [])]
+    : [...(rest.els.length ? [rest] : []), ...own];
+  if (pages.length < (plan ? 2 : minPages)) return fs;
+  // Each planned page opens with a line on what it is for and, where one helps, a drawing that
+  // follows the values as they are typed.
+  const arts = [];
+  for (const p of pages) {
+    if (!p.intro && !p.art) continue;
+    const box = document.createElement("div");
+    box.className = "page-art full";
+    grid.insertBefore(box, p.els[0]);
+    p.els.unshift(box);
+    const draw = () => {
+      let pic = "";
+      try {
+        pic = p.art && obj ? p.art(obj, ctx) : "";
+      } catch {
+        pic = ""; // a drawing never stops the form
+      }
+      box.innerHTML = `${p.intro ? `<p class="page-intro">${esc(p.intro)}</p>` : ""}${pic ? `<div class="page-pic">${pic}</div>` : ""}`;
+    };
+    draw();
+    if (p.art) arts.push(draw);
+  }
+  if (arts.length) {
+    let queued = false;
+    const redraw = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        arts.forEach((d) => d());
+      });
+    };
+    fs.addEventListener("input", redraw);
+    fs.addEventListener("change", redraw);
+  }
   fs.classList.add("paged");
   let cur = Math.min(picked(`page:${key}`) ?? 0, pages.length - 1);
   if (cur !== ALL && (cur < 0 || typeof cur !== "number")) cur = 0;

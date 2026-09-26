@@ -11,6 +11,7 @@ import { renderMovedPiles } from "./moved.js";
 import { renderSequence } from "./sequence.js";
 import { smooth } from "./progress.js";
 import { tubeZonesHtml } from "./tubeview.js";
+import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
 import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
 
 const $app = document.getElementById("app");
@@ -541,7 +542,9 @@ async function projectPage(id, tab, sectionId) {
     host.append(used);
     storagePanel(used, id);
   }
-  else if (tab === "settings") host.append(pageForm(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"), `settings:${p.id}`));
+  else if (tab === "settings")
+    host.append(pageForm(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"), `settings:${p.id}`,
+      { plan: DESIGN_PAGES, obj: p.design, ctx: { materials: MATERIALS } }));
   else if (tab === "design") renderDesignTab(host);
   else if (tab === "openings") renderOpeningsTab(host);
   else if (tab === "sections") renderSections(host);
@@ -866,6 +869,7 @@ function renderObject(schema, obj, path, title) {
 function renderNested(obj, key, prop, inner, nullable, path) {
   const wrap = document.createElement("div");
   wrap.className = "full";
+  wrap.dataset.key = key; // which field it is, for the form's pages
   const draw = () => {
     wrap.innerHTML = "";
     if (nullable) {
@@ -1176,20 +1180,32 @@ function renderSections(host) {
       markDirty();
       route();
     };
+    // The section's settings in pages (name and edges, combinations, site, furniture, berth line, joints).
+    const body = document.createElement("fieldset");
+    body.className = "section-pages";
+    body.innerHTML = '<div class="fields"></div>';
+    const part = (key, ...els) => {
+      const w = document.createElement("div");
+      w.className = "full";
+      w.dataset.key = key;
+      w.append(...els);
+      body.firstChild.append(w);
+      return w;
+    };
     const fs = renderObject(schema, s, `sections.${i}`, "");
     fs.style.border = "0";
     fs.style.padding = "0";
-    card.append(fs);
-    card.append(edgesSketch(s));
+    part("main", fs);
+    part("edges", edgesSketch(s));
     const combos = document.createElement("div");
     combos.className = "field full";
     combos.innerHTML = `<label>Load combinations</label><div class="hint">${esc(def.properties.combinations.description)}</div>`;
     combos.append(comboListEditor(s));
-    card.append(combos);
+    part("combos", combos);
     s.site ??= {};
     const site = renderObject(def.properties.site, s.site, `sections.${i}.site`, "Site in the 3D views");
     site.dataset.free = ""; // seabed, water and soil as drawn: never a design input, open while locked
-    card.append(site);
+    part("site", site).dataset.free = "";
     // Whether this section's berth has fender protrusions and STS cranes (their sizes: Furniture tab).
     s.furniture ??= {};
     const fdef = SCHEMA.$defs.SectionFurniture;
@@ -1197,9 +1213,10 @@ function renderSections(host) {
       { properties: { protrusion: fdef.properties.protrusion, sts_crane: fdef.properties.sts_crane } },
       s.furniture, `sections.${i}.furniture`, "Quay furniture on this section");
     quay.dataset.free = ""; // the furniture is never in the element designs: open while locked
-    card.append(quay);
-    card.append(alignmentEditor(p, s));
-    card.append(jointsEditor(p, s));
+    part("quay", quay).dataset.free = "";
+    part("alignment", alignmentEditor(p, s));
+    part("joints", jointsEditor(p, s));
+    card.append(pageForm(body, `section-page:${p.id}`, { plan: SECTION_PAGES, obj: s }));
     host.append(card);
   });
 }
@@ -1473,7 +1490,8 @@ function renderElements(host) {
       markDirty();
       route();
     };
-    const fs = pageForm(renderObject(schema, el, `sections.${secIndex()}.elements.${name}`, ""), `el:${el.kind}`);
+    const fs = pageForm(renderObject(schema, el, `sections.${secIndex()}.elements.${name}`, ""), `el:${el.kind}`,
+      { plan: ELEMENT_PAGES[el.kind], obj: el, ctx: { design: state.project.design, materials: MATERIALS } });
     fs.style.border = "0";
     fs.style.padding = "0";
     card.append(fs);
