@@ -16,6 +16,7 @@ import math
 from typing import Any
 
 from .alignment import combine_parts
+from .furniture_inputs import costing_left_out
 from .materials import STEEL_DENSITY
 from .project import CombiWallInput, ElementCosting, PileInput, Prices, Project, Section, SheetPileInput
 
@@ -400,8 +401,13 @@ def cost_section(
             rows.append(row)
 
     unpriced = []
+    left_out = costing_left_out(section.furniture)
+    dropped: list[str] = []
     for i, item in enumerate(section.costing.items):
         if not item.name.strip() and item.price is None:
+            continue
+        if item.name.strip().lower() in left_out:
+            dropped.append(item.name.strip())
             continue
         row = _Row(item.name.strip() or f"Item {i + 1}", "item")
         row.item = i
@@ -471,6 +477,8 @@ def cost_section(
     )
     if unpriced:
         notes.append("No price yet, so left out of the totals: " + ", ".join(unpriced) + ".")
+    if dropped:
+        notes.append("No STS crane on this section (Furniture tab), so left out: " + ", ".join(dropped) + ".")
     if missing:
         notes.append("Prices or inputs missing, so the totals leave them out: " + ", ".join(missing) + ".")
     return {

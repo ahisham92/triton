@@ -379,6 +379,22 @@ class QuayFurniture(_Model):
         return data
 
 
+# What comes with the STS cranes: none of it where a section has no crane (its "STS cranes" tick off).
+CRANE_ITEMS = ("crane_rails", "crane_stoppers", "storm_pins", "tie_downs")
+# The same items by their Costing tab names (lower case).
+CRANE_COSTING = frozenset({"crane rails", "crane stoppers", "storm pins", "crane tie-downs"})
+
+
+def crane_items_off(sf: SectionFurniture) -> tuple[str, ...]:
+    """The furniture items this section leaves out: those that come with the cranes, when it has none."""
+    return () if sf.sts_crane else CRANE_ITEMS
+
+
+def costing_left_out(sf: SectionFurniture) -> frozenset[str]:
+    """Costing item names (lower case) this section leaves out, for the same reason."""
+    return frozenset() if sf.sts_crane else CRANE_COSTING
+
+
 class SectionFurniture(_Model):
     """Where this section's berth differs from the project's furniture."""
 
@@ -406,5 +422,6 @@ class SectionFurniture(_Model):
         True,
         title="STS cranes on this section",
         description="Checks the ship's stand-off against the crane (Furniture tab) and draws it in 3D. "
-        "Untick where no ship-to-shore crane works this berth.",
+        "Untick where no ship-to-shore crane works this berth: the crane rails, stoppers, stow pins and "
+        "tie-downs are then left out too (design, 3D, costing, drawings and reports).",
     )

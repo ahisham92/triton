@@ -37,6 +37,7 @@ from typing import Any
 
 import numpy as np
 
+from .furniture_inputs import costing_left_out
 from .project import DesignSettings, ExpansionJoints, PileInput, Section, SectionJoints
 
 STEP = 0.5  # m: positions tried when a joint may go anywhere
@@ -87,8 +88,9 @@ def pile_rows(
 def furniture_from_costing(section: Section, berth: float) -> list[dict[str, Any]]:
     """Items priced each on the Costing tab, one at each end of the berth and evenly between."""
     out = []
+    left_out = costing_left_out(section.furniture)
     for item in section.costing.items:
-        if item.unit != "each" or not item.name.strip():
+        if item.unit != "each" or not item.name.strip() or item.name.strip().lower() in left_out:
             continue
         n = (
             item.count
