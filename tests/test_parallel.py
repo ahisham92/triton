@@ -147,3 +147,25 @@ def test_the_design_keeps_edits_saved_while_it_ran(client, monkeypatch):
     assert client.post(f"{url}/design").status_code == 200
     project = client.get(f"/api/projects/{p['id']}").json()
     assert project["locked"] and project["info"]["name"] == "Renamed meanwhile"
+
+
+def test_a_step_lists_a_beam_or_slab_as_designed_only_once_it_is(client):
+    """A step that runs out of time before the deck used to list it as designed and still to come:
+    the page showed "Nothing to design" until a later step designed it."""
+    from conftest import plate_sheet
+
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)", "Front Beam", "Deck"]}).json()
+    url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
+    sheets = {f"Pile(1)-{c}": pile_sheet() for c in ("PT-B-Apron", "QP")}
+    sheets |= {f"{e}-{c}": plate_sheet() for e in ("Front Beam", "Deck") for c in ("PT-B-Apron", "QP")}
+    assert client.post(f"{url}/workbook", files={"file": ("s.xlsx", xlsx_bytes(sheets))}).status_code == 200
+    ask, seen = None, []
+    for _ in range(10):
+        r = client.post(f"{url}/design", json={"elements": ask, "budget_s": 1e-9}).json()
+        assert not set(r["designed"]) & set(r["left"]), r["designed"]
+        assert len(r["designed"]) == len(set(r["designed"]))
+        seen += r["designed"]
+        if not r["left"]:
+            break
+        ask = r["left"]
+    assert sorted(seen) == ["Deck", "Front Beam", "Pile(1)"]

@@ -192,7 +192,7 @@ def run_section(
     stopped = False
     section, heads = assumed_heads(section, workbook)
     try:
-        _design(settings, section, workbook, approach, furniture_at, tick, take, out)
+        _design(settings, section, workbook, approach, furniture_at, tick, take, out, only=only)
         on.clear()
     except Stopped:
         # Stop pressed: the elements finished so far keep their results; the one under way is dropped.
@@ -245,6 +245,7 @@ def _design(
     take: Callable[[str], bool],
     found_so_far: dict[str, Any],
     standard: bool = False,
+    only: list[str] | None = None,
 ) -> None:
     """run_section's work, element by element, into ``found_so_far`` as it goes (a Stop keeps it)."""
     raw = workbook.elements()
@@ -358,7 +359,13 @@ def _design(
             skipped.append(f"{name}: no usable results in the workbook.")
     beams = found_so_far["beams"]
     found = getattr(workbook, "axes", None) or []
-    plates = [n for n, e in section.elements.items() if isinstance(e, (BeamInput, SlabInput)) and take(n)]
+    # The beams and slabs this run may design (taken one by one below, when their turn comes: taking
+    # them here listed them as designed in a step that ran out of time before reaching them).
+    plates = [
+        n
+        for n, e in section.elements.items()
+        if isinstance(e, (BeamInput, SlabInput)) and (only is None or n in only)
+    ]
     if settings.plate_positive_moment == "auto" and any(
         a["kind"] == "plate" and a["element"] in plates and "positive" not in a for a in found
     ):

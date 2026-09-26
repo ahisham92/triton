@@ -19,6 +19,7 @@ from .project import BeamInput, Project, Section, SlabInput
 _SECTION_OWN = {
     "id",
     "name",
+    "locked",
     "elements",
     "load_factors",
     "sheet_map",

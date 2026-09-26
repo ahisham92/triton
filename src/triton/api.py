@@ -299,7 +299,11 @@ def project_method(project_id: str) -> dict:
     return method.view(_get(project_id))
 
 
-LOCKED = "The model is locked since it was designed. Press Unlock to edit first."
+def _locked_text(sections: list[Section]) -> str:
+    names = ", ".join(s.name for s in sections)
+    one = len(sections) == 1
+    since = "it was" if one else "they were"
+    return f"{names} {'is' if one else 'are'} locked since {since} designed. Press Unlock to edit first."
 
 
 def _model(p: Project) -> dict:
@@ -321,15 +325,19 @@ def _model(p: Project) -> dict:
         s.pop("site", None)  # seabed, water and soil as drawn in 3D
         s.pop("existing", None)  # the quay already on site: drawn and checked, never designed
         s.pop("sequence", None)  # the construction sequence
+        s.pop("locked", None)
         for el in s.get("elements", {}).values():  # a sheet pile wall's "ignore N or Q", ticked on its card
             if el.get("kind") == "sheet_pile_wall":
                 el.pop("ignore", None)
     return d
 
 
-def _unlocked(project: Project) -> Project:
-    if project.locked:
-        raise HTTPException(409, LOCKED)
+def _unlocked(project: Project, section_id: str | None = None) -> Project:
+    """The project, if what is changed is open: one section's inputs (``section_id``), else the shared ones,
+    which are read only while any section is locked."""
+    held = [s for s in project.sections if s.locked and section_id in (None, s.id)]
+    if held:
+        raise HTTPException(409, _locked_text(held))
     return project
 
 
@@ -343,8 +351,7 @@ def _update_project(project_id: str, body: Project) -> Project:
     existing = _get(project_id)
     if body.id != project_id:
         raise HTTPException(400, "Project id in the body does not match the URL.")
-    if existing.locked and body.locked and _model(body) != _model(existing):
-        raise HTTPException(409, LOCKED)
+    _hold_locks(existing, body)
     body.created_at = existing.created_at
     _stamp_multipliers(existing, body)
     # The Clashes tab saves its own settings and what-ifs; a page holding older ones never undoes them.
@@ -357,9 +364,31 @@ def _update_project(project_id: str, body: Project) -> Project:
     for s in existing.sections:
         if s.id not in kept:
             store().delete_section_files(project_id, s.id)
-    if not saved.locked:
-        _drop_stale(project_id, saved)
+    _drop_stale(project_id, saved)
     return saved
+
+
+def _hold_locks(existing: Project, body: Project) -> None:
+    """Each designed section is locked on its own (Ahmed, 2026-09-26): its inputs stay as designed until
+    it is unlocked, while the other sections can change. The shared settings stay as they are while any
+    section is locked. Unlock on a shared tab (the project's lock off) unlocks every section."""
+    was = {s.id: s.locked for s in existing.sections}
+    unlock_all = existing.locked and not body.locked
+    for s in body.sections:
+        if unlock_all:
+            s.locked = False
+        elif "locked" not in s.model_fields_set:  # a page from before sections were locked one by one
+            s.locked = was.get(s.id, False)
+    now = {s.id: s.locked for s in body.sections}
+    held = [s for s in existing.sections if s.locked and now.get(s.id, True)]
+    if held:
+        old, new = _model(existing), _model(body)
+        before = {s["id"]: s for s in old.pop("sections")}
+        after = {s["id"]: s for s in new.pop("sections")}
+        changed = [s for s in held if before[s.id] != after.get(s.id)]
+        if changed or old != new:
+            raise HTTPException(409, _locked_text(changed or held))
+    body.locked = any(now.values())
 
 
 def _stamp_multipliers(existing: Project, body: Project) -> None:
@@ -379,6 +408,8 @@ def _drop_stale(project_id: str, project: Project) -> None:
     date: only what a change affects goes (all of a section's for a shared input), so the others can
     still be used and the changed elements designed on their own."""
     for section in project.sections:
+        if section.locked:  # its inputs are as designed
+            continue
         with store().section_lock(project_id, section.id):
             _drop_stale_section(project_id, project, section)
 
@@ -455,12 +486,14 @@ WORKBOOK_OWN = {
 
 @app.post("/api/projects/{project_id}/sections", status_code=201)
 def add_section(project_id: str, body: NewSection) -> Project:
-    project = _unlocked(_get(project_id))
+    project = _get(project_id)  # a new section is open to edit, whatever the others' locks
     if any(s.name.strip().lower() == body.name.strip().lower() for s in project.sections):
         raise HTTPException(400, f"There is already a section called '{body.name}'.")
     settings = {}
     if body.copy_from:
-        settings = _section(project, body.copy_from).model_dump(mode="json", exclude=WORKBOOK_OWN)
+        settings = _section(project, body.copy_from).model_dump(
+            mode="json", exclude=WORKBOOK_OWN | {"locked"}
+        )
     try:
         section = Section.model_validate({**settings, "name": body.name})
     except ValidationError as e:
@@ -471,7 +504,7 @@ def add_section(project_id: str, body: NewSection) -> Project:
 
 @app.delete("/api/projects/{project_id}/sections/{section_id}")
 def delete_section(project_id: str, section_id: str) -> Project:
-    project = _unlocked(_get(project_id))
+    project = _unlocked(_get(project_id), section_id)
     _section(project, section_id)
     if len(project.sections) == 1:
         raise HTTPException(400, "A project needs at least one section.")
@@ -482,7 +515,7 @@ def delete_section(project_id: str, section_id: str) -> Project:
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/elements")
 def add_elements(project_id: str, section_id: str, body: ElementNames) -> dict:
-    project = _unlocked(_get(project_id))
+    project = _unlocked(_get(project_id), section_id)
     added = _section(project, section_id).add_elements(body.names)
     store().save(project)
     return {"added": added, "project": project}
@@ -738,7 +771,7 @@ def set_check(project_id: str, section_id: str, element: str, body: CheckUpdate)
 def _keeper(project_id: str, section_id: str, mode: str) -> Callable[[str, ImportResult], dict]:
     """Saves an uploaded workbook into a section: replacing its workbook, or (``update``, ``add``)
     brought into the one it has; see ``merge_workbooks``."""
-    section = _section(_unlocked(_get(project_id)), section_id)
+    section = _section(_unlocked(_get(project_id), section_id), section_id)
     if mode not in MERGE_MODES:
         raise HTTPException(422, "mode is replace, update or add.")
 
@@ -788,7 +821,7 @@ class SheetNames(BaseModel):
 @app.delete(SECTION + "/workbook", status_code=204)
 def delete_workbook(project_id: str, section_id: str) -> Response:
     """Delete the section's whole workbook and its results, back to a blank section."""
-    _section(_unlocked(_get(project_id)), section_id)
+    _section(_unlocked(_get(project_id), section_id), section_id)
     store().delete_workbook(project_id, section_id)
     return Response(status_code=204)
 
@@ -796,7 +829,7 @@ def delete_workbook(project_id: str, section_id: str) -> Response:
 @app.post(SECTION + "/workbook/delete")
 def delete_workbook_sheets(project_id: str, section_id: str, body: SheetNames) -> dict:
     """Delete some tabs of the section's workbook; the rest is checked again."""
-    _section(_unlocked(_get(project_id)), section_id)
+    _section(_unlocked(_get(project_id), section_id), section_id)
     wb = store().load_workbook(project_id, section_id)
     if wb is None:
         raise HTTPException(404, "No workbook uploaded for this section yet.")
@@ -1114,7 +1147,7 @@ def _value(v):
 def edit_workbook_sheet(project_id: str, section_id: str, name: str, body: SheetEdits) -> dict:
     """Change cells of a sheet as read; the sheet is cleaned and the workbook checked again, as if
     the corrected workbook had been uploaded."""
-    section = _section(_unlocked(_get(project_id)), section_id)
+    section = _section(_unlocked(_get(project_id), section_id), section_id)
     wb, raw = _raw_sheet(project_id, section, name)
     if raw is None:
         raise HTTPException(
@@ -1210,8 +1243,8 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
             owner.unlink(missing_ok=True)  # done: the section is free again
         else:
             atomic.write_text(owner, json.dumps({"run": body.run, "at": time.time()}))
-    if not project.locked:
-        _lock_model(project_id)
+    if not section.locked:
+        _lock_model(project_id, section_id)
     changed, stale = fresh.status(results, now, every)
     return {
         **results,
@@ -1331,13 +1364,14 @@ def _hold_section(key: str, run: str | None) -> Path | None:
     return owner
 
 
-def _lock_model(project_id: str) -> None:
-    """Lock the model, on the project as it is saved now: a page's edits saved while the design ran
-    are kept, not overwritten by the copy the design started from."""
+def _lock_model(project_id: str, section_id: str) -> None:
+    """Lock the designed section, on the project as it is saved now: a page's edits saved while the
+    design ran are kept, not overwritten by the copy the design started from."""
     with store().project_lock(project_id):
         project = _get(project_id)
-        if not project.locked:
-            project.locked = True
+        section = next((s for s in project.sections if s.id == section_id), None)
+        if section is not None and not section.locked:
+            section.locked = project.locked = True
             store().save(project)
 
 
@@ -1748,7 +1782,7 @@ def _use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
     if not results.get("run_at"):
         results["run_at"] = design.get("run_at") or _now()
     store().save_results(project_id, section_id, results)
-    project.locked = True
+    trial.locked = project.locked = True
     saved = store().save(project)
     # Elements designed with this one's size: piles carry the beams and the slab (supports, punching),
     # the beams and the slab frame into each other.
@@ -2130,7 +2164,9 @@ def _view_parts(project: Project, section: Section, *, site: bool = False) -> li
     return [
         _CODE,
         project.model_dump(mode="json", exclude={"updated_at", "created_at", "locked", "sections"}),
-        section.model_dump(mode="json", exclude=None if site else {"site", "existing", "sequence"}),
+        section.model_dump(
+            mode="json", exclude={"locked"} if site else {"locked", "site", "existing", "sequence"}
+        ),
         summary.get("version"),
         summary.get("uploaded_at"),
     ]

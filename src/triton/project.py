@@ -2561,6 +2561,13 @@ class Section(_Model):
 
     id: str = Field(default_factory=_short_id)
     name: str = Field("Section 1", title="Section name", min_length=1, description="e.g. Section 01a")
+    locked: bool = Field(
+        False,
+        title="Locked",
+        description="Set when this section is designed: its inputs cannot change until it is unlocked to "
+        "edit. Other sections stay open (Ahmed, 2026-09-26).",
+        json_schema_extra=_HIDDEN,
+    )
     x_min: float | None = _m(
         "Working zone: X from",
         None,
@@ -2905,7 +2912,8 @@ class Project(_Model):
     locked: bool = Field(
         False,
         title="Locked",
-        description="Set when the model is designed: its inputs cannot change until it is unlocked to edit.",
+        description="Set while any section is locked (each section has its own lock): the shared settings "
+        "cannot change until every designed section is unlocked to edit.",
     )
 
     @model_validator(mode="before")
