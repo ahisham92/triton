@@ -103,3 +103,29 @@ def test_report_lists_standard_elements_in_an_overview():
     rep = build_report(Project(sections=[section]), section, res, "detailed")
     text = str(rep.blocks)
     assert "Standard design (overview)" in text and "Pile(1): pile" in text
+
+
+def test_standard_finished_in_detailed_without_designing_again(client):
+    p = client.post("/api/projects", json={"element_names": ["Pile(1)", "Pile(2)"]}).json()
+    url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
+    sheets = {f"Pile({i})-{c}": pile_sheet() for i in (1, 2) for c in ("PT-B-Apron", "QP")}
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", xlsx_bytes(sheets))})
+    before = client.post(f"{url}/design", json={"mode": "standard"}).json()
+    assert client.get(f"{url}/design/drawings.dxf").status_code == 409
+
+    # Pile(2) changed since (its results are dropped): it has to be designed again; Pile(1) is taken
+    # as it is.
+    project = client.get(f"/api/projects/{p['id']}").json()
+    project["locked"] = False
+    project["sections"][0]["elements"]["Pile(2)"]["diameter"] = 1500
+    assert client.put(f"/api/projects/{p['id']}", json=project).status_code == 200
+    r = client.post(f"{url}/design/finish").json()
+    assert r["finished"] == ["Pile(1)"] and "Pile(2)" not in {e["element"] for e in r["piles"]}
+    (p1,) = [e for e in r["piles"] if e["element"] == "Pile(1)"]
+    (was,) = [e for e in before["piles"] if e["element"] == "Pile(1)"]
+    assert standard.KEY not in p1 and "standard" not in p1 and standard.NOTE not in p1["notes"]
+    drop = (standard.KEY, "standard", "notes")
+    assert {k: v for k, v in p1.items() if k not in drop} == {k: v for k, v in was.items() if k not in drop}
+    assert r["run_at"] == before["run_at"]  # not designed again
+    assert client.get(f"{url}/design/drawings.dxf").status_code == 200
+    assert client.post(f"{url}/design/finish").json()["finished"] == []

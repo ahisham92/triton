@@ -151,6 +151,16 @@ def mark(kind: str, entry: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
+def unmark(entry: dict[str, Any]) -> dict[str, Any]:
+    """An element's Standard results taken as Detailed (the same design): the mark and note dropped."""
+    entry.pop(KEY, None)
+    entry.pop("standard", None)
+    notes = entry.get("notes")
+    if isinstance(notes, list):
+        entry["notes"] = [n for n in notes if n != NOTE]
+    return entry
+
+
 def detailed_only(results: dict[str, Any], kinds: tuple[str, ...]) -> tuple[dict[str, Any], list[str]]:
     """The results without the elements designed in Standard mode, and those elements' names."""
     out = dict(results)
