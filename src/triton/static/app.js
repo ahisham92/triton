@@ -2911,6 +2911,7 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
       res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3, mode, run: WINDOW_ID }) })));
       const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"].flatMap((k) => res[k] || []);
       for (const n of res.designed) {
+        if (res.left.includes(n)) continue; // still to come in a later step
         const s = step(n);
         const r = all.find((x) => x.element === n);
         s.state = "done";
