@@ -2526,7 +2526,7 @@ def _furniture(project_id: str, section_id: str) -> tuple[Project, Section, dict
     geometry = _berth_geometry(project_id, section)
     joints = _joints_for_furniture(project_id, project, section)
     try:
-        res = furniture_mod.design(project, section, geometry, joints)
+        res = furniture_mod.design(project, section, geometry, joints, _corner_line(project_id, section))
     except ValueError as e:
         raise HTTPException(409, str(e)) from None
     store()._write_json(store()._dir(project_id, section_id) / "furniture.json", res)
@@ -2556,13 +2556,14 @@ def _site(project_id: str, project: Project, section: Section) -> dict:
     except ValueError:
         frame = None
     furn = None
+    line = _corner_line(project_id, section)
     if frame is not None and section.furniture.use:
         try:
             joints = _joints_for_furniture(project_id, project, section)
-            furn = furniture_mod.design(project, section, geometry, joints)
+            furn = furniture_mod.design(project, section, geometry, joints, line)
         except (ValueError, HTTPException):
             furn = None
-    return site3d.scene(project, section, geometry, frame, furn, _corner_line(project_id, section))
+    return site3d.scene(project, section, geometry, frame, furn, line)
 
 
 def _corner_line(project_id: str, section: Section) -> list[list[float]] | None:
