@@ -149,7 +149,10 @@ def design_one(
                 continue
             return "failed", str(e.detail)
         except Exception as e:  # noqa: BLE001 - one section failing leaves the others to design
-            return "failed", f"{type(e).__name__}: {e}"
+            from . import errors
+
+            # With a code, its traceback kept under it (errors.py), as the page shows it.
+            return "failed", errors.record(e, "RUNNER", f"{project_id}/{section_id}")["detail"]
     return "failed", "Another window kept designing it."
 
 

@@ -204,6 +204,10 @@ def run_section(
         unfinished = [n for n in handled if n in on or not (n in started or n in found or n in said)]
         handled[:] = [n for n in handled if n not in unfinished]
         left[:0] = unfinished
+    except Exception as e:
+        if on:
+            e.triton_element = on[0]  # named in the error the page shows (errors.py)
+        raise
     for e in out["piles"]:
         if e.get("element") in heads:
             e.setdefault("notes", []).append(heads[e["element"]])

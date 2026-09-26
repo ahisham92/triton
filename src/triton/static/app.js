@@ -37,6 +37,7 @@ async function api(path, opts = {}) {
         : typeof data.detail === "string" ? data.detail : res.statusText,
     );
     err.detail = data.detail;
+    err.code = data.code; // a server error's code (errors.py)
     err.status = res.status;
     throw err;
   }
@@ -1565,12 +1566,14 @@ function newJob(job) {
   return job;
 }
 
-function jobDone(job, end, message) {
+function jobDone(job, end, message, err = null) {
   job.state = end;
   job.message = message;
+  if (end === "failed") setProblem(job, problemOf(err, job) || { code: "T-FAIL", text: message });
+  else if (job.problem?.code === "T-STALL") job.problem = null;
   for (const s of job.steps) if (s.state === "running") s.state = end === "done" ? "done" : "waiting";
   drawJobs();
-  if (end === "done") setTimeout(() => dismissJob(job), 60000);
+  if (end === "done" && !job.problem) setTimeout(() => dismissJob(job), 60000); // a problem stays to copy
 }
 
 function dismissJob(job) {
@@ -1598,6 +1601,81 @@ function timeLeft(job, f) {
 
 const JOB_END = { done: "Done", failed: "Failed", stopped: "Stopped" };
 
+// ---------------------------------------------------------------- problems with a code
+// A job that fails, or stops moving, says so with a short code and a "Copy details" button, so it
+// can be reported in the chat and looked up. Codes: E... a server error (its traceback kept on the
+// server under the code); T-STALL nothing moved for a while; T-CUT-504/502/503 the host cut the
+// request off; T-NET no answer at all; T-BUSY the section is busy elsewhere; T-HTTP-n another refusal;
+// T-PAGE an error in the page itself.
+const STALL_S = window.TRITON_STALL_S ?? 180; // seconds (settable for tests)
+
+function problemOf(e, job) {
+  const on = job.steps.find((s) => s.state === "running")?.label;
+  const at = on ? ` (at ${on})` : "";
+  if (!e) return null;
+  if (e.code) return { code: e.code, text: e.message };
+  if (GATEWAY.includes(e.status)) return { code: `T-CUT-${e.status}`, text: `The host cut the request off${at}: it ran longer than the host allows, or the site was restarting.` };
+  if (e instanceof TypeError) return { code: "T-NET", text: `No answer from the server${at}: the connection dropped or the site is down.` };
+  if (e.status === 409) return { code: "T-BUSY", text: e.message };
+  if (e.status) return { code: `T-HTTP-${e.status}`, text: e.message };
+  return { code: "T-PAGE", text: `${e.name || "Error"} in the page${at}: ${e.message}`, stack: String(e.stack || "").split("\n").slice(0, 4).join(" | ") };
+}
+
+function setProblem(job, problem) {
+  job.problem = problem;
+  if (problem?.code?.startsWith("E"))
+    fetch(`${ROOT}/api/errors/${encodeURIComponent(problem.code)}`)
+      .then((r) => (r.ok ? r.text() : ""))
+      .then((t) => t && job.problem === problem && (problem.trace = t))
+      .catch(() => {});
+}
+
+function problemDetails(job) {
+  const p = job.problem || {};
+  const lines = [
+    `Triton problem ${p.code}`,
+    p.text,
+    `Job: ${job.title} (${job.state})`,
+    `Started: ${new Date(job.began).toLocaleString()}, now ${new Date().toLocaleString()}`,
+    `Steps: ${job.steps.map((s) => `${s.label}: ${s.state}${s.note ? ` (${s.note})` : ""}`).join("; ")}`,
+    ...(job.server ? [`Server said: ${job.server.step || ""} ${Math.round((job.server.fraction || 0) * 100)}%`] : []),
+    ...(p.stack ? [`Page: ${p.stack}`] : []),
+    `Page address: ${location.href}`,
+    ...(p.trace ? ["", p.trace] : []),
+  ];
+  return lines.filter((x) => x != null).join("\n");
+}
+
+async function copyProblem(job, button) {
+  const text = problemDetails(job);
+  try {
+    await navigator.clipboard.writeText(text);
+    button.textContent = "Copied: paste it in the chat";
+  } catch {
+    window.prompt("Copy these details and paste them in the chat:", text);
+  }
+}
+
+// A running job whose bars, notes and server step have not moved for STALL_S says it looks stuck.
+function watchStall(job) {
+  if (job.state !== "running") return;
+  const sig = JSON.stringify([job.steps.map((s) => [s.state, Math.round((s.fraction || 0) * 100), s.note, s.detail]), job.server?.step, Math.round((job.server?.fraction || 0) * 100)]);
+  const now = Date.now();
+  if (sig !== job.sig) {
+    job.sig = sig;
+    job.moved = now;
+    if (job.problem?.code === "T-STALL") job.problem = null;
+    return;
+  }
+  const quiet = (now - (job.moved || job.began)) / 1000;
+  if (quiet < STALL_S || (job.problem && job.problem.code !== "T-STALL")) return;
+  const on = job.steps.find((s) => s.state === "running")?.label || "the next step";
+  job.problem = {
+    code: "T-STALL",
+    text: `Nothing has moved for ${quiet < 120 ? `${Math.round(quiet)} s` : `${Math.round(quiet / 60)} min`} on ${on}${job.server?.step ? ` (the server last said: ${job.server.step})` : ""}. It may still be working; if this stays, press Stop and send these details.`,
+  };
+}
+
 function stepNote(s) {
   if (s.note) return s.note;
   if (s.state === "done") return "Done";
@@ -1612,6 +1690,7 @@ function jobCardHtml(job, inDock) {
       ${job.state === "running" ? `<button class="quiet small" data-job-stop>Stop</button>` : `<button class="x" data-job-close title="Close">×</button>`}</div>
     ${voyageHtml()}
     <div class="job-sub"><span></span>${inDock && job.home ? ` <a href="${job.home}">Open</a>` : ""}</div>
+    <div class="job-problem" hidden><b></b> <span></span> <button class="quiet small" data-job-copy>Copy details</button></div>
     <ol class="job-steps${job.steps.length > 5 ? " many" : ""}">${job.steps
       .map((s) => `<li><span class="step-name">${esc(s.label)}</span><span class="bar"><i></i></span><span class="step-note"></span></li>`)
       .join("")}</ol></div>`;
@@ -1629,8 +1708,14 @@ function fillJobCard(card, job) {
     pct: ended ? null : pctEl, done: job.state === "done",
     ahead: job.state === "running" ? 1 / Math.max(1, job.steps.length) : 0 });
   if (ended) pctEl.textContent = JOB_END[job.state];
+  const problem = card.querySelector(".job-problem");
+  problem.hidden = !job.problem;
+  if (job.problem) {
+    problem.querySelector("b").textContent = `Code ${job.problem.code}`;
+    problem.querySelector("span").textContent = job.problem.text || "";
+  }
   card.querySelector(".job-sub span").textContent =
-    job.state === "running" ? [running?.detail || running?.label, timeLeft(job, f)].filter(Boolean).join(" · ") : job.message || "";
+    job.state === "running" ? [running?.detail || running?.label, timeLeft(job, f)].filter(Boolean).join(" · ") : job.problem && job.state === "failed" ? "" : job.message || "";
   card.querySelectorAll(".job-steps li").forEach((li, i) => {
     const s = job.steps[i];
     li.className = `${s.state}${s.bad ? " bad" : ""}${s.state === "running" && s.fraction == null ? " busy" : ""}`;
@@ -1659,6 +1744,7 @@ function showJob(box, job, inDock) {
       job.stop?.();
     });
     card.querySelector("[data-job-close]")?.addEventListener("click", () => dismissJob(job));
+    card.querySelector("[data-job-copy]")?.addEventListener("click", (e) => copyProblem(job, e.target));
   }
   fillJobCard(card, job);
 }
@@ -1681,7 +1767,10 @@ function drawJobs() {
   document.querySelectorAll("[data-job]").forEach((c) => shown.has(c.dataset.job) || c.remove());
 }
 // Time left moves on even between answers.
-setInterval(() => JOBS.some((j) => j.state === "running") && drawJobs(), 1000);
+setInterval(() => {
+  JOBS.forEach(watchStall);
+  if (JOBS.some((j) => j.state === "running")) drawJobs();
+}, 1000);
 window.addEventListener("beforeunload", (e) => {
   if (JOBS.some((j) => j.state === "running") || state?.dirty) e.preventDefault();
 });
@@ -1772,7 +1861,7 @@ async function uploadJob(f, { url, mode, title, slot, home, onDone }) {
     jobDone(job, "done", data.merged ? mergedText(data.merged) : `Checked ${data.file}${counts ? `: ${counts}` : ""}.`);
     onDone?.(data);
   } catch (e) {
-    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped. Nothing was kept from this upload." : `Failed: ${e.message}`);
+    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped. Nothing was kept from this upload." : `Failed: ${e.message}`, e);
   }
 }
 
@@ -1964,7 +2053,7 @@ async function fetchWorkbook(url, { title, slot, fresh = false, doneText }) {
     return job;
   } catch (e) {
     clearInterval(poll);
-    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped." : `Failed: ${e.message}`);
+    jobDone(job, job.stopped ? "stopped" : "failed", job.stopped ? "Stopped." : `Failed: ${e.message}`, e);
     throw Object.assign(e, { job });
   }
 }
@@ -3087,6 +3176,7 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
   const poll = setInterval(async () => {
     try {
       const p = await api(`${ROOT}/api/progress/${key}`);
+      job.server = p;
       const m = /^Designing (.+)$/.exec(p.step || "");
       const s = m && job.steps.find((x) => x.name === m[1]);
       if (s && s.state === "waiting") {
@@ -3170,7 +3260,7 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
         if (location.hash.startsWith(`#/project/${pid}/`)) route();
         prepareTabs(pid, section);
       }
-    } else jobDone(job, "failed", `Failed: ${why}`);
+    } else jobDone(job, "failed", `Failed: ${why}`, e);
   } finally {
     clearInterval(poll);
   }
@@ -3274,6 +3364,7 @@ async function designAllSections(project, ids, mode, resumed = false, changedOnl
       else {
         failed++;
         Object.assign(step, { state: "done", note: one.state === "failed" ? "Failed" : "Stopped", bad: true, detail: one.message });
+        if (one.problem && !job.problem) setProblem(job, { ...one.problem, text: `${s.name}: ${one.problem.text}` });
       }
       queue.ids = queue.ids.filter((id) => id !== s.id);
       keepQueue({ ...queue, alive: (queue.alive = Date.now()) });
@@ -3338,6 +3429,10 @@ async function followServerQueue(project, first = null) {
       else if (s.state === "waiting") step.state = "waiting";
       else {
         Object.assign(step, { state: "done", note: s.state === "done" ? s.note : s.state === "failed" ? "Failed" : s.note || "Stopped", bad: s.state !== "done" || /unsafe/.test(s.note), detail: s.note });
+        if (s.state === "failed" && !job.problem) {
+          const code = /Server error (E[\w-]+)/.exec(s.note || "")?.[1];
+          setProblem(job, { code: code || "T-RUNNER", text: `${s.name}: ${s.note || "failed on the server"}` });
+        }
         if (s.state === "done" && !seen.has(s.id)) {
           seen.add(s.id);
           if (state?.project.id === pid) {

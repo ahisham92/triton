@@ -42,6 +42,7 @@ from . import (
     trials,
     views,
 )
+from . import errors as errors_mod
 from . import furniture as furniture_mod
 from . import moved as moved_piles
 from . import runner as runner_mod
@@ -570,6 +571,25 @@ def _progress_path(key: str) -> Path:
 @app.exception_handler(Stopped)
 def _stopped(_request: Request, _exc: Stopped) -> JSONResponse:
     return JSONResponse({"detail": "Stopped."}, status_code=409)
+
+
+@app.middleware("http")
+async def _coded_errors(request: Request, call_next):
+    """An unexpected error answers with a code (and what it was, and where), its traceback kept
+    under that code: the page shows it, so it can be reported and looked up."""
+    try:
+        return await call_next(request)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(errors_mod.record(exc, request.method, request.url.path), status_code=500)
+
+
+@app.get("/api/errors/{code}")
+def error_details(code: str) -> Response:
+    """The traceback kept under an error's code."""
+    text = errors_mod.read(code)
+    if text is None:
+        raise HTTPException(404, "No error with that code (only the newest 100 are kept).")
+    return Response(text, media_type="text/plain; charset=utf-8")
 
 
 class _Progress:
