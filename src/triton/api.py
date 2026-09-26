@@ -2562,7 +2562,19 @@ def _site(project_id: str, project: Project, section: Section) -> dict:
             furn = furniture_mod.design(project, section, geometry, joints)
         except (ValueError, HTTPException):
             furn = None
-    return site3d.scene(project, section, geometry, frame, furn)
+    return site3d.scene(project, section, geometry, frame, furn, _corner_line(project_id, section))
+
+
+def _corner_line(project_id: str, section: Section) -> list[list[float]] | None:
+    """A corner (or turned) berth's front beam line in plan, as the 3D view's geometry found it; None
+    for a straight berth along the model's axis."""
+    try:
+        al = geometry(project_id, section.id).get("alignment") or {}
+    except HTTPException:
+        return None
+    parts = al.get("parts") or []
+    turned = len(parts) > 1 or any(abs(p.get("rotation_deg") or 0.0) > 1e-6 for p in parts)
+    return al.get("points") if turned and len(al.get("points") or []) >= 2 else None
 
 
 @app.get(SECTION + "/sequence")

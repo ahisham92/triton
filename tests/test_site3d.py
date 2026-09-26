@@ -167,3 +167,52 @@ def test_a_section_without_sts_cranes_draws_none(api):
     out = client.get(base + "/site").json()
     assert out["crane"] is None
     assert any(i["kind"] == "fender_blocks" for i in out["furniture"])
+
+
+def test_a_corner_berths_furniture_follows_the_front_beams_face():
+    """Ahmed 09-26: on a corner berth the fenders, bollards and rails follow the front face of the
+    front beam round the corner, turned with it."""
+    import math
+
+    from triton import furniture as F
+    from triton import site3d
+
+    p = project()
+    s = p.sections[0]
+    g = geometry()
+    fr = F.berth_frame(p, s, g)
+    furn = F.design(p, s, g, None)
+    # The front beam (2 m wide, centre at X 0) runs up Y to 0, then turns 30° inland (towards -X).
+    turn = [-math.sin(math.radians(30)), math.cos(math.radians(30))]
+    line = [[0.0, -16.8], [0.0, 0.0], [16.8 * turn[0], 16.8 * turn[1]]]
+    out = site3d.scene(p, s, g, fr, furn, line)
+    fenders = [i for i in out["furniture"] if i["kind"] == "fenders" and not i["label"].endswith("panel")]
+    assert fenders
+    for f in fenders:
+        plan = f["box"]["plan"]
+        cx = sum(q[0] for q in plan) / 4
+        cy = sum(q[1] for q in plan) / 4
+        along = [plan[1][0] - plan[0][0], plan[1][1] - plan[0][1]]
+        n = math.hypot(*along)
+        if cy < -0.5:
+            # The straight part: square to X, out to sea of the face at X 1.
+            assert abs(along[0]) < 1e-6 and cx > 1.0
+        elif cy > 2.0:
+            # The turned part: along the turned face, out to sea of it.
+            assert along[0] / n == pytest.approx(turn[0], abs=2e-3) and along[1] / n == pytest.approx(
+                turn[1], abs=2e-3
+            )
+            face = [1.0 * turn[1], -1.0 * turn[0]]  # the face point beside the corner, 1 m to sea
+            sea = (cx - face[0]) * turn[1] - (cy - face[1]) * turn[0]
+            assert sea > 0
+    # Rails come in one piece per straight, meeting at the corner.
+    rails = out["rails"]
+    assert len(rails) == 2 * len({r["label"] for r in rails})
+    a, b = rails[0]["line"][1], rails[1]["line"][0]
+    assert a == b
+    # The straight berth draws as before: squares with the model's axes.
+    plain = site3d.scene(p, s, g, fr, furn)
+    for f in plain["furniture"]:
+        if "box" in f:
+            plan = f["box"]["plan"]
+            assert {round(q[0], 6) for q in plan} == {round(v, 6) for v in f["box"]["X"]}

@@ -124,6 +124,15 @@ function solid(items, box, color, tip) {
     const c = color.match(/\w\w/g).map((h) => Math.round(parseInt(h, 16) * f));
     return `rgb(${c.join(",")})`;
   };
+  // Square to a corner berth's face: its own plan corners, in order round it.
+  const plan = box.plan || [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  if (box.plan) {
+    const at = (i, z) => [plan[i][0], plan[i][1], z];
+    const sides = [0, 1, 2, 3].map((i) => [at(i, z0), at((i + 1) % 4, z0), at((i + 1) % 4, z1), at(i, z1), i % 2 ? 0.68 : 0.8]);
+    const all = [[at(0, z1), at(1, z1), at(2, z1), at(3, z1), 1.0], ...sides, [at(0, z0), at(1, z0), at(2, z0), at(3, z0), 0.55]];
+    for (const [a, b, c, d, f] of all) items.push({ kind: "quad", pts: [a, b, c, d], fill: shade(f), base: 0, stroke: false, site: true, tip });
+    return;
+  }
   const faces = [
     [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], 1.0],
     [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], 0.8],
@@ -693,12 +702,22 @@ export class View3D {
   _seat() {
     const plates = [];
     for (const e of this.scene.elements) {
-      if (!e.box || e.turn || e.box.Z[1] - e.box.Z[0] >= 0.05) continue;
-      plates.push({ X: e.box.X, Y: e.box.Y, top: this.tops[e.key || e.element] ?? e.box.Z[1] });
+      if (!e.box || e.box.Z[1] - e.box.Z[0] >= 0.05) continue;
+      plates.push({ X: e.box.X, Y: e.box.Y, turn: e.turn, top: this.tops[e.key || e.element] ?? e.box.Z[1] });
     }
     if (!plates.length) return () => 0;
     const cope = this.scene.site.levels.cope;
-    const gap = (p, x, y) => Math.hypot(Math.max(p.X[0] - x, 0, x - p.X[1]), Math.max(p.Y[0] - y, 0, y - p.Y[1]));
+    const gap = (p, x0, y0) => {
+      let [x, y] = [x0, y0];
+      if (p.turn) {
+        // A corner berth's part: its box is in its turned frame (turnBack's inverse brings the point in).
+        const a = (p.turn.deg * Math.PI) / 180;
+        const [px, py] = p.turn.pivot;
+        const dx = x0 - px, dy = y0 - py;
+        [x, y] = [px + Math.cos(a) * dx - Math.sin(a) * dy, py + Math.sin(a) * dx + Math.cos(a) * dy];
+      }
+      return Math.hypot(Math.max(p.X[0] - x, 0, x - p.X[1]), Math.max(p.Y[0] - y, 0, y - p.Y[1]));
+    };
     return (x, y) => {
       const on = plates.filter((p) => gap(p, x, y) < 0.05);
       const top = on.length ? Math.max(...on.map((p) => p.top)) : plates.reduce((b, p) => (gap(p, x, y) < gap(b, x, y) ? p : b)).top;
