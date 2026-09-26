@@ -7,6 +7,11 @@ the piles (cage in, then concrete cast about 1 m above the cut-off level, then t
 down), the front and rear beams at the same time, the slab and approach slab, the furniture and
 last the dredging. Each section can have its own steps (Section.sequence).
 
+The furniture goes in item by item (Ahmed, 2026-09-26): crane rail, tie-downs, stow pins, crane
+stoppers, fenders, bollards, and last the STS crane, brought by a ship that berths alongside and pushed
+onto the quay over skid rails laid from its deck. A section with no STS crane has none of the crane's
+items (furniture.for_section, the Furniture tab's own rule), so it has none of their steps.
+
 A stage is a step with the steps set "at the same time as the step before" after it.
 """
 
@@ -14,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .furniture import for_section
 from .project import (
     BeamInput,
     CombiWallInput,
@@ -41,6 +47,13 @@ NAMES = {
     "transverse_beam": "Cast the transverse beams",
     "slab": "Cast the slab",
     "approach_slab": "Cast the approach slab",
+    "crane_rail": "Lay the crane rails",
+    "tie_downs": "Fix the crane tie-downs",
+    "stow_pins": "Fix the stow pin sockets",
+    "crane_stoppers": "Fix the crane stoppers",
+    "fenders": "Hang the fenders and ladders",
+    "bollards": "Fix the bollards",
+    "sts_crane": "Bring the STS crane by ship and push it onto the quay",
     "furniture": "Install the quay furniture",
     "dredging": "Dredge to the new seabed",
 }
@@ -59,6 +72,29 @@ BUILDS = {
     "transverse_beam": ("transverse_beam", "done"),
     "slab": ("slab", "done"),
 }
+
+
+# The furniture works in their order, the Furniture tab's item each one needs, and the kinds of the
+# 3D view's furniture (triton/site3d.py) each one installs. "furniture" is every item at once.
+FURNITURE = {
+    "crane_rail": ("crane_rails", ["crane_rails"]),
+    "tie_downs": ("tie_downs", ["tie_downs"]),
+    "stow_pins": ("storm_pins", ["storm_pins"]),
+    "crane_stoppers": ("crane_stoppers", ["crane_stoppers"]),
+    "fenders": ("fenders", ["fenders", "fender_blocks", "ladders"]),
+    "bollards": ("bollards", ["bollards"]),
+    "sts_crane": ("sts_crane", ["sts_crane"]),
+}
+ALL_FURNITURE = sorted({k for _, kinds in FURNITURE.values() for k in kinds})
+
+
+def furniture_works(project: Project, section: Section) -> list[str]:
+    """The furniture works this section has: none without furniture, and none of the crane's items
+    without an STS crane."""
+    if not section.furniture.use:
+        return []
+    f = for_section(project.furniture, section.furniture)
+    return [w for w, (item, _) in FURNITURE.items() if getattr(f, item) is not None]
 
 
 def _kind(el: Any) -> str | None:
@@ -87,7 +123,7 @@ def default_steps(project: Project, section: Section) -> list[SequenceStep]:
         ("transverse_beam", True),
         ("slab", False),
         ("approach_slab", True),
-        ("furniture", False),
+        *((w, False) for w in furniture_works(project, section)),
         ("dredging", False),
     ]
     out = []
@@ -97,8 +133,6 @@ def default_steps(project: Project, section: Section) -> list[SequenceStep]:
         if work == "demolition" and not ex.use:
             continue
         if work == "approach_slab" and project.approach is None:
-            continue
-        if work == "furniture" and not section.furniture.use:
             continue
         # "At the same time" only when the step before it is kept.
         out.append(SequenceStep(work=work, with_previous=together and bool(out)))
@@ -133,7 +167,7 @@ def stages(project: Project, section: Section, geometry: list[dict[str, Any]]) -
     after = section.site.seabed_level
     state: dict[str, str] = {}
     demolished = False
-    furniture = False
+    installed: set[str] = set()
     approach = False
     seabed = before
     groups: list[list[int]] = []
@@ -158,7 +192,9 @@ def stages(project: Project, section: Section, geometry: list[dict[str, Any]]) -
             elif st.work == "demolition":
                 demolished = True
             elif st.work == "furniture":
-                furniture = True
+                installed.update(ALL_FURNITURE)
+            elif st.work in FURNITURE:
+                installed.update(FURNITURE[st.work][1])
             elif st.work == "approach_slab":
                 approach = True
             elif st.work == "dredging":
@@ -172,7 +208,7 @@ def stages(project: Project, section: Section, geometry: list[dict[str, Any]]) -
                 "elements": dict(state),
                 "active": active,
                 "demolished": demolished,
-                "furniture": furniture,
+                "furniture": sorted(installed),
                 "approach_slab": approach,
                 "seabed": seabed,
             }

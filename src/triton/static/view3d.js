@@ -247,9 +247,9 @@ export class View3D {
     this.items = [];
     host.querySelectorAll("[data-preset]").forEach((b) => (b.onclick = () => {
       Object.assign(this.cam, PRESETS[b.dataset.preset]);
-      this.fit();
+      this.fit(this.fitExtra || []);
     }));
-    host.querySelector("[data-fit]").onclick = () => this.fit();
+    host.querySelector("[data-fit]").onclick = () => this.fit(this.fitExtra || []);
     host.querySelector("[data-labels]").onchange = (e) => {
       this.labels = e.target.checked;
       this.draw();
@@ -830,29 +830,54 @@ export class View3D {
     if (S.existing && v.existing !== "hidden") this._existingItems(items, S.existing, v.existing === "show" ? 1 : 0.3, stage);
     const seat = this._seat();
     const lower = (p, dz) => [p[0], p[1], p[2] + dz];
-    if (v.furniture && (!stage || stage.furniture)) {
+    // A construction stage: only the furniture installed so far (stage.furniture: the kinds; true on an
+    // older stage), the ones of the work under way only up to where it has got along the berth, and the
+    // STS crane shifted out to sea while it is being pushed off its ship.
+    const fr = S.frame;
+    const sOf = (x, y) => (fr ? ({ X: x, Y: y })[fr.along] - fr.start : 0);
+    const has = (k) => !stage || stage.furniture === true || (Array.isArray(stage.furniture) && stage.furniture.includes(k));
+    const upTo = (k, x, y) => !stage?.furniture_upto || !stage.furniture_upto.kinds.includes(k) || sOf(x, y) <= stage.furniture_upto.s;
+    if (v.furniture) {
       for (const f of S.furniture || []) {
+        if (!has(f.kind)) continue;
         if (f.line) {
+          if (!upTo(f.kind, f.line[0][0], f.line[0][1])) continue;
           const dz = seat(f.line[0][0], f.line[0][1]);
           items.push({ kind: "line", a: lower(f.line[0], dz), b: lower(f.line[1], dz), color: "#b45309", width: 2, site: true, tip: f.label });
           continue;
         }
+        if (!upTo(f.kind, (f.box.X[0] + f.box.X[1]) / 2, (f.box.Y[0] + f.box.Y[1]) / 2)) continue;
         const dz = seat((f.box.X[0] + f.box.X[1]) / 2, (f.box.Y[0] + f.box.Y[1]) / 2);
         const color = f.kind === "fenders" ? (/panel/.test(f.label) ? "#d4a017" : "#2f3337")
           : f.kind === "fender_blocks" ? "#aab0b8" : f.kind === "bollards" ? "#4b5563"
-          : f.kind === "crane_stoppers" ? "#b91c1c" : "#6b7280";
+          : f.kind === "crane_stoppers" ? "#b91c1c" : f.kind === "tie_downs" ? "#0f766e" : f.kind === "storm_pins" ? "#7c3aed" : "#6b7280";
         solid(items, { ...f.box, Z: [f.box.Z[0] + dz, f.box.Z[1] + dz] }, color, f.label);
       }
-      for (const r of S.rails || []) {
-        const dz = seat((r.line[0][0] + r.line[1][0]) / 2, (r.line[0][1] + r.line[1][1]) / 2);
-        items.push({ kind: "line", a: lower(r.line[0], dz), b: lower(r.line[1], dz), color: "#374151", width: 2.5, site: true, tip: r.label });
-      }
+      if (has("crane_rails"))
+        for (const r of S.rails || []) {
+          const dz = seat((r.line[0][0] + r.line[1][0]) / 2, (r.line[0][1] + r.line[1][1]) / 2);
+          let b = r.line[1];
+          const lim = stage?.furniture_upto?.kinds.includes("crane_rails") ? stage.furniture_upto.s : null;
+          if (lim != null && fr) {
+            const s0 = sOf(r.line[0][0], r.line[0][1]);
+            const s1 = sOf(b[0], b[1]);
+            if (lim <= s0) continue;
+            const k = Math.min(1, (lim - s0) / (s1 - s0 || 1));
+            b = r.line[0].map((c, i) => c + (r.line[1][i] - c) * k);
+          }
+          items.push({ kind: "line", a: lower(r.line[0], dz), b: lower(b, dz), color: "#374151", width: 2.5, site: true, tip: r.label });
+        }
     }
-    if (v.crane && S.crane && (!stage || stage.furniture)) {
+    if (v.crane && S.crane && has("sts_crane")) {
       const [x, y] = S.crane.lines[0][0]; // the foot of a sea-side leg
       const dz = seat(x, y);
+      // Out to sea by crane_shift m (on its ship), and up by crane_lift m (the ship's deck above the rail).
+      const sea = { X: 0, Y: 0 };
+      if (fr && stage?.crane_shift) sea[fr.across] = -fr.inland * stage.crane_shift;
+      const up = stage?.crane_lift || 0;
+      const move = (p) => [p[0] + sea.X, p[1] + sea.Y, p[2] + dz + up];
       for (const [a, b] of S.crane.lines)
-        items.push({ kind: "line", a: lower(a, dz), b: lower(b, dz), color: "#1d4ed8", width: 2.5, site: true, tip: S.crane.label });
+        items.push({ kind: "line", a: move(a), b: move(b), color: "#1d4ed8", width: 2.5, site: true, tip: S.crane.label });
     }
   }
 
@@ -955,10 +980,11 @@ export class View3D {
     return [this.w / 2 + this.cam.panX + dot(right) * s, this.h / 2 + this.cam.panY - dot(up) * s, dot(toward)];
   }
 
-  fit() {
+  // extra: more points to keep in view (the construction sequence's ship and crane).
+  fit(extra = this.fitExtra || []) {
     this._size();
     const { lo, hi } = this.bounds;
-    const corners = [];
+    const corners = [...extra];
     for (const x of [lo[0], hi[0]]) for (const y of [lo[1], hi[1]]) for (const z of [lo[2], hi[2]]) corners.push([x, y, z]);
     this.cam.scale = 1;
     this.cam.panX = this.cam.panY = 0;
@@ -966,6 +992,13 @@ export class View3D {
     const wx = Math.max(...sp.map((p) => p[0])) - Math.min(...sp.map((p) => p[0]));
     const wy = Math.max(...sp.map((p) => p[1])) - Math.min(...sp.map((p) => p[1]));
     this.cam.scale = 0.82 * Math.min(this.w / Math.max(wx, 1e-6), this.h / Math.max(wy, 1e-6));
+    if (extra.length) {
+      // Centred on everything to keep in view, not on the structure.
+      const mx = (Math.max(...sp.map((p) => p[0])) + Math.min(...sp.map((p) => p[0]))) / 2 - this.w / 2;
+      const my = (Math.max(...sp.map((p) => p[1])) + Math.min(...sp.map((p) => p[1]))) / 2 - this.h / 2;
+      this.cam.panX = -mx * this.cam.scale;
+      this.cam.panY = -my * this.cam.scale;
+    }
     this.draw();
   }
 

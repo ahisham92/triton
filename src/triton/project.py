@@ -2524,6 +2524,13 @@ SEQUENCE_WORKS = (
     "transverse_beam",
     "slab",
     "approach_slab",
+    "crane_rail",
+    "tie_downs",
+    "stow_pins",
+    "crane_stoppers",
+    "fenders",
+    "bollards",
+    "sts_crane",
     "furniture",
     "dredging",
 )
@@ -2542,7 +2549,7 @@ class ConstructionSequence(_Model):
         default_factory=list,
         title="Steps",
         description="Empty: the default order (pipes, cages, infill, sheet piles, demolition, piles, beams, "
-        "slabs, furniture, dredging).",
+        "slabs, the furniture item by item ending with the STS crane, dredging).",
     )
     cast_above: float = _m(
         "Piles cast above their cut-off level by", 1.0, ge=0, description="Broken down in their own step."
