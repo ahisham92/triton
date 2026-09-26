@@ -395,3 +395,22 @@ def test_no_crane_leaves_out_what_comes_with_it():
         r["element"] for r in out["rows"]
     }
     assert any("No STS crane" in n for n in out["notes"])
+
+
+def test_a_corner_berth_is_laid_out_round_the_corner():
+    p = project()
+    s = p.sections[0]
+    s.costing.berth_length = None
+    # 200 m along the model, then 100 m turned 30 degrees off it: 300 m round the corner.
+    line = [[0.0, 0.0], [0.0, 200.0], [50.0, 200.0 + 50.0 * 3**0.5]]
+    assert F.line_length(line) == pytest.approx(300.0)
+    frame = F.berth_frame(p, s, geometry())
+    assert F.berth_length(s, frame, line) == (
+        pytest.approx(300.0),
+        "the front beam's length round the corner in the model",
+    )
+    assert F.berth_length(s, frame)[0] == frame["model_length_m"]
+    assert F.design(p, s, geometry(), None, line)["berth_length_m"] == pytest.approx(300.0)
+    # A length given still wins.
+    s.furniture.berth_length = 250.0
+    assert F.berth_length(s, frame, line)[0] == 250.0
