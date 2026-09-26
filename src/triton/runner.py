@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import atomic
+from .design.combi import failing_parts
 
 ALIVE_S = 60  # a runner that has not said it is there for this long is taken to be off
 BEAT_S = 10
@@ -111,7 +112,12 @@ def _outcome(res: dict[str, Any]) -> tuple[str, str]:
     kinds = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
     done = set(res.get("designed") or [])
     designed = [e for k in kinds for e in res.get(k) or [] if e.get("element") in done]
-    unsafe = sum(1 for e in designed if e.get("passed") is False)
+    # A combi wall counts as its two parts (concrete infill, steel), each safe or not.
+    unsafe = sum(
+        len(failing_parts(e)) or 1 if "infill" in e and "tube" in e else 1
+        for e in designed
+        if e.get("passed") is False
+    )
     return "done", f"{unsafe} unsafe" if unsafe else "All safe"
 
 

@@ -217,10 +217,17 @@ export async function renderTrials(host, h) {
     const saving = (v, c) => (v == null ? "–" : c.base ? "–" : v === 0 ? "0" : `<span class="${v > 0 ? "flag-ok" : "flag-bad"}">${v > 0 ? "saves " : "costs "}${fmt(Math.abs(v))}</span>`);
     const cell = (c, f) => (c.complete ? f(c) : `<span class="status">${c.missing} element${c.missing === 1 ? "" : "s"} not designed yet</span>`);
     const line = (label, f, strong) => `<tr><th>${label}</th>${cols.map((c) => `<td>${strong ? "<strong>" : ""}${cell(c, f)}${strong ? "</strong>" : ""}</td>`).join("")}</tr>`;
+    // A combi wall shows as two elements, its concrete infill and its steel (a row each).
+    const partsOf = (n) => cols.map((c) => c.elements[n]?.parts).find((p) => p?.length);
     const elRow = (n) =>
+      partsOf(n) ? partsOf(n).map((p, i) => oneRow(p.element, (c) => {
+        const e = c.elements[n] || {};
+        return e.state === "done" ? { state: "done", ...(e.parts?.[i] || {}) } : e;
+      })).join("") : oneRow(n, (c) => c.elements[n] || {});
+    const oneRow = (n, get) =>
       `<tr><td>${esc(n)}</td>${cols
         .map((c) => {
-          const e = c.elements[n] || {};
+          const e = get(c);
           if (e.state !== "done") return `<td class="status">${esc(e.state || "–")}</td>`;
           return `<td><span class="${e.passed ? "flag-ok" : "flag-bad"}">${fmt(e.utilisation, 2)}</span>${e.cost_per_m != null ? ` · ${fmt(e.cost_per_m)}/m` : ""}${e.kg_per_m3 != null ? `<div class="hint">${fmt(e.kg_per_m3)} kg/m³</div>` : ""}</td>`;
         })

@@ -184,3 +184,42 @@ def design_combi_wall(
         "tube": steel,
         "notes": notes,
     }
+
+
+# The combi wall is designed and mapped as one element, but its two parts are reported as two
+# elements in every summary, so the part that fails shows by name.
+PARTS = (("infill", "concrete infill"), ("steel", "steel"))
+
+
+def part_name(wall: str, part: str) -> str:
+    return f"{wall} – {dict(PARTS)[part]}"
+
+
+def parts(w: dict[str, Any]) -> list[dict[str, Any]]:
+    """The concrete infill and the steel tube of a designed combi wall, each as its own element.
+
+    Works on results stored before the split: both parts were always designed separately."""
+    inf, tube = w.get("infill") or {}, w.get("tube") or {}
+    g = tube.get("governing") or {}
+    return [
+        {
+            "element": part_name(w["element"], "infill"),
+            "wall": w["element"],
+            "part": "infill",
+            "utilisation": inf.get("utilisation"),
+            "passed": bool(inf.get("passed")),
+            "governs": "N–M" if inf.get("utilisation") is not None else None,
+        },
+        {
+            "element": part_name(w["element"], "steel"),
+            "wall": w["element"],
+            "part": "steel",
+            "utilisation": tube.get("utilisation"),
+            "passed": bool(tube.get("passed")),
+            "governs": g.get("check"),
+        },
+    ]
+
+
+def failing_parts(w: dict[str, Any]) -> list[str]:
+    return [p["element"] for p in parts(w) if not p["passed"]]

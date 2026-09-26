@@ -16,6 +16,7 @@ import math
 from typing import Any
 
 from .alignment import combine_parts
+from .design.combi import part_name
 from .furniture_inputs import costing_left_out
 from .materials import STEEL_DENSITY
 from .project import CombiWallInput, ElementCosting, PileInput, Prices, Project, Section, SheetPileInput
@@ -40,6 +41,7 @@ class _Row:
         self.spacing: float | None = None
         self.length: float | None = None
         self.item: int | None = None
+        self.parts: list[_Row] = []
 
     def add(self, amount: float | None, what: str) -> None:
         """Add a cost; a missing price leaves the row without a total and says which."""
@@ -66,6 +68,7 @@ class _Row:
             "missing": self.missing,
             "flags": self.flags,
             "item": self.item,
+            **({"parts": [p.to_dict(berth) | {"part": p.kind} for p in self.parts]} if self.parts else {}),
         }
 
 
@@ -257,19 +260,25 @@ def cost_section(
             row.add(None, "tube length")
             rows.append(row)
             continue
+        # Costed as its two parts (the steel: tube and intermediate sheets; the concrete infill with
+        # its bars), each shown as its own line; the row is their sum.
+        steel, infill = _Row(part_name(name, "steel"), "steel"), _Row(part_name(name, "infill"), "infill")
         tube_t = n * kg_m * length / 1000
-        row.basis.append(f"{how}, tube {D:.0f} × {t:.0f} × {length:.1f} m ({kg_m:.0f} kg/m)")
-        row.steel_t += tube_t
-        _steel_cost(row, prices, c.steel_element, tube_t, n * length, n * math.pi * D / 1000 * length, "tube")
+        steel.basis.append(f"{how}, tube {D:.0f} × {t:.0f} × {length:.1f} m ({kg_m:.0f} kg/m)")
+        steel.steel_t += tube_t
+        _steel_cost(
+            steel, prices, c.steel_element, tube_t, n * length, n * math.pi * D / 1000 * length, "tube"
+        )
         inf = (w.get("infill") or {}).get("steel") or {}
         if inf.get("concrete_m3"):
-            row.concrete_m3 += n * inf["concrete_m3"]
-            row.rebar_t += n * (inf.get("total_kg") or 0) / 1000
-            row.add(
+            infill.basis.append(f"{n} infills, {inf['concrete_m3']:.1f} m³ each")
+            infill.concrete_m3 += n * inf["concrete_m3"]
+            infill.rebar_t += n * (inf.get("total_kg") or 0) / 1000
+            infill.add(
                 _price(prices.concrete_infill or prices.concrete_beams, n * inf["concrete_m3"]),
                 "infill concrete price",
             )
-            row.add(_price(prices.rebar, n * (inf.get("total_kg") or 0) / 1000), "reinforcement price")
+            infill.add(_price(prices.rebar, n * (inf.get("total_kg") or 0) / 1000), "reinforcement price")
         if c.intermediate_element:
             item = _steel_item(prices, c.intermediate_element)
             gaps = max(berth - n * D / 1000, 0.0)
@@ -277,12 +286,22 @@ def cost_section(
             area_m2 = gaps * ilen
             mass = item.mass if item and item.mass else None
             tonnes = area_m2 * mass / 1000 if mass else 0.0
-            row.steel_t += tonnes
-            row.basis.append(f"intermediate {c.intermediate_element}: {area_m2:.0f} m² ({ilen:.1f} m long)")
+            steel.steel_t += tonnes
+            steel.basis.append(f"intermediate {c.intermediate_element}: {area_m2:.0f} m² ({ilen:.1f} m long)")
             if item and item.unit == "t" and not mass:
-                row.add(None, f"{item.name} mass per m²")
+                steel.add(None, f"{item.name} mass per m²")
             else:
-                _steel_cost(row, prices, c.intermediate_element, tonnes, gaps, area_m2, "intermediate sheets")
+                _steel_cost(
+                    steel, prices, c.intermediate_element, tonnes, gaps, area_m2, "intermediate sheets"
+                )
+        for part in (steel, infill):
+            row.basis += part.basis
+            row.concrete_m3 += part.concrete_m3
+            row.rebar_t += part.rebar_t
+            row.steel_t += part.steel_t
+            row.missing += part.missing
+            row.cost = None if row.cost is None or part.cost is None else row.cost + part.cost
+        row.parts = [steel, infill]
         rows.append(row)
 
     for w in results.get("sheet_pile_walls", []):

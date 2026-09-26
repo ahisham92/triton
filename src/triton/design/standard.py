@@ -141,6 +141,44 @@ def summary(kind: str, entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def combi_parts(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """A combi wall's overview as two elements, its concrete infill and its steel tube."""
+    from .combi import part_name
+
+    wall, inf, tube = entry["element"], entry.get("infill") or {}, entry.get("tube") or {}
+    out = []
+    for part, found, ok, u, st in (
+        ("infill", _pile(inf), inf.get("passed"), inf.get("utilisation"), inf),
+        (
+            "steel",
+            [_check("Steel tube (EN 1993)", tube.get("utilisation"), tube.get("passed"))],
+            tube.get("passed"),
+            tube.get("utilisation"),
+            {},
+        ),
+    ):
+        found = [c for c in found if c]
+        failing = [c["check"] for c in found if not c["passed"]]
+        governing = max(found, key=lambda c: c["utilisation"] or 0.0) if found else None
+        kg, pct = steel(st) if st else (None, None)
+        out.append(
+            {
+                "element": part_name(wall, part),
+                "part": part,
+                "workable": bool(ok) and not failing,
+                "utilisation": _u(u),
+                "governs": governing["check"] if governing else None,
+                "kg_per_m3": kg,
+                "ratio_pct": pct,
+                "checks": found,
+                "why": list(inf.get("failure") or [])
+                if part == "infill" and failing
+                else [f"{c} fails." for c in failing],
+            }
+        )
+    return out
+
+
 def mark(kind: str, entry: dict[str, Any]) -> dict[str, Any]:
     """An element's results as a Standard design: marked, with the overview and the note first."""
     entry[KEY] = "standard"

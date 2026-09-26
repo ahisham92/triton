@@ -784,7 +784,13 @@ def _element_summary(kind: str, design: dict[str, Any]) -> dict[str, Any]:
         uf = (design.get("design") or {}).get("uf")
         return {"utilisation": uf, "passed": uf is not None and uf <= 1}
     if kind == "combi_walls":
-        return {"utilisation": design.get("utilisation"), "passed": bool(design.get("passed"))}
+        from .design.combi import parts
+
+        return {
+            "utilisation": design.get("utilisation"),
+            "passed": bool(design.get("passed")),
+            "parts": [{k: p[k] for k in ("element", "part", "utilisation", "passed")} for p in parts(design)],
+        }
     return _summary(kind, design)
 
 
@@ -860,6 +866,9 @@ def scenarios_view(
                         }
                         continue
                     e |= {"cost_per_m": r["cost_per_m"], "rebar_t_per_m": round(r["rebar_t"] / berth, 4)}
+                    costs = {c["part"]: c["cost_per_m"] for c in r.get("parts") or []}
+                    for part in e.get("parts") or []:
+                        part["cost_per_m"] = costs.get(part["part"])
                 t = c.get("totals") or {}
                 col |= {
                     "cost_per_m": c.get("per_m", {}).get("cost"),
@@ -871,10 +880,14 @@ def scenarios_view(
                     "missing_prices": sorted({m for r in c.get("rows") or [] for m in r["missing"] if m}),
                 }
             done = [e for e in elements.values() if e.get("state") == "done"]
+            # A combi wall counts as its concrete infill and its steel, so the unsafe part is named.
             col["unsafe"] = [
-                n for n, e in elements.items() if e.get("state") == "done" and not e.get("passed")
+                n
+                for name, e in elements.items()
+                if e.get("state") == "done" and not e.get("passed")
+                for n in ([p["element"] for p in e.get("parts") or [] if not p["passed"]] or [name])
             ]
-            col["safe_count"] = len(done) - len(col["unsafe"])
+            col["safe_count"] = sum(len(e.get("parts") or [0]) for e in done) - len(col["unsafe"])
         cols.append(col)
     base = cols[0]
     for c in cols:

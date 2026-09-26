@@ -105,9 +105,18 @@ export async function renderValueEngineering(host, h) {
       ? `<details style="margin-top:8px"><summary>Each element: utilisation · cost per m</summary><div class="scroll"><table class="cost trials">
           <tr><th></th>${cols.map((c) => `<th style="white-space:normal;min-width:9em">${esc(c.label)}</th>`).join("")}</tr>
           ${data.elements
-            .map((n) => `<tr><td>${esc(n)}</td>${cols
-              .map((c) => {
+            .flatMap((n) => {
+              // A combi wall shows as two elements, its concrete infill and its steel (a row each).
+              const parts = cols.map((c) => c.elements[n]?.parts).find((p) => p?.length);
+              if (!parts) return [[n, (c) => c.elements[n] || {}]];
+              return parts.map((p, i) => [p.element, (c) => {
                 const e = c.elements[n] || {};
+                return e.state === "done" ? { state: "done", ...(e.parts?.[i] || {}) } : e;
+              }]);
+            })
+            .map(([n, get]) => `<tr><td>${esc(n)}</td>${cols
+              .map((c) => {
+                const e = get(c);
                 return e.state !== "done" ? `<td class="status">${esc(e.state || "–")}</td>` : `<td><span class="${e.passed ? "flag-ok" : "flag-bad"}">${fmt(e.utilisation, 2)}</span>${e.cost_per_m != null ? ` · ${fmt(e.cost_per_m)}` : ""}</td>`;
               })
               .join("")}</tr>`)

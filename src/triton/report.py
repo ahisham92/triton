@@ -13,6 +13,8 @@ from typing import Any
 from . import clock
 from .alignment import named_parts
 from .design import standard
+from .design.combi import failing_parts, part_name
+from .design.combi import parts as combi_parts
 from .figures import deflected_shape, slab_bars, slab_stations
 from .materials import STEEL_DENSITY
 from .project import DesignSettings, Project, Section
@@ -278,15 +280,17 @@ def build_scenarios_report(project: Project, section: Section, view: dict, title
                 if e.get("state") != "done":
                     rows.append([n, c["label"], e.get("state") or "not run", "", ""])
                     continue
-                rows.append(
-                    [
-                        n,
-                        c["label"],
-                        "yes" if e.get("passed") else "no",
-                        e.get("utilisation"),
-                        e.get("cost_per_m"),
-                    ]
-                )
+                # A combi wall: its concrete infill and its steel, each as its own element.
+                for x in e.get("parts") or [e]:
+                    rows.append(
+                        [
+                            x.get("element", n),
+                            c["label"],
+                            "yes" if x.get("passed") else "no",
+                            x.get("utilisation"),
+                            x.get("cost_per_m"),
+                        ]
+                    )
         r.table(["Element", "Change", "Safe", "Utilisation", f"{cur}/m"], rows)
     return r
 
@@ -505,6 +509,20 @@ def _standard_overview(r: Report, res: dict) -> None:
     for kind in ("piles", "combi_walls", "beams", "slabs"):
         for e in res.get(kind) or []:
             if not standard.is_standard(e):
+                continue
+            if kind == "combi_walls":  # its two parts, each as its own element
+                for o in standard.combi_parts(e):
+                    rows.append(
+                        [
+                            o["element"],
+                            "Yes" if o["workable"] else "NO",
+                            _fmt(o["utilisation"]),
+                            o["governs"] or "–",
+                            "–" if o["kg_per_m3"] is None else f"{o['kg_per_m3']:.0f}",
+                            "–" if o["ratio_pct"] is None else f"{o['ratio_pct']:.2f}",
+                        ]
+                    )
+                    why += [f"{o['element']}: {w}" for w in o["why"]]
                 continue
             o = e.get("standard") or standard.summary(kind, e)
             rows.append(
@@ -852,11 +870,18 @@ def _sections(r: Report, section: Section, res: dict) -> None:
             if m is not None and mrd:
                 # As the office tables: bending alone, then with the N–M (and buckling) interaction.
                 rows.append(
-                    [f"{w['element']} – steel tube{zone}", "N.A", round(abs(m) / mrd, 3), m, mrd, combo]
+                    [
+                        f"{part_name(w['element'], 'steel')}{zone}",
+                        "N.A",
+                        round(abs(m) / mrd, 3),
+                        m,
+                        mrd,
+                        combo,
+                    ]
                 )
             rows.append(
                 [
-                    f"{w['element']} – steel tube{zone} (considering interaction between moment and normal)",
+                    f"{part_name(w['element'], 'steel')}{zone} (considering interaction between moment and normal)",
                     "N.A",
                     t.get("utilisation"),
                     m,
@@ -864,7 +889,7 @@ def _sections(r: Report, section: Section, res: dict) -> None:
                     combo,
                 ]
             )
-        rows += _part_rows(f"{w['element']} – infill", w.get("infill") or {}, w["element"])
+        rows += _part_rows(part_name(w["element"], "infill"), w.get("infill") or {}, w["element"])
     for p in res.get("piles", []):
         rows += _part_rows(p["element"], p)
         t = (p.get("casing") or {}).get("tube") or {}
@@ -916,11 +941,13 @@ def _sections(r: Report, section: Section, res: dict) -> None:
     _shear_summary(r, res)
     _punching_summary(r, res)
     _steel_summary(r, res)
+    # A combi wall shows as its two parts, so the one that fails is named.
     failing = [
-        x["element"]
+        name
         for k in ("piles", "combi_walls", "beams", "slabs", "approach_slabs")
         for x in res.get(k, [])
         if not x.get("passed")
+        for name in (failing_parts(x) or [x["element"]] if k == "combi_walls" else [x["element"]])
     ]
     if failing:
         r.note("Not passing: " + ", ".join(failing) + ". See the notes of each element in the appendix.")
@@ -1058,7 +1085,7 @@ MOMENT = {
 def _shear_summary(r: Report, res: dict) -> None:
     piles = [(p["element"], p.get("shear")) for p in res.get("piles", []) if p.get("shear")]
     piles += [
-        (f"{w['element']} infill", (w.get("infill") or {}).get("shear"))
+        (part_name(w["element"], "infill"), (w.get("infill") or {}).get("shear"))
         for w in res.get("combi_walls", [])
         if (w.get("infill") or {}).get("shear")
     ]
@@ -1192,7 +1219,12 @@ def _steel_summary(r: Report, res: dict) -> None:
     for w in res.get("combi_walls", []):
         st = (w.get("infill") or {}).get("steel") or {}
         rows.append(
-            [f"{w['element']} infill", overall_ratio(st), st.get("kg_per_m3"), st.get("element_total_t")]
+            [
+                part_name(w["element"], "infill"),
+                overall_ratio(st),
+                st.get("kg_per_m3"),
+                st.get("element_total_t"),
+            ]
         )
     for b in res.get("beams", []):
         st = b.get("steel") or {}
@@ -1770,14 +1802,16 @@ def _combi(r: Report, w: dict) -> None:
                 if (w.get("tube") or {}).get("method") == "office"
                 else "EN 1993: plastic where filled, shell buckling where empty",
             ),
-            ("Utilisation", w.get("utilisation")),
-            ("Result", _ok(w.get("passed"))),
+            *(
+                (f"{p['element']}", f"utilisation {_fmt(p['utilisation'])}, {_ok(p['passed']).lower()}")
+                for p in combi_parts(w)
+            ),
         ]
     )
     t = w.get("tube")
     if t:
         s = t["section"]
-        r.h(2, "Steel tube")
+        r.h(2, f"{part_name(w['element'], 'steel')}: steel tube")
         r.kv(
             [
                 ("Tube", f"Ø{s['diameter_mm']:g} × {s['thickness_mm']:g} mm {s.get('grade', '')}"),
@@ -1872,7 +1906,7 @@ def _combi(r: Report, w: dict) -> None:
             )
     inf = w.get("infill")
     if inf:
-        r.h(2, "Concrete infill")
+        r.h(2, f"{part_name(w['element'], 'infill')}")
         _pile_body(r, inf)
     for n in w.get("notes", []):
         r.note(n)
