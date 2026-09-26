@@ -419,7 +419,7 @@ def _drop_stale_section(project_id: str, project: Project, section: Section) -> 
     if not results:
         return
     now = fresh.fingerprint(project, section, store().workbook_summary(project_id, section.id))
-    changed, stale = fresh.status(results, now, fresh.names(project, section))
+    changed, stale = fresh.status(results, now, fresh.names(project, section), fresh.supports(section))
     designed = {e["element"] for e in fresh._designed(results)}
     gone = designed & set(stale)
     if changed is None or not gone:
@@ -1191,6 +1191,12 @@ class DesignRequest(BaseModel):
         description="Which window runs this design, the same on each of its steps; another window "
         "asking to design the section meanwhile is told it is busy.",
     )
+    changed_only: bool = Field(
+        False,
+        description="With no elements asked for: design only the elements whose inputs changed since "
+        "their results (or that depend on one that changed: a beam or slab on the piles under it), "
+        "and those not designed yet; the others keep their results. Nothing changed: nothing runs.",
+    )
 
 
 def _merge(
@@ -1224,6 +1230,10 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
     if workbook is None:
         raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
     only = None if body.elements is None else [n for n in body.elements if n]
+    if only is None and body.changed_only:
+        only = _changed_elements(project_id, section_id, project, section, body.mode)
+        if only == []:
+            return _nothing_changed(project_id, section_id, project, section)
     deadline = time.monotonic() + body.budget_s if body.budget_s else None
     # The workbook as it was when the design started: one replaced meanwhile leaves these results
     # marked out of date rather than passing for the new one's.
@@ -1245,7 +1255,7 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
             atomic.write_text(owner, json.dumps({"run": body.run, "at": time.time()}))
     if not section.locked:
         _lock_model(project_id, section_id)
-    changed, stale = fresh.status(results, now, every)
+    changed, stale = fresh.status(results, now, every, fresh.supports(section))
     return {
         **results,
         "changed": changed,
@@ -1255,6 +1265,23 @@ def design_section(project_id: str, section_id: str, body: DesignRequest | None 
         "locked": True,
         **({"stopped": True} if new.get("stopped") else {}),
     }
+
+
+def _changed_elements(project_id, section_id, project, section, mode) -> list[str] | None:
+    """The elements a design of only what changed takes (None: all). In Detailed, elements that are
+    up to date but were designed in Standard are finished in Detailed as they are, not redesigned."""
+    now = fresh.fingerprint(project, section, store().workbook_summary(project_id, section_id))
+    results = store().load_results(project_id, section_id)
+    only = fresh.to_redesign(results, now, fresh.names(project, section), fresh.supports(section))
+    if only is not None and mode == "detailed":
+        finish_in_detailed(project_id, section_id)
+    return only
+
+
+def _nothing_changed(project_id, section_id, project, section) -> dict:
+    """The answer of a design of only what changed when nothing did: the results as they are."""
+    _, _, results = _results(project_id, section_id)
+    return {**results, "designed": [], "left": [], "locked": section.locked, "unchanged": True}
 
 
 def _design_step(project_id, section_id, project, section, workbook, summary, body, only, deadline, key):
@@ -1290,7 +1317,7 @@ def _design_step(project_id, section_id, project, section, workbook, summary, bo
             earlier = (fresh._by_element(old, every) or {}) if old else {}
             results["element_inputs"] = {
                 **{k: v for k, v in earlier.items() if k in every or k in spws},
-                **fresh.element_inputs(now, every, handled),
+                **fresh.element_inputs(now, every, handled, fresh.supports(section)),
             }
             results["inputs"] = now
             store().save_results(project_id, section_id, results)
@@ -1317,7 +1344,7 @@ def finish_in_detailed(project_id: str, section_id: str, body: FinishRequest | N
         results = store().load_results(project_id, section_id)
         if results is None:
             raise HTTPException(404, "This section has not been designed yet.")
-        _, stale = fresh.status(results, now, every)
+        _, stale = fresh.status(results, now, every, fresh.supports(section))
         asked = None if not body.elements else set(body.elements)
         finished, redesign = [], []
         for kind in fresh.KINDS:
@@ -1334,7 +1361,7 @@ def finish_in_detailed(project_id: str, section_id: str, body: FinishRequest | N
                     finished.append(name)
         if finished:
             store().save_results(project_id, section_id, results)
-    changed, stale = fresh.status(results, now, every)
+    changed, stale = fresh.status(results, now, every, fresh.supports(section))
     return {**results, "changed": changed, "stale": stale, "finished": finished, "redesign": redesign}
 
 
@@ -1383,6 +1410,7 @@ def _lock_model(project_id: str, section_id: str) -> None:
 class DesignAllRequest(BaseModel):
     mode: Literal["detailed", "standard"] = "detailed"
     sections: list[str] | None = Field(None, description="Section ids, in order; empty: all of them.")
+    changed_only: bool = Field(False, description="Design only what changed in each section.")
 
 
 @app.get("/api/runner")
@@ -1411,7 +1439,7 @@ def design_all(project_id: str, body: DesignAllRequest | None = None) -> dict:
     with runner_mod.lock(project_id):
         if not runner_mod.finished(runner_mod.load(project_id)):
             raise HTTPException(409, "This project's sections are already queued. Stop that first.")
-        q = runner_mod.new_queue(project_id, sections, body.mode)
+        q = runner_mod.new_queue(project_id, sections, body.mode, body.changed_only)
         runner_mod.save(q)
     return {**q, "finished": runner_mod.finished(q), "runner_on": True}
 
@@ -1777,7 +1805,10 @@ def _use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
     results = _merge(old, {kind: [design]}, [body.element], trial, fresh.names(project, trial))
     now = fresh.fingerprint(project, trial, summary)
     earlier = (fresh._by_element(old, fresh.names(project, trial)) or {}) if old else {}
-    results["element_inputs"] = {**earlier, **fresh.element_inputs(now, trial.elements, [body.element])}
+    results["element_inputs"] = {
+        **earlier,
+        **fresh.element_inputs(now, trial.elements, [body.element], fresh.supports(trial)),
+    }
     results["inputs"] = now
     if not results.get("run_at"):
         results["run_at"] = design.get("run_at") or _now()

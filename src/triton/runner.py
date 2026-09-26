@@ -72,10 +72,13 @@ def finished(queue: dict[str, Any] | None) -> bool:
     return not queue or all(s["state"] not in ("waiting", "running") for s in queue["sections"])
 
 
-def new_queue(project_id: str, sections: list[tuple[str, str]], mode: str) -> dict[str, Any]:
+def new_queue(
+    project_id: str, sections: list[tuple[str, str]], mode: str, changed_only: bool = False
+) -> dict[str, Any]:
     return {
         "pid": project_id,
         "mode": mode,
+        "changed_only": changed_only,
         "asked_at": time.time(),
         "stop": False,
         "sections": [{"id": sid, "name": name, "state": "waiting", "note": ""} for sid, name in sections],
@@ -109,9 +112,11 @@ def _outcome(res: dict[str, Any]) -> tuple[str, str]:
     """The state and note a design's answer gives its section."""
     if res.get("stopped"):
         return "stopped", "Stopped"
+    if res.get("unchanged"):
+        return "done", "Nothing changed: results kept"
     kinds = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
-    done = set(res.get("designed") or [])
-    designed = [e for k in kinds for e in res.get(k) or [] if e.get("element") in done]
+    # The whole section as it stands: with only what changed designed, the rest kept their results.
+    designed = [e for k in kinds for e in res.get(k) or []]
     # A combi wall counts as its two parts (concrete infill, steel), each safe or not.
     unsafe = sum(
         len(failing_parts(e)) or 1 if "infill" in e and "tube" in e else 1
@@ -121,8 +126,11 @@ def _outcome(res: dict[str, Any]) -> tuple[str, str]:
     return "done", f"{unsafe} unsafe" if unsafe else "All safe"
 
 
-def design_one(project_id: str, section_id: str, mode: str, sleep=time.sleep) -> tuple[str, str]:
-    """Design every element of one section, as the Design button does; returns (state, note)."""
+def design_one(
+    project_id: str, section_id: str, mode: str, sleep=time.sleep, changed_only: bool = False
+) -> tuple[str, str]:
+    """Design the elements of one section (every one, or only those whose inputs changed), as the
+    Design button does; returns (state, note)."""
     from fastapi import HTTPException
 
     from . import api
@@ -130,7 +138,8 @@ def design_one(project_id: str, section_id: str, mode: str, sleep=time.sleep) ->
 
     for tries in range(BUSY_TRIES + 1):
         try:
-            res = api.design_section(project_id, section_id, api.DesignRequest(mode=mode, run="server"))
+            ask = api.DesignRequest(mode=mode, run="server", changed_only=changed_only)
+            res = api.design_section(project_id, section_id, ask)
             return _outcome(res)
         except Stopped:
             return "stopped", "Stopped"
@@ -151,13 +160,15 @@ def code_stamp() -> str:
     return "|".join(f"{f.relative_to(here)}:{f.stat().st_mtime_ns}:{f.stat().st_size}" for f in files)
 
 
-def _claim(project_id: str | None = None, data: str | Path | None = None) -> tuple[str, str, str] | None:
+def _claim(
+    project_id: str | None = None, data: str | Path | None = None
+) -> tuple[str, str, str, bool] | None:
     """Mark the next waiting section running (of ``project_id``, else of the queue asked for first)
-    and return (project, section, mode)."""
+    and return (project, section, mode, changed only)."""
     pid = project_id or _next(data)
     if pid is None:
         return None
-    got: list[tuple[str, str, str]] = []
+    got: list[tuple[str, str, str, bool]] = []
 
     def start(q):
         if q.get("stop"):
@@ -165,7 +176,7 @@ def _claim(project_id: str | None = None, data: str | Path | None = None) -> tup
         todo = next((s for s in q["sections"] if s["state"] == "waiting"), None)
         if todo is not None:
             todo.update(state="running", started=time.time())
-            got.append((pid, todo["id"], q.get("mode") or "detailed"))
+            got.append((pid, todo["id"], q.get("mode") or "detailed", bool(q.get("changed_only"))))
 
     _update(pid, start, data)
     return got[0] if got else None
@@ -192,12 +203,12 @@ def work(project_id: str, data: str | Path | None = None, sleep=time.sleep, upda
         job = _claim(project_id, data)
         if job is None:
             return
-        pid, sid, mode = job
-        _finish(pid, sid, *design_one(pid, sid, mode, sleep), data)
+        pid, sid, mode, changed_only = job
+        _finish(pid, sid, *design_one(pid, sid, mode, sleep, changed_only), data)
 
 
-def _design_in_child(pid: str, sid: str, mode: str) -> tuple[str, str]:  # pragma: no cover
-    return design_one(pid, sid, mode)
+def _design_in_child(pid: str, sid: str, mode: str, changed: bool) -> tuple[str, str]:  # pragma: no cover
+    return design_one(pid, sid, mode, changed_only=changed)
 
 
 def _die_with_runner() -> None:  # pragma: no cover
@@ -254,9 +265,9 @@ def run_forever(
                 job = _claim(None, data)
                 if job is None:
                     break
-                pid, sid, mode = job
+                pid, sid, mode, changed_only = job
                 print(f"{time.strftime('%H:%M:%S')} designing {pid} / {sid}", flush=True)
-                running[pool.submit(_design_in_child, pid, sid, mode)] = (pid, sid)
+                running[pool.submit(_design_in_child, pid, sid, mode, changed_only)] = (pid, sid)
             if not running:
                 if not fresh:
                     # A site update: stop, and PythonAnywhere starts the task again on the new code
