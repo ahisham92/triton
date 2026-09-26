@@ -374,9 +374,30 @@ def sag_factor(setting: str, found: dict[str, Any] | None) -> tuple[float, str]:
     )
 
 
+def _corner(elements: dict[str, dict[str, SheetData]]) -> bool:
+    """Whether the berth turns a corner (its front beam, else rear beam, is not one straight run)."""
+    from .alignment import fit_alignment, reference_points
+
+    ref = reference_points(elements)
+    try:
+        return ref is not None and len(fit_alignment(ref[1])) > 2
+    except (ValueError, IndexError, np.linalg.LinAlgError):
+        return False
+
+
+CORNER_NOTE = (
+    "The berth turns a corner, so the actions turn with it and act both ways: the directions cannot be "
+    "confirmed from the results alone. Nothing to do if every element of the model keeps Plaxis's default "
+    "local axes"
+)
+
+
 def infer_axes(elements: dict[str, dict[str, SheetData]]) -> tuple[list[dict[str, Any]], list[Issue]]:
-    """Axis findings per element, and warnings where they are unclear or disagree."""
+    """Axis findings per element, and warnings where they are unclear or disagree. On a corner berth the
+    actions act both ways, so piles and walls (designed for the resultant moment) and a beam plate that
+    agrees with the deck are only noted, not warned about."""
     line = quay_line(elements)
+    corner = _corner(elements)
     found, issues = [], []
     specs = {n: next((s.parsed.spec for s in c.values() if s.parsed), None) for n, c in elements.items()}
     for name, combos in elements.items():
@@ -396,7 +417,24 @@ def infer_axes(elements: dict[str, dict[str, SheetData]]) -> tuple[list[dict[str
             continue
         a["type"] = spec.type.value
         found.append(a)
-        if not a["clear"]:
+        if not a["clear"] and corner and (a["kind"] == "beam" or spec.type in WALLS):
+            a["corner"] = True
+            issues.append(
+                Issue(
+                    Severity.INFO,
+                    "axes_corner",
+                    f"{name}: {CORNER_NOTE}"
+                    + (
+                        "; it is designed from N1, M11 and its shear column as a sheet pile wall always is. "
+                        if spec.type is ElementType.SHEET_PILE_WALL
+                        else "; it is designed for the resultant of its two moments, whichever local axis "
+                        "carries more. "
+                    )
+                    + a["text"],
+                    element=name,
+                )
+            )
+        elif not a["clear"]:
             issues.append(
                 Issue(
                     Severity.WARNING,
@@ -406,12 +444,35 @@ def infer_axes(elements: dict[str, dict[str, SheetData]]) -> tuple[list[dict[str
                     element=name,
                 )
             )
+    if corner:
+        # A beam plate the results cannot confirm, read the same way as the deck: it keeps the deck's axes.
+        deck = next(
+            (a for a in found if a["kind"] == "plate" and a["clear"] and a["type"] == ElementType.SLAB.value),
+            None,
+        )
+        for a in found:
+            if a["kind"] == "plate" and not a["clear"] and deck and a["local"] == deck["local"]:
+                if a["type"] in (ElementType.FRONT_BEAM.value, ElementType.REAR_BEAM.value):
+                    a["clear"], a["corner"] = True, True
+                    a["text"] += f" The same as the deck ({deck['element']}), which the results confirm."
+                    issues[:] = [
+                        i for i in issues if not (i.code == "axes_unclear" and i.element == a["element"])
+                    ]
+                    issues.append(
+                        Issue(
+                            Severity.INFO,
+                            "axes_corner",
+                            f"{a['element']}: {CORNER_NOTE}. Its results read the same way as the deck's, "
+                            f"so it takes the deck's directions. {a['text']}",
+                            element=a["element"],
+                        )
+                    )
     _share_sign(found, issues)
     # Elements of one type should agree (all piles bending mainly about the same local axis, all decks alike).
     by_type: dict[str, dict[str, list[str]]] = {}
     for a in found:
-        if not a["clear"]:
-            continue
+        if not a["clear"] or a.get("corner") or (corner and a["kind"] == "beam"):
+            continue  # at a corner piles bend both ways: which local moment is larger varies
         key = a.get("main_moment") if a["kind"] == "beam" else a["local"]["1"]
         by_type.setdefault(a["type"], {}).setdefault(key, []).append(a["element"])
     for kind, groups in by_type.items():

@@ -373,3 +373,18 @@ def test_both_ends_are_cut_on_one_line_inside_the_element_that_stops_first():
     ]
     _, info = trim_ends(skew.elements(), pts, "Y", 2.0, keep={"Pile(1)"})
     assert info["skew_deg"][0] == pytest.approx(30.0, abs=1.0) and info["skew_deg"][1] == 0.0
+
+
+def test_a_corner_notes_the_axes_it_cannot_confirm_instead_of_warning():
+    from triton.axes import infer_axes
+    from triton.issues import Severity
+
+    wb = berth()
+    _, straight = infer_axes(wb.elements())
+    # The synthetic front beam's shears are too plain to read its axes: on a straight berth, a warning.
+    assert [(i.severity, i.code) for i in straight] == [(Severity.WARNING, "axes_unclear")]
+    found, issues = infer_axes(turn_workbook(wb, -25.0, where=lambda x, y: y >= 0).elements())
+    # At a corner it reads like the deck, so it takes the deck's axes, noted, and nothing is warned about.
+    assert [(i.severity, i.code, i.element) for i in issues] == [(Severity.INFO, "axes_corner", "Front Beam")]
+    beam = next(a for a in found if a["element"] == "Front Beam")
+    assert beam["clear"] and beam["local"] == next(a for a in found if a["element"] == "Deck")["local"]
