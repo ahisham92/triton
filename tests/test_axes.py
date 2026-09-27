@@ -188,3 +188,19 @@ def test_a_narrow_beam_takes_the_deck_sign():
     found, issues = infer_axes(elements(Deck=loaded_plate("hogging"), **{"Front Beam": beam}))
     b = next(a for a in found if a["element"] == "Front Beam")
     assert b["positive"] == "hogging" and b["sign_from"] == "Deck" and "as in Deck" in b["sign_text"]
+
+
+def test_nearest_nodes_on_a_big_sheet_match_every_pair():
+    """Above BRUTE_NODES the grid search finds the same neighbours (by distance) as comparing every pair."""
+    import numpy as np
+
+    from triton import axes
+
+    rng = np.random.default_rng(1)
+    p = np.column_stack([rng.uniform(0, 300, 7000), rng.uniform(-20, 0, 7000)])
+    p[:50] = p[50:100]  # nodes repeated at the same place
+    grid = axes._nearest(p, 16)
+    brute = np.array([np.argsort(((p - q) ** 2).sum(1))[:16] for q in p[::97]])
+    dist = lambda idx, q: np.sort(((p[idx] - q) ** 2).sum(-1))  # noqa: E731
+    for n, q in enumerate(p[::97]):
+        assert np.allclose(dist(grid[n * 97], q), dist(brute[n], q))
