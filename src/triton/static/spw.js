@@ -7,10 +7,12 @@ import { checkBar, zoneElevation } from "./tubeview.js";
 const ALL = "All combinations";
 const CHECKS = ["bending", "bending_shear", "web_buckling", "buckling", "bending_axial", "bending_shear_axial"];
 
+// Utilisations past 10 mean nothing more than "unsafe by far".
+const uf = (u, fmt, digits = 2) => (u > 10 ? "&gt; 10, unsafe by far" : fmt(u, digits));
+
 export function spwCard(w, h) {
   const { fmt, esc } = h;
-  // Utilisations past 10 mean nothing more than "unsafe by far".
-  const fu = (u, digits = 2) => (u > 10 ? "&gt; 10, unsafe by far" : fmt(u, digits));
+  const fu = (u, digits = 2) => uf(u, fmt, digits);
   const card = document.createElement("div");
   card.className = "panel";
   card.style.marginTop = "16px";
@@ -201,7 +203,7 @@ function details(r, d, fmt, esc) {
     n !== 0
       ? `Bending and axial: |NEd| / Npl,Rd = ${fmt(Math.abs(n) / v.Npl, 3)}${Math.abs(n) / v.Npl <= 0.1 ? " ≤ 0.10, M not reduced" : `, MN,Rd = Mc,Rd (1 − NEd / Npl,Rd) = ${fmt(v.Mn, 1)} kNm/m`}.`
       : "",
-    `Uf = ${fu(r.uf, 3)} (${esc(d.check_titles[r.governs])}).`,
+    `Uf = ${uf(r.uf, fmt, 3)} (${esc(d.check_titles[r.governs])}).`,
   ];
   return `<ul>${lines.filter(Boolean).map((l) => `<li>${l}</li>`).join("")}</ul>`;
 }
