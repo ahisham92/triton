@@ -26,6 +26,7 @@ from . import (
     atomic,
     checker,
     clash_report,
+    clock,
     deformed,
     drawings,
     durability,
@@ -386,6 +387,9 @@ def _update_project(project_id: str, body: Project) -> Project:
     existing = _get(project_id)
     if body.id != project_id:
         raise HTTPException(400, "Project id in the body does not match the URL.")
+    _refuse_stale(existing, body)
+    gone = {s.id for s in body.sections}
+    _refuse_designing(project_id, [s for s in existing.sections if s.id not in gone])
     _hold_locks(existing, body)
     body.created_at = existing.created_at
     _stamp_multipliers(existing, body)
@@ -398,9 +402,35 @@ def _update_project(project_id: str, body: Project) -> Project:
     kept = {s.id for s in saved.sections}
     for s in existing.sections:
         if s.id not in kept:
-            store().delete_section_files(project_id, s.id)
+            with store().section_lock(project_id, s.id):
+                store().delete_section_files(project_id, s.id)
     _drop_stale(project_id, saved)
     return saved
+
+
+STALE = (
+    "This project changed in another window or tab since this page loaded it (a section was designed "
+    "there). Reload the page to see it, then make your change again."
+)
+
+
+def _refuse_stale(existing: Project, body: Project) -> None:
+    """A page loaded before a design in another window still shows that section open: its save would
+    unlock it (and change its inputs) with the results kept. A save older than the project that would
+    unlock a section locked now is refused, to be reloaded. Its other saves go ahead as before (the
+    page does not hear of every save on the server: checks, clash settings), and a save that sends no
+    time (older pages, scripts) is not checked."""
+    if "updated_at" not in body.model_fields_set:
+        return
+    if clock.order(body.updated_at) >= clock.order(existing.updated_at):
+        return
+    now = {s.id: s for s in body.sections}
+    unlock_all = existing.locked and not body.locked
+    for s in existing.sections:
+        new = now.get(s.id)
+        unlocks = (unlock_all or ("locked" in new.model_fields_set and not new.locked)) if new else False
+        if s.locked and unlocks:
+            raise HTTPException(409, STALE)
 
 
 def _hold_locks(existing: Project, body: Project) -> None:
@@ -521,6 +551,11 @@ WORKBOOK_OWN = {
 
 @app.post("/api/projects/{project_id}/sections", status_code=201)
 def add_section(project_id: str, body: NewSection) -> Project:
+    with store().project_lock(project_id):
+        return _add_section(project_id, body)
+
+
+def _add_section(project_id: str, body: NewSection) -> Project:
     project = _get(project_id)  # a new section is open to edit, whatever the others' locks
     if any(s.name.strip().lower() == body.name.strip().lower() for s in project.sections):
         raise HTTPException(400, f"There is already a section called '{body.name}'.")
@@ -543,20 +578,34 @@ def add_section(project_id: str, body: NewSection) -> Project:
 
 @app.delete("/api/projects/{project_id}/sections/{section_id}")
 def delete_section(project_id: str, section_id: str) -> Project:
-    project = _unlocked(_get(project_id), section_id)
-    _section(project, section_id)
-    if len(project.sections) == 1:
-        raise HTTPException(400, "A project needs at least one section.")
-    project.sections = [s for s in project.sections if s.id != section_id]
-    store().delete_section_files(project_id, section_id)
-    return store().save(project)
+    with store().project_lock(project_id):
+        project = _unlocked(_get(project_id), section_id)
+        section = _section(project, section_id)
+        if len(project.sections) == 1:
+            raise HTTPException(400, "A project needs at least one section.")
+        # Its design saves its results under the section's lock: deleted in between, they would be kept
+        # for a section that is gone.
+        with store().section_lock(project_id, section_id):
+            _refuse_designing(project_id, [section])
+            project.sections = [s for s in project.sections if s.id != section_id]
+            saved = store().save(project)
+            store().delete_section_files(project_id, section_id)
+        return saved
+
+
+def _refuse_designing(project_id: str, sections: list[Section]) -> None:
+    """A section whose design is running is not deleted: 409."""
+    for section in sections:
+        if _designing(f"design-{project_id}-{section.id}"):
+            raise HTTPException(409, f"{section.name} is being designed: stop it first.")
 
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/elements")
 def add_elements(project_id: str, section_id: str, body: ElementNames) -> dict:
-    project = _unlocked(_get(project_id), section_id)
-    added = _section(project, section_id).add_elements(body.names)
-    store().save(project)
+    with store().project_lock(project_id):
+        project = _unlocked(_get(project_id), section_id)
+        added = _section(project, section_id).add_elements(body.names)
+        store().save(project)
     return {"added": added, "project": project}
 
 
@@ -813,19 +862,20 @@ class CheckUpdate(BaseModel):
 @app.put(SECTION + "/checks/{element}")
 def set_check(project_id: str, section_id: str, element: str, body: CheckUpdate) -> Project:
     """The checker's status for one element (open while the model is locked: it is not a design input)."""
-    project = _get(project_id)
-    section = _section(project, section_id)
-    if element not in section.elements:
-        raise HTTPException(404, f"No element named {element} in {section.name}.")
-    results = store().load_results(project_id, section_id) or {}
-    section.checks[element] = ElementCheck(
-        status=body.status,
-        by=body.by.strip(),
-        comment=body.comment.strip(),
-        at=_now(),
-        design_run_at=results.get("run_at"),
-    )
-    return store().save(project)
+    with store().project_lock(project_id):
+        project = _get(project_id)
+        section = _section(project, section_id)
+        if element not in section.elements:
+            raise HTTPException(404, f"No element named {element} in {section.name}.")
+        results = store().load_results(project_id, section_id) or {}
+        section.checks[element] = ElementCheck(
+            status=body.status,
+            by=body.by.strip(),
+            comment=body.comment.strip(),
+            at=_now(),
+            design_run_at=results.get("run_at"),
+        )
+        return store().save(project)
 
 
 def _keeper(project_id: str, section_id: str, mode: str) -> Callable[[str, ImportResult], dict]:
@@ -860,17 +910,18 @@ def _carry_renamed_sheets(project_id: str, section_id: str, replaced: list[str])
     pairs = [r.split(" → ") for r in replaced if " → " in r]
     if not pairs:
         return []
-    project = _get(project_id)
-    section = _section(project, section_id)
-    out = []
-    for old, new in pairs:
-        for rule in section.load_factors:
-            if old in rule.sheets:
-                rule.sheets = [new if n == old else n for n in rule.sheets]
-                out.append(f"{old} → {new}: ×{rule.factor:g} kept")
-        if old in section.sheet_map and new not in section.sheet_map:
-            section.sheet_map[new] = section.sheet_map.pop(old)
-    store().save(project)
+    with store().project_lock(project_id):
+        project = _get(project_id)
+        section = _section(project, section_id)
+        out = []
+        for old, new in pairs:
+            for rule in section.load_factors:
+                if old in rule.sheets:
+                    rule.sheets = [new if n == old else n for n in rule.sheets]
+                    out.append(f"{old} → {new}: ×{rule.factor:g} kept")
+            if old in section.sheet_map and new not in section.sheet_map:
+                section.sheet_map[new] = section.sheet_map.pop(old)
+        store().save(project)
     return out
 
 
@@ -1389,6 +1440,8 @@ def _design_step(project_id, section_id, project, section, workbook, summary, bo
         # Read, add to and save the results in one go: another design of this section (another
         # window) waits here, and each keeps the elements the other saved.
         with store().section_lock(project_id, section_id):
+            if all(s.id != section_id for s in _get(project_id).sections):
+                raise HTTPException(404, "The section was deleted while it was designed: no results kept.")
             old = store().load_results(project_id, section_id)
             if only is None and not new["left"] and not new.get("stopped"):
                 old = None  # everything designed again: nothing earlier stays
@@ -1471,6 +1524,20 @@ def _hold_section(key: str, run: str | None) -> Path | None:
             raise HTTPException(409, BUSY)
         atomic.write_text(owner, json.dumps({"run": run, "at": time.time()}))
     return owner
+
+
+def _designing(key: str) -> bool:
+    """Whether a design holds the section: a step under way, or a window's run between two steps,
+    until it has been silent for DESIGN_HOLD_S (as ``_hold_section`` sees it)."""
+    progress = _progress_path(key)
+    owner = progress.with_suffix(".owner")
+    try:
+        at = [json.loads(owner.read_text("utf-8")).get("at", 0)]
+    except (OSError, ValueError):
+        at = []
+    with contextlib.suppress(OSError):
+        at.append(progress.stat().st_mtime)
+    return bool(at) and time.time() - max(at) < DESIGN_HOLD_S
 
 
 def _lock_model(project_id: str, section_id: str) -> None:

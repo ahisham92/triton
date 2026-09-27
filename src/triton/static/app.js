@@ -702,7 +702,24 @@ function applyLock() {
           "elements you don't touch stay. Files you already downloaded are not affected.",
       );
       if (!ok) return;
-      for (const s of held) s.locked = false;
+      if (state.dirty) await save();
+      if (state.errors?.length) return;
+      // The project as saved now, with what was saved on the server since this page last saved (checks,
+      // clash settings). A section designed in another window meanwhile: reload first, since Unlock
+      // would unlock it too (the server refuses that save).
+      const ids = new Set(held.map((s) => s.id));
+      const lockedIds = (p) => p.sections.filter((s) => s.locked).map((s) => s.id).join();
+      try {
+        const now = await api(`${ROOT}/api/projects/${state.project.id}`);
+        if (lockedIds(now) !== lockedIds(state.project)) throw new Error(STALE);
+        mergeInto(state.project, now);
+      } catch (e) {
+        state.errors = [{ loc: [], msg: e.message }];
+        showSaveState();
+        showErrors();
+        return;
+      }
+      for (const s of state.project.sections) if (ids.has(s.id)) s.locked = false;
       syncLock();
       state.dirty = true;
       await save();
@@ -723,6 +740,11 @@ function applyLock() {
   host._lockWatch.observe(host, { childList: true, subtree: true });
 }
 
+// The server refuses a save from a page older than the project when it would unlock a section designed
+// in another window since (api.py, _refuse_stale).
+const STALE = "This project changed in another window or tab since this page loaded it (a section was designed there). Reload the page to see it, then make your change again.";
+const stale = () => (state.errors || []).some((e) => /Reload the page/.test(e.msg || ""));
+
 // Every change saves itself a moment later; the bar at the bottom says whether it has.
 let saveTimer = null;
 let saving = null;
@@ -738,7 +760,7 @@ function showSaveState(text) {
   if (!s) return;
   const bad = state.errors?.length;
   s.className = `save-state ${text === "Saving…" || (!bad && state.dirty) ? "saving" : bad ? "unsaved" : "saved"}`;
-  s.textContent = text || (bad ? "Not saved: fix the fields below" : state.dirty ? "Saving…" : "All changes saved");
+  s.textContent = text || (bad ? (stale() ? "Not saved: reload the page" : "Not saved: fix the fields below") : state.dirty ? "Saving…" : "All changes saved");
 }
 
 // Copies the saved project into the one the forms are bound to, keeping its objects.
