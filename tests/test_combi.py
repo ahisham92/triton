@@ -286,3 +286,33 @@ def test_corrosion_through_the_tube_leaves_the_infill_alone():
     assert full["tube"]["utilisation"] is None and full["tube"]["passed"]
     assert full["utilisation"] == full["infill"]["utilisation"]
     assert any("8 mm over the design life is as much as the 8 mm tube wall" in n for n in full["notes"])
+
+
+def test_sea_and_land_sides_as_the_office_pipe_sheet():
+    # SPWPIPE (N25185, Tincan B5&6): Ø1626 × 18, S355, γM0 1.1. The diameter takes the average of the
+    # sea and land sides, the thickness the larger loss; below the infill 1.75 inside as well.
+    from triton.design.combi import combi_section, tube_zones
+    from triton.project import CorrosionZone
+
+    zones = [(4.5, 0, 0), (2.5, 0, 0), (2.5, 1.75, 0), (1.75, 1.75, 0)]
+    a_eff = [48103.74, 59107.05, 59042.72, 63350.21]
+    m_rd = [9561.20, 10525.90, 9970.39, 10327.31]
+    for (sea, land, inside), a, m in zip(zones, a_eff, m_rd, strict=True):
+        t = Tube(1626, 18, max(sea, land), "S355", inside=inside, fy_set=355, mean_outside=(sea + land) / 2)
+        assert t.a_eff == pytest.approx(a, rel=0.001)
+        assert t.resistances(1.1)["M_eff_kNm"] == pytest.approx(m, rel=0.001)
+
+    wall = CombiWallInput(tube_diameter=1626, tube_thickness=18, concrete="C40/50")
+    assert [z.land for z in wall.corrosion_zones] == [0, 0, 1.75, 1.75, 1.75]
+    # Splash 4.5 / 0 gives 2.25 off the diameter: the infill takes 67% of E·I, as the office.
+    assert 1 - combi_section(wall).steel_share == pytest.approx(0.673, abs=0.002)
+    assert tube_zones(wall)[0][2].t == pytest.approx(13.5)
+    # Walls stored before the land side keep the single loss for the split and one loss all round.
+    old = CombiWallInput(
+        tube_diameter=1626,
+        tube_thickness=18,
+        concrete="C40/50",
+        corrosion_loss=4.5,
+        corrosion_zones=[CorrosionZone(bottom_level=-0.5, outside=4.5)],
+    )
+    assert 1 - combi_section(old).steel_share == pytest.approx(0.706, abs=0.002)

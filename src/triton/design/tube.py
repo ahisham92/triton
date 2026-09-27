@@ -81,6 +81,9 @@ class Tube:
     inside: float = 0.0  # mm, lost from the inside
     fy_set: float | None = None  # MPa, instead of the grade's value for the thickness
     name: str = ""
+    # mm, lost off the diameter where the sea and land sides lose differently (their average; the
+    # thickness loses ``corrosion``, the larger): None is ``corrosion`` all round.
+    mean_outside: float | None = None
 
     @property
     def d(self) -> float:
@@ -91,9 +94,18 @@ class Tube:
         return self.thickness - self.corrosion - self.inside
 
     @property
+    def _d_mean(self) -> float:
+        loss = self.corrosion if self.mean_outside is None else self.mean_outside
+        return self.diameter - 2 * loss
+
+    @property
+    def _d_in(self) -> float:
+        # As the office sheets: the bore grows only by the loss inside.
+        return self.diameter - 2 * self.thickness + 2 * self.inside
+
+    @property
     def i(self) -> float:
-        di = self.d - 2 * self.t
-        return math.pi / 64 * (self.d**4 - di**4)
+        return math.pi / 64 * (self._d_mean**4 - self._d_in**4)
 
     @property
     def _eps2(self) -> float:
@@ -121,18 +133,17 @@ class Tube:
 
     @property
     def area(self) -> float:
-        di = self.d - 2 * self.t
-        return math.pi / 4 * (self.d**2 - di**2)
+        # As the office sheets: the thickness left on the worse side round the average diameter.
+        di = self._d_mean - 2 * self.t
+        return math.pi / 4 * (self._d_mean**2 - di**2)
 
     @property
     def w_el(self) -> float:
-        di = self.d - 2 * self.t
-        return math.pi / 32 * (self.d**4 - di**4) / self.d
+        return self.i / (self._d_mean / 2)
 
     @property
     def w_pl(self) -> float:
-        di = self.d - 2 * self.t
-        return (self.d**3 - di**3) / 6
+        return (self._d_mean**3 - self._d_in**3) / 6
 
     @property
     def section_class(self) -> int:
@@ -691,7 +702,7 @@ def office_sheet(
         cls = t.section_class
         a, a_eff = t.area, t.a_eff
         w_el, w_eff, w_pl, i = t.w_el, t.w_eff, t.w_pl, t.i
-        s1 = (d**3 - di**3) / 12
+        s1 = w_pl / 2  # as the sheet, 1/12·(Deff³ − deff³)
         av = 2 * a / math.pi
         ei = E_STEEL * i + (KE * ecm * ic if sg.filled else 0.0)
         npl_rk = a_eff * fy + (0.85 * ac * fck if sg.filled else 0.0)
@@ -842,6 +853,11 @@ def sheet_table(sheet: dict[str, Any], ecm: float, fck: float) -> dict[str, Any]
                 row("Thickness", "mm", lambda c: t(c).thickness),
                 row("Corrosion, outside", "mm", lambda c: t(c).corrosion),
                 row("Corrosion, inside", "mm", lambda c: t(c).inside),
+                row(
+                    "Corrosion, average of sea and land sides",
+                    "mm",
+                    lambda c: t(c).corrosion if t(c).mean_outside is None else t(c).mean_outside,
+                ),
                 row("Length of each segment", "m", lambda c: c["seg"].length),
                 row("Levels", "m", lambda c: f"{_lvl(c['seg'].top)} to {_lvl(c['seg'].bottom)}", "text"),
                 row("L, pile head to firm soil", "m", lambda c: sheet["length_m"]),
