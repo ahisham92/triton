@@ -140,3 +140,26 @@ def test_a_new_workbook_redesigns_everything(client, designed):
     s.save_results(pid, sid, results)
     client.post(f"{url}/design", json={"changed_only": True})
     assert asked == [["Deck", "Front Beam", "Pile(1)", "Pile(2)"]]
+
+
+def test_using_a_trial_with_an_approach_slab_leaves_the_element_up_to_date(client, designed):
+    """The trial's element inputs include the project's approach slab as an element of its own, as a
+    design does; it once went in as a shared part, so the element read out of date at once."""
+    pid, url, _ = designed
+    project = client.get(f"/api/projects/{pid}").json()
+    project["approach"] = {}
+    for s in project["sections"]:
+        s["locked"] = False
+        s["elements"]["Rear Beam"] = {"kind": "rear_beam"}
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+    assert client.post(f"{url}/design").status_code == 200
+    assert (
+        client.post(f"{url}/trials", json={"element": "Pile(1)", "sizes": [{"diameter": 1500}]}).status_code
+        == 200
+    )
+    assert (
+        client.post(f"{url}/trials/use", json={"element": "Pile(1)", "size": {"diameter": 1500}}).status_code
+        == 200
+    )
+    r = client.get(f"{url}/design").json()
+    assert "Pile(1)" not in r["stale"] and not any("Approach" in c for c in r["changed"])

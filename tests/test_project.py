@@ -191,3 +191,32 @@ def test_elements_use_project_grades_unless_set():
     assert (wall.concrete, wall.steel) == ("C35/45", "S460")
     assert with_project_grades(SheetPileInput(), m).steel == "S355GP"
     assert PileInput().concrete is None  # unset until designed
+
+
+def test_a_copied_section_starts_with_no_checks_or_clash_what_ifs(client):
+    p = client.post("/api/projects", json={"section_name": "Section 01a", "element_names": ["Deck"]}).json()
+    s = p["sections"][0]
+    s["clashes"]["choices"] = {"Pile(1)": "straight"}
+    assert client.put(f"/api/projects/{p['id']}", json=p).status_code == 200
+    url = f"/api/projects/{p['id']}/sections/{s['id']}/checks/Deck"
+    assert client.put(url, json={"status": "approved", "by": "AM"}).json()["sections"][0]["checks"]["Deck"]
+    r = client.post(
+        f"/api/projects/{p['id']}/sections", json={"name": "Section 02", "copy_from": s["id"]}
+    ).json()
+    new = r["sections"][1]
+    assert new["checks"] == {} and new["clashes"]["choices"] == {} and new["clashes"]["whatifs"] == []
+
+
+def test_a_locked_section_can_be_renamed(client):
+    p = client.post("/api/projects", json={"section_name": "Section 01a"}).json()
+    p["sections"][0]["locked"] = True
+    p = client.put(f"/api/projects/{p['id']}", json=p).json()
+    assert p["sections"][0]["locked"]
+    p["sections"][0]["name"] = "Section 01b"
+    r = client.put(f"/api/projects/{p['id']}", json=p)
+    assert r.status_code == 200 and r.json()["sections"][0]["name"] == "Section 01b"
+
+
+def test_a_stamp_for_a_missing_project_is_404_and_makes_no_folder(client, tmp_path):
+    assert client.get("/api/projects/abc123/sections/def456/stamp").status_code == 404
+    assert not (tmp_path / "projects" / "abc123").exists() and not (tmp_path / "abc123").exists()
