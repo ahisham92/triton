@@ -5,6 +5,7 @@
 // app.js passes its helpers in: api, again, esc, fmt, secUrl, ROOT, project(), sectionId(), costingHash.
 
 import { newRun, paintRun, runHtml } from "./progress.js";
+import { guessKind, kindColor } from "./picker.js";
 
 export async function renderValueEngineering(host, h) {
   const { api, again, esc, fmt, secUrl, ROOT } = h;
@@ -80,7 +81,7 @@ export async function renderValueEngineering(host, h) {
               <td class="hint" style="white-space:normal">${esc(i.note || "")}</td></tr>`;
           })
           .join("");
-        return `<tr><th colspan="4" style="padding-top:12px">${g ? esc(g) : "All elements"}</th></tr>${rows}`;
+        return `<tr class="ve-group" style="--kc:${kindColor(g ? guessKind(g) : "section")}"><th colspan="4" style="padding-top:12px"><span class="kchip"></span>${g ? esc(g) : "All elements"}</th></tr>${rows}`;
       })
       .join("");
     const cols = data.variants;

@@ -8,6 +8,9 @@ const COL = {
   pile: "#7a4696", bottom: "#7b818c", top: "#2a5fae", punch: "#008c96", link: "#9aa0aa",
   trim: "#2e8b4a", clash: "#c62828", gone: "#b8bcc4", pick: "#e08a00", concrete: "rgba(160,160,150,0.13)",
 };
+import { statTiles, passMeter, tideDiagram } from "./look.js";
+import { guessKind, kindColor } from "./picker.js";
+
 const SOL_ORDER = ["set_out", "rotate", "shift", "rotate_shift", "crank", "cut_trim", "cut"];
 
 export async function renderClashes(host, h) {
@@ -64,20 +67,23 @@ export async function renderClashes(host, h) {
     ${data.groups.map((g) => {
       const rec = g.summary.recommended;
       const tally = g.summary.solutions.find((s) => s.id === rec);
-      return `<tr class="link ${g.key === st.group ? "on" : ""}" data-group="${esc(g.key)}"><td><strong>${esc(g.pile)}</strong> into ${esc(g.host)}</td>
-        <td>${esc(g.connection.shape)}</td><td class="num">${g.count.heads}</td><td class="num">${g.count.with_clashes}</td>
-        <td class="num">${g.count.clash}</td><td class="num">${g.count.pairs - g.count.clash}</td><td class="num">${g.count.punch_pairs}</td>
-        <td>${rec ? `${esc(solTitle(rec))}${tally ? ` <span class="status">(${tally.passes_at}/${tally.heads} pass)</span>` : ""}` : "–"}</td>
+      const pill = (n, tone) => `<span class="pill ${n ? tone : "none"}">${n}</span>`;
+      return `<tr class="link ${g.key === st.group ? "on" : ""}" data-group="${esc(g.key)}"><td><span class="nowrap"><span class="kchip" style="--kc:${kindColor(guessKind(g.pile))}"></span><strong>${esc(g.pile)}</strong></span> into ${esc(g.host)}</td>
+        <td>${esc(g.connection.shape)}</td><td class="num">${g.count.heads}</td><td class="num">${pill(g.count.with_clashes, "bad")}</td>
+        <td class="num">${pill(g.count.clash, "bad")}</td><td class="num">${pill(g.count.pairs - g.count.clash, "warn")}</td><td class="num">${pill(g.count.punch_pairs, "warn")}</td>
+        <td>${rec ? `${esc(solTitle(rec))}${tally ? ` <span class="rec-pass">${passMeter(tally.passes_at, tally.heads)}<span class="status">${tally.passes_at}/${tally.heads} pass</span></span>` : ""}` : "–"}</td>
         <td><select data-choice="${esc(g.key)}" data-free><option value="">As recommended</option>${SOL_ORDER.filter((id) => g.summary.solutions.some((s) => s.id === id))
           .map((id) => `<option value="${id}" ${g.choice === id ? "selected" : ""}>${esc(solTitle(id))}</option>`).join("")}</select></td></tr>`;
     }).join("")}</tbody></table></div></div>`;
 
   const FLAG = { ok: "flag-ok", warning: "flag-warn", critical: "flag-bad" };
+  const TONE = { ok: "ok", warning: "warn", critical: "bad" };
   const waterHtml = () => !data.water?.length ? "" : `<div class="panel"><h2>Front beam and the water</h2>
     <p class="status">Water levels from the section's site settings (3D tab). A soffit in the tidal zone is cast between tides; below the lowest level it needs a cofferdam or a precast shell.</p>
+    <div class="tide-wrap">${tideDiagram(data.water[0].levels, data.water.map((w) => ({ label: (w.what.replace(/^Front Beam\s*/i, "").replace(/\s*(block\s*)?underside$/i, "") || w.what).slice(0, 22), level: w.level_m, tone: TONE[w.severity] })), { fmt })}
     <div class="scroll"><table><thead><tr><th>Underside</th><th class="num">Level (m)</th><th>Where</th>${data.water[0].levels.map((l) => `<th class="num">${esc(l.name)} ${l.level_m}</th>`).join("")}</tr></thead><tbody>
     ${data.water.map((w) => `<tr><td>${esc(w.what)}</td><td class="num">${w.level_m.toFixed(2)}</td><td><span class="${FLAG[w.severity]}">${esc(w.status)}</span></td>
-      ${w.levels.map((l) => `<td class="num">${l.above_m >= 0 ? "+" : ""}${l.above_m.toFixed(2)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      ${w.levels.map((l) => `<td class="num">${l.above_m >= 0 ? "+" : ""}${l.above_m.toFixed(2)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
     <ul class="status">${data.water.filter((w) => w.severity !== "ok").map((w) => `<li>${esc(w.text)}</li>`).join("")}</ul></div>`;
 
   const whatifsHtml = () => !data.whatifs.length ? "" : `<div class="panel"><h2>What ifs kept</h2><div class="scroll"><table><thead><tr><th>Connection</th><th>Taken out</th><th>Note</th><th>Result</th><th>Steel</th><th>Calculation</th><th></th></tr></thead><tbody>
@@ -87,8 +93,21 @@ export async function renderClashes(host, h) {
       <td><button class="quiet" data-open-wi="${esc(w.id)}" data-free>Open</button> <button class="danger" data-drop-wi="${esc(w.id)}" data-free>Remove</button></td></tr>`).join("")}
     </tbody></table></div></div>`;
 
+  const summaryHtml = () => {
+    const tallies = data.groups.map((g) => g.summary.solutions.find((x) => x.id === (g.choice || g.summary.recommended))).filter(Boolean);
+    const solved = tallies.reduce((a, t) => a + t.passes_at, 0), of = tallies.reduce((a, t) => a + t.heads, 0);
+    const clashing = data.groups.reduce((a, g) => a + g.count.with_clashes, 0);
+    const worst = (data.water || []).reduce((a, w) => (["ok", "warning", "critical"].indexOf(w.severity) > ["ok", "warning", "critical"].indexOf(a?.severity) ? w : a), null);
+    return statTiles([
+      { label: "Pile heads checked", value: data.heads_checked, color: "#2a78d6", sub: `${data.groups.length} connection${data.groups.length === 1 ? "" : "s"}` },
+      { label: "Heads with clashes", value: clashing, tone: clashing ? "bad" : "ok", sub: clashing ? "before any way out" : "all clear" },
+      of ? { label: "Solved by the chosen way out", value: `${solved}/${of}`, tone: solved === of ? "ok" : "warn", sub: passMeter(solved, of) } : null,
+      worst ? { label: "Front beam and the water", value: esc(worst.status), tone: TONE[worst.severity], sub: esc(worst.what) } : null,
+    ]);
+  };
+
   const draw = () => {
-    out.innerHTML = settingsHtml() + waterHtml() + groupsHtml() + whatifsHtml() + `<div id="cl-head"></div>`;
+    out.innerHTML = summaryHtml() + settingsHtml() + waterHtml() + groupsHtml() + whatifsHtml() + `<div id="cl-head"></div>`;
     out.querySelector("#cl-save").onclick = async () => {
       const body = { rule: out.querySelector("#cl-rule").value, fixing_tolerance: Number(out.querySelector("#cl-tol").value), plate_level: out.querySelector("#cl-plate").value, beam_bars: out.querySelector("#cl-beam").value, water_margin: Number(out.querySelector("#cl-water").value),
         weld: { ...(data.settings.weld || {}), leg: Number(out.querySelector("#cl-leg").value), filler_fu: Number(out.querySelector("#cl-fu").value) } };
