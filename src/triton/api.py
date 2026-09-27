@@ -945,11 +945,29 @@ def _view(raw: ImportResult, section: Section) -> ImportResult:
 
 def _workbook(project_id: str, section: Section) -> ImportResult | None:
     """The section's stored workbook as the section reads it: its sheet mapping applied and each
-    combination read as one of the section's load combinations."""
+    combination read as one of the section's load combinations. The axis findings are kept once
+    worked out (seconds on a big workbook), so each design step, tab and report reuses them."""
     wb = store().load_workbook(project_id, section.id)
-    if wb is None:
-        return None
-    return _view(wb, section)
+    return None if wb is None else _kept_view(project_id, section, wb)
+
+
+def _kept_view(project_id: str, section: Section, wb: ImportResult) -> ImportResult:
+    """``_view`` of the stored workbook, with its axis findings kept for the next time."""
+    summary = store().workbook_summary(project_id, section.id) or {}
+    key = _view_key(summary, section)
+    kept = store().load_axes(project_id, section.id, key)
+    view = apply_section(
+        wb,
+        _sheet_map(section),
+        section.combinations,
+        section.combination_map,
+        section.review,
+        _sizes(section),
+        axes=kept,
+    )
+    if kept is None:
+        store().save_axes(project_id, section.id, key, view.found_axes)
+    return view
 
 
 def _phases(project: Project, section: Section) -> ImportResult | None:
@@ -1008,7 +1026,7 @@ def section_workbook(
         if raw is None:
             return summary
         tell(0.35, "Checking the sheets for this section")
-        wb = _view(raw, section)
+        wb = _kept_view(project_id, section, raw)
         tell(0.8, "Checking the load combinations")
         summary = {**summary, **wb.summary(), "sheet_map": list(section.sheet_map)}
         check = combination_check(

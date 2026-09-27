@@ -131,7 +131,7 @@ def _edge_direction(p: np.ndarray, u: np.ndarray) -> np.ndarray:
     with straight edges (a beam's nodes) it is the edges' direction exactly, where a fitted line
     carries the scatter of the mesh."""
     try:
-        pts = _outline(np.unique(p, axis=0))
+        pts = np.unique(_outline(p), axis=0)
         if len(pts) < 3:
             return u
         # Convex hull (monotone chain).

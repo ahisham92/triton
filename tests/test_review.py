@@ -178,8 +178,8 @@ def test_the_workbook_tab_starts_from_a_brief_and_keeps_the_check(client, monkey
 
     # The upload worked the check out: opening the tab only reads it back.
     calls = []
-    view = api._view
-    monkeypatch.setattr(api, "_view", lambda *a: calls.append(1) or view(*a))
+    view = api._kept_view
+    monkeypatch.setattr(api, "_kept_view", lambda *a: calls.append(1) or view(*a))
     assert client.get(f"{url}/workbook", params={"progress": "open-t1"}).json() == full
     assert not calls
     # A decision changes how the section reads the workbook: it is checked again.
