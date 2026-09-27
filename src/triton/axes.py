@@ -430,11 +430,17 @@ def _share_sign(found: list[dict[str, Any]], issues: list[Issue]) -> None:
         )
 
 
+def sign_setting(settings: Any, element: Any = None) -> str:
+    """The element's own 'Positive plate moments' where it sets one, else the project's."""
+    own = getattr(element, "positive_moment", "project")
+    return settings.plate_positive_moment if own in (None, "project") else own
+
+
 def sag_factor(setting: str, found: dict[str, Any] | None) -> tuple[float, str]:
     """+1 when positive plate moments are sagging, -1 when hogging, and the note that says why."""
     if setting != "auto":
         sag = 1.0 if setting == "sagging" else -1.0
-        return sag, f"Positive plate moments taken as {setting} (Design settings)."
+        return sag, f"Positive plate moments taken as {setting} (Design settings or the element's own)."
     if found and found.get("positive"):
         sag = 1.0 if found["positive"] == "sagging" else -1.0
         return sag, f"{found.get('sign_text', '')} (Design settings: Auto.)"

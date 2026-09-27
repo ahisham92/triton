@@ -498,6 +498,8 @@ def test_the_beam_bar_rule_puts_only_beams_out_of_date():
         for key in ("link_size", "link_spacing"):
             if o.get(key) is None:
                 o.pop(key, None)
+        if o.get("positive_moment") == "project":
+            o.pop("positive_moment")
         if o.get("punching_fix") == "bars":
             o.pop("punching_fix")
         if o.get("punching_per") == "type":

@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .axes import sag_factor
+from .axes import sag_factor, sign_setting
 from .design import deflection as D
 from .design.runner import factored_elements
 from .project import (
@@ -161,7 +161,7 @@ def _plate(name, element, settings, ds, sheets, combination, axes, supports) -> 
     h = element.thickness if isinstance(element, SlabInput) else element.depth
     e_c, _ = D._e_concrete(element.concrete, settings, ds)
     ei = e_c * h**3 / 12 * 1e-6
-    sag, _ = sag_factor(settings.plate_positive_moment, axes)
+    sag, _ = sag_factor(sign_setting(settings, element), axes)
     # Slabs span across the quay between the pile rows (local 1); beams along their length.
     if isinstance(element, SlabInput):
         k = "1"
