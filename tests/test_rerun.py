@@ -51,6 +51,15 @@ def designed(client, monkeypatch):
     return p["id"], url, asked
 
 
+def unlocked(client, pid):
+    """The project, unlocked to edit."""
+    project = client.get(f"/api/projects/{pid}").json()
+    project["locked"] = False
+    for s in project["sections"]:
+        s["locked"] = False
+    return project
+
+
 def edit(client, pid, name, **change):
     project = client.get(f"/api/projects/{pid}").json()
     project["locked"] = False
@@ -142,18 +151,52 @@ def test_a_new_workbook_redesigns_everything(client, designed):
     assert asked == [["Deck", "Front Beam", "Pile(1)", "Pile(2)"]]
 
 
-def test_a_berth_length_puts_only_the_beams_and_slabs_out_of_date(client, designed):
-    """The berth length on the Costing tab sets the joints, which set only the beams' and slabs'
-    restraint length: the piles keep their results and are not redesigned."""
+def test_a_berth_length_puts_nothing_out_of_date(client, designed):
+    """The berth length on the Costing tab is for costing only: the expansion joints are given on the
+    Sections tab, so it no longer sets the beams' and slabs' restraint length (Ahmed, 2026-09-27) and
+    no result goes out of date."""
     pid, url, asked = designed
     project = client.get(f"/api/projects/{pid}").json()
     project["sections"][0]["costing"]["berth_length"] = 300
     assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
     r = client.get(f"{url}/design").json()
-    assert r["changed"] == ["expansion joints"]
-    assert sorted(r["stale"]) == ["Deck", "Front Beam"]
+    assert r["changed"] == [] and r["stale"] == []
+
+
+def test_the_runs_put_only_the_beams_and_slabs_out_of_date(client, designed):
+    """The runs on the Sections tab lay the joints, which set only the beams' and slabs' restraint
+    length: the piles keep their results and are not redesigned."""
+    pid, url, asked = designed
+    project = unlocked(client, pid)
+    project["sections"][0]["joints"]["runs"] = [300]
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
     r = client.post(f"{url}/design", json={"changed_only": True}).json()
     assert asked == [["Deck", "Front Beam"]] and r["stale"] == []
+
+
+def test_a_multiplier_note_puts_nothing_out_of_date(client, designed):
+    """Editing a load multiplier's note does not change the results, so they stay up to date and the
+    multiplier keeps when it was applied (Ahmed, 2026-09-27). Changing the multiplier does not."""
+    pid, url, asked = designed
+    project = unlocked(client, pid)
+    project["sections"][0]["load_factors"] = [{"factor": 1.35, "sheets": ["Pile(1)-QP"], "note": ""}]
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+    assert client.post(f"{url}/design").status_code == 200
+    project = unlocked(client, pid)
+    applied = project["sections"][0]["load_factors"][0]["applied_at"]
+    project["sections"][0]["load_factors"][0]["note"] = "Set B actions to design values"
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+    project = client.get(f"/api/projects/{pid}").json()
+    assert project["sections"][0]["load_factors"][0]["applied_at"] == applied
+    r = client.get(f"{url}/design").json()
+    assert r["changed"] == [] and r["stale"] == [] and len(r["piles"]) == 2  # nothing dropped
+    r = client.post(f"{url}/design", json={"changed_only": True}).json()
+    assert r["unchanged"] and asked == [None]
+    project = unlocked(client, pid)
+    project["sections"][0]["load_factors"][0]["factor"] = 1.5
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+    client.post(f"{url}/design", json={"changed_only": True})
+    assert asked == [None, None]  # a shared input: every result was out of date and dropped
 
 
 def test_using_a_trial_with_an_approach_slab_leaves_the_element_up_to_date(client, designed):

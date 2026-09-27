@@ -1,9 +1,9 @@
 """Expansion joints: where to break the deck and beams of a berth into segments.
 
 The berth is laid out as its straight runs one after the other (the lengths given on the Sections
-tab, else the berth length from Costing as one run; never the model's length, which covers only a
-short piece of the berth), measured as chainage from its start. Joints are placed by the rules in
-Design settings:
+tab; never the berth length on the Costing tab, which is for quantities only (Ahmed, 2026-09-27),
+nor the model's length, which covers only a short piece of the berth), measured as chainage from its
+start. Joints are placed by the rules in Design settings:
 
 * No segment is longer than the longest segment allowed (58 m by default, the office's joint
   spacing) nor shorter than the shortest; with a preferred length the berth gets about that length
@@ -106,13 +106,12 @@ def furniture_from_costing(section: Section, berth: float) -> list[dict[str, Any
 
 def berth_runs(section: Section, parts: list[Any] | None) -> tuple[list[float], str]:
     """The lengths of the berth's straight runs, and where they came from. Never the model's own
-    length: the model covers only a short piece of the berth."""
+    length: the model covers only a short piece of the berth. Never the berth length on the Costing
+    tab either: the expansion joints are given on the Sections tab, so that length is for costing only
+    and does not set the beams' and slabs' restraint length (Ahmed, 2026-09-27)."""
     sj = section.joints
     if sj.runs:
         return list(sj.runs), "the runs given on the Sections tab"
-    berth = section.costing.berth_length
-    if berth:
-        return [berth], "the berth length on the Costing tab"
     return [], ""
 
 
@@ -350,8 +349,8 @@ def section_joints(
             "joints": [],
             "segments": [],
             "warnings": [],
-            "text": "Give the berth length on the Costing tab (or the straight runs on the Sections tab) to "
-            "place the joints. Until then each beam and slab uses its own length between movement joints.",
+            "text": "Give the straight runs of the berth on the Sections tab to place the joints. Until then "
+            "each beam and slab uses its own length between movement joints.",
         }
     spacing, spacing_from = sj.pile_spacing, "given"
     if spacing is None:

@@ -457,14 +457,16 @@ def _hold_locks(existing: Project, body: Project) -> None:
 
 
 def _stamp_multipliers(existing: Project, body: Project) -> None:
-    """Each load multiplier remembers when it last changed, so tabs uploaded after it show up."""
+    """Each load multiplier remembers when it last changed, so tabs uploaded after it show up. Its note
+    is left out: editing the note does not change the results, so it does not stamp the multiplier
+    again nor put the results out of date (Ahmed, 2026-09-27)."""
     before = {s.id: s for s in existing.sections}
     now = _now()
     for section in body.sections:
         old = before.get(section.id)
-        kept = {(r.factor, tuple(r.sheets), r.note): r.applied_at for r in old.load_factors} if old else {}
+        kept = {(r.factor, tuple(r.sheets)): r.applied_at for r in old.load_factors} if old else {}
         for rule in section.load_factors:
-            key = (rule.factor, tuple(rule.sheets), rule.note)
+            key = (rule.factor, tuple(rule.sheets))
             rule.applied_at = kept[key] if key in kept else now
 
 
