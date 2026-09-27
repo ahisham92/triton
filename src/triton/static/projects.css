@@ -41,7 +41,8 @@
 .pc-kinds { display: flex; gap: 4px; flex-wrap: wrap; }
 .pc-kinds span { display: inline-flex; padding: 2px; border-radius: 6px; background: color-mix(in srgb, var(--kind) 10%, transparent); }
 .pc-foot { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 6px; border-top: 1px solid var(--line); font-size: 13px; }
-.pc-links { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+.pc-links { margin-left: auto; display: flex; gap: 10px; align-items: center; white-space: nowrap; }
+.pc-foot .status { min-width: 0; }
 .pc-links button { padding: 3px 10px; font-size: 13px; }
 .pc-open { font-weight: 600; text-decoration: none; }
 .empty-state { display: flex; gap: 14px; align-items: center; color: var(--muted); }
