@@ -267,7 +267,7 @@ export const ELEMENT_PAGES = {
   transverse_beam: BEAM_PAGES,
   slab: [
     { title: "Thickness and covers", keys: ["concrete", "thickness", "cover_top", "cover_bottom", "crack_width_limit", "crack_width_limit_bottom"], intro: "The slab section. Empty values use the project's.", art: slabArt },
-    { title: "Strips and stations", keys: ["strips", "strip_direction", "column_strip_width", "field_strip_width", "stations", "zone_size", "peaks", "twisting", "min_zone_length"], intro: "How the slab is cut into column and field strips and design stations." },
+    { title: "Strips and stations", keys: ["strips", "strip_direction", "column_strip_width", "field_strip_width", "stations", "station_thicknesses", "positive_moment", "zone_size", "peaks", "twisting", "min_zone_length"], intro: "How the slab is cut into column and field strips and design stations." },
     { title: "Bar layout", keys: ["layout_bottom_x", "layout_bottom_y", "layout_top_x", "layout_top_y", "mesh_bottom_x", "mesh_bottom_y", "mesh_top_x", "mesh_top_y"], intro: "The basic mesh on each face and whether additional bars go on top of it." },
     { title: "Punching and shear", keys: ["punching_thickness", "punching_piles", "punching_per", "punching_fix", "punching_depths", "punching_face_beta", "shear_links", "shear_in_tension"], intro: "Punching round the pile heads and one-way shear." },
     { title: "Openings and crane", keys: ["manholes", "channels", "voids", "crane"], intro: "Manholes, service channels, PVC voids and mobile crane areas." },
