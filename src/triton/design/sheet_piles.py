@@ -47,6 +47,7 @@ import numpy as np
 
 E_STEEL = 210_000.0  # MPa
 ALPHA_D = 0.76  # imperfection factor, buckling curve d
+UF_CAP = 99.0  # utilisations are capped here; the app shows anything over 10 as "unsafe by far"
 
 # ArcelorMittal AZ sections (Z-type), per metre of wall unless noted: width of a single pile b (mm),
 # height h, flange and web thicknesses, area (cm²/m), inertia (cm⁴/m), Wel and Wpl (cm³/m), and
@@ -374,7 +375,12 @@ def evaluate(
     av_web = Av * 100 * bs / 1000  # mm² per web
     loss_w = rho * av_web**2 / (4 * p["tw"] * sin_a) / bs  # mm³/mm = cm³/m
     Mv = np.minimum((W - loss_w) * fy_cls * rho_water / g0 / 1000, Mc)
-    out["bending_shear"] = np.where(V > 0.5 * Vpl, np.maximum(V / Vpl, M / np.maximum(Mv, 1e-9)), V / Vpl)
+    # Once VEd reaches Vpl,Rd (ρ ≥ 1) or the shear takes the whole modulus, no moment resistance is
+    # left: Uf is VEd / Vpl,Rd then, or UF_CAP (unsafe by far) where that is still below 1 with M acting.
+    no_mv = Mv <= 0
+    lost = np.where(V >= Vpl, V / Vpl, np.where(M > 0, UF_CAP, 0.0))
+    with_v = np.where(no_mv, lost, M / np.where(no_mv, 1.0, Mv))
+    out["bending_shear"] = np.where(V > 0.5 * Vpl, np.maximum(V / Vpl, with_v), V / Vpl)
     # Web shear buckling.
     c_tw = p["c"] / p["tw"]
     eps_w = np.sqrt(235.0 / fy_cls)
@@ -406,10 +412,12 @@ def evaluate(
     both = big_n & (V > 0.5 * Vpl)
     npl_red = np.maximum(A - rho * Av, 1e-9) * fy_cls / g0 / 10
     n_red = n_abs / npl_red
-    mn_red = np.maximum(np.minimum(k2 * Mv * (1 - n_red), Mv), 1e-9)
-    out["bending_shear_axial"] = np.where(
-        both, np.where(n_red < 1, np.maximum(n_red, M / mn_red), n_red), np.nan
-    )
+    mn_red = np.minimum(k2 * Mv * (1 - n_red), Mv)
+    m_red = np.where(mn_red > 0, M / np.where(mn_red > 0, mn_red, 1.0), np.where(M > 0, UF_CAP, 0.0))
+    out["bending_shear_axial"] = np.where(both, np.where(n_red < 1, np.maximum(n_red, m_red), n_red), np.nan)
+    # Past a few times the resistance the number means nothing more than "unsafe by far".
+    for c in CHECKS:
+        out[c] = np.minimum(out[c], UF_CAP)
     stacked = np.vstack([np.nan_to_num(out[k], nan=0.0) for k in CHECKS])
     out["uf"] = stacked.max(axis=0)
     out["governs"] = stacked.argmax(axis=0)

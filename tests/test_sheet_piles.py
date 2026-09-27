@@ -217,3 +217,19 @@ def test_saved_walls_still_open():
     w = SheetPileInput.model_validate(old)
     assert w.section_name == "AZ 26-700" and w.class_from == "auto"
     assert SheetPileInput.model_validate({"section_name": "PU 22"}).section_name == "AZ 14-770"
+
+
+def test_shear_beyond_vpl_is_not_astronomical():
+    # V above Vpl,Rd once gave M / 1e-9 (Uf ~5e10): shear alone is V / Vpl,Rd, web buckling governs.
+    r = evaluate(
+        reduced("AZ 14-770", np.array([4.25, 4.25])),
+        770,
+        Options(buckling_length=12.3),
+        [77.5, 5],
+        [751.6, 20],
+        [156.7, 0],
+    )
+    assert r["bending_shear"][0] == pytest.approx(751.6 / r["Vpl"][0], rel=1e-6)
+    assert r["uf"][0] == pytest.approx(751.6 / r["Vb"][0], rel=1e-6)  # about 3.4, web shear buckling
+    assert CHECKS[r["governs"][0]] == "web_buckling"
+    assert np.all(np.nan_to_num(np.vstack([r[c] for c in CHECKS])) <= 99)

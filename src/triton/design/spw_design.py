@@ -186,6 +186,8 @@ def _pass(f, M, V, N, loss, zone, name, opts) -> dict[str, Any]:
         "checks": per_check,
         "profile": [[float(z), round(float(u), 3)] for z, u in prof.items()],
         "_uf": uf,
+        "_gov": res["governs"],
+        "_z": f["Z"].to_numpy(float),
     }
 
 
@@ -249,6 +251,11 @@ def design_spw(
     adjusted = ign_n.any() or ign_q.any()
     designed = _pass(f, M_des, V_des, N_des, loss, zone, sec_name, opts) if adjusted else as_plaxis
     uf_p, uf_d = as_plaxis.pop("_uf"), designed.pop("_uf", None)
+    gov_d = (designed if uf_d is not None else as_plaxis).pop("_gov")
+    zs = (designed if uf_d is not None else as_plaxis).pop("_z")
+    for x in (as_plaxis, designed):
+        x.pop("_gov", None)
+        x.pop("_z", None)
     if not wall.buckling_length and (N_des > 0).any():
         where = (
             f"the firm soil level {firm:g} m"
@@ -295,6 +302,8 @@ def design_spw(
     by_combo = []
     for c in combos:
         m = (f["combination"] == c).to_numpy()
+        u = uf_d if uf_d is not None else uf_p
+        j = np.flatnonzero(m)[int(np.argmax(u[m]))]
         by_combo.append(
             {
                 "combination": c,
@@ -305,6 +314,8 @@ def design_spw(
                 "max_N": round(float(N_all[m].max()), 1),
                 "max_V": round(float(V_all[m].max()), 1),
                 "max_M": round(float(np.abs(m11[m]).max()), 1),
+                "governs": CHECKS[int(gov_d[j])],
+                "z": round(float(zs[j]), 2),
             }
         )
     out = {
@@ -375,4 +386,6 @@ def design_spw(
 
 
 def fmt_uf(u: float | None) -> str:
-    return "–" if u is None or (isinstance(u, float) and math.isnan(u)) else f"{u:.2f}"
+    if u is None or (isinstance(u, float) and math.isnan(u)):
+        return "–"
+    return "> 10, unsafe by far" if u > 10 else f"{u:.2f}"

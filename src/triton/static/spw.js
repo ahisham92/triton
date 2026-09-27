@@ -9,6 +9,8 @@ const CHECKS = ["bending", "bending_shear", "web_buckling", "buckling", "bending
 
 export function spwCard(w, h) {
   const { fmt, esc } = h;
+  // Utilisations past 10 mean nothing more than "unsafe by far".
+  const fu = (u, digits = 2) => (u > 10 ? "&gt; 10, unsafe by far" : fmt(u, digits));
   const card = document.createElement("div");
   card.className = "panel";
   card.style.marginTop = "16px";
@@ -26,7 +28,7 @@ export function spwCard(w, h) {
   const g = des.governing;
   const gp = pla.governing;
   const ok = (x) => `<span class="sev ${x ? "ok" : "error"}">${x ? "passes" : "fails"}</span>`;
-  const ufCell = (u) => (u == null ? `<td class="muted">–</td>` : `<td class="cell ${u <= 1 ? "ok" : "error"}">${fmt(u, 2)}</td>`);
+  const ufCell = (u) => (u == null ? `<td class="muted">–</td>` : `<td class="cell ${u <= 1 ? "ok" : "error"}">${fu(u)}</td>`);
   const where = (r) => `${esc(r.combination)}, z ${fmt(r.z, 2)} m`;
   const ignoredText = d.ignored
     .map((r) => `${[r.ignore_n && "N", r.ignore_q && "Q"].filter(Boolean).join(" and ")} left out in ${r.combination === ALL ? "every combination" : esc(r.combination)}`)
@@ -34,13 +36,13 @@ export function spwCard(w, h) {
   card.innerHTML = `<div class="element-head"><h3>${esc(w.element)}<span class="type">${esc(d.section)}, fy ${fmt(d.steel.fy)} MPa, EN 1993-5 (as Durability 4.2.1)</span></h3>
       ${ok(des.ok)}</div>
     <div class="counts" style="margin-top:0">
-      <div class="count"><b class="${des.uf > 1 ? "bad" : ""}">${fmt(des.uf, 2)}</b>Uf${d.adjusted ? " as designed" : ""}: ${esc(T[g.governs])}, ${where(g)}</div>
-      ${d.adjusted ? `<div class="count"><b class="${pla.uf > 1 ? "bad" : ""}">${fmt(pla.uf, 2)}</b>Uf with every Plaxis action: ${esc(T[gp.governs])}, ${where(gp)}</div>` : ""}
+      <div class="count"><b class="${des.uf > 1 ? "bad" : ""}">${fu(des.uf)}</b>Uf${d.adjusted ? " as designed" : ""}: ${esc(T[g.governs])}, ${where(g)}</div>
+      ${d.adjusted ? `<div class="count"><b class="${pla.uf > 1 ? "bad" : ""}">${fu(pla.uf)}</b>Uf with every Plaxis action: ${esc(T[gp.governs])}, ${where(gp)}</div>` : ""}
       <div class="count"><b>${fmt(p.mass, 1)}</b>kg/m² of wall (${fmt(d.top, 2)} to ${fmt(d.toe, 2)} m)</div>
       <div class="count"><b>${fmt(s.buckling_length, 2)} m</b>buckling length${s.buckling_length_given ? "" : " (assumed)"}</div>
     </div>
-    ${d.adjusted ? `<p class="fail-why"><b>Adjusted:</b> ${ignoredText}. Both results are shown; the one with every Plaxis action is ${pla.ok ? "also safe" : `<b>unsafe</b> (Uf ${fmt(pla.uf, 2)})`}.</p>` : ""}
-    ${!des.ok ? `<div class="fail-why"><b>Fails because:</b> ${esc(T[g.governs])} Uf ${fmt(g.uf, 2)} at ${where(g)} (M ${fmt(g.M, 1)} kNm/m, V ${fmt(g.V, 1)} kN/m, N ${fmt(g.N, 1)} kN/m, ${fmt(g.loss, 2)} mm corrosion). ${hint(g, d, T)}</div>` : ""}
+    ${d.adjusted ? `<p class="fail-why"><b>Adjusted:</b> ${ignoredText}. Both results are shown; the one with every Plaxis action is ${pla.ok ? "also safe" : `<b>unsafe</b> (Uf ${fu(pla.uf)})`}.</p>` : ""}
+    ${!des.ok ? `<div class="fail-why"><b>Fails because:</b> ${esc(T[g.governs])} Uf ${fu(g.uf)} at ${where(g)} (M ${fmt(g.M, 1)} kNm/m, V ${fmt(g.V, 1)} kN/m, N ${fmt(g.N, 1)} kN/m, ${fmt(g.loss, 2)} mm corrosion). ${hint(g, d, T)}</div>` : ""}
     ${[...(w.notes || []), ...d.notes].map((n) => `<p class="status">${esc(n)}</p>`).join("")}
     ${h.v3dSlot ? h.v3dSlot(w.element) : ""}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;align-items:start"><div class="chart" data-spw="profile"></div>
@@ -104,11 +106,11 @@ export function spwCard(w, h) {
       zs.filter((x) => x.top != null && x.bottom != null && x.bottom < x.top).map((x) => ({ name: `Zone ${x.z.zone}`, top: x.top, bottom: x.bottom, u: x.z.uf })),
       { esc, fmt, note: "Level (m), from the top of the wall to its toe" })}</div>
       <div class="tz-cards">${zs.map(({ z, zz, top }) => `<div class="tz-card" style="--st:${z.uf > 1 ? "var(--err)" : z.uf >= 0.95 ? "#e0a100" : "var(--ok)"}">
-        <div class="tz-head"><b>Zone ${z.zone}</b><span class="status">${top != null ? `${fmt(top, 2)} to ` : "down to "}${fmt(zz.bottom, 2)} m</span><span class="tz-badge">${fmt(z.uf, 2)}</span></div>
+        <div class="tz-head"><b>Zone ${z.zone}</b><span class="status">${top != null ? `${fmt(top, 2)} to ` : "down to "}${fmt(zz.bottom, 2)} m</span><span class="tz-badge">${fu(z.uf)}</span></div>
         <div class="tz-facts"><span>corrosion <b>${fmt(z.loss, 2)}</b> mm <small>(${fmt(zz.front, 2)} front + ${fmt(zz.back, 2)} back)</small></span>
           <span>class ${z.values.class}${z.values.class === 4 ? " → 3 (reduced fy)" : ""}</span><span>worst at z ${fmt(z.z, 2)} m, ${esc(z.combination)}</span></div>
         <div class="tz-forces"><span><small>M</small><b>${fmt(z.M, 1)}</b> kNm/m</span><span><small>V</small><b>${fmt(z.V, 1)}</b> kN/m</span><span><small>N</small><b>${fmt(z.N, 1)}</b> kN/m</span></div>
-        <ul class="tz-checks">${CHECKS.map((c) => checkBar(T[c], z.checks[c], { esc, fmt, governs: z.checks[c] != null && Math.abs(z.checks[c] - z.uf) < 5e-4,
+        <ul class="tz-checks">${CHECKS.map((c) => checkBar(T[c], z.checks[c], { esc, fmt: fu, governs: z.checks[c] != null && Math.abs(z.checks[c] - z.uf) < 5e-4,
           note: "" })).join("")}</ul></div>`).join("")}</div>`;
     card.querySelector('[data-spw="check-view"]').innerHTML = CHECKS.map((c) => {
       const x = r.checks[c];
@@ -125,12 +127,12 @@ export function spwCard(w, h) {
   // Per combination, with ticks that change the element's "Ignore N or Q" rules.
   const combos = card.querySelector('[data-spw="combos"]');
   const all = d.ignored.find((r) => r.combination === ALL) || { ignore_n: false, ignore_q: false };
-  combos.innerHTML = `<table><tr><th>Combination</th><th>max N kN/m</th><th>max |V| kN/m</th><th>max |M| kNm/m</th><th>Uf, every action</th><th>Uf as designed</th><th>Ignore N</th><th>Ignore Q</th></tr>
-    <tr><td><b>${ALL}</b></td><td colspan="5" class="muted">applies to every combination</td>
+  combos.innerHTML = `<table><tr><th>Combination</th><th>max N kN/m</th><th>max |V| kN/m</th><th>max |M| kNm/m</th><th>Uf, every action</th><th>Uf as designed</th><th>Governs</th><th>Ignore N</th><th>Ignore Q</th></tr>
+    <tr><td><b>${ALL}</b></td><td colspan="6" class="muted">applies to every combination</td>
       <td><input type="checkbox" data-c="${ALL}" data-k="ignore_n" ${all.ignore_n ? "checked" : ""}></td><td><input type="checkbox" data-c="${ALL}" data-k="ignore_q" ${all.ignore_q ? "checked" : ""}></td></tr>
     ${d.by_combination.map((c) => {
       const own = d.ignored.find((r) => r.combination === c.combination) || {};
-      return `<tr><td>${esc(c.combination)}</td><td>${fmt(c.max_N, 1)}</td><td>${fmt(c.max_V, 1)}</td><td>${fmt(c.max_M, 1)}</td>${ufCell(c.uf_plaxis)}${ufCell(c.uf)}
+      return `<tr><td>${esc(c.combination)}</td><td>${fmt(c.max_N, 1)}</td><td>${fmt(c.max_V, 1)}</td><td>${fmt(c.max_M, 1)}</td>${ufCell(c.uf_plaxis)}${ufCell(c.uf)}<td>${c.governs ? `${esc(T[c.governs])}, z ${fmt(c.z, 2)} m` : "–"}</td>
         <td><input type="checkbox" data-c="${esc(c.combination)}" data-k="ignore_n" ${own.ignore_n ? "checked" : ""}></td>
         <td><input type="checkbox" data-c="${esc(c.combination)}" data-k="ignore_q" ${own.ignore_q ? "checked" : ""}></td></tr>`;
     }).join("")}</table>
@@ -199,7 +201,7 @@ function details(r, d, fmt, esc) {
     n !== 0
       ? `Bending and axial: |NEd| / Npl,Rd = ${fmt(Math.abs(n) / v.Npl, 3)}${Math.abs(n) / v.Npl <= 0.1 ? " ≤ 0.10, M not reduced" : `, MN,Rd = Mc,Rd (1 − NEd / Npl,Rd) = ${fmt(v.Mn, 1)} kNm/m`}.`
       : "",
-    `Uf = ${fmt(r.uf, 3)} (${esc(d.check_titles[r.governs])}).`,
+    `Uf = ${fu(r.uf, 3)} (${esc(d.check_titles[r.governs])}).`,
   ];
   return `<ul>${lines.filter(Boolean).map((l) => `<li>${l}</li>`).join("")}</ul>`;
 }

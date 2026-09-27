@@ -15,6 +15,7 @@ from .alignment import named_parts
 from .design import standard
 from .design.combi import failing_parts, part_name
 from .design.combi import parts as combi_parts
+from .design.spw_design import fmt_uf
 from .figures import deflected_shape, slab_bars, slab_stations
 from .materials import STEEL_DENSITY
 from .project import DesignSettings, Project, Section
@@ -2571,7 +2572,7 @@ def _spw_summary(r: Report, w: dict) -> None:
     g = d["designed"]["governing"]
     r.p(
         f"{w['element']}: {d['section']}, fy {d['steel']['fy']:g} MPa, checked to EN 1993-5 as ArcelorMittal "
-        f"Durability 4.2.1 at every Plaxis result: Uf = {d['uf']:.2f} ({t[g['governs']].lower()}, "
+        f"Durability 4.2.1 at every Plaxis result: Uf = {fmt_uf(d['uf'])} ({t[g['governs']].lower()}, "
         f"{g['combination']}, z {g['z']:.2f} m), {'passes' if d['ok'] else 'FAILS'}."
     )
     if d["adjusted"]:
@@ -2583,7 +2584,7 @@ def _spw_summary(r: Report, w: dict) -> None:
         )
         r.note(
             f"{w['element']}: {left}, as the Plaxis values there are not taken as sheet pile actions. With every "
-            f"Plaxis action Uf = {p['uf']:.2f} ({t[p['governing']['governs']].lower()})."
+            f"Plaxis action Uf = {fmt_uf(p['uf'])} ({t[p['governing']['governs']].lower()})."
         )
 
 
@@ -2626,8 +2627,8 @@ def _spw(r: Report, w: dict) -> None:
                         z["loss"],
                         z["values"]["class"],
                     ]
-                    + [("–" if z["checks"][c] is None else z["checks"][c]) for c in t]
-                    + [z["uf"]]
+                    + [fmt_uf(z["checks"][c]) for c in t]
+                    + [fmt_uf(z["uf"])]
                     for z in res["zones"]
                 ],
             )
@@ -2643,7 +2644,7 @@ def _spw(r: Report, w: dict) -> None:
                 f"MEd {g['M']:.1f} kNm/m, Mc,Rd {v['Mc']:.1f} kNm/m; VEd {g['V']:.1f} kN/m, Vpl,Rd {v['Vpl']:.1f} kN/m"
                 + (f", Vb,Rd {v['Vb']:.1f} kN/m" if v.get("Vb") is not None else "")
                 + f"; NEd {g['N']:.1f} kN/m, Npl,Rd {v['Npl']:.0f} kN/m, Ncr {v['Ncr']:.0f} kN/m, χ {v['chi']:.3f}",
-                f"Uf = {g['uf']:.3f} ({t[g['governs']].lower()})",
+                f"Uf = {fmt_uf(g['uf'])} ({t[g['governs']].lower()})",
             ]
         )
         for n in [*(w.get("notes") or []), *d["notes"]]:
