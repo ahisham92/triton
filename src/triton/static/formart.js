@@ -195,7 +195,7 @@ const pileArt = (e, h) => {
     ${barsRing(cx, cy, R - cov * s - 6, e.bar_count || 24, 4)}
     ${dim(cx - R, cy + R + 12, cx + R, cy + R + 12, `Ø ${n(D)} mm`, { side: 1 })}
     <text x="200" y="30" class="pa-t">${e.casing ? "Cased pile" : "Bored pile"}</text>
-    <text x="200" y="50" class="pa-s">cover to links ${n(cov)} mm${e.cover == null ? " (project value)" : ""} · links from Ø${n(e.link_diameter)}</text>
+    <text x="200" y="50" class="pa-s">cover to links ${n(cov)} mm${e.cover == null ? " (project value)" : ""} · ${e.link_size ? `links Ø${n(e.link_size)}${e.link_spacing ? ` @ ${n(e.link_spacing)}` : ""} (yours)` : `links from Ø${n(e.link_diameter)}`}</text>
     <text x="200" y="70" class="pa-s">${e.bar_count ? `${e.bar_count} bars in the outer row (fixed)` : "bars chosen by Triton"}</text>
     <text x="200" y="90" class="pa-s">top level ${e.head_level == null ? "not set: every result is used" : `${n(e.head_level, 2)} m (slab soffit)`}</text>
     <text x="200" y="110" class="pa-s">crack width limit ${n(e.crack_width_limit, 2)} mm (QP)</text>`, "Pile section");
@@ -253,7 +253,7 @@ const BEAM_PAGES = [
   { title: "Cracking", keys: ["crack_width_limit", "crack_width_limit_bottom", "joint_spacing", "restraint_factor"], intro: "Crack width limits on each face and the restraint check along the beam." },
 ];
 export const ELEMENT_PAGES = {
-  pile: [{ title: "Pile", keys: ["concrete", "diameter", "cover", "link_diameter", "count", "bar_count", "head_level", "crack_width_limit"], intro: "The pile's size, cover and top level. Empty values use the project's.", art: pileArt }],
+  pile: [{ title: "Pile", keys: ["concrete", "diameter", "cover", "link_diameter", "link_size", "link_spacing", "count", "bar_count", "head_level", "crack_width_limit"], intro: "The pile's size, cover and top level. Empty values use the project's.", art: pileArt }],
   front_beam: BEAM_PAGES,
   rear_beam: BEAM_PAGES,
   transverse_beam: BEAM_PAGES,

@@ -85,6 +85,7 @@ def _settings_left_out(project: Project) -> dict:
 
 
 SLAB_BARS_RULE = "additional bars inside the mesh"
+PILE_LINKS_RULE = "pile links: pitch 100, 150 or 200; least link steel of the sizes that pass"
 BEAM_BARS_RULE = "beam bars: even, top as many as bottom; layers behind: same count, half or 2"
 
 
@@ -137,7 +138,8 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
     for name, element in section.elements.items():
         cage = section.user_cages.get(name) or section.beam_cages.get(name) or section.slab_strips.get(name)
         own = element.model_dump(mode="json")
-        for key in ("rooms", "manholes", "channels", "construction_joints", "punching_piles"):
+        own_keys = ("rooms", "manholes", "channels", "construction_joints", "punching_piles")
+        for key in own_keys + ("link_size", "link_spacing"):
             if not own.get(key):
                 own.pop(key, None)  # none: the fingerprint it had before these existed
         if own.get("construction_joints"):
@@ -160,6 +162,10 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
             # Additional bars in layers of their own above the bottom mesh or below the top mesh,
             # none between its bars (Ahmed, 2026-09-26): slabs designed before ask for a redesign.
             value = [value, SLAB_BARS_RULE]
+        if isinstance(element, PileInput):
+            # Link pitches of 100, 150 or 200 mm only, and the size with the least link steel
+            # (Ahmed, 2026-09-27): piles designed before ask for a redesign.
+            value = [value, PILE_LINKS_RULE]
         if isinstance(element, BeamInput):
             # The first layers of top and bottom bars have the same count, so each link leg ties a
             # top bar and the bottom bar under it, and a layer behind holds the same count, half of it

@@ -6582,7 +6582,7 @@ function connectionBlock(c) {
 
 function shearBlock(sh, above = "the slab") {
   const g = sh.governing;
-  const why = { shear: "shear", minimum: "9.5.3 maximum spacing", "near slab": `0.6 × spacing below ${above}`, "at lap": "0.6 × spacing at laps" };
+  const why = { shear: "shear", minimum: "9.5.3 maximum spacing", "near slab": `0.6 × spacing below ${above}`, "at lap": "0.6 × spacing at laps", "set by you": "your spacing" };
   return `<h3 style="margin:20px 0 4px;font-size:15px">Shear and links <span class="sev ${sh.passed ? "ok" : "error"}">${sh.passed ? "passes" : "fails"}</span></h3>
     <p style="margin:4px 0 8px">Governing: ${esc(g.combination)}, z ${fmt(g.z, 2)} m. V<sub>Ed</sub> = ${fmt(g.V_kN)} kN with N<sub>Ed</sub> = ${fmt(g.N_kN)} kN;
       V<sub>Rd,c</sub> = ${fmt(g.VRd_c_kN)} kN${g.N_kN < 0 ? " (pile in tension: no concrete contribution)" : ""}, V<sub>Rd,max</sub> = ${fmt(g.VRd_max_kN)} kN at cot θ = ${fmt(g.cot_theta, 2)}. Utilisation ${fmt(sh.utilisation, 2)}.</p>
@@ -6590,6 +6590,10 @@ function shearBlock(sh, above = "the slab") {
       ${sh.zones.map((z) => `<tr><td>${fmt(z.top, 2)}</td><td>${fmt(z.bottom, 2)}</td><td>${esc(z.link)}</td><td>${esc(why[z.reason] || z.reason)}</td></tr>`).join("")}
     </table></div>
     <p class="status">${esc(sh.method)}. Largest spacing ${fmt(sh.max_spacing_mm)} mm, smallest link Ø${fmt(sh.min_link_diameter_mm)} (9.5.3). ${fmt(sh.links_kg)} kg of links per pile${sh.inner_rings ? `, of which ${fmt(sh.inner_links_kg)} kg in ${sh.inner_rings} inner ring${sh.inner_rings > 1 ? "s" : ""} around the inner row${sh.inner_rings > 1 ? "s" : ""}` : ""}.</p>
+    ${sh.options?.length > 1 ? `<div class="scroll"><table><tr><th>Link size tried</th><th>Links</th><th>kg per pile</th><th>Utilisation</th><th></th></tr>
+      ${sh.options.map((o) => `<tr><td>Ø${fmt(o.link_diameter_mm)}</td><td>${esc(o.link)}</td><td>${fmt(o.links_kg)}</td>
+        <td class="cell ${o.passed ? "ok" : "error"}">${fmt(o.utilisation, 2)}</td><td>${o.link_diameter_mm === sh.link_diameter_mm ? "chosen" : ""}</td></tr>`).join("")}
+    </table></div>` : ""}
     ${sh.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}`;
 }
 

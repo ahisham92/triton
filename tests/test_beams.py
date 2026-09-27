@@ -488,12 +488,15 @@ def test_the_beam_bar_rule_puts_only_beams_out_of_date():
         for key in ("rooms", "manholes", "channels", "construction_joints", "punching_piles"):
             if not o.get(key):
                 o.pop(key, None)
+        for key in ("link_size", "link_spacing"):
+            if o.get(key) is None:
+                o.pop(key, None)
         if o.get("punching_fix") == "bars":
             o.pop("punching_fix")
         if o.get("punching_per") == "type":
             o.pop("punching_per")
     assert now["Front Beam"] == fresh._hash([own["Front Beam"], fresh.BEAM_BARS_RULE])
-    assert now["Pile(1)"] == fresh._hash(own["Pile(1)"])
+    assert now["Pile(1)"] == fresh._hash([own["Pile(1)"], fresh.PILE_LINKS_RULE])
     assert now["Deck"] == fresh._hash([own["Deck"], fresh.SLAB_BARS_RULE])
     # Results designed before the rule: the beam alone is out of date, named as what changed.
     before = {**now, "Front Beam": fresh._hash(own["Front Beam"])}
