@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections import defaultdict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -284,6 +285,7 @@ def apply_section(
     aliases: dict[str, str] | None = None,
     decisions: dict[str, str] | None = None,
     sizes: dict[str, str] | None = None,
+    axes: tuple[list[dict[str, Any]], list[Issue]] | None = None,
 ) -> ImportResult:
     """The workbook as a section reads it: sheets assigned by hand, the user's decisions on the
     warnings applied, then each combination read as one of the section's defined combinations. A
@@ -320,7 +322,7 @@ def apply_section(
             sheets.append(replace(s, issues=issues))
             continue
         sheets.append(replace(s, parsed=replace(s.parsed, combination=target), issues=issues))
-    return _decide_workbook_issues(_checked(ImportResult(sheets), ignored, sizes), decisions)
+    return _decide_workbook_issues(_checked(ImportResult(sheets), ignored, sizes, axes), decisions)
 
 
 def _ignored(result: ImportResult) -> set[str]:
@@ -462,16 +464,23 @@ def merge_workbooks(
 
 
 def _checked(
-    result: ImportResult, ignored: set[str] | frozenset = frozenset(), sizes: dict[str, str] | None = None
+    result: ImportResult,
+    ignored: set[str] | frozenset = frozenset(),
+    sizes: dict[str, str] | None = None,
+    axes: tuple[list[dict[str, Any]], list[Issue]] | None = None,
 ) -> ImportResult:
+    """The workbook-wide checks. ``axes``: the axis findings already worked out for this same reading
+    of the workbook (they take seconds on a big one); the result keeps them as ``found_axes``."""
     _check_names(result, ignored)
     _check_duplicate_sheets(result)
     _check_coverage(result)
     _check_identical_combinations(result)
     _check_mesh_consistency(result)
     _check_point_counts(result, sizes or {})
-    result.axes, issues = infer_axes(result.elements())
-    result.issues.extend(issues)
+    found, issues = axes if axes is not None else infer_axes(result.elements())
+    result.found_axes = (found, issues)
+    result.axes = found
+    result.issues.extend(copy.deepcopy(issues))
     return result
 
 

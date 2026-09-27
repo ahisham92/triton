@@ -238,6 +238,7 @@ class ProjectStore:
             "workbook.pkl.gz",
             "workbook.json",
             "workbook_view.json",
+            "workbook_axes.pkl",
             "results.json",
         ):
             (d / name).unlink(missing_ok=True)
@@ -261,6 +262,23 @@ class ProjectStore:
 
     def save_view(self, project_id: str, section_id: str, key: str, data: dict[str, Any]) -> None:
         self._write_json(self._dir(project_id, section_id) / "workbook_view.json", {"key": key, "data": data})
+
+    def load_axes(self, project_id: str, section_id: str, key: str) -> Any | None:
+        """The axis findings of the workbook as the section last read it, if nothing changed since."""
+        path = self._dir(project_id, section_id) / "workbook_axes.pkl"
+        try:
+            with path.open("rb") as f:
+                kept_key, axes = pickle.load(f)
+        except (OSError, EOFError, pickle.UnpicklingError, ValueError, AttributeError, ImportError):
+            return None
+        return axes if kept_key == key else None
+
+    def save_axes(self, project_id: str, section_id: str, key: str, axes: Any) -> None:
+        path = self._dir(project_id, section_id) / "workbook_axes.pkl"
+        tmp = atomic.tmp_for(path)
+        with tmp.open("wb") as f:
+            pickle.dump((key, axes), f, protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(path)
 
     def workbook_summary(self, project_id: str, section_id: str) -> dict[str, Any] | None:
         path = self._dir(project_id, section_id) / "workbook.json"
@@ -315,7 +333,13 @@ class ProjectStore:
             d = self.root / project_id / sid
             workbook = sum(
                 _size(d / n)
-                for n in ("workbook.pkl", "workbook.pkl.gz", "workbook.json", "workbook_view.json")
+                for n in (
+                    "workbook.pkl",
+                    "workbook.pkl.gz",
+                    "workbook.json",
+                    "workbook_view.json",
+                    "workbook_axes.pkl",
+                )
             )
             rows, results = _size(d / "raw"), _size(d / "results.json")
             out[sid] = {"workbook": workbook, "rows": rows, "results": results, "total": _size(d)}

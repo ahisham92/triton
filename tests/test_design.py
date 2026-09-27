@@ -598,3 +598,27 @@ def test_stop_during_an_element_keeps_the_finished_ones(client, monkeypatch):
     r = client.post(f"{url}/design", json={"elements": ["Pile(2)", "Pile(3)"]}).json()
     assert "stopped" not in r and r["designed"] == ["Pile(2)", "Pile(3)"]
     assert [x["element"] for x in r["piles"]] == names
+
+
+def test_axis_findings_are_worked_out_once_per_reading(client, monkeypatch):
+    """Each design step, tab and report reads the section's workbook again; the axis findings are kept
+    after the first time, and worked out again only when the section's reading of it changes."""
+    from triton import validation
+
+    p = client.post("/api/projects", json={"info": {"name": "A"}, "element_names": ["Pile(1)"]}).json()
+    url = f"/api/projects/{p['id']}/sections/{p['sections'][0]['id']}"
+    data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet(scale=0.5)})
+    assert client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)}).status_code == 200
+    calls = []
+    real = validation.infer_axes
+    monkeypatch.setattr(validation, "infer_axes", lambda e: calls.append(1) or real(e))
+    first = client.post(f"{url}/design").json()
+    assert client.post(f"{url}/design", json={"changed_only": False}).json()["piles"] == first["piles"]
+    assert client.get(f"{url}/deflections").status_code == 200
+    assert calls == []  # kept since the upload's check
+    page = client.get(f"/api/projects/{p['id']}").json()
+    page["sections"][0]["locked"] = False
+    page["sections"][0]["combination_map"] = {"QP": ""}  # QP left out: a new reading
+    assert client.put(f"/api/projects/{p['id']}", json=page).status_code == 200
+    client.get(f"{url}/deflections")
+    assert calls == [1]
