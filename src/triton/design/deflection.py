@@ -57,7 +57,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..axes import CLEAR, _corr, sag_factor
+from ..axes import CLEAR, _corr, sag_factor, sign_setting
 from ..elements import CombinationType, combination_type
 from ..forces import design_forces
 from ..importer import LABEL, SheetData
@@ -994,7 +994,7 @@ def _plate(
     h = element.thickness if isinstance(element, SlabInput) else element.depth
     e_c, e_words = _e_concrete(element.concrete, settings, ds)
     ei = e_c * h**3 / 12 * 1e-6  # kN·m² per metre
-    sag, _ = sag_factor(settings.plate_positive_moment, axes)
+    sag, _ = sag_factor(sign_setting(settings, element), axes)
     curves = []
     where = []
     for k, col in (("1", "M_11"), ("2", "M_22")):

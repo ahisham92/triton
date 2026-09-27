@@ -143,6 +143,8 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         for key in own_keys + ("link_size", "link_spacing", "station_thicknesses"):
             if not own.get(key):
                 own.pop(key, None)  # none: the fingerprint it had before these existed
+        if own.get("positive_moment") == "project":
+            own.pop("positive_moment")
         if own.get("construction_joints"):
             own["construction_joint_rules"] = project.design.construction_joints.model_dump(mode="json")
         if own.get("punching_fix") == "bars":

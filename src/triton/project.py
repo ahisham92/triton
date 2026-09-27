@@ -1201,6 +1201,13 @@ class Channel(_Model):
 class SlabInput(_ConcreteSection):
     kind: Literal["slab"] = "slab"
     thickness: float = _mm("Slab thickness", 700.0, gt=0)
+    positive_moment: Literal["project", "sagging", "hogging"] = Field(
+        "project",
+        title="Positive plate moments (this element)",
+        description="Project: the Design settings value. Sagging: positive M11/M22 puts the bottom bars in "
+        "tension; hogging: the top bars. For a model whose plates do not share one sign (the office's "
+        "AdSec deck strips take the Plaxis moment x -1, its beams as they are).",
+    )
     cover_top: float | None = _mm("Top cover", None, gt=0, description=_PROJECT_VALUE)
     cover_bottom: float | None = _mm("Bottom cover", None, gt=0, description=_PROJECT_VALUE)
     strips: Literal["uniform", "column_and_field"] = Field(
@@ -1593,6 +1600,13 @@ class BeamInput(_ConcreteSection):
     )
     depth: float = _mm("Beam depth", 2000.0, gt=0)
     cover: float | None = _mm("Cover to links", None, gt=0, description=_PROJECT_VALUE)
+    positive_moment: Literal["project", "sagging", "hogging"] = Field(
+        "project",
+        title="Positive plate moments (this element)",
+        description="Project: the Design settings value. Sagging: positive M11/M22 puts the bottom bars in "
+        "tension; hogging: the top bars. For a model whose plates do not share one sign (the office's "
+        "AdSec deck strips take the Plaxis moment x -1, its beams as they are).",
+    )
     link_diameter: float = _mm("Link diameter", 16.0, gt=0)
     joint_spacing: float = _m(
         "Length between movement joints",

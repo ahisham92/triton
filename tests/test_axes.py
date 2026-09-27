@@ -218,3 +218,21 @@ def test_far_from_supports_matches_every_pair():
     brute = (np.hypot(u[:, None] - su[None, :], v[:, None] - sv[None, :]) > 1.8).all(1)
     assert (axes._far_from(u, v, su, sv, 1.8) == brute).all()
     assert axes._far_from(u, v, su[:0], sv[:0], 1.8).all()
+
+
+def test_an_element_can_set_its_own_sign():
+    from triton.axes import sag_factor, sign_setting
+    from triton.project import BeamInput, DesignSettings, SlabInput
+
+    settings = DesignSettings()
+    deck, beam = SlabInput(positive_moment="hogging"), BeamInput()
+    assert sign_setting(settings, beam) == settings.plate_positive_moment == "auto"
+    assert sag_factor(sign_setting(settings, deck), {"positive": "sagging"})[0] == -1.0
+    assert sag_factor(sign_setting(settings, beam), {"positive": "sagging"})[0] == 1.0
+    assert sign_setting(settings.model_copy(update={"plate_positive_moment": "hogging"}), None) == "hogging"
+
+
+def test_the_element_sign_leaves_old_fingerprints_alone():
+    from triton.project import SlabInput
+
+    assert "positive_moment" in SlabInput().model_dump()  # the fingerprint drops it at "project"
