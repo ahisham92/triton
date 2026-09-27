@@ -37,6 +37,10 @@ SUFFIX = ".trt"
 _SECTION_JSON = re.compile(r"[A-Za-z0-9_-]+\.json")
 _TRIAL = re.compile(r"(trials|moved)/[0-9a-f]{6,64}\.json\.gz")
 _SKIP = {"workbook.json", "workbook_view.json"}
+# What a .trt can carry of each section: the workbook as cleaned (the lightest copy that designs the
+# same), its rows as uploaded (kept for editing; they replace the cleaned copy when both are asked), and
+# the design results with the trials.
+PARTS = ("workbook", "rows", "results")
 # An opened file may not grow past this when unpacked (a zip bomb stops here).
 MAX_UNPACKED = 4 * 1024**3
 
@@ -129,17 +133,33 @@ def _sheet_in(name: str, d: dict[str, Any]) -> SheetData:
     )
 
 
-def file_name(project: Project) -> str:
-    return (re.sub(r"[^A-Za-z0-9._ -]+", "_", project.info.name or "").strip(" ._") or "project") + SUFFIX
+def file_name(project: Project, section: str = "", parts: tuple[str, ...] = PARTS) -> str:
+    stem = " - ".join(x for x in (project.info.name, section) if x)
+    if tuple(parts) != PARTS:
+        stem += " - " + " + ".join(parts)
+    return (re.sub(r"[^A-Za-z0-9._ -]+", "_", stem).strip(" ._") or "project") + SUFFIX
 
 
-def write(store: ProjectStore, project: Project, out: IO[bytes]) -> dict[str, Any]:
-    """Write ``project`` with every section's workbook rows, results and trials to ``out`` as a .trt."""
+def write(
+    store: ProjectStore,
+    project: Project,
+    out: IO[bytes],
+    sections: list[str] | None = None,
+    parts: tuple[str, ...] = PARTS,
+) -> dict[str, Any]:
+    """Write ``project`` to ``out`` as a .trt: every section, or only those with their id in ``sections``,
+    each with what ``parts`` names (all of it by default: the rows as read, results and trials). It opens
+    as a project like any other, with those sections only."""
+    if sections is not None:
+        project = project.model_copy(
+            update={"sections": [s for s in project.sections if s.id in set(sections)]}
+        )
     manifest: dict[str, Any] = {
         "format": FORMAT,
         "saved_at": _now(),
         "name": project.info.name,
         "sections": {},
+        "parts": list(parts),
     }
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         z.writestr("project.json", project.model_dump_json(indent=1))
@@ -150,12 +170,13 @@ def write(store: ProjectStore, project: Project, out: IO[bytes]) -> dict[str, An
             base = f"sections/{section.id}/"
             info: dict[str, Any] = {"name": section.name}
             summary = store.workbook_summary(project.id, section.id)
-            wb = store.load_workbook(project.id, section.id) if summary else None
+            wants = "workbook" in parts or "rows" in parts
+            wb = store.load_workbook(project.id, section.id) if summary and wants else None
             if wb is not None:
                 # One member per sheet, so neither end holds the whole workbook's rows at once.
                 order = []
                 for sheet in wb.sheets:
-                    rows = store.load_raw(project.id, section.id, sheet.name)
+                    rows = store.load_raw(project.id, section.id, sheet.name) if "rows" in parts else None
                     # Rows as read; a workbook uploaded before they were kept carries its cleaned sheets.
                     body = {"rows": rows} if rows is not None else {"cleaned": _sheet_out(sheet)}
                     with z.open(f"{base}sheets/{len(order)}.json", "w", force_zip64=True) as f:
@@ -163,10 +184,10 @@ def write(store: ProjectStore, project: Project, out: IO[bytes]) -> dict[str, An
                     order.append(sheet.name)
                 info["sheets"] = order
                 z.writestr(base + "workbook.json", json.dumps(summary, default=str))
-            for p in sorted(d.iterdir()):
+            for p in sorted(d.iterdir()) if "results" in parts else ():
                 if p.is_file() and _SECTION_JSON.fullmatch(p.name) and p.name not in _SKIP:
                     z.write(p, base + p.name)
-            for folder in ("trials", "moved"):
+            for folder in ("trials", "moved") if "results" in parts else ():
                 if (d / folder).is_dir():
                     for p in sorted((d / folder).glob("*.json.gz")):
                         if _TRIAL.fullmatch(f"{folder}/{p.name}"):
@@ -314,10 +335,12 @@ def unique_name(store: ProjectStore, name: str) -> str:
     return f"{stem} ({n})"
 
 
-def spool(store: ProjectStore, project: Project) -> tuple[IO[bytes], int]:
+def spool(
+    store: ProjectStore, project: Project, sections: list[str] | None = None, parts: tuple[str, ...] = PARTS
+) -> tuple[IO[bytes], int]:
     """The .trt in a temporary file (on disk past 32 MB), rewound, and its size."""
     f = tempfile.SpooledTemporaryFile(max_size=32 * 1024**2)
-    write(store, project, f)
+    write(store, project, f, sections, parts)
     size = f.tell()
     f.seek(0)
     return f, size

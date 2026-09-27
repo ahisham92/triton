@@ -109,3 +109,47 @@ def test_a_workbook_uploaded_before_its_rows_were_kept_comes_along(tmp_path, mon
     assert all(x.frame.equals(y.frame) for x, y in zip(a.sheets, b.sheets, strict=True))
     assert sorted(i.id for i in a.all_issues()) == sorted(i.id for i in b.all_issues())
     assert client.post(f"/api/projects/{new['id']}/sections/{sid}/design").status_code == 200
+
+
+def test_one_section_and_part_from_the_storage_tab(tmp_path, monkeypatch):
+    # The Storage tab's sizes download that section alone as a .trt: the cleaned workbook (lightest,
+    # designs the same), the rows kept for editing, or the results; each opens as a project.
+    from fastapi.testclient import TestClient
+
+    from triton.api import app
+
+    monkeypatch.setenv("TRITON_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    p = client.post("/api/projects", json={"info": {"name": "Berth 1"}, "element_names": ["Pile(1)"]}).json()
+    sid = p["sections"][0]["id"]
+    p = client.post(f"/api/projects/{p['id']}/sections", json={"name": "Section 2"}).json()
+    url = f"/api/projects/{p['id']}/sections/{sid}"
+    data = xlsx_bytes({"Pile(1)-PT-B-Apron": pile_sheet(), "Pile(1)-QP": pile_sheet()})
+    client.post(f"{url}/workbook", files={"file": ("s.xlsx", data)})
+    assert client.post(f"{url}/design").status_code == 200
+    before = client.get(f"{url}/design").json()
+    base = f"/api/projects/{p['id']}/project.trt?section={sid}"
+
+    def members(r):
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        return z, set(z.namelist())
+
+    r = client.get(base + "&parts=workbook")
+    assert r.status_code == 200 and "workbook" in r.headers["content-disposition"]
+    z, names = members(r)
+    assert f"sections/{sid}/sheets/0.json" in names and f"sections/{sid}/results.json" not in names
+    assert "cleaned" in json.loads(z.read(f"sections/{sid}/sheets/0.json"))
+    assert [s["id"] for s in json.loads(z.read("project.json"))["sections"]] == [sid]
+    up = _upload(client, "w.trt", r.content)
+    opened = client.post(f"/api/projects/open/{up}", json={"if_exists": "keep"}).json()
+    new_url = f"/api/projects/{opened['id']}/sections/{sid}"
+    assert client.post(f"{new_url}/design").status_code == 200
+    again = client.get(f"{new_url}/design").json()
+    assert again["piles"][0]["arrangement"] == before["piles"][0]["arrangement"]
+
+    z, names = members(client.get(base + "&parts=rows"))
+    assert "rows" in json.loads(z.read(f"sections/{sid}/sheets/0.json"))
+    z, names = members(client.get(base + "&parts=results"))
+    assert f"sections/{sid}/results.json" in names and not any("/sheets/" in n for n in names)
+    assert client.get(base + "&parts=nothing").status_code == 400
+    assert client.get(f"/api/projects/{p['id']}/project.trt?section=nope").status_code == 404
