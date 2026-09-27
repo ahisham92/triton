@@ -85,6 +85,7 @@ def _settings_left_out(project: Project) -> dict:
 
 
 SLAB_BARS_RULE = "additional bars inside the mesh"
+SLAB_ADSEC_RULE = "deck strength counts the compression bars; crack width by AdSec's outer-layer method"
 PILE_LINKS_RULE = "pile links: pitch 100, 150 or 200; least link steel of the sizes that pass"
 BEAM_BARS_RULE = "beam bars: even, top as many as bottom; layers behind: same count, half or 2"
 
@@ -162,6 +163,9 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
             # Additional bars in layers of their own above the bottom mesh or below the top mesh,
             # none between its bars (Ahmed, 2026-09-26): slabs designed before ask for a redesign.
             value = [value, SLAB_BARS_RULE]
+            # Strength with the compression bars and crack width as AdSec (Ahmed, 2026-09-27):
+            # decks designed before ask for a redesign.
+            value = [value, SLAB_ADSEC_RULE]
         if isinstance(element, PileInput):
             # Link pitches of 100, 150 or 200 mm only, and the size with the least link steel
             # (Ahmed, 2026-09-27): piles designed before ask for a redesign.

@@ -497,7 +497,7 @@ def test_the_beam_bar_rule_puts_only_beams_out_of_date():
             o.pop("punching_per")
     assert now["Front Beam"] == fresh._hash([own["Front Beam"], fresh.BEAM_BARS_RULE])
     assert now["Pile(1)"] == fresh._hash([own["Pile(1)"], fresh.PILE_LINKS_RULE])
-    assert now["Deck"] == fresh._hash([own["Deck"], fresh.SLAB_BARS_RULE])
+    assert now["Deck"] == fresh._hash([[own["Deck"], fresh.SLAB_BARS_RULE], fresh.SLAB_ADSEC_RULE])
     # Results designed before the rule: the beam alone is out of date, named as what changed.
     before = {**now, "Front Beam": fresh._hash(own["Front Beam"])}
     shared = {k: v for k, v in before.items() if k not in section.elements}
