@@ -388,3 +388,103 @@ def test_stop_reaches_inside_a_beam_design():
         design_beam(
             "Front Beam", els["Front Beam"], DesignSettings(), wb.elements()["Front Beam"], [], els, None
         )
+
+
+def test_top_and_bottom_have_the_same_bar_count_and_additional_bars_come_in_2_6_or_12():
+    """Ahmed, 2026-09-27: as many top bars as bottom bars (per first layer) so each link leg ties a top
+    bar and the bottom bar under it; additional bars 2, 6 or 12."""
+    from triton.design.beams import EXTRA_BARS, Geometry, face_candidates, spread
+
+    settings = DesignSettings()
+    g = Geometry(2000.0, 1600.0, 50.0, 16.0)
+    for f in face_candidates(g, settings, g.b):
+        assert f.layers == 1 and len(f.extra) <= 1 and set(f.extra) <= set(EXTRA_BARS)
+        assert all(set(r) <= set(range(f.count)) for r in f.rows)  # over first-layer bars
+    # A third layer, where allowed, only behind a full 12, and again 2, 6 or 12.
+    three = DesignSettings(reinforcement={"max_layers": 3})
+    assert {f.extra[:-1] for f in face_candidates(g, three, g.b)} == {(), (12,)}
+    assert spread(23, 5) == [0, 6, 11, 17, 22] and spread(10, 2) == [0, 9]
+
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=6000.0, q23=100.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=2500.0)),
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    beam = BeamInput(kind="front_beam", width=2000, depth=1600)
+    # Ø20 and Ø32 only: the bottom has to take additional bars beyond its first layer.
+    bigger = DesignSettings(reinforcement={"bar_diameters": [20, 32]})
+    for s in (DesignSettings(), bigger):
+        d = design_beam("Front Beam", beam, s, sheets, [], {}, None)
+        top, bottom = d["cage"]["top"], d["cage"]["bottom"]
+        assert top["per_layer"] == bottom["per_layer"]
+        assert top["extra"] in (0, *EXTRA_BARS) and bottom["extra"] in (0, *EXTRA_BARS)
+        assert bottom["count"] == bottom["per_layer"] + bottom["extra"]
+        # The link legs stand on matching bars, evenly spread and symmetric.
+        link = d["shear"]["link"]
+        n = top["per_layer"]
+        assert link["leg_bars"] == [i + 1 for i in spread(n, link["legs"])]
+        assert link["leg_bars"][0] == 1 and link["leg_bars"][-1] == n
+    assert d["passed"] and d["cage"]["bottom"]["extra"] in EXTRA_BARS and d["cage"]["bottom"]["layers"] >= 2
+    assert d["cage"]["bottom"]["extra_layers"] == [bottom["extra"]]
+    assert f"+ {bottom['extra']} in 2 layers" in d["cage"]["label"]
+    # The drawing has every bar: the first layers and the additional ones over first-layer bars.
+    bars = d["cage"]["bars"]
+    assert len(bars) == top["count"] + bottom["count"] + 2 * d["cage"]["side"]["count"]
+    lowest = min(v for _, v, _ in bars)
+    first = sorted(u for u, v, _ in bars if v == lowest)
+    second = sorted({v for _, v, _ in bars if v < 0})[1]
+    assert all(any(abs(u - x) < 0.2 for x in first) for u, v, _ in bars if v == second)
+
+
+def test_bars_set_by_the_user_keep_their_counts_with_a_note():
+    from triton.project import BeamCage
+
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=400.0, q23=30.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=300.0)),
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    beam = BeamInput(kind="front_beam", width=2000, depth=1600)
+    typed = BeamCage(
+        top={"count": 10, "diameter": 20},
+        bottom={"count": 14, "diameter": 25, "extra": 3},
+        side={"count": 4, "diameter": 16},
+    )
+    d = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None, typed)
+    c = d["cage"]
+    assert (c["top"]["count"], c["top"]["phi"]) == (10, 20)
+    assert (c["bottom"]["per_layer"], c["bottom"]["extra"], c["bottom"]["count"]) == (14, 3, 17)
+    assert any("10 and 14 bars per layer" in n for n in d["notes"])
+    assert "leg_bars" not in d["shear"]["link"]  # evenly spaced legs, as before
+    same = BeamCage(**{**typed.model_dump(), "top": {"count": 14, "diameter": 20}})
+    d2 = design_beam("Front Beam", beam, DesignSettings(), sheets, [], {}, None, same)
+    assert not any("bars per layer" in n for n in d2["notes"])
+
+
+def test_the_beam_bar_rule_puts_only_beams_out_of_date():
+    from triton import fresh
+    from triton.project import Project, SlabInput
+
+    section = Section(
+        elements={"Front Beam": BeamInput(), "Pile(1)": PileInput(head_level=2.7), "Deck": SlabInput()}
+    )
+    project = Project(sections=[section])
+    now = fresh.fingerprint(project, section, None)
+    own = {n: e.model_dump(mode="json") for n, e in section.elements.items()}
+    for o in own.values():
+        for key in ("rooms", "manholes", "channels", "construction_joints", "punching_piles"):
+            if not o.get(key):
+                o.pop(key, None)
+        if o.get("punching_fix") == "bars":
+            o.pop("punching_fix")
+        if o.get("punching_per") == "type":
+            o.pop("punching_per")
+    assert now["Front Beam"] == fresh._hash([own["Front Beam"], fresh.BEAM_BARS_RULE])
+    assert now["Pile(1)"] == fresh._hash(own["Pile(1)"])
+    assert now["Deck"] == fresh._hash([own["Deck"], fresh.SLAB_BARS_RULE])
+    # Results designed before the rule: the beam alone is out of date, named as what changed.
+    before = {**now, "Front Beam": fresh._hash(own["Front Beam"])}
+    shared = {k: v for k, v in before.items() if k not in section.elements}
+    results = {"element_inputs": {n: {**shared, n: before[n]} for n in section.elements}}
+    changed, stale = fresh.status(results, now, list(section.elements))
+    assert changed == ["Front Beam"] and stale == ["Front Beam"]

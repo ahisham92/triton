@@ -1984,6 +1984,13 @@ class BeamFace(_Model):
     count: int = Field(10, title="Bars per layer", ge=0)
     diameter: int = Field(25, title="Bar", json_schema_extra={"unit": "mm"})
     layers: int = Field(1, title="Layers", ge=1, le=4)
+    extra: int = Field(
+        0,
+        title="Additional bars",
+        ge=0,
+        description="Bars of the same size behind the full layers, each over a first-layer bar "
+        "(Triton uses 2, 6 or 12).",
+    )
 
 
 class BeamCage(_Model):
