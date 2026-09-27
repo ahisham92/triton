@@ -346,6 +346,7 @@ def _model(p: Project) -> dict:
     )
     d.pop("info")  # names, numbers and who designed it: open to edit at any time
     for s in d["sections"]:
+        s.pop("name", None)  # a section's name is not a design input (fresh leaves it out too)
         s.pop("costing", None)
         s.pop("checks", None)  # the checker's status is not a design input
         s.pop("displacements", None)  # typed in as received, checked as they are
@@ -526,8 +527,12 @@ def add_section(project_id: str, body: NewSection) -> Project:
     settings = {}
     if body.copy_from:
         settings = _section(project, body.copy_from).model_dump(
-            mode="json", exclude=WORKBOOK_OWN | {"locked"}
+            mode="json", exclude=WORKBOOK_OWN | {"locked", "checks"}
         )
+        # The checker's statuses and the clash what-ifs and choices are about the other section's
+        # results and pile heads: the new section starts with none (its clash settings are copied).
+        for k in ("whatifs", "choices"):
+            (settings.get("clashes") or {}).pop(k, None)
     try:
         section = Section.model_validate({**settings, "name": body.name})
     except ValidationError as e:
@@ -1915,7 +1920,7 @@ def _use_trial(project_id: str, section_id: str, body: TrialPick) -> dict:
     earlier = (fresh._by_element(old, fresh.names(project, trial)) or {}) if old else {}
     results["element_inputs"] = {
         **earlier,
-        **fresh.element_inputs(now, trial.elements, [body.element], fresh.supports(trial)),
+        **fresh.element_inputs(now, fresh.names(project, trial), [body.element], fresh.supports(trial)),
     }
     results["inputs"] = now
     if not results.get("run_at"):
@@ -2357,8 +2362,14 @@ def _clashes(
 def section_stamp(project_id: str, section_id: str) -> dict:
     """Changes whenever the project, the section's workbook or its results are written: the page keeps
     what a tab loaded and uses it again while this stays the same. Reads no file, so it is quick."""
-    d = store()._dir(project_id, section_id)
-    files = [store()._path(project_id), d / "workbook.json", d / "results.json"]
+    try:
+        path = store()._path(project_id)
+    except ProjectNotFound:
+        raise HTTPException(404, "Project not found.") from None
+    if not path.exists() or not section_id.isalnum():
+        raise HTTPException(404, "Project not found." if not path.exists() else "Section not found.")
+    d = store().root / project_id / section_id  # not _dir: a stamp never makes a folder
+    files = [path, d / "workbook.json", d / "results.json"]
     return {"stamp": views.key([views.stat(f) for f in files])}
 
 
