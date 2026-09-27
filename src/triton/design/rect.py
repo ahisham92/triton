@@ -137,11 +137,13 @@ class RectSection:
         x = np.concatenate([x_beyond, x_within])
         h_c = (1 - ec2 / ecu) * H
         eps_top = np.where(x <= H, ecu, ec2 * x / np.maximum(x - h_c, 1e-9))
+        _, _, yb = self._frame(axis, sign)
+        if len(yb):
+            eps_top = self.steel.top_strain(eps_top, x, float(yb.max()))
         n, m = self._resultants(axis, sign, eps_top, eps_top / x)
         n0, m0 = self._resultants(axis, sign, np.array([ec2]), np.array([0.0]))
-        nt = -self.bars.total * self.steel.fyd
-        _, _, yb = self._frame(axis, sign)
-        mt = -float((self.bars.area * self.steel.fyd * (H / 2 - yb)).sum())
+        nt = -self.bars.total * self.steel.f_ud
+        mt = -float((self.bars.area * self.steel.f_ud * (H / 2 - yb)).sum())
         c = np.vstack([[n0[0], m0[0]], np.column_stack([n, m]), [nt, mt]]) / np.array([1e3, 1e6])
         self._cache[key] = c
         return c
@@ -272,5 +274,5 @@ class RectSection:
         }
 
 
-def rect_laws(fck: float, gamma_c: float, gamma_s: float, alpha_cc: float, fyk: float):
-    return ConcreteLaw(fck, gamma_c, alpha_cc), SteelLaw(fyk, gamma_s)
+def rect_laws(fck: float, gamma_c: float, gamma_s: float, alpha_cc: float, fyk: float, curve: str = "adsec"):
+    return ConcreteLaw(fck, gamma_c, alpha_cc), SteelLaw.of(fyk, gamma_s, curve)

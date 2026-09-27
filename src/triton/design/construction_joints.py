@@ -91,7 +91,7 @@ class Laws:
         self.nu = 0.6 * (1 - c.fck / 250)
         self.v_max = 0.5 * self.nu * self.fcd
         self.concrete = ConcreteLaw(c.fck, pf.gamma_c, pf.alpha_cc)
-        self.steel = SteelLaw(self.fyk, pf.gamma_s)
+        self.steel = SteelLaw.of(self.fyk, pf.gamma_s, pf.steel_curve)
 
 
 def shear_steel(v_edi: np.ndarray, sigma_n: np.ndarray, surface: str, laws: Laws) -> np.ndarray:

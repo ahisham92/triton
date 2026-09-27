@@ -62,6 +62,7 @@ from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, SlabInput, SlabStrips, with_project_grades
 from . import ductility
 from . import voids as vd
+from .circular import SteelLaw
 from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restraint_factor
 from .governing import crack_terms
 from .tension import slab_tension
@@ -607,14 +608,23 @@ def strip_average(
     return df.groupby(keys, sort=False)[["m", "n", "v"]].mean().reset_index()
 
 
-def strip_mrd(area: float, d: float, h: float, n: float, fcd: float, fyd: float) -> float:
+def strip_mrd(
+    area: float, d: float, h: float, n: float, fcd: float, fyd: float, steel: SteelLaw | None = None
+) -> float:
     """Moment capacity per metre (kNm/m) of a strip with tension steel only, under N (kN/m, compression +),
-    about the mid-depth, rectangular block 0.8x."""
-    fc = area * fyd + n * 1e3
-    if fc <= 0:
-        return 0.0
-    x = fc / (0.8 * 1000 * fcd)
-    return max(fc * (h / 2 - 0.4 * x) + area * fyd * (d - h / 2), 0.0) / 1e6
+    about the mid-depth, rectangular block 0.8x. With a strain-hardening ``steel`` law the bars take the
+    stress of their strain εcu2·(d − x)/x, held to εud, as AdSec's 500B curve gives them."""
+    fs = fyd
+    for _ in range(8 if steel is not None and steel.k > 1 else 1):
+        fc = area * fs + n * 1e3
+        if fc <= 0:
+            return 0.0
+        x = fc / (0.8 * 1000 * fcd)
+        if steel is None or steel.k <= 1 or x >= d:
+            break
+        eps = min(0.0035 * (d - x) / x, steel.eps_ud or 1.0)
+        fs = max(float(steel.stress(np.array(eps))) * fyd / steel.fyd, fyd)
+    return max(fc * (h / 2 - 0.4 * x) + area * fs * (d - h / 2), 0.0) / 1e6
 
 
 def add_crane(uls: pd.DataFrame, slab: SlabInput) -> tuple[pd.DataFrame, int]:
@@ -1966,6 +1976,7 @@ def design_slab(
     conc = concrete(slab.concrete)
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     fyd = fyk / settings.partial_factors.gamma_s
+    steel = SteelLaw.of(fyk, settings.partial_factors.gamma_s, settings.partial_factors.steel_curve)
     e_eff = conc.ecm / (1 + settings.cracking.creep_coefficient)
     sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
     h = slab.thickness
@@ -2166,7 +2177,7 @@ def design_slab(
     def mrd_of(area, d_o, n_, face, direction, voided):
         if voided and direction in vsec:
             return vd.mrd(area, d_o, h, n_, fcd_s, fyd, vsec[direction], face)
-        return strip_mrd(area, d_o, h, n_, fcd_s, fyd)
+        return strip_mrd(area, d_o, h, n_, fcd_s, fyd, steel)
 
     mesh_labels = {label(o): o for o in options}
     # Steel per node for each layer; where K > K' the opposite face's bars work in compression.

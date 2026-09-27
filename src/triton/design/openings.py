@@ -82,7 +82,9 @@ def _bars_at(layer: dict, x0: float, x1: float, y0: float, y1: float) -> tuple[f
 def _laws(slab: SlabInput, settings: DesignSettings):
     pf = settings.partial_factors
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
-    return ConcreteLaw(concrete(slab.concrete).fck, pf.gamma_c, pf.alpha_cc), SteelLaw(fyk, pf.gamma_s)
+    return ConcreteLaw(concrete(slab.concrete).fck, pf.gamma_c, pf.alpha_cc), SteelLaw.of(
+        fyk, pf.gamma_s, pf.steel_curve
+    )
 
 
 def _xy(f: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:

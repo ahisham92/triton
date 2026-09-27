@@ -1156,7 +1156,7 @@ def _beam_section(ctx: Ctx, head: Head, bars: list[dict]) -> RectSection:
             np.array([math.pi * b["diameter_mm"] ** 2 / 4 for b in bars], float),
         ),
         ConcreteLaw(conc.fck, pf.gamma_c, pf.alpha_cc),
-        SteelLaw(fyk, pf.gamma_s),
+        SteelLaw.of(fyk, pf.gamma_s, pf.steel_curve),
         deduct=pf.deduct_bar_area,
     )
 
@@ -1226,7 +1226,7 @@ def pile_check(
     pf = ctx.settings.partial_factors
     laws = (
         ConcreteLaw(concrete(el.concrete).fck, pf.gamma_c, pf.alpha_cc),
-        SteelLaw(REINFORCEMENT_GRADES[ctx.settings.reinforcement.grade], pf.gamma_s),
+        SteelLaw.of(REINFORCEMENT_GRADES[ctx.settings.reinforcement.grade], pf.gamma_s, pf.steel_curve),
     )
 
     def util(e: float, gone: set[str] | None) -> float:
