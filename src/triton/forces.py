@@ -64,8 +64,8 @@ class CombiSection:
     def __post_init__(self) -> None:
         if self.wall_thickness <= 0 or self.outer_diameter <= 2 * self.wall_thickness:
             raise ValueError("Wall thickness must be positive and smaller than the radius.")
-        if not 0 <= self.corrosion_loss < self.wall_thickness:
-            raise ValueError("Corrosion loss must be between 0 and the wall thickness.")
+        if self.corrosion_loss < 0:
+            raise ValueError("Corrosion loss cannot be negative.")
 
     @property
     def inner_diameter(self) -> float:
@@ -73,6 +73,9 @@ class CombiSection:
 
     @property
     def i_steel(self) -> float:
+        # Corrosion through the whole wall leaves no steel: it carries nothing.
+        if self.corrosion_loss >= self.wall_thickness:
+            return 0.0
         d_out = self.outer_diameter - 2 * self.corrosion_loss
         return math.pi / 64 * (d_out**4 - self.inner_diameter**4)
 

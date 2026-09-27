@@ -486,7 +486,14 @@ def build_matrix_report(project: Project, section: Section, view: dict, designs:
         if punch:
             r.p("Punching at the piles (one design per pile type, its worst head):")
             r.table(
-                ["Pile type", "Heads", "Utilisation without links", "Links needed", "Links", "Passes"],
+                [
+                    "Pile type",
+                    "Heads",
+                    "Utilisation (with links where needed)",
+                    "Links needed",
+                    "Links",
+                    "Passes",
+                ],
                 [
                     [
                         p["pile"],
@@ -1168,7 +1175,7 @@ def _punching_summary(r: Report, res: dict) -> None:
             rows.append(
                 [
                     label,
-                    q.get("utilisation"),
+                    q.get("utilisation_no_links", q.get("utilisation")),
                     q.get("utilisation_with_links")
                     if q.get("perimeters")
                     else (round(face, 3) if face > 1 else "-"),

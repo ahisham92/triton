@@ -53,6 +53,7 @@ from ..furniture_inputs import (
 )
 from ..materials import concrete
 from .anchors import BOLT_GRADES, Group, check_group, circle, grid, local_bearing, stress_area
+from .sheet_piles import UF_CAP
 
 G = 9.81
 E_STEEL = 210_000.0
@@ -414,17 +415,30 @@ def ladder(lad: Ladders, beam: Beam, cope: float) -> dict[str, Any]:
     d = lad.rung_diameter - 2 * c
     span = lad.clear_width + lad.stringer_thickness
     m = p * span / 4  # kNmm × 1e3 below
-    w_el = math.pi * d**3 / 32
-    u_rung = m * 1e3 / w_el / fy
-    i_rung = math.pi * d**4 / 64
-    defl = 1.5e3 * span**3 / (48 * E_STEEL * i_rung)
-    u_defl = defl / (span / 200)
+    notes = []
+    # Corrosion on both faces that eats the whole bar leaves nothing: unsafe by far, and said so.
+    if d <= 0:
+        d, w_el, defl = 0.0, None, None
+        u_rung = u_defl = UF_CAP
+        notes.append(_eaten(2 * c, lad.rung_diameter, "rung"))
+    else:
+        w_el = math.pi * d**3 / 32
+        u_rung = m * 1e3 / w_el / fy
+        i_rung = math.pi * d**4 / 64
+        defl = 1.5e3 * span**3 / (48 * E_STEEL * i_rung)
+        u_defl = defl / (span / 200)
     v = 1.5 * lad.users * 1.5  # kN on one bracket span
     t = lad.stringer_thickness - 2 * c
     b = lad.stringer_width - 2 * c
     ms = v / 2 * lad.standoff  # kNmm per stringer
-    sigma = v / 2 * 1e3 / (t * b) + ms * 1e3 / (t * b * b / 6)
-    u_str = sigma / fy
+    if t <= 0 or b <= 0:
+        t, b, sigma = max(t, 0.0), max(b, 0.0), None
+        u_str = UF_CAP
+        side = lad.stringer_thickness if lad.stringer_thickness <= lad.stringer_width else lad.stringer_width
+        notes.append(_eaten(2 * c, side, "stringer"))
+    else:
+        sigma = v / 2 * 1e3 / (t * b) + ms * 1e3 / (t * b * b / 6)
+        u_str = sigma / fy
     lever = 150.0  # bracket bearing edge to the bolts
     n_pull = v * lad.standoff / lever
     g = group(lad.anchors, 500.0, 500.0, beam.width, beam.concrete)
@@ -444,12 +458,20 @@ def ladder(lad: Ladders, beam: Beam, cope: float) -> dict[str, Any]:
         rung={
             "diameter_after_loss_mm": d,
             "M_Ed_kNm": round(m / 1e3, 3),
-            "sigma_MPa": round(m * 1e3 / w_el, 1),
-            "deflection_mm": round(defl, 2),
+            "sigma_MPa": round(m * 1e3 / w_el, 1) if w_el else None,
+            "deflection_mm": round(defl, 2) if defl is not None else None,
         },
-        stringer={"section_after_loss": f"{b:g} × {t:g} mm", "sigma_MPa": round(sigma, 1)},
+        stringer={"section_after_loss": f"{b:g} × {t:g} mm", "sigma_MPa": round(sigma, 1) if sigma else None},
         anchors=fix,
-        notes=[],
+        notes=notes,
+    )
+
+
+def _eaten(loss: float, size: float, what: str) -> str:
+    than = "more than" if loss > size else "as much as"
+    return (
+        f"Corrosion {loss:g} mm over the design life (both faces) is {than} the {size:g} mm {what}: the "
+        f"{what} is gone before the end of the design life, so the ladder fails."
     )
 
 

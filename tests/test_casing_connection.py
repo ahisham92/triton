@@ -64,3 +64,20 @@ def test_a_casing_up_to_the_soffit_also_covers_the_connection_band():
     assert casing_band(below, s) == (-1.9, 1.5)
     d = design_pile("Pile(1)", at_soffit, s, pile_sheets(LOADS)).to_dict()
     assert d["section"]["no_crack_m"] == [-1.9, 2.2] and d["section"]["soffit_m"] == 2.1
+
+
+def test_a_casing_eaten_by_corrosion_is_not_counted():
+    # The project's 4.5 mm casing loss is more than the 4 mm casing: the concrete is designed on its
+    # own, with its crack width checked inside the casing too.
+    s = DesignSettings()
+    s.durability.corrosion.casing = 4.5
+    pile = PileInput(
+        head_level=0.0, casing=Casing(role="structural", top_level=0.0, bottom_level=-10.0, thickness=4.0)
+    )
+    d = design_pile("Pile(1)", pile, s, pile_sheets(LOADS)).to_dict()
+    plain = design_pile("Pile(1)", PileInput(head_level=0.0), s, pile_sheets(LOADS)).to_dict()
+    assert d["casing"] is None and d["connection"] is None
+    assert d["arrangement"]["area_mm2"] == plain["arrangement"]["area_mm2"]
+    assert "no_crack_m" not in d["section"]
+    note = "Corrosion 4.5 mm over the design life is more than the 4 mm casing wall"
+    assert any(n.startswith(note) and "crack width checked" in n for n in d["notes"])

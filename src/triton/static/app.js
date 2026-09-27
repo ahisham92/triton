@@ -5429,10 +5429,10 @@ function slabCard(d) {
       </table></div><div class="charts" data-kind="punch"></div>
       <details style="margin-top:8px"><summary>Each pile head's own check (${punch.length} heads)</summary>
       <p class="status">For checking only: what each head would need on its own. Change a head's thickness for a slope, then save and design again.</p>
-      <div class="scroll"><table class="punch"><tr><th>Pile</th><th>X, Y</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Utilisation</th><th>Links on its own</th></tr>
+      <div class="scroll"><table class="punch"><tr><th>Pile</th><th>X, Y</th><th>Thickness</th><th>V<sub>Ed</sub></th><th>β</th><th>v<sub>Ed</sub> / v<sub>Rd,c</sub> (MPa)</th><th>At the face / v<sub>Rd,max</sub></th><th>Utilisation (with links where needed)</th><th>Links on its own</th></tr>
       ${punch.map((q, i) => { const o = q.own || q; return `<tr><td>${esc(q.pile)}${q.governing ? " <b>(worst)</b>" : ""}</td><td>${fmt(q.plan_x ?? q.x, 1)}, ${fmt(q.plan_y ?? q.y, 1)}</td>
         <td><input type="number" step="any" data-depth="${i}" value="${q.thickness_mm}" style="width:80px" title="${esc(q.thickness_from)}"> mm</td><td>${fmt(o.V_kN)} kN<br><span class="status">${esc(o.combination)}</span></td><td>${fmt(o.beta, 2)}</td>
-        <td>${fmt(o.vEd_MPa, 3)} / ${fmt(o.vRd_c_MPa, 3)}</td><td>${fmt(o.vEd_face_MPa, 2)} / ${fmt(o.vRd_max_MPa, 2)}</td><td>${fmt(o.utilisation, 2)}</td>
+        <td>${fmt(o.vEd_MPa, 3)} / ${fmt(o.vRd_c_MPa, 3)}</td><td>${fmt(o.vEd_face_MPa, 2)} / ${fmt(o.vRd_max_MPa, 2)}</td><td>${fmt(o.utilisation, 2)}${o.utilisation_no_links != null && o.utilisation_no_links !== o.utilisation ? `<br><span class="status">${fmt(o.utilisation_no_links, 2)} without links</span>` : ""}</td>
         <td>${o.needs_reinforcement ? (o.perimeters ? `${o.perimeters} perimeters, ${fmt(o.asw_mm2_per_perimeter)} mm² each` : o.passed ? "–" : "fails") : "none"}</td></tr>`; }).join("")}
       </table></div></details>
     ${punchBarsNote(d)}

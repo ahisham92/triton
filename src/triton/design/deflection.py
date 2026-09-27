@@ -539,6 +539,8 @@ def _combi(
     base, base_note = pick_baseline(sheets, ["M_2", "M_3"], ds.baseline, combo)
     based = {(x, y): g for x, y, g in _members(forces(base), ["M_2", "M_3"])[0]} if base else {}
     sec = combi_section(wall)
+    if sec.i_steel <= 0:
+        return None  # corrosion eats the tube: nothing stiffens the wall below the infill
     e_c, e_words = _e_concrete(wall.concrete, settings, ds)
     ke = KE if ds.stiffness == "cracked" else 1.0
     steel = sec.e_steel * sec.i_steel  # kN·m²

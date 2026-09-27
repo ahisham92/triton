@@ -58,6 +58,19 @@ CURVES = {"a": 0.21, "b": 0.34, "c": 0.49}
 Q_FABRICATION = {"A": 40.0, "B": 25.0, "C": 16.0}  # EN 1993-1-6 Table D.1
 
 
+def steel_gone(loss: float | None, thickness: float, wall: str, inner: str) -> str | None:
+    """The note for a steel wall that corrosion eats before the end of the design life (the loss over
+    the design life at least its thickness), or None while some steel is left."""
+    if loss is None or loss < thickness:
+        return None
+    than = "more than" if loss > thickness else "as much as"
+    return (
+        f"Corrosion {loss:g} mm over the design life is {than} the {thickness:g} mm {wall} wall: the "
+        f"steel is gone before the end of the design life, so it is not counted; the {inner} is designed "
+        "on its own and its crack width checked."
+    )
+
+
 @dataclass(frozen=True)
 class Tube:
     diameter: float  # mm, as rolled
@@ -218,10 +231,12 @@ def plastic_utilisation(
         ok = mid * m <= np.cos(np.pi * np.minimum(mid * n, 1.0) / 2) + 1e-12
         lo = np.where(ok, mid, lo)
         hi = np.where(ok, hi, mid)
-    # Shear at or over Vpl: Uf is VEd / Vpl,Rd, as for the sheet pile wall (sheet_piles.py), and
-    # anything else is capped at UF_CAP (unsafe by far), never an infinity, which reads as no result.
+    # Shear at or over Vpl leaves no resistance for N or M: with either acting Uf is UF_CAP
+    # (unsafe by far), as for the sheet pile wall (sheet_piles.py); with shear alone it is
+    # VEd / Vpl,Rd. Anything else is capped at UF_CAP, never an infinity, which reads as no result.
     u = np.minimum(np.where(lo > 0, 1 / np.maximum(lo, 1e-12), UF_CAP), UF_CAP)
-    return np.where(v_kn >= r["V_pl_kN"], v_kn / r["V_pl_kN"], u)
+    over = np.where((n > 0) | (m > 0), UF_CAP, v_kn / r["V_pl_kN"])
+    return np.where(v_kn >= r["V_pl_kN"], over, u)
 
 
 def tube_loads(
@@ -386,9 +401,11 @@ def _office(
     u_sig = np.where(cls >= 3, (np.abs(n) * 1e3 / get("A") + m * 1e6 / get("W_el")) / get("fy"), 0.0)
     v_pl = get("V_pl")
     rho = np.where(v >= 0.5 * v_pl, (2 * v / v_pl - 1) ** 2, 0.0)
-    # rho >= 1 (V >= Vpl): Uf is V / Vpl, as for the sheet pile wall; below it capped at UF_CAP.
+    # rho >= 1 (V >= Vpl): with a moment acting Uf is UF_CAP (unsafe by far), as for the sheet
+    # pile wall; with no moment it is V / Vpl. Below Vpl it is capped at UF_CAP.
     reduced = np.minimum(u_m / np.clip(1 - rho, 1e-9, None), UF_CAP)
-    u_mv = np.where(v >= v_pl, v / v_pl, np.where(rho > 0, reduced, 0.0))
+    over = np.where(np.abs(m) > 0, UF_CAP, v / v_pl)
+    u_mv = np.where(v >= v_pl, over, np.where(rho > 0, reduced, 0.0))
     tau_rd = np.array([cols[j]["tau_Rd_shell"] or np.inf for j in seg_of], float)
     u_shell = tau / tau_rd
     stack = np.vstack([u_tau, u_nm, u_sig, u_mv, u_shell])
@@ -750,7 +767,7 @@ def office_sheet(
             rho=rho,
             u_MV=min(u_m / (1 - rho), UF_CAP)
             if rho is not None and rho < 1
-            else (v / v_pl if rho is not None else None),
+            else ((UF_CAP if abs(m) > 0 else v / v_pl) if rho is not None else None),
             n=nn,
             MN_Rd=mn_rd,
             u_MN=(m / mn_rd if mn_rd else math.inf) if mn_rd is not None else None,

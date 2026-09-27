@@ -214,3 +214,15 @@ def test_openings_go_to_the_report_drawings_and_method():
     text = " ".join(b.text for b in r.blocks if b.text)
     assert "Manhole 1: opening in the deck" in text and "Channel 1: channel along Y" in text
     assert any(m.__name__.endswith("openings") for _, m in TOPICS["Slabs"])
+
+
+def test_manhole_nearly_round_a_pile_caps_the_punching_utilisation(monkeypatch):
+    # An opening taking nearly all of a pile's control perimeter once gave u0 / (1 - share) in the
+    # thousands: it is capped at UF_CAP ("unsafe by far"), as for a pile inside the opening.
+    from triton.design import openings
+    from triton.design.sheet_piles import UF_CAP
+
+    monkeypatch.setattr(openings, "_pile_share", lambda *a: 0.99999)
+    d = _deck(manholes=[{"x": -6, "y": 2, "size_x": 1000, "size_y": 1200}])
+    (p,) = d["openings"]["manholes"][0]["piles"]
+    assert p["utilisation"] == UF_CAP and not p["passed"]

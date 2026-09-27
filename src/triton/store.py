@@ -376,12 +376,21 @@ def finite(value: Any) -> Any:
 
 def _upgrade(results: Any) -> Any:
     """Results saved by an older Triton, read as the current one gives them: slabs designed before
-    punching was unified per pile type get their heads unified (the default), without a redesign."""
+    punching was unified per pile type get their heads unified (the default), and punching saved
+    before its utilisation was given with links gets it so, without a redesign."""
     if not isinstance(results, dict):
         return results
-    from .design.slabs import unify_punching
+    from .design.slabs import unify_punching, with_links
 
     for d in results.get("slabs") or []:
+        # Punching saved before the utilisation was given with links: the same reading as now.
+        for q in (
+            [*(d.get("punching") or []), *(d.get("punching_types") or [])] if isinstance(d, dict) else []
+        ):
+            if isinstance(q, dict):
+                with_links(q)
+                if isinstance(q.get("own"), dict):
+                    with_links(q["own"])
         if isinstance(d, dict) and isinstance(d.get("punching"), list) and "punching_types" not in d:
             d["punching"], d["punching_types"] = unify_punching(d["punching"])
     return results

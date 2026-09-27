@@ -220,7 +220,8 @@ def test_saved_walls_still_open():
 
 
 def test_shear_beyond_vpl_is_not_astronomical():
-    # V above Vpl,Rd once gave M / 1e-9 (Uf ~5e10): shear alone is V / Vpl,Rd, web buckling governs.
+    # V above Vpl,Rd once gave M / 1e-9 (Uf ~5e10). With a moment acting there is no moment
+    # resistance left, so bending with shear reads "unsafe by far" (UF_CAP), never a huge number.
     r = evaluate(
         reduced("AZ 14-770", np.array([4.25, 4.25])),
         770,
@@ -229,7 +230,17 @@ def test_shear_beyond_vpl_is_not_astronomical():
         [751.6, 20],
         [156.7, 0],
     )
-    assert r["bending_shear"][0] == pytest.approx(751.6 / r["Vpl"][0], rel=1e-6)
-    assert r["uf"][0] == pytest.approx(751.6 / r["Vb"][0], rel=1e-6)  # about 3.4, web shear buckling
-    assert CHECKS[r["governs"][0]] == "web_buckling"
+    assert r["bending_shear"][0] == 99
+    assert r["uf"][0] == 99
+    assert CHECKS[r["governs"][0]] == "bending_shear"
+    # With no moment, shear alone stays V / Vpl,Rd.
+    r0 = evaluate(
+        reduced("AZ 14-770", np.array([4.25, 4.25])),
+        770,
+        Options(buckling_length=12.3),
+        [0.0, 5],
+        [751.6, 20],
+        [0.0, 0],
+    )
+    assert r0["bending_shear"][0] == pytest.approx(751.6 / r0["Vpl"][0], rel=1e-6)
     assert np.all(np.nan_to_num(np.vstack([r[c] for c in CHECKS])) <= 99)

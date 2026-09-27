@@ -31,7 +31,8 @@ from ..project import (
 )
 from .governing import placeholder_sets, steel_sets
 from .piles import design_pile
-from .tube import Tube, check_tube, tube_loads
+from .sheet_piles import UF_CAP
+from .tube import Tube, check_tube, steel_gone, tube_loads
 
 
 def combi_section(wall: CombiWallInput) -> CombiSection:
@@ -72,7 +73,14 @@ def tube_zones(wall: CombiWallInput) -> list[tuple[float, float, Tube]]:
     return out
 
 
+def tube_gone(wall: CombiWallInput) -> str | None:
+    """The note when corrosion eats the tube before the end of the design life, else None."""
+    return steel_gone(wall.corrosion_loss, wall.tube_thickness, "tube", "infill")
+
+
 def infill_as_pile(wall: CombiWallInput) -> PileInput:
+    # A tube eaten by corrosion is no casing: the infill's crack width is checked.
+    gone = tube_gone(wall)
     return PileInput(
         diameter=wall.tube_diameter - 2 * wall.tube_thickness,
         cover=wall.cover,
@@ -82,9 +90,9 @@ def infill_as_pile(wall: CombiWallInput) -> PileInput:
         head_level=wall.top_level_to_ignore,
         # The tube is a permanent casing over the whole infill: no crack width check, so the cracks
         # do not drive the infill cage either.
-        casing=Casing(
-            role="crack_only", top_level=1000.0, bottom_level=-1000.0, thickness=wall.tube_thickness
-        ),
+        casing=None
+        if gone
+        else Casing(role="crack_only", top_level=1000.0, bottom_level=-1000.0, thickness=wall.tube_thickness),
     )
 
 
@@ -97,8 +105,9 @@ def design_combi_wall(
     standard: bool = False,
 ) -> dict[str, Any]:
     wall = with_project_grades(wall, settings.materials, settings.durability)
+    gone = tube_gone(wall)
     sec = combi_section(wall)
-    share = sec.steel_share
+    share = sec.steel_share  # 0 when the tube is gone
     bottom = wall.concrete_bottom_level
 
     infill_sheets = {}
@@ -114,13 +123,12 @@ def design_combi_wall(
         if not n.startswith("No pile top level")
     ]
     infill["head_name"] = "the front beam"
-    if infill.get("cracks"):
+    if infill.get("cracks") and not gone:
         infill["cracks"]["casing"] = "The tube is a permanent casing: no crack width check."
         infill["cracks"].pop("note", None)
-    for station in infill.get("governing_sets") or []:
+    for station in [] if gone else infill.get("governing_sets") or []:
         station["qp"] = placeholder_sets()  # the tube is a casing: no crack width check
 
-    zones = tube_zones(wall)
     above = settings.results_into_connection / 1e3
     tube_share = 1.0 if wall.tube_share == "all" else share
     loads = tube_loads(sheets, tube_share, bottom, wall.top_level_to_ignore, above)
@@ -142,9 +150,38 @@ def design_combi_wall(
             "firm": wall.firm_soil_level,
             "column_ei": wall.column_ei * 1e9 if wall.column_ei else None,  # kN·m² to N·mm²
         }
-    steel = check_tube(
-        zones, loads, method=wall.tube_check, gamma_m0=pf.gamma_m0, gamma_m1=pf.gamma_m1, column=column
-    )
+    if gone:
+        # No tube to check. Below the infill only the tube carried the actions, so any action left
+        # there has nothing to carry it: unsafe by far.
+        below = loads[~loads["filled"].astype(bool)] if not loads.empty else loads
+        acts = not below.empty and bool(
+            ((below["N"].abs() > 1) | (below["V"].abs() > 1) | (below["M"].abs() > 1)).any()
+        )
+        steel = {
+            "utilisation": UF_CAP if acts else None,
+            "passed": not acts,
+            "notes": [gone],
+            # The tube as rolled, for the reports and quantities: nothing of it is left to count.
+            "section": {
+                "diameter_mm": wall.tube_diameter,
+                "thickness_mm": wall.tube_thickness,
+                "corrosion_mm": wall.corrosion_loss,
+                "corroded_diameter_mm": wall.tube_diameter - 2 * wall.tube_thickness,
+                "corroded_thickness_mm": 0.0,
+                "grade": wall.steel,
+                "class_unfilled": None,
+            },
+        }
+        if acts:
+            steel["notes"].append(
+                f"Below the infill ({bottom:g} m) the tube carried the actions alone: with it gone nothing "
+                "is left to carry them there."
+            )
+    else:
+        zones = tube_zones(wall)
+        steel = check_tube(
+            zones, loads, method=wall.tube_check, gamma_m0=pf.gamma_m0, gamma_m1=pf.gamma_m1, column=column
+        )
     steel["governing_sets"] = steel_sets(loads, "beam")
 
     split = (
@@ -161,10 +198,14 @@ def design_combi_wall(
         split,
         "The tube is a permanent casing, so the infill has no crack width check.",
     ]
+    if gone:
+        notes = [gone, *steel["notes"][1:]]
     if wall.top_level_to_ignore is None:
         notes.append("No king pile top level is set, so results inside the front beam are included.")
 
     u = [x for x in (infill.get("utilisation"), steel.get("utilisation")) if x is not None]
+    # With the tube gone and nothing below the infill, the infill alone is the design.
+    whole = max(u) if len(u) == 2 else (infill.get("utilisation") if gone else None)
     positions = infill.get("positions") or []
     count = wall.count or len(positions) or 1
     infill["count"] = count
@@ -177,8 +218,9 @@ def design_combi_wall(
         "infill_bottom_level": bottom,
         "positions": positions,
         "steel_share": round(share, 3),
+        "tube_gone": bool(gone),
         "top_level_set": wall.top_level_to_ignore is not None,
-        "utilisation": max(u) if len(u) == 2 else None,
+        "utilisation": whole,
         "passed": bool(infill["passed"] and steel["passed"]),
         "infill": infill,
         "tube": steel,

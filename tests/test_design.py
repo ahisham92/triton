@@ -192,6 +192,14 @@ def test_fixed_outer_bar_count():
     assert cands and {a.outer.count for a in cands} == {26}
 
 
+def test_odd_typed_bar_count_says_bar_counts_must_be_even():
+    sheets = pile_sheets([(1, 0.0, -3000.0, 100.0, 0.0), (2, -5.0, -3500.0, 200.0, 0.0)])
+    d = design_pile("Pile(1)", PileInput(head_level=1.0, bar_count=7), DesignSettings(), sheets)
+    assert not d.passed
+    assert any("must be even" in n and "6 or 8" in n for n in d.notes)
+    assert not any(n.startswith("No cage fits") for n in d.notes)
+
+
 def test_candidates_by_cost():
     settings = DesignSettings()
     settings.reinforcement.objective = "min_cost"
