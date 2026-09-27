@@ -656,8 +656,22 @@ class PileInput(_ConcreteSection):
         "Smallest link diameter",
         10.0,
         gt=0,
-        description="The links are designed: from this size up, the first that carries the shear at a "
-        "pitch of 100 mm or more.",
+        description="The links are designed: every size from this one up is tried at pitches of 100, 150 "
+        "or 200 mm, and the one that passes with the least link steel is kept.",
+    )
+    link_size: float | None = _mm(
+        "Your link size",
+        None,
+        gt=0,
+        description="Leave empty to let Triton choose, or set it (e.g. 12) to design the pile with these "
+        "links: they are checked and their utilisation shown.",
+    )
+    link_spacing: float | None = _mm(
+        "Your link spacing",
+        None,
+        gt=0,
+        description="Empty: the largest of 100, 150 or 200 mm that works. Set: used wherever EN 1992 9.5.3 "
+        "allows it (closer near the slab and at laps), and checked.",
     )
     count: int | None = Field(
         None,

@@ -16,9 +16,13 @@ for ρl.
 * Detailing to 9.5.3: hoop diameter at least max(6 mm, φl,max/4), spacing at
   most min(20·φl,min, D, 400 mm), times 0.6 for a length D below the pile
   head (slab above) and over laps of bars larger than 14 mm.
-* The links are designed, not only checked: from the pile's link diameter (T10 by
-  default) up through the link sizes, the first that carries the shear at a pitch
-  of at least PREFERRED_PITCH is chosen (else the first that works at all).
+* Link pitches are 100, 150 or 200 mm only (Ahmed, 2026-09-27): the largest of them
+  that the shear and 9.5.3 allow.
+* The links are designed, not only checked: every link size from the pile's smallest
+  link diameter (T10 by default) up is tried, and of those that pass the one with the
+  least link steel (kg per pile) is kept, so T12 @ 200 beats T10 @ 100.
+* The pile can instead be given its own link size (and pitch): those links are then
+  checked and their utilisation reported, nothing is chosen.
 """
 
 from __future__ import annotations
@@ -33,8 +37,7 @@ from ..elements import CombinationType
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, pile_cover
 
-MIN_LINK_SPACING = 75.0  # mm, practical minimum pitch
-PREFERRED_PITCH = 100.0  # mm, a larger link is chosen before a pitch closer than this
+PITCHES = (100.0, 150.0, 200.0)  # mm, the only link pitches used (Ahmed, 2026-09-27)
 LINK_SIZES = (10, 12, 14, 16, 20, 25)
 STEP = 0.05  # m, level grid
 MIN_LINK_ZONE = 1.0  # m, shorter zones join a neighbour at the closer spacing
@@ -71,34 +74,72 @@ def _factors(settings: DesignSettings, accidental: np.ndarray) -> tuple[np.ndarr
 def design_shear(
     pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, zones: list[CageZone]
 ) -> dict:
-    """The links of a pile: the smallest size from the pile's link diameter up that carries the
-    shear at a practical pitch."""
+    """The links of a pile: of every size from the pile's smallest link diameter up, the one that
+    passes with the least link steel; or the pile's own links, checked."""
+    own_size = getattr(pile, "link_size", None)
+    own_pitch = getattr(pile, "link_spacing", None)
+    if own_size:
+        out = _design_with(pile, settings, loads, zones, float(own_size), own_pitch)
+        out.pop("crushed", None)
+        pitch = f" @ {own_pitch:g}" if own_pitch else ""
+        out["notes"] = [f"Links set on the pile: Ø{own_size:g}{pitch}, checked, not chosen."] + out["notes"]
+        out["set_by_you"] = True
+        return out
     start = pile.link_diameter
     sizes = [start] + [d for d in LINK_SIZES if d > start]
     tried = []
     for link in sizes:
-        out = _design_with(pile, settings, loads, zones, float(link))
+        out = _design_with(pile, settings, loads, zones, float(link), own_pitch)
         tried.append(out)
-        pitch = min(z["spacing_mm"] for z in out["zones"])
-        if out["passed"] and pitch >= PREFERRED_PITCH - 1e-9:
-            break
         if out.get("crushed"):
             break  # no link helps: the concrete strut crushes
+    passing = [t for t in tried if t["passed"]]
+    if passing:
+        out = min(passing, key=lambda t: (t["links_kg"], t["link_diameter_mm"]))
     else:
-        out = next((t for t in tried if t["passed"]), tried[-1])
-    if out["link_diameter_mm"] > start:
-        out["notes"] = [
-            f"Links designed as Ø{out['link_diameter_mm']:g}: Ø{start:g} would need a pitch closer than "
-            f"{PREFERRED_PITCH:g} mm or would not carry the shear."
-        ] + out["notes"]
+        out = min(tried, key=lambda t: (t["utilisation"] is None, t["utilisation"] or 0.0))
+    options = [
+        {
+            "link": " / ".join(dict.fromkeys(z["link"] for z in t["zones"])),
+            "link_diameter_mm": t["link_diameter_mm"],
+            "links_kg": t["links_kg"],
+            "utilisation": t["utilisation"],
+            "passed": t["passed"],
+        }
+        for t in tried
+    ]
     for t in tried:
         t.pop("crushed", None)
+    lighter = [o for o in options if o["passed"] and o["link_diameter_mm"] < out["link_diameter_mm"]]
+    if out["passed"] and lighter:
+        o = min(lighter, key=lambda o: o["links_kg"])
+        out["notes"] = [
+            f"Links {out['zones'][0]['link']} ({out['links_kg']:g} kg) chosen over {o['link']} "
+            f"({o['links_kg']:g} kg): less link steel."
+        ] + out["notes"]
+    elif not out["passed"] and len(tried) > 1:
+        top, best = tried[-1]["link_diameter_mm"], out["link_diameter_mm"]
+        note = f"No link from Ø{start:g} to Ø{top:g} passes; Ø{best:g} comes closest."
+        out["notes"] = [note] + out["notes"]
+    out["options"] = options
     return out
 
 
+def _pitch(s: float) -> float:
+    """The largest of PITCHES not over ``s`` (the closest, 100 mm, when none is)."""
+    return max((p for p in PITCHES if p <= s + 1e-9), default=PITCHES[0])
+
+
 def _design_with(
-    pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, zones: list[CageZone], link: float
+    pile: PileInput,
+    settings: DesignSettings,
+    loads: pd.DataFrame,
+    zones: list[CageZone],
+    link: float,
+    pitch: float | None = None,
 ) -> dict:
+    """Links of one size. ``pitch``: the pile's own pitch, used wherever 9.5.3 allows it, whatever the
+    shear needs (the utilisation shows whether it carries it)."""
     D = pile.diameter
     r = D / 2
     ac = math.pi * r * r
@@ -181,23 +222,25 @@ def _design_with(
     for zn in zones[:-1]:
         if zn.phi_max > 14 and zn.lap_below > 0:
             reduced |= (levels <= zn.bottom) & (levels >= zn.bottom - zn.lap_below)
-    step = settings.reinforcement.spacing_step
     spacing = np.empty(n)
     reason = np.empty(n, dtype=object)
     for j in range(n):
         limit = s_max * (0.6 if reduced[j] else 1.0)
         s_req = asw / need_band[j] if need_band[j] > 0 else math.inf
-        s = min(limit, s_req)
-        s = max(MIN_LINK_SPACING, math.floor(s / step + 1e-9) * step)
-        spacing[j] = s
-        if s_req < limit:
+        wanted = min(limit, pitch) if pitch else min(limit, s_req)
+        spacing[j] = _pitch(wanted)
+        if pitch and pitch <= limit:
+            reason[j] = "set by you"
+        elif not pitch and s_req < limit:
             reason[j] = "shear"
         elif reduced[j]:
             reason[j] = "near slab" if levels[j] > head - D / 1000 else "at lap"
         else:
             reason[j] = "minimum"
-    if (need_band > 0).any() and asw / need_band.max() < MIN_LINK_SPACING - 1e-9:
-        notes.append(f"Ø{link:g} links would be closer than {MIN_LINK_SPACING:g} mm: use larger links.")
+    if s_max * 0.6 < PITCHES[0] - 1e-9 and reduced.any():
+        notes.append(f"9.5.3 asks for links closer than {PITCHES[0]:g} mm near the slab or at laps.")
+    elif s_max < PITCHES[0] - 1e-9:
+        notes.append(f"9.5.3 asks for links closer than {PITCHES[0]:g} mm.")
 
     if settings.piles.links == "unified":
         # One spacing over the whole pile: the closest one needed anywhere.
