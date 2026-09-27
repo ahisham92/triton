@@ -35,11 +35,26 @@ from .sheet_piles import UF_CAP
 from .tube import Tube, check_tube, steel_gone, tube_loads
 
 
+def split_loss(wall: CombiWallInput) -> float:
+    """The loss (mm) off the tube's diameter for the E·I split: with zones, the largest average of the sea
+    and land sides over the filled length, as the office sheets (splash 4.5 / 0 gives 2.25 and the
+    infill 67%); without land sides typed (walls stored before), the single loss, as before."""
+    gone = wall.corrosion_loss is not None and wall.corrosion_loss >= wall.tube_thickness
+    if gone or all(z.land is None for z in wall.corrosion_zones):
+        return wall.corrosion_loss
+    top, filled = math.inf, []
+    for z in wall.corrosion_zones:
+        if top > wall.concrete_bottom_level:
+            filled.append(z.mean_outside)
+        top = z.bottom_level
+    return max(filled) if filled else wall.corrosion_loss
+
+
 def combi_section(wall: CombiWallInput) -> CombiSection:
     return CombiSection(
         wall.tube_diameter / 1e3,
         wall.tube_thickness / 1e3,
-        wall.corrosion_loss / 1e3,
+        split_loss(wall) / 1e3,
         e_steel=210e6,
         e_concrete=concrete(wall.concrete).ecm * 1e3,
         concrete_bottom_level=wall.concrete_bottom_level,
@@ -49,7 +64,7 @@ def combi_section(wall: CombiWallInput) -> CombiSection:
 def tube_zones(wall: CombiWallInput) -> list[tuple[float, float, Tube]]:
     """(top, bottom, tube) down the king pile from the corrosion zones, or one tube for the whole length."""
 
-    def tube(outside: float, inside: float = 0.0, name: str = "") -> Tube:
+    def tube(outside: float, inside: float = 0.0, name: str = "", mean: float | None = None) -> Tube:
         return Tube(
             wall.tube_diameter,
             wall.tube_thickness,
@@ -59,6 +74,7 @@ def tube_zones(wall: CombiWallInput) -> list[tuple[float, float, Tube]]:
             inside,
             fy_set=wall.tube_fy,
             name=name,
+            mean_outside=mean,
         )
 
     if not wall.corrosion_zones:
@@ -68,7 +84,8 @@ def tube_zones(wall: CombiWallInput) -> list[tuple[float, float, Tube]]:
     office = {(o.bottom_level, o.outside, o.inside): o.name for o in _office_tube_zones()}
     for z in wall.corrosion_zones:
         name = z.name or office.get((z.bottom_level, z.outside, z.inside), "")
-        out.append((top, z.bottom_level, tube(z.outside, z.inside, name)))
+        mean = None if z.land is None else z.mean_outside
+        out.append((top, z.bottom_level, tube(z.max_outside, z.inside, name, mean)))
         top = z.bottom_level
     return out
 

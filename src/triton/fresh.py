@@ -143,6 +143,9 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         for key in own_keys + ("link_size", "link_spacing", "station_thicknesses"):
             if not own.get(key):
                 own.pop(key, None)  # none: the fingerprint it had before these existed
+        for z in own.get("corrosion_zones") or []:
+            if z.get("land") is None:
+                z.pop("land", None)  # no land side: walls stored before it keep their hash
         if own.get("positive_moment") == "project":
             own.pop("positive_moment")
         if own.get("construction_joints"):

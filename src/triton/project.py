@@ -714,19 +714,40 @@ class CorrosionZone(_Model):
 
     name: str = Field("", title="Zone name", description="As the office sheet's columns, e.g. Splash.")
     bottom_level: float = _m("Zone bottom level", 0.0)
-    outside: float = _mm("Loss on the outside face", 0.0, ge=0)
-    inside: float = _mm("Loss on the inside face", 0.0, ge=0, description="e.g. below the infill")
+    outside: float = _mm("Loss on the sea side", 0.0, ge=0, description="The outside face towards the sea.")
+    land: float | None = _mm(
+        "Loss on the land side",
+        None,
+        ge=0,
+        description="The outside face towards the land. As the office sheets, the tube's diameter (and "
+        "so its E·I and the infill's share) takes the average of the two sides, its wall thickness the "
+        "larger loss. Empty: the same as the sea side.",
+    )
+    inside: float = _mm(
+        "Loss inside the tube", 0.0, ge=0, description="Where the tube has no concrete; 0 where it is filled."
+    )
+
+    @property
+    def mean_outside(self) -> float:
+        """The loss off the diameter: the average of the sea and land sides."""
+        return self.outside if self.land is None else (self.outside + self.land) / 2
+
+    @property
+    def max_outside(self) -> float:
+        """The loss off the wall thickness: the larger of the two sides."""
+        return self.outside if self.land is None else max(self.outside, self.land)
 
 
 def _office_tube_zones() -> list[CorrosionZone]:
     # The office's king pile sheets: splash, immersion, immersion with soil, soil (filled), then the
-    # steel-only length below the infill with 1.75 mm lost inside as well. BS 6349-1-4 mean losses.
+    # steel-only length below the infill with 1.75 mm lost inside as well. BS 6349-1-4 mean losses; no
+    # loss on the land side above -14.5 where the fill behind is cement stabilised sand.
     return [
-        CorrosionZone(name="Splash", bottom_level=-0.5, outside=4.5),
-        CorrosionZone(name="Submerged", bottom_level=-14.5, outside=2.5),
-        CorrosionZone(name="Submerged & soil", bottom_level=-16.12, outside=2.5),
-        CorrosionZone(name="Soil", bottom_level=-25.0, outside=1.75),
-        CorrosionZone(name="Soil (steel only)", bottom_level=-39.0, outside=1.75, inside=1.75),
+        CorrosionZone(name="Splash", bottom_level=-0.5, outside=4.5, land=0.0),
+        CorrosionZone(name="Submerged", bottom_level=-14.5, outside=2.5, land=0.0),
+        CorrosionZone(name="Submerged & soil", bottom_level=-16.12, outside=2.5, land=1.75),
+        CorrosionZone(name="Soil", bottom_level=-25.0, outside=1.75, land=1.75),
+        CorrosionZone(name="Soil (steel only)", bottom_level=-39.0, outside=1.75, land=1.75, inside=1.75),
     ]
 
 
@@ -781,9 +802,11 @@ class CombiWallInput(_Model):
     corrosion_zones: list[CorrosionZone] = Field(
         default_factory=_office_tube_zones,
         title="Corrosion by zone",
-        description="From the top down; the last zone runs on to the toe. The values are the office's "
-        "king pile sheets: splash 4.5 to −0.5, immersion 2.5 to −16.12, soil 1.75 to −25, then 1.75 "
-        "outside and inside below the infill. Empty: the single loss above, outside only.",
+        description="From the top down; the last zone runs on to the toe. Losses on the sea side, the land "
+        "side and inside the tube (only where it has no concrete). The values are the office's king pile "
+        "sheets: splash 4.5 / 0, immersion 2.5 / 0 to −14.5, 2.5 / 1.75 to −16.12, soil 1.75 / 1.75 to "
+        "−25, then 1.75 inside too below the infill. The infill's E·I share takes the largest average "
+        "loss of the filled zones. Empty: the single loss above, outside only.",
     )
     buckling_length_factor: float = Field(
         0.7,
@@ -834,7 +857,7 @@ class CombiWallInput(_Model):
         if self.corrosion_loss is not None and self.corrosion_loss >= self.tube_thickness:
             raise ValueError("Corrosion loss must be less than the tube thickness.")
         for z in self.corrosion_zones:
-            if z.outside + z.inside >= self.tube_thickness:
+            if z.max_outside + z.inside >= self.tube_thickness:
                 raise ValueError(f"Corrosion to {z.bottom_level:g} m must be less than the tube thickness.")
         levels = [z.bottom_level for z in self.corrosion_zones]
         if levels != sorted(levels, reverse=True):
