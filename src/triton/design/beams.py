@@ -273,7 +273,8 @@ def station_forces(
 
     With ``peak_width`` (m), Mv and V are the peak nodal values per metre within ±PEAK of the
     station times that width, as hand calculations take them: one row with the largest sagging
-    moment and one with the largest hogging moment. N, Mh, Vh and T stay integrated. A beam that
+    moment and one with the largest hogging moment, each with its node's own N per metre times that
+    width, as the office sheets. Mh, Vh and T stay integrated. A beam that
     turns: each part is fitted on its own, over its own width, from its results turned into its axes.
     """
     cols = _columns(lay)
@@ -329,10 +330,14 @@ def _fits(
             near = m
         mv = sag * values["M"][near]
         vv = values["V"][near]
+        nn = -values["N"][near]  # concrete sign
         row["V"] = float(vv[np.argmax(np.abs(vv))]) * peak_width
-        rows.append({**row, "Mv": float(mv.max()) * peak_width})
+        # N is the node's own with its peak moment, as the office sheets (Ahmed, 2026-09-27), not the
+        # integrated value.
+        hi, lo = int(np.argmax(mv)), int(np.argmin(mv))
+        rows.append({**row, "Mv": float(mv[hi]) * peak_width, "N": float(nn[hi]) * peak_width})
         if mv.min() < mv.max():
-            rows.append({**row, "Mv": float(mv.min()) * peak_width})
+            rows.append({**row, "Mv": float(mv[lo]) * peak_width, "N": float(nn[lo]) * peak_width})
     return rows
 
 
@@ -1227,8 +1232,9 @@ def design_beam(
         ),
         (
             f"Vertical bending and shear: peak nodal M and Q per metre within ±{PEAK:g} m of each station "
-            f"× the beam width {b / 1000:g} m, as the calc report takes them. N, horizontal bending and "
-            f"torsion are integrated over the model's {lay.width:g} m width (Design settings)."
+            f"× the beam width {b / 1000:g} m, as the calc report takes them, each with its node's own N "
+            f"per metre × the same width. Horizontal bending and torsion are integrated over the model's "
+            f"{lay.width:g} m width (Design settings)."
             if peak is not None
             else "Section forces integrated over the model's width (Design settings)."
         ),
