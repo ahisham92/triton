@@ -284,6 +284,34 @@ def plate_axes(
     return out
 
 
+def _far_from(u: np.ndarray, v: np.ndarray, su: np.ndarray, sv: np.ndarray, clear: float) -> np.ndarray:
+    """Which points (u, v) have no support (su, sv) within ``clear``. Points and supports go in square
+    cells ``clear`` wide, so each point needs only the supports in its own cell and the eight round
+    it, not every support in the model."""
+    far = np.ones(len(u), bool)
+    ci, cj = np.floor(u / clear).astype(np.int64), np.floor(v / clear).astype(np.int64)
+    si, sj = np.floor(su / clear).astype(np.int64), np.floor(sv / clear).astype(np.int64)
+    cells: dict[tuple[int, int], list[int]] = {}
+    for k, key in enumerate(zip(si.tolist(), sj.tolist(), strict=True)):
+        cells.setdefault(key, []).append(k)
+    near: set[tuple[int, int]] = {
+        (a + da, b + db) for a, b in cells for da in (-1, 0, 1) for db in (-1, 0, 1)
+    }
+    keys = np.column_stack([ci, cj])
+    uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
+    inverse = inverse.ravel()
+    order = np.argsort(inverse, kind="stable")
+    bounds = np.r_[0, np.cumsum(np.bincount(inverse, minlength=len(uniq)))]
+    for n, (a, b) in enumerate(uniq.tolist()):
+        if (a, b) not in near:
+            continue
+        cand = [k for da in (-1, 0, 1) for db in (-1, 0, 1) for k in cells.get((a + da, b + db), ())]
+        idx = order[bounds[n] : bounds[n + 1]]
+        d = np.hypot(u[idx, None] - su[None, cand], v[idx, None] - sv[None, cand])
+        far[idx] = (d > clear).all(1)
+    return far
+
+
 def plate_sign(
     combos: dict[str, SheetData], plane: list[str], i: int, supports: np.ndarray | None = None
 ) -> dict[str, Any] | None:
@@ -308,10 +336,7 @@ def plate_sign(
         far = np.ones(len(f), bool)
         if supports is not None and len(supports):
             su, sv = supports[:, "XYZ".index(plane[i])], supports[:, "XYZ".index(plane[j])]
-            for s0 in range(0, len(su), 200):
-                du = u[:, None] - su[None, s0 : s0 + 200]
-                dv = v[:, None] - sv[None, s0 : s0 + 200]
-                far &= (np.hypot(du, dv) > SUPPORT_CLEAR).all(1)
+            far = _far_from(u, v, su, sv, SUPPORT_CLEAR)
         cell = pd.DataFrame(
             {"i": np.floor(u / GRID).astype(int), "j": np.floor(v / GRID).astype(int), "far": far}
         )

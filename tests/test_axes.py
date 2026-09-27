@@ -204,3 +204,17 @@ def test_nearest_nodes_on_a_big_sheet_match_every_pair():
     dist = lambda idx, q: np.sort(((p[idx] - q) ** 2).sum(-1))  # noqa: E731
     for n, q in enumerate(p[::97]):
         assert np.allclose(dist(grid[n * 97], q), dist(brute[n], q))
+
+
+def test_far_from_supports_matches_every_pair():
+    """The grid check of which points are clear of every support gives what comparing every pair does."""
+    import numpy as np
+
+    from triton import axes
+
+    rng = np.random.default_rng(2)
+    u, v = rng.uniform(-30, 30, 3000), rng.uniform(-10, 10, 3000)
+    su, sv = rng.uniform(-30, 30, 40), rng.uniform(-10, 10, 40)
+    brute = (np.hypot(u[:, None] - su[None, :], v[:, None] - sv[None, :]) > 1.8).all(1)
+    assert (axes._far_from(u, v, su, sv, 1.8) == brute).all()
+    assert axes._far_from(u, v, su[:0], sv[:0], 1.8).all()

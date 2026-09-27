@@ -388,3 +388,23 @@ def test_a_corner_notes_the_axes_it_cannot_confirm_instead_of_warning():
     assert [(i.severity, i.code, i.element) for i in issues] == [(Severity.INFO, "axes_corner", "Front Beam")]
     beam = next(a for a in found if a["element"] == "Front Beam")
     assert beam["clear"] and beam["local"] == next(a for a in found if a["element"] == "Deck")["local"]
+
+
+def test_outline_keeps_every_hull_corner(monkeypatch):
+    """Leaving out points between others on a vertical or horizontal line finds the same edge
+    direction as the hull of every point."""
+    import numpy as np
+
+    from triton import alignment
+
+    rng = np.random.default_rng(3)
+    grid = np.array([(x, y) for x in np.arange(0, 40, 0.5) for y in np.arange(0, 3, 0.25)])
+    pts = np.unique(np.vstack([grid, rng.uniform(0, 40, (200, 2)) * [1, 0.075]]), axis=0)
+    assert len(alignment._outline(pts)) < len(pts) / 4
+    turn = np.array([[np.cos(0.05), np.sin(0.05)], [-np.sin(0.05), np.cos(0.05)]])
+    u = np.array([1.0, 0.03])
+    u /= np.hypot(*u)
+    got = [alignment._edge_direction(p, u) for p in (pts, pts @ turn)]
+    monkeypatch.setattr(alignment, "_outline", lambda p: p)
+    every = [alignment._edge_direction(p, u) for p in (pts, pts @ turn)]
+    assert np.allclose(got, every)
