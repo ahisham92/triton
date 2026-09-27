@@ -26,8 +26,9 @@ cell in a zone.
 
 Column and field strips (the default, as the office's slab design): strips run from the front
 beam to the rear beam. A column strip (2.2 m) is centred on each line of piles, a field strip
-(2.0 m) between two lines. At every cut along a strip the moment and axial force are averaged
-across the strip's width; every column strip is designed together, and every field strip, at
+(2.0 m) between two lines. At every cut along a strip the moment is the largest node's across the
+strip's width, with its own axial force, as the calc report (or, as a slab setting, both averaged
+across the width); every column strip is designed together, and every field strip, at
 stations along the strips (2 m each side of every row of piles and the spans between, or the
 user's). Each station and strip gets one set of bars for its worst cut (ULS) and QP crack width;
 M/MRd uses the rectangular block with the tension steel only.
@@ -587,10 +588,18 @@ def locate(frame: dict, along: np.ndarray, across: np.ndarray) -> dict[str, np.n
 
 
 def strip_average(
-    f: pd.DataFrame, m: np.ndarray, n: np.ndarray, loc: dict, size: float, v: np.ndarray | None = None
+    f: pd.DataFrame,
+    m: np.ndarray,
+    n: np.ndarray,
+    loc: dict,
+    size: float,
+    v: np.ndarray | None = None,
+    across: str = "average",
 ) -> pd.DataFrame:
-    """Moment and axial force per metre averaged across each strip's width, at every cut along it
-    (``size`` apart) and for every combination; with ``v`` (1 where the slab is voided) the voided share."""
+    """Moment and axial force per metre across each strip's width, at every cut along it (``size`` apart)
+    and for every combination: averaged over the width, or with ``across`` "peak" the nodes with the
+    largest moment of each sign, each with its own N, as the calc report takes each strip.
+    With ``v`` (1 where the slab is voided) the voided share."""
     df = pd.DataFrame(
         {
             "combination": f["combination"].to_numpy(),
@@ -604,6 +613,11 @@ def strip_average(
         }
     )[loc["averaged"]]
     keys = ["st", "kind", "inst", "cut", "combination"]
+    if across == "peak":
+        # The largest sagging and the largest hogging node, each with its own N: a face needs its own sign.
+        g = df.groupby(keys, sort=False)["m"]
+        rows = np.unique(np.concatenate([g.idxmax().to_numpy(), g.idxmin().to_numpy()]))
+        return df.loc[rows, [*keys, "m", "n", "v"]].reset_index(drop=True)
     return df.groupby(keys, sort=False)[["m", "n", "v"]].mean().reset_index()
 
 
@@ -2213,7 +2227,7 @@ def design_slab(
             # Every column strip together and every field strip together, station by station: the need
             # is the worst cut across a strip's width, averaged over that width.
             other = "top" if face == "bottom" else "bottom"
-            env = strip_average(uls_m, wa[layer], n_u, uloc, size, vm_u)
+            env = strip_average(uls_m, wa[layer], n_u, uloc, size, vm_u, slab.strip_moments)
             a_env, _, _ = req_as(
                 env["m"].to_numpy(),
                 env["n"].to_numpy(),
@@ -2241,7 +2255,7 @@ def design_slab(
                 groups[k].req if k in groups else r for k, r in zip(keys, cell["req"], strict=True)
             ]
             if wq is not None and qloc is not None:
-                qenv = strip_average(qp_m, wq[layer], nq, qloc, size, vm_q)
+                qenv = strip_average(qp_m, wq[layer], nq, qloc, size, vm_q, slab.strip_moments)
                 for k, g in qenv.groupby(["st", "kind"]):
                     qgroups[(int(k[0]), int(k[1]))] = (
                         g["m"].to_numpy(),
@@ -3261,6 +3275,7 @@ def design_slab(
             "along": frame["along"],
             "from": frame["from"],
             "column_width_m": frame["column"],
+            "across": slab.strip_moments,
             "field_width_m": frame["field"],
             "lines": frame["lines"],
             "pile_rows_m": frame["rows"],
@@ -3276,7 +3291,12 @@ def design_slab(
         notes.append(
             f"Column strips {frame['column']:g} m wide on the {len(frame['lines'])} lines of piles "
             f"along {frame['along']}, field strips {frame['field']:g} m between them; each strip's "
-            "moments are averaged across its width and all column (field) strips are designed together "
+            + (
+                "moments are taken at the largest node across its width (as the calc report)"
+                if slab.strip_moments == "peak"
+                else "moments are averaged across its width"
+            )
+            + " and all column (field) strips are designed together "
             f"at {len(frame['bounds']) - 1} stations measured from the {frame['from']}. The bars along "
             f"{frame['across']} are one design over the whole deck, with zones only where it needs more."
         )

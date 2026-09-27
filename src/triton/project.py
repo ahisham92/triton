@@ -1200,8 +1200,8 @@ class SlabInput(_ConcreteSection):
         "column_and_field",
         title="Reinforcement layout",
         description="Column and field strips: strips from the front beam to the rear beam, each designed "
-        "for its moments averaged across its width, every column strip together and every field strip "
-        "together, station by station. Uniform: bars per 1 m cell, zoned.",
+        "for the moments across its width (peak or average, below), every column strip together "
+        "and every field strip together, station by station. Uniform: bars per 1 m cell, zoned.",
     )
     strip_direction: Literal["X", "Y"] = Field(
         "X",
@@ -1219,6 +1219,13 @@ class SlabInput(_ConcreteSection):
         2.0,
         gt=0,
         description="Centred between two lines of piles; it passes through no pile.",
+    )
+    strip_moments: Literal["peak", "average"] = Field(
+        "peak",
+        title="Moment across a strip",
+        description="Peak (default, as the calc report and its AdSec strips): at each cut, the node with "
+        "the largest moment across the strip's width, with its own N. Average: the moment and N averaged "
+        "across the width, which spreads the peaks over the piles.",
     )
     stations: list[float] = Field(
         default_factory=list,
