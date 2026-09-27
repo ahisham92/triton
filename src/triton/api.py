@@ -1493,16 +1493,27 @@ def design_status(project_id: str) -> list[dict]:
     kinds = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
     out = []
     for section in project.sections:
-        row = {"id": section.id, "name": section.name, "elements": len(section.elements),
-               "locked": section.locked}
+        row = {
+            "id": section.id,
+            "name": section.name,
+            "elements": len(section.elements),
+            "locked": section.locked,
+        }
         results = store().load_results(project_id, section.id)
         if results is None:
             out.append({**row, "designed": False})
             continue
         summary = store().workbook_summary(project_id, section.id)
         status = fresh.with_status(project, section, results, summary)
-        out.append({**row, "designed": True, "run_at": results.get("run_at"), "stale": status["stale"],
-                    "designed_elements": sum(len(results.get(k) or []) for k in kinds)})
+        out.append(
+            {
+                **row,
+                "designed": True,
+                "run_at": results.get("run_at"),
+                "stale": status["stale"],
+                "designed_elements": sum(len(results.get(k) or []) for k in kinds),
+            }
+        )
     return out
 
 
