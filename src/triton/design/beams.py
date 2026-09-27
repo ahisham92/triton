@@ -303,14 +303,19 @@ def transverse_nodes(nodes: pd.DataFrame, supports: list[Support], extra: float)
 
 
 # Top and bottom bars of a beam Triton designs (Ahmed, 2026-09-27: "the number of bars for top should
-# be the same as bottom so that stirrups can be constructible ... if additional then additional to be 2
-# or 6 or 12"). Read as: the first (outer) layer of the top and the first layer of the bottom have the
-# SAME number of bars, so each top bar sits over a bottom bar and each link leg ties a matching pair;
-# the diameters may differ. A face that needs more than its first layer takes additional bars of the
-# same diameter in a layer behind it, 2, 6 or 12 of them, each over a first-layer bar; where the
-# maximum layers allow a third layer, it comes only behind a full 12 and again holds 2, 6 or 12.
+# be the same as bottom so that stirrups can be constructible"). The first (outer) layer of the top and
+# the first layer of the bottom have the SAME number of bars, so each top bar sits over a bottom bar
+# and each link leg ties a matching pair; the diameters may differ. A face that needs more takes
+# layers of the same diameter behind the first, each over first-layer bars; Ahmed, 11:30: "the second
+# layer should depend on the first layer it is either same count or half of it or 2 bars". So every
+# layer behind is a full layer (the same count), or, as the last one, half the count or 2 bars.
 # Bars the user types (BeamCage) are checked as typed; a note says when their counts differ.
-EXTRA_BARS = (2, 6, 12)
+
+
+def layer_behind(n: int) -> tuple[int, ...]:
+    """The bar counts a part-layer behind a first layer of ``n`` bars may take: half of it or 2
+    (a layer of all ``n`` is a full layer)."""
+    return tuple(sorted({k for k in (n // 2, 2) if 1 <= k < n}))
 
 
 def spread(n: int, m: int) -> list[int]:
@@ -435,9 +440,9 @@ class Geometry:
 
 def face_candidates(g: Geometry, settings: DesignSettings, width: float) -> list[Face]:
     """Bars along one face of clear width ``width`` (mm), cheapest first, by area: a first layer
-    within the spacing limits and, where the face needs more, 2, 6 or 12 additional bars of the same
-    size behind it (EXTRA_BARS), in no more than the maximum layers. With even bar counts set, the
-    first layer takes only even counts (the additional 2, 6 or 12 keep the total even)."""
+    within the spacing limits and, where the face needs more, layers of the same size behind it, each
+    the first layer's count, or (the last one) half of it or 2 bars (``layer_behind``), in no more than
+    the maximum layers. With even bar counts set, the first layer takes only even counts."""
     r = settings.reinforcement
     dg = settings.piles.aggregate_size
     out = []
@@ -451,13 +456,11 @@ def face_candidates(g: Geometry, settings: DesignSettings, width: float) -> list
         for n in range(n_min, n_max + 1):
             if n % 2 and settings.piles.even_bar_count:
                 continue  # even bar counts only (the setting), so top and bottom pair up
-            out.append(Face(n, phi))
-            # Additional layers: 2, 6 or 12 bars (no more than the first layer has), a further layer
-            # only behind a full 12.
-            for more in range(1, r.max_layers):
-                for k in EXTRA_BARS:
-                    if k <= n and (more == 1 or 12 <= n):
-                        out.append(Face(n, phi, 1, (12,) * (more - 1) + (k,)))
+            # Full layers of n, the last layer behind them either full or half of n or 2 bars.
+            for full in range(1, r.max_layers + 1):
+                out.append(Face(n, phi, full))
+                if full < r.max_layers:
+                    out.extend(Face(n, phi, full, (k,)) for k in layer_behind(n))
     return sorted(out, key=lambda f: (f.area, len(f.rows), -f.phi, f.count))
 
 
@@ -766,7 +769,7 @@ def link_design(
     leg_gap_max = min(0.75 * d, 600.0)
     inner_w = b - 2 * (g.cover + g.link / 2)
     legs_min = max(2, math.ceil(inner_w / leg_gap_max) + 1)
-    # With as many top bars as bottom bars (EXTRA_BARS) each leg ties a top bar and the bottom bar
+    # With as many top bars as bottom bars (first layers) each leg ties a top bar and the bottom bar
     # under it: legs on first-layer bars, evenly spread (``spread``), the widest gap a whole number
     # of bar pitches. The user's bars with other counts keep evenly spaced legs.
     pairs = cage.top.count if cage.top.count == cage.bottom.count and cage.top.count >= 2 else None
@@ -1206,9 +1209,9 @@ def design_beam(
     def grow_cage(asl: float, use_truss: bool = True):
         """Step the faces up until bending (with ``asl`` of torsion steel taken out of the faces),
         cracking, restraint and (with ``use_truss``) the truss tie pass. Top and bottom keep the same
-        first-layer count (EXTRA_BARS)."""
+        first-layer count."""
         ti = bi = next(
-            (i for i, f in enumerate(tops) if f.area >= as_min and not f.extra),
+            (i for i, f in enumerate(tops) if f.area >= as_min and f.layers == 1 and not f.extra),
             next((i for i, f in enumerate(tops) if f.area >= as_min), len(tops) - 1),
         )
         sides = side_candidates(g, settings, tops[ti], tops[bi])
@@ -1367,7 +1370,7 @@ def design_beam(
             notes.append(
                 f"Your top and bottom have {cage.top.count} and {cage.bottom.count} bars per layer: the link "
                 "legs cannot tie each top bar to the bottom bar under it. Triton designs both faces with the "
-                "same number (additional bars 2, 6 or 12)."
+                "same number (layers behind: the same count, half of it or 2 bars)."
             )
         for f in ("top", "bottom"):
             face = getattr(cage, f)

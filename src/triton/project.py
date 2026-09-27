@@ -1989,7 +1989,7 @@ class BeamFace(_Model):
         title="Additional bars",
         ge=0,
         description="Bars of the same size behind the full layers, each over a first-layer bar "
-        "(Triton uses 2, 6 or 12).",
+        "(Triton uses half the first layer's count or 2 bars).",
     )
 
 

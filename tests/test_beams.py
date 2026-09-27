@@ -390,22 +390,30 @@ def test_stop_reaches_inside_a_beam_design():
         )
 
 
-def test_top_and_bottom_have_the_same_bar_count_and_additional_bars_come_in_2_6_or_12():
+def test_top_and_bottom_have_the_same_bar_count_and_layers_behind_are_full_half_or_2():
     """Ahmed, 2026-09-27: as many top bars as bottom bars (per first layer) so each link leg ties a top
-    bar and the bottom bar under it; additional bars 2, 6 or 12."""
-    from triton.design.beams import EXTRA_BARS, Geometry, face_candidates, spread
+    bar and the bottom bar under it; a layer behind holds the same count, half of it or 2 bars."""
+    from triton.design.beams import Geometry, face_candidates, layer_behind, spread
 
     settings = DesignSettings()
     g = Geometry(2000.0, 1600.0, 50.0, 16.0)
     for f in face_candidates(g, settings, g.b):
-        assert f.layers == 1 and len(f.extra) <= 1 and set(f.extra) <= set(EXTRA_BARS)
+        assert len(f.extra) <= 1 and set(f.extra) <= {f.count // 2, 2}
+        assert f.layers + len(f.extra) <= settings.reinforcement.max_layers
         assert all(set(r) <= set(range(f.count)) for r in f.rows)  # over first-layer bars
         assert f.count % 2 == 0  # even bar counts (the default setting)
+    assert layer_behind(18) == (2, 9) and layer_behind(4) == (2,) and layer_behind(2) == (1,)
     odd = DesignSettings(piles={"even_bar_count": False})
     assert any(f.count % 2 for f in face_candidates(g, odd, g.b))
-    # A third layer, where allowed, only behind a full 12, and again 2, 6 or 12.
+    # A third layer, where allowed, only behind two full layers.
     three = DesignSettings(reinforcement={"max_layers": 3})
-    assert {f.extra[:-1] for f in face_candidates(g, three, g.b)} == {(), (12,)}
+    assert {(f.layers, bool(f.extra)) for f in face_candidates(g, three, g.b)} == {
+        (1, False),
+        (1, True),
+        (2, False),
+        (2, True),
+        (3, False),
+    }
     assert spread(23, 5) == [0, 6, 11, 17, 22] and spread(10, 2) == [0, 9]
 
     raw = {
@@ -420,15 +428,16 @@ def test_top_and_bottom_have_the_same_bar_count_and_additional_bars_come_in_2_6_
         d = design_beam("Front Beam", beam, s, sheets, [], {}, None)
         top, bottom = d["cage"]["top"], d["cage"]["bottom"]
         assert top["per_layer"] == bottom["per_layer"]
-        assert top["per_layer"] % 2 == 0 and (top["per_layer"] + top["extra"]) % 2 == 0
-        assert top["extra"] in (0, *EXTRA_BARS) and bottom["extra"] in (0, *EXTRA_BARS)
-        assert bottom["count"] == bottom["per_layer"] + bottom["extra"]
+        assert top["per_layer"] % 2 == 0
+        for face in (top, bottom):
+            assert face["extra"] in (0, face["per_layer"] // 2, 2)
+        assert bottom["count"] == bottom["per_layer"] * bottom["full_layers"] + bottom["extra"]
         # The link legs stand on matching bars, evenly spread and symmetric.
         link = d["shear"]["link"]
         n = top["per_layer"]
         assert link["leg_bars"] == [i + 1 for i in spread(n, link["legs"])]
         assert link["leg_bars"][0] == 1 and link["leg_bars"][-1] == n
-    assert d["passed"] and d["cage"]["bottom"]["extra"] in EXTRA_BARS and d["cage"]["bottom"]["layers"] >= 2
+    assert d["passed"] and d["cage"]["bottom"]["layers"] >= 2
     assert d["cage"]["bottom"]["extra_layers"] == [bottom["extra"]]
     assert f"+ {bottom['extra']} in 2 layers" in d["cage"]["label"]
     # The drawing has every bar: the first layers and the additional ones over first-layer bars.

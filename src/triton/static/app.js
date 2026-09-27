@@ -5891,7 +5891,7 @@ function beamCageHtml(b) {
   const own = sec().beam_cages?.[b.key || b.element];
   const c = b.cage;
   const v = own || {
-    // per_layer bars in full_layers layers, and the additional bars behind them (2, 6 or 12).
+    // per_layer bars in full_layers layers, and the additional bars behind them (the same count, half of it or 2 bars).
     top: { count: c.top.per_layer ?? c.top.count, diameter: c.top.phi, layers: c.top.full_layers ?? c.top.layers, extra: c.top.extra || 0 },
     bottom: { count: c.bottom.per_layer ?? c.bottom.count, diameter: c.bottom.phi, layers: c.bottom.full_layers ?? c.bottom.layers, extra: c.bottom.extra || 0 },
     side: { count: c.side.count, diameter: c.side.phi || 20, layers: 1 },
@@ -5903,7 +5903,7 @@ function beamCageHtml(b) {
       <label>Bars${layers ? " per layer" : ""} <input type="number" min="0" step="1" data-k="count" value="${v[f].count}" style="width:70px"></label>
       <label>Bar <select data-k="diameter">${opt(v[f].diameter)}</select></label>
       ${layers ? `<label>Layers <input type="number" min="1" max="4" step="1" data-k="layers" value="${v[f].layers}" style="width:60px"></label>
-      <label title="Bars of the same size behind the full layers, each over a first-layer bar (Triton uses 2, 6 or 12)">Additional <input type="number" min="0" step="1" data-k="extra" value="${v[f].extra || 0}" style="width:60px"></label>` : ""}</div>`;
+      <label title="Bars of the same size behind the full layers, each over a first-layer bar (Triton uses the same count, half of it or 2 bars)">Additional <input type="number" min="0" step="1" data-k="extra" value="${v[f].extra || 0}" style="width:60px"></label>` : ""}</div>`;
   return `<details class="panel cage-set" data-beam-cage ${own ? "open" : ""}><summary>${own ? "Bars set by you (checked, not chosen by Triton)" : "Change bars and re-check"}</summary>
     ${row("top", "Top", true)}${row("bottom", "Bottom", true)}${row("side", "Each side", false)}
     <div class="row" style="margin-top:8px;gap:10px;flex-wrap:wrap;align-items:center"><span data-beam-sum></span></div>
