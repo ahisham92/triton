@@ -3840,7 +3840,10 @@ function pickResults(res, out) {
     const r = all.find((x) => (x.key || x.element) === name) || all.find((x) => x.element === name);
     const u = util(r);
     const kind = sec().elements[r?.element || name]?.kind || guessKind(name);
-    const st = worst[name] || (u == null ? null : statusOf(u));
+    // The worse of the warnings and the number: a warning can make an element unsafe (a failed
+    // punching check), but can never make a utilisation over 1 look near the limit.
+    const byU = u == null ? null : statusOf(u);
+    const st = [worst[name], byU].filter(Boolean).sort((a, b) => rank[b] - rank[a])[0] || null;
     return { key: name, label: name, kind, utilisation: u, status: st || (u === undefined ? "" : "none"),
       sub: u != null ? `utilisation ${fmt(u, 2)}` : KINDS[kind]?.label };
   });
@@ -4224,12 +4227,23 @@ function alerts(res) {
     for (const [f, c] of Object.entries(b.restraint?.faces || {})) {
       if (isFinite(c.wk)) checks.push([`${f} restraint crack ${fmt(c.wk, 2)} mm of ${fmt(c.limit, 2)}`, c.wk / c.limit, null]);
     }
+    for (const [f, c] of Object.entries(b.transverse?.cracks || {})) {
+      if (c.limit) checks.push([`transverse ${f} crack width ${fmt(c.wk, 2)} mm of ${fmt(c.limit, 2)}`, c.wk / c.limit, null]);
+    }
+    for (const rm of b.rooms || []) {
+      checks.push([`${rm.name} (room, ${fmt(rm.start_m, 1)} to ${fmt(rm.end_m, 1)} m)`, rm.utilisation, null]);
+      if (rm.passed === false && !(rm.utilisation > 1)) add("unsafe", (b.key || b.element), `${rm.name} (room) fails: see the Openings tab`);
+    }
     if (b.utilisation == null) add("unsafe", (b.key || b.element), "no reinforcement passes");
     for (const [what, u, g] of checks) {
       if (u == null) continue;
       if (u > 1) add("unsafe", (b.key || b.element), `${what}: ${fmt(u, 2)}${at2(g)}`);
       else if (u >= 0.95) add("limit", (b.key || b.element), `${what}: ${fmt(u, 2)}${at2(g)}, close to the limit`);
     }
+    // Anything else in the beam's own utilisation (it takes the worst of every check).
+    const listed = Math.max(0, ...checks.map(([, u]) => u ?? 0));
+    if (b.utilisation > 1 && listed <= 1) add("unsafe", (b.key || b.element), `max utilisation ${fmt(b.utilisation, 2)}: see its card`);
+    else if (b.utilisation >= 0.95 && listed < 0.95) add("limit", (b.key || b.element), `max utilisation ${fmt(b.utilisation, 2)}, close to the limit`);
     if (b.utilisation != null && b.utilisation < 0.5) add("safe", (b.key || b.element), `max utilisation ${fmt(b.utilisation, 2)}: very safe`);
   }
   for (const d of res.slabs || []) {
