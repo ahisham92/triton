@@ -1031,7 +1031,7 @@ def _slab_views(
                     for b in lay["bars"]:
                         if lay["layer"] == 1 and b["kind"] == "mesh":
                             continue  # the mesh: drawn by hand
-                        # Layers inside the mesh sit behind its bars (bars between them only in
+                        # Added layers sit behind the mesh bars (bars between them only in
                         # designs from before that was dropped).
                         off = s_mesh / 2 + (s_mesh / 2 if b["kind"] == "between the mesh bars" else 0)
                         if lay["layer"] > 1:

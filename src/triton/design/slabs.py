@@ -775,7 +775,7 @@ def additional_options(
     """The mesh alone, then the mesh with additional bars, least steel first.
 
     The mesh stays as it is (Ø @ 150 stays @ 150): no bars go between its bars. Additional bars are
-    layers of their own inside the mesh (above the bottom mesh, below the top mesh), each behind the
+    layers of their own above the bottom mesh or below the top mesh, never in the mesh, each behind the
     mesh bars: L1 at the mesh spacing or twice it, then L2, L3... at the mesh spacing, the last one
     maybe at twice it, as many as the design needs (Maximum bar layers is for beams and slab meshes)
     while the stack stays on its side of mid-depth (``room``, mm from the face; without it 3 layers at
@@ -795,7 +795,7 @@ def additional_options(
         pitch = big + max(25.0, big)
         top = 3 if room is None else 12
         choices = []
-        for k in range(1, top + 1):  # k layers of additional bars inside the mesh
+        for k in range(1, top + 1):  # k layers above the bottom mesh / below the top mesh
             if room is not None and big + (k + layers_b - 1) * pitch > room + 1e-9:
                 break
             for last in (s_b, 2 * s_b):  # the last layer at the mesh spacing or every second bar
@@ -815,7 +815,7 @@ def additional_options(
 def parse_layers(text: str) -> list[tuple[float, float] | None] | None:
     """Bar layers set by the user: 'layers: – | Ø32@150 | Ø25@300', the first at mesh level (always '–'
     now: no bars go between the mesh bars; older lists may have one, which is left out with a note),
-    the next ones L1, L2, ... inside the mesh (above the bottom mesh, below the top one). None when
+    the next ones L1, L2, ... above the bottom mesh or below the top one. None when
     the text is not in this form."""
     if not text.startswith("layers:"):
         return None
@@ -835,7 +835,7 @@ def parse_layers(text: str) -> list[tuple[float, float] | None] | None:
 
 def layer_name(n: int, mesh_layers: int = 1) -> str:
     """A layer as the office numbers it: the mesh is at mesh level (no bars go between its bars), L1 is
-    the first layer inside the mesh (above the bottom mesh, below the top one), then L2, L3..."""
+    the first layer above the bottom mesh or below the top one, then L2, L3..."""
     if n <= mesh_layers:
         return "mesh level" if mesh_layers == 1 else f"mesh level {n}"
     return f"L{n - mesh_layers}"
@@ -2382,8 +2382,8 @@ def design_slab(
                 if spec and spec[0] is not None:
                     notes.append(
                         f"{LAYER_TEXT[layer].capitalize()}: {layers_text(spec)} puts bars between the mesh "
-                        "bars; additional bars now go in layers of their own inside the mesh: left out, set "
-                        "it again."
+                        "bars; additional bars now go in layers of their own above the bottom mesh or "
+                        "below the top mesh: left out, set it again."
                     )
                     continue
                 bad = [
