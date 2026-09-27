@@ -304,7 +304,7 @@ def test_peak_times_width_takes_the_largest_nodal_values():
     f = station_forces(sheets["PT-B-Apron"].frame, lay, 1.0, np.array([6.0]), peak_width=4.5)
     assert sorted(f["Mv"]) == pytest.approx([50 * 4.5, 150 * 4.5])
     assert np.allclose(f["V"], 40 * 4.5)
-    assert np.allclose(f["N"], 100.0)  # still integrated over the model's 2 m
+    assert np.allclose(f["N"], 50 * 4.5)  # the peak node's own N per metre x the width, as the office
 
 
 def test_beam_reports_what_sets_each_face():
@@ -504,7 +504,7 @@ def test_the_beam_bar_rule_puts_only_beams_out_of_date():
             o.pop("punching_fix")
         if o.get("punching_per") == "type":
             o.pop("punching_per")
-    assert now["Front Beam"] == fresh._hash([own["Front Beam"], fresh.BEAM_BARS_RULE])
+    assert now["Front Beam"] == fresh._hash([[own["Front Beam"], fresh.BEAM_BARS_RULE], fresh.BEAM_N_RULE])
     assert now["Pile(1)"] == fresh._hash([own["Pile(1)"], fresh.PILE_LINKS_RULE])
     assert now["Deck"] == fresh._hash([[own["Deck"], fresh.SLAB_BARS_RULE], fresh.SLAB_ADSEC_RULE])
     # Results designed before the rule: the beam alone is out of date, named as what changed.
