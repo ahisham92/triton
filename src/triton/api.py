@@ -1486,6 +1486,26 @@ def design_all_state(project_id: str) -> dict:
     return {**q, "finished": runner_mod.finished(q), "runner_on": runner_mod.alive()}
 
 
+@app.get("/api/projects/{project_id}/design-status")
+def design_status(project_id: str) -> list[dict]:
+    """Each section at a glance for the Design tab: designed or not, when, and what is out of date."""
+    project = _get(project_id)
+    kinds = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
+    out = []
+    for section in project.sections:
+        row = {"id": section.id, "name": section.name, "elements": len(section.elements),
+               "locked": section.locked}
+        results = store().load_results(project_id, section.id)
+        if results is None:
+            out.append({**row, "designed": False})
+            continue
+        summary = store().workbook_summary(project_id, section.id)
+        status = fresh.with_status(project, section, results, summary)
+        out.append({**row, "designed": True, "run_at": results.get("run_at"), "stale": status["stale"],
+                    "designed_elements": sum(len(results.get(k) or []) for k in kinds)})
+    return out
+
+
 @app.post("/api/projects/{project_id}/design-all")
 def design_all(project_id: str, body: DesignAllRequest | None = None) -> dict:
     """Queue every section (or the ones given) for the runner to design one after another."""

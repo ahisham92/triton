@@ -11,7 +11,7 @@ import { renderFurniture } from "./furniture.js";
 import { renderMovedPiles } from "./moved.js";
 import { renderSequence } from "./sequence.js";
 import { smooth, voyageHtml } from "./progress.js";
-import { tabBanner, tabGroupColor, statTiles, shareBar } from "./look.js";
+import { pageBlocks, tabBanner, tabGroupColor, statTiles, shareBar } from "./look.js";
 import { tubeZonesHtml } from "./tubeview.js";
 import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
 import { projectsPage as renderProjectsPage } from "./projects.js";
@@ -441,7 +441,7 @@ async function projectPage(id, tab, sectionId) {
           .map((s) => `<option value="${esc(s.id)}" ${s.id === sec().id ? "selected" : ""}>${esc(s.name)}</option>`)
           .join("")}</select>
         ${p.sections.length > 1 ? `<button type="button" class="quiet step" data-sec-step="1" data-free ${secIndex() === p.sections.length - 1 ? "disabled" : ""} title="Next section">&#9654;</button>` : ""}
-        <span class="status">Elements, workbook, load multipliers and results below are for this section${p.sections.length > 1 ? ` (${secIndex() + 1} of ${p.sections.length})` : ""}.</span></div>`
+        <span class="status">${p.sections.length > 1 ? `Section ${secIndex() + 1} of ${p.sections.length}: this tab shows its elements, workbook and results.` : "This tab shows this section's elements, workbook and results."}</span></div>`
     : "";
   // Download, Duplicate and Delete sit on the Project tab only, so moving between tabs never
   // leaves Delete under the pointer.
@@ -504,11 +504,12 @@ async function projectPage(id, tab, sectionId) {
     const info = renderObject(SCHEMA.properties.info, p.info, "info", "Project");
     info.dataset.free = ""; // names and numbers, not design inputs: open to edit at any time
     host.append(info);
-    host.append(sitesPanel(p, markDirty)); // where the project is built, for the projects map
-    const prices = renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)");
+    const sites = sitesPanel(p, markDirty); // where the project is built, for the projects map
+    host.append(sites);
+    const prices = pageForm(renderObject(SCHEMA.properties.prices, p.prices, "prices", "Prices (for the Costing tab)"), `prices:${p.id}`, { plan: PRICE_PAGES });
     prices.dataset.free = ""; // not a design input: open while the model is locked
     host.append(prices);
-    const names = renderObject(SCHEMA.properties.drawings, p.drawings, "drawings", "Drawing names (AutoCAD layers, Revit line styles and family types)");
+    const names = pageForm(renderObject(SCHEMA.properties.drawings, p.drawings, "drawings", "Drawing names (AutoCAD layers, Revit line styles and family types)"), `drawings:${p.id}`, { plan: DRAWING_PAGES });
     names.dataset.free = ""; // not a design input either
     host.append(names);
     const used = document.createElement("div");
@@ -517,6 +518,14 @@ async function projectPage(id, tab, sectionId) {
     used.innerHTML = '<h2>Storage</h2><p class="status">Working out…</p>';
     host.append(used);
     storagePanel(used, id);
+    // The Project tab one block at a time, like the Design settings pages.
+    pageBlocks(`project:${p.id}`, [
+      { title: "Project details", els: [info] },
+      { title: "Sites on the map", els: [sites] },
+      { title: "Prices", els: [prices] },
+      { title: "Drawing names", els: [names] },
+      { title: "Storage", els: [used] },
+    ]);
   }
   else if (tab === "settings")
     host.append(pageForm(renderObject(SCHEMA.properties.design, p.design, "design", "Design settings"), `settings:${p.id}`,
@@ -593,6 +602,19 @@ async function projectPage(id, tab, sectionId) {
 
 // The steps of the whole program with where this project stands (the workbook and results from the
 // storage list, which is quick).
+// Page plans for the Project tab's forms (keys as in project.py).
+const PRICE_PAGES = [
+  { title: "Rates", intro: "Unit rates for concrete, reinforcement and structural steel, in the project's currency.", keys: ["currency", "currency_default", "concrete_slab", "concrete_beams", "concrete_infill", "rebar", "steel"] },
+  { title: "Steel sections", intro: "Sheet piles, tubes and other steel priced by weight or length.", keys: ["steel_elements"] },
+  { title: "Bored piles", intro: "Piles priced per linear metre with their reinforcement.", keys: ["piles"] },
+];
+const DRAWING_PAGES = [
+  { title: "Bars", intro: "The layer, line style and family type each bar diameter is drawn with.", keys: ["bars"] },
+  { title: "Revit families", intro: "The Revit families placed for cut bars, pile sections, links and the slab's additional bars.", keys: ["cut_bar_family", "pile_section_family", "stirrup_family", "additional_bars_x_family", "additional_bars_y_family"] },
+  { title: "Layers and styles", intro: "AutoCAD layers and Revit line styles for the concrete outline, zones, text and dimensions.", keys: ["concrete_cad_layer", "concrete_revit_line_style", "zones_cad_layer", "zones_revit_line_style", "text_cad_layer", "revit_text_type", "revit_dimension_type"] },
+  { title: "Views and rules", intro: "Drafting view names and scale, and how bars are drawn past their zone and into the slab.", keys: ["revit_view_prefix", "revit_view_scale", "lap_factor", "pile_into_slab"] },
+];
+
 async function projectFlow(box, p) {
   const s = sec();
   const n = Object.keys(s.elements).length;
@@ -2901,6 +2923,41 @@ const designUnits = (section, project = state?.project) =>
     .map(([n]) => n)
     .concat(project?.approach ? [APPROACH] : []); // the project's approach slab, last
 
+// Small line icons for the download groups.
+function dlIcon(kind) {
+  const d = { doc: "M6 3h9l4 4v14H6zM15 3v4h4M9 12h7M9 15h7M9 18h4", draw: "M4 20h16M6 16l8-8 3 3-8 8H6zM14 8l2-2 3 3-2 2",
+    sets: "M4 5h16v14H4zM4 10h16M4 15h16M10 5v14" }[kind];
+  return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${d}"/></svg>`;
+}
+
+// Every section of the project at a glance, above "Design all sections": designed and up to date,
+// designed with some elements out of date, or not designed. Click one to open it.
+async function sectionBoard(box, current) {
+  if (!box || state.project.sections.length < 2) return;
+  let rows;
+  try {
+    rows = await api(`${ROOT}/api/projects/${state.project.id}/design-status`);
+  } catch {
+    return;
+  }
+  if (!document.body.contains(box)) return;
+  const done = rows.filter((r) => r.designed && !r.stale?.length).length;
+  box.innerHTML = `<div class="board-head"><b>Sections</b><span class="status">${done} of ${rows.length} designed and up to date</span></div>
+    <div class="board">${rows.map((r) => {
+      const st = !r.designed ? "none" : r.stale?.length ? "stale" : "ok";
+      const text = !r.designed ? "Not designed" : r.stale?.length ? `${r.stale.length} out of date` : "Up to date";
+      return `<button type="button" class="board-card ${st}${r.id === current ? " on" : ""}" data-sec-go="${esc(r.id)}" data-free
+        title="${esc(r.stale?.length ? `Out of date: ${r.stale.join(", ")}` : text)}">
+        <span class="board-dot"></span><span class="board-name">${esc(r.name)}</span>
+        <span class="board-state">${text}</span>
+        <span class="board-sub">${r.designed ? `${r.designed_elements} of ${r.elements} elements · ${esc(when(r.run_at))}` : `${r.elements} element${r.elements === 1 ? "" : "s"}`}</span></button>`;
+    }).join("")}</div>`;
+  box.querySelectorAll("[data-sec-go]").forEach((b) => (b.onclick = () => {
+    state.sectionId = b.dataset.secGo;
+    location.hash = tabHash("design");
+  }));
+}
+
 async function renderDesignTab(host) {
   const url = secUrl();
   const section = sec();
@@ -2924,27 +2981,27 @@ async function renderDesignTab(host) {
       ${state.project.sections.length > 1 ? `<button class="quiet" id="run-all" title="Every section, one after another: only what changed in each, or every element, as picked under Again. With the server's runner on you can close the page; otherwise keep it open (opening the project again carries on).">Design all ${state.project.sections.length} sections</button>` : ""}
       <span class="status" id="design-status">${units.length ? "" : "Add pile, combi wall, beam or slab elements first."}</span>
       </div>
+      <div id="section-board"></div>
       <div data-slot="design-all"></div>
-      <div class="row pick-row" id="export-pick" hidden></div>
-      <div class="row export-links">
-      <a class="quiet-link" id="cages" href="${url}/design/cages.json" hidden>Download bars for Revit (JSON: pile and infill cages, beams, slab)</a>
-      <a class="quiet-link" id="sets" href="${url}/design/governing.xlsx" hidden>Download governing sets for AdSec (Excel)</a>
-      <a class="quiet-link" id="ads" href="${url}/design/adsec.zip" hidden>Download AdSec 8.3 files (.ads: pile parts, combi infill, beams, slab strips)</a>
-      <span class="reports" id="drawings" hidden>Drawings:
-        <a class="quiet-link" data-draw="dxf" href="#">AutoCAD (DXF)</a>
-        <a class="quiet-link" data-draw="crm" href="#">Revit (.crm drawings file)</a>
-        <a class="quiet-link" href="#" id="drawing-help">How to open in Revit</a>
-      </span>
-      <span class="reports" id="reports" hidden>Report:
-        <select id="report-detail"><option value="summary">Summary</option><option value="detailed">Detailed</option></select>
-        <a class="quiet-link" data-fmt="docx" href="#">Word</a>
-        <a class="quiet-link" data-fmt="pdf" href="#">PDF</a>
-        <a class="quiet-link" data-fmt="xlsx" href="#">Excel</a>
-      </span>
-      ${Object.values(section.elements).some((e) => e.kind === "sheet_pile_wall") ? `<a class="quiet-link" href="${url}/spw.xlsx">Download SPW straining actions (Excel)</a>` : ""}
-      </div>
       <div data-slot="design-${esc(section.id)}"></div>
+    </div>
+    <div class="panel downloads" id="downloads" hidden>
+      <div class="pick-head"><h3>Downloads</h3><span class="status">From the latest design of ${esc(section.name)}.</span></div>
+      <div class="row pick-row" id="export-pick" hidden></div>
+      <div class="dl-grid">
+        <div class="dl-group" id="reports" hidden><h4>${dlIcon("doc")}Calculation report</h4>
+          <div class="field"><label for="report-detail">Content</label><select id="report-detail"><option value="summary">Summary</option><option value="detailed">Detailed</option></select></div>
+          <div class="dl-row"><a class="dl" data-fmt="docx" href="#"><b>Word</b><span>.docx</span></a><a class="dl" data-fmt="pdf" href="#"><b>PDF</b><span>.pdf</span></a><a class="dl" data-fmt="xlsx" href="#"><b>Excel</b><span>.xlsx</span></a></div></div>
+        <div class="dl-group" id="drawings" hidden><h4>${dlIcon("draw")}Drawings</h4>
+          <div class="dl-row"><a class="dl" data-draw="dxf" href="#"><b>AutoCAD</b><span>.dxf</span></a><a class="dl" data-draw="crm" href="#"><b>Revit</b><span>.crm</span></a></div>
+          <a class="quiet-link dl-help" href="#" id="drawing-help">How to open the .crm in Revit</a></div>
+        <div class="dl-group" id="adsec-group" hidden><h4>${dlIcon("sets")}AdSec</h4>
+          <div class="dl-row"><a class="dl" id="sets" href="${url}/design/governing.xlsx" hidden><b>Governing sets</b><span>.xlsx</span></a><a class="dl" id="ads" href="${url}/design/adsec.zip" hidden><b>AdSec 8.3 files</b><span>.ads (zip)</span></a></div>
+          <p class="status dl-note">Pile parts, combi infill, beams and slab strips.</p></div>
+        ${Object.values(section.elements).some((e) => e.kind === "sheet_pile_wall") ? `<div class="dl-group"><h4>${dlIcon("sets")}Sheet pile wall</h4><div class="dl-row"><a class="dl" href="${url}/spw.xlsx"><b>Straining actions</b><span>.xlsx</span></a></div></div>` : ""}
+      </div>
     </div><div class="panel" id="displacements" data-free></div><div class="panel" id="deflections" data-free></div><div id="design-out"></div>`;
+  sectionBoard(document.getElementById("section-board"), section.id);
   displacementsPanel(document.getElementById("displacements"));
   deflectionsPanel(document.getElementById("deflections"));
   // Folded to their title lines until opened (kept per section).
@@ -3556,7 +3613,7 @@ function drawingHelp() {
       Visual Studio) gives a Triton button on the Add-Ins tab instead.</p>
     <p class="status">Line styles your project lacks are made by the add-in, and it lists them when it finishes. Where a Revit family type is set
       for a bar size, cut bars are placed as that detail component and bars along the view as the line-based one.</p>`;
-  document.getElementById("drawings").closest(".panel").after(box);
+  document.getElementById("downloads").after(box);
 }
 
 // One pick of elements for every download in the export row: All, or only the ticked ones
@@ -3604,7 +3661,6 @@ function wireExportPick(names, steelOnly, anyCages) {
       a.href = link(path);
       a.hidden = !bars;
     };
-    setHref("cages", "cages.json");
     setHref("ads", "adsec.zip");
     const sets = document.getElementById("sets");
     if (sets) sets.href = link("governing.xlsx");
@@ -3680,12 +3736,12 @@ function drawCards(res, full = res, withBars = full) {
   const slabs = res.slabs || [];
   // Drawings, AdSec files and bars for Revit: from the elements designed in Detailed.
   const anyCages = withBars.piles.length || (withBars.combi_walls || []).length || (withBars.beams || []).length || (withBars.slabs || []).length;
-  const link = document.getElementById("cages");
-  if (link) link.hidden = !anyCages;
   const ads = document.getElementById("ads");
   if (ads) ads.hidden = !anyCages;
   const reports = document.getElementById("reports");
   if (reports) reports.hidden = false;
+  const downloads = document.getElementById("downloads");
+  if (downloads) downloads.hidden = false;
   const sets = document.getElementById("sets");
   if (sets) sets.hidden = !anyCages && !(full.sheet_pile_walls || []).length;
   const draw = document.getElementById("drawings");
@@ -3696,6 +3752,8 @@ function drawCards(res, full = res, withBars = full) {
     .flatMap((k) => (full[k] || []).map((x) => x.element))
     .sort((a, b) => (order.indexOf(a) + 1 || 1e9) - (order.indexOf(b) + 1 || 1e9));
   wireExportPick(exported, new Set((full.sheet_pile_walls || []).map((x) => x.element)), anyCages);
+  const adsecGroup = document.getElementById("adsec-group");
+  if (adsecGroup) adsecGroup.hidden = !!(sets?.hidden && ads?.hidden);
   checkingPanel(exported, full.run_at);
   if (draw) {
     document.getElementById("drawing-help").onclick = (e) => {
@@ -4339,8 +4397,12 @@ async function renderCostingTab(host) {
   const status = document.getElementById("cost-status");
   const steelNames = p.prices.steel_elements.map((x) => x.name).filter(Boolean);
 
-  const input = (obj, key, placeholder, attrs = "") =>
-    `<input type="number" step="any" min="0" ${attrs} data-obj="${esc(obj)}" data-key="${esc(key)}" placeholder="${esc(placeholder ?? "")}">`;
+  const input = (obj, key, placeholder, attrs = "", unit = "") => {
+    const box = `<input type="number" step="any" min="0" ${attrs} data-obj="${esc(obj)}" data-key="${esc(key)}" placeholder="${esc(placeholder ?? "")}">`;
+    return unit ? `<span class="inputwrap">${box}<span class="unit">${esc(unit)}</span></span>` : box;
+  };
+  // A missing price as a short red tag; the full list is in the notes under the table.
+  const missingTag = (m) => (m.length ? `<span class="tag-missing" title="Missing: ${esc(m.join(", "))}">${m.length === 1 ? "price missing" : `${m.length} prices missing`}</span>` : "");
   const pick = (obj, key, value, none) =>
     `<select data-obj="${esc(obj)}" data-key="${esc(key)}"><option value="">${esc(none)}</option>${steelNames
       .map((n) => `<option ${n === value ? "selected" : ""}>${esc(n)}</option>`)
@@ -4350,8 +4412,10 @@ async function renderCostingTab(host) {
   // as a lump sum; the total above includes them.
   const itemsTable = (c, cs) => {
     const got = Object.fromEntries(c.rows.filter((r) => r.kind === "item").map((r) => [r.item, r]));
-    const box = (i, key, placeholder = "", attrs = "") =>
-      `<input type="number" step="any" min="0" ${attrs} data-item="${esc(c.section_id)}|${i}" data-key="${key}" placeholder="${esc(placeholder)}">`;
+    const box = (i, key, placeholder = "", attrs = "", unit = "") => {
+      const b = `<input type="number" step="any" min="0" ${attrs} data-item="${esc(c.section_id)}|${i}" data-key="${key}" placeholder="${esc(placeholder)}">`;
+      return unit ? `<span class="inputwrap">${b}<span class="unit">${esc(unit)}</span></span>` : b;
+    };
     const rows = (cs.items || [])
       .map((it, i) => {
         const r = got[i] || {};
@@ -4360,17 +4424,17 @@ async function renderCostingTab(host) {
           <td><select data-item="${esc(c.section_id)}|${i}" data-key="unit">${[["each", "each"], ["m", "per m"], ["lump", "lump sum"]]
             .map(([v, t]) => `<option value="${v}" ${it.unit === v ? "selected" : ""}>${t}</option>`)
             .join("")}</select></td>
-          <td>${box(i, "price")}</td>
-          <td>${each ? box(i, "spacing") : "–"}</td>
+          <td>${box(i, "price", "", "", cur)}</td>
+          <td>${each ? box(i, "spacing", "", "", "m") : "–"}</td>
           <td>${each ? box(i, "count", r.count_auto ?? "", 'step="1"') + (it.count != null ? `<div class="hint">Given by you${r.count_auto != null ? `; automatic ${fmt(r.count_auto)}` : ""}</div><button class="small" data-item-auto="${esc(c.section_id)}|${i}">Use automatic</button>` : "") : "–"}</td>
-          <td>${it.unit === "m" ? `${box(i, "runs", "1")}<div class="hint">lines</div>${box(i, "length", fmt(c.berth_length_m, 1))}<div class="hint">m each</div>` : "–"}</td>
-          <td class="basis">${esc(r.basis || "")}${it.price == null ? '<div class="flag-bad">No price yet</div>' : ""}</td>
+          <td>${it.unit === "m" ? `${box(i, "runs", "1", "", "lines")}${box(i, "length", fmt(c.berth_length_m, 1), "", "m each")}` : "–"}</td>
+          <td class="basis">${esc(r.basis || "")}${it.price == null ? '<span class="tag-missing">no price yet</span>' : ""}</td>
           <td>${money(r.cost)}</td><td>${money(r.cost_per_m)}</td>
           <td><button class="small quiet" data-item-drop="${esc(c.section_id)}|${i}" title="Take this item off">×</button></td></tr>`;
       })
       .join("");
     return `<h3 style="margin-top:14px">Other items</h3>
-      <div class="scroll"><table class="cost"><tr><th>Item</th><th>Priced</th><th>Unit price (${esc(cur)})</th><th>Spacing (m)</th><th>Number</th><th>Length</th><th>Basis</th><th>Cost (${esc(cur)})</th><th>Per m</th><th></th></tr>
+      <div class="scroll"><table class="cost"><tr><th>Item</th><th>Priced</th><th>Unit price</th><th>Spacing</th><th>Number</th><th>Length</th><th>Basis</th><th>Cost (${esc(cur)})</th><th>Per m</th><th></th></tr>
         ${rows}</table></div>
       <button class="small" data-item-add="${esc(c.section_id)}">Add an item</button>
       <p class="status">Spacings for fenders (20 m) and bollards (30 m) are common values, not from your drawings: change them. Items with no price are left out of the total.</p>`;
@@ -4386,7 +4450,7 @@ async function renderCostingTab(host) {
         const head = `<h2>${esc(c.section)}</h2>${staleHtml(c)}`;
         if (!c.rows.length && !c.totals)
           return `${head}<div class="panel"><p class="status">${esc(c.notes.join(" "))}</p>
-            ${c.notes[0] === "Not designed yet." ? "" : `<div class="row"><label>Berth length (m) ${input(`${c.section_id}`, "berth_length", "")}</label></div>`}</div>`;
+            ${c.notes[0] === "Not designed yet." ? "" : `<div class="row"><div class="field"><label>Berth length</label>${input(`${c.section_id}`, "berth_length", "", "", "m")}</div></div>`}</div>`;
         const rows = c.rows
           .filter((r) => r.kind !== "item")
           .map((r) => {
@@ -4398,15 +4462,15 @@ async function renderCostingTab(host) {
             const [st, inf] = r.parts || [];
             const q = st || r;
             const infillRow = inf ? `<tr><td>${esc(inf.element)}</td><td>–</td><td class="hint">As the steel</td><td class="hint">As the steel</td><td>–</td>
-              <td class="basis">${esc(inf.basis || "–")}${inf.missing.length ? `<div class="flag-bad">Missing: ${esc(inf.missing.join(", "))}</div>` : ""}</td>
+              <td class="basis">${esc(inf.basis || "–")}${missingTag(inf.missing)}</td>
               <td>${fmt(inf.concrete_m3, 1)}</td><td>${fmt(inf.rebar_t, 1)}</td><td>${fmt(inf.steel_t, 1)}</td>
               <td>${money(inf.cost)}</td><td>${money(inf.cost_per_m)}</td></tr>` : "";
             return `<tr><td>${esc(st ? st.element : r.element)}</td>
-              <td>${spaced ? input(key, "spacing", r.spacing_m != null ? fmt(r.spacing_m, 2) : "") : "–"}</td>
+              <td>${spaced ? input(key, "spacing", r.spacing_m != null ? fmt(r.spacing_m, 2) : "", "", "m") : "–"}</td>
               <td>${spaced ? input(key, "count", r.count_auto ?? r.count ?? "", 'step="1"') + (e.count != null ? `<div class="hint">Given by you${r.count_auto != null ? `; automatic ${fmt(r.count_auto)}` : ""}</div><button class="small" data-auto="${esc(key)}">Use automatic</button>` : "") : "–"}</td>
-              <td>${["approach_slab", "ledge"].includes(r.kind) ? (r.length_m != null ? fmt(r.length_m, 1) : "–") : input(key, "length", r.length_m != null ? fmt(r.length_m, 1) : "")}</td>
+              <td>${["approach_slab", "ledge"].includes(r.kind) ? (r.length_m != null ? fmt(r.length_m, 1) : "–") : input(key, "length", r.length_m != null ? fmt(r.length_m, 1) : "", "", "m")}</td>
               <td>${steel ? pick(key, "steel_element", e.steel_element, r.kind === "sheet_pile_wall" ? "Its section, else the first AZ" : "Structural steel price") : "–"}${r.kind === "combi_wall" ? `<div class="hint">Intermediate sheets</div>${pick(key, "intermediate_element", e.intermediate_element, "None")}` : ""}</td>
-              <td class="basis">${esc(q.basis)}${r.flags.map((f) => `<div class="${/above/.test(f) ? "flag-bad" : "flag-ok"}">${esc(f)}</div>`).join("")}${q.missing.length ? `<div class="flag-bad">Missing: ${esc(q.missing.join(", "))}</div>` : ""}</td>
+              <td class="basis">${esc(q.basis)}${r.flags.map((f) => `<div class="${/above/.test(f) ? "flag-bad" : "flag-ok"}">${esc(f)}</div>`).join("")}${missingTag(q.missing)}</td>
               <td>${fmt(q.concrete_m3, 1)}</td><td>${fmt(q.rebar_t, 1)}</td><td>${fmt(q.steel_t, 1)}</td>
               <td>${money(q.cost)}</td><td>${money(q.cost_per_m)}</td></tr>${infillRow}`;
           })
@@ -4414,12 +4478,12 @@ async function renderCostingTab(host) {
         const t = c.totals;
         return `${head}${costSummaryHtml(c, cur)}<div class="panel">
           <div class="row">
-            <label>Berth length (m) ${input(c.section_id, "berth_length", fmt(c.berth_length_m, 1))}</label>
-            <label>Length the model covers (m) ${input(c.section_id, "model_length", c.model_length_m != null ? fmt(c.model_length_m, 1) : "")}</label>
+            <div class="field"><label>Berth length</label>${input(c.section_id, "berth_length", fmt(c.berth_length_m, 1), "", "m")}</div>
+            <div class="field"><label>Length the model covers</label>${input(c.section_id, "model_length", c.model_length_m != null ? fmt(c.model_length_m, 1) : "", "", "m")}</div>
           </div>
           <p class="status">Empty boxes use the value shown in grey, from the design. The number follows the berth length and spacing
             as you type them; a number you give yourself stays until you press Use automatic.</p>
-          <div class="scroll"><table class="cost"><tr><th>Element</th><th>Spacing (m)</th><th>Number</th><th>Length (m)</th><th>Steel price</th><th>Basis</th>
+          <div class="scroll"><table class="cost"><tr><th>Element</th><th>Spacing</th><th>Number</th><th>Length</th><th>Steel price</th><th>Basis</th>
             <th>Concrete m³</th><th>Rebar t</th><th>Steel t</th><th>Cost (${esc(cur)})</th><th>Per m</th></tr>${rows}
             <tr class="total"><td>Total</td><td colspan="5">${fmt(c.berth_length_m, 1)} m of berth${t.complete ? "" : " (incomplete: prices missing)"}</td>
               <td>${fmt(t.concrete_m3, 1)}</td><td>${fmt(t.rebar_t, 1)}</td><td>${fmt(t.steel_t, 1)}</td><td>${money(t.cost)}</td><td>${money(c.per_m.cost)}</td></tr></table></div>
@@ -4430,7 +4494,7 @@ async function renderCostingTab(host) {
     const best = costed.filter((c) => c.totals.complete).sort((a, b) => a.per_m.cost - b.per_m.cost)[0];
     const line = (label, f) => `<tr><th>${label}</th>${costed.map((c) => `<td class="${c === best && label.startsWith("Cost per m") ? "cell ok" : ""}">${f(c)}</td>`).join("")}${costed.length > 1 ? `<td>${f(null)}</td>` : ""}</tr>`;
     const T = data.total;
-    const compare = costed.length
+    const compare = costed.length > 1
       ? `<h2>Sections side by side</h2><div class="panel scroll"><table class="compare"><tr><th></th>${costed.map((c) => `<th>${esc(c.section)}</th>`).join("")}${costed.length > 1 ? "<th>All sections</th>" : ""}</tr>
         ${line("Berth length (m)", (c) => fmt(c ? c.berth_length_m : T.berth_length_m, 1))}
         ${line(`Cost (${esc(cur)})`, (c) => money(c ? c.totals.cost : T.cost))}

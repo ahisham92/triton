@@ -2,6 +2,8 @@
 // the work (set up, design, check, cost and build) and Previous / Next tab; rows of coloured number
 // tiles; a bar split by share; and the tide levels drawn against an underside. Presentation only.
 
+import { ALL, keepPick, picked } from "./picker.js";
+
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -126,4 +128,51 @@ export function tideDiagram(levels, marks, { fmt = (v) => String(v) } = {}) {
       <text x="178" y="${my[i] - 4}" class="tide-label" fill="${TONE[m.tone] || TONE.ok}">${esc(m.label)}</text>
       <text x="178" y="${my[i] + 11}" class="tick">${m.level >= 0 ? "+" : ""}${fmt(m.level, 2)} m</text>`).join("")}
   </svg>`;
+}
+
+// Whole blocks of a tab (panels, forms) shown one page at a time, with numbered steps on top and
+// Previous / Next below, as the Design settings pages. pages: [{ title, els: [element, ...] }], all
+// already in the page and in order. The page shown is kept per `key`.
+export function pageBlocks(key, pages) {
+  pages = pages.filter((p) => p.els.length);
+  if (pages.length < 2) return;
+  const first = pages[0].els[0], last = pages[pages.length - 1].els.at(-1);
+  const top = document.createElement("div");
+  top.className = "page-steps block-steps";
+  top.dataset.free = "";
+  const bottom = document.createElement("div");
+  bottom.className = "pick-nav page-nav block-nav";
+  bottom.dataset.free = "";
+  first.before(top);
+  last.after(bottom);
+  let cur = picked(`blocks:${key}`) ?? 0;
+  if (cur !== ALL && (typeof cur !== "number" || cur < 0 || cur >= pages.length)) cur = 0;
+  const draw = () => {
+    pages.forEach((p, i) => p.els.forEach((el) => el.classList.toggle("page-off", cur !== ALL && i !== cur)));
+    top.innerHTML = pages.map((p, i) => `<button type="button" class="page-step ${i === cur ? "on" : ""}" data-i="${i}" data-free><span class="n">${i + 1}</span>${esc(p.title)}</button>`).join("")
+      + `<button type="button" class="page-step all ${cur === ALL ? "on" : ""}" data-i="${ALL}" data-free>All on one page</button>`;
+    bottom.innerHTML = cur === ALL
+      ? `<button type="button" class="quiet" data-go="0" data-free>Back to one page at a time</button>`
+      : `<button type="button" class="quiet" data-go="${cur - 1}" ${cur === 0 ? "disabled" : ""} data-free>&#9664; Previous</button>
+         <span class="status">Page ${cur + 1} of ${pages.length}: ${esc(pages[cur].title)}</span>
+         <button type="button" class="quiet" data-go="${cur + 1}" ${cur === pages.length - 1 ? "disabled" : ""} data-free>${cur < pages.length - 1 ? `Next: ${esc(pages[cur + 1].title)} &#9654;` : "Next &#9654;"}</button>`;
+    top.querySelectorAll("[data-i]").forEach((b) => (b.onclick = () => go(b.dataset.i === ALL ? ALL : +b.dataset.i)));
+    bottom.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => {
+      go(+b.dataset.go);
+      top.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }));
+  };
+  const go = (i) => {
+    cur = i;
+    keepPick(`blocks:${key}`, i);
+    draw();
+    // A map or 3D view drawn while hidden needs to size itself again.
+    window.dispatchEvent(new Event("resize"));
+  };
+  draw();
+}
+
+// One labelled field, framed like the schema forms, with its unit in a tab at the end.
+export function fieldHtml(label, control, { unit = "", hint = "", wide = false } = {}) {
+  return `<div class="field${wide ? " wide" : ""}"><label>${esc(label)}</label>${unit ? `<span class="inputwrap">${control}<span class="unit">${esc(unit)}</span></span>` : control}${hint ? `<div class="hint">${esc(hint)}</div>` : ""}</div>`;
 }

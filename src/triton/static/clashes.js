@@ -8,7 +8,7 @@ const COL = {
   pile: "#7a4696", bottom: "#7b818c", top: "#2a5fae", punch: "#008c96", link: "#9aa0aa",
   trim: "#2e8b4a", clash: "#c62828", gone: "#b8bcc4", pick: "#e08a00", concrete: "rgba(160,160,150,0.13)",
 };
-import { statTiles, passMeter, tideDiagram } from "./look.js";
+import { fieldHtml, statTiles, passMeter, tideDiagram } from "./look.js";
 import { guessKind, kindColor } from "./picker.js";
 
 const SOL_ORDER = ["set_out", "rotate", "shift", "rotate_shift", "crank", "cut_trim", "cut"];
@@ -44,24 +44,26 @@ export async function renderClashes(host, h) {
   const settingsHtml = () => {
     const s = data.settings;
     return `<details class="panel" data-free><summary>How clashes are found</summary>
-      <div class="row"><label>A clash is <select id="cl-rule">
+      <div class="fields form-grid">
+      ${fieldHtml("A clash is", `<select id="cl-rule">
         <option value="touch" ${s.rule === "touch" ? "selected" : ""}>bars that would touch (closer than the fixing tolerance)</option>
-        <option value="ec2" ${s.rule === "ec2" ? "selected" : ""}>bars closer than EN 1992-1-1 8.2(2) allows</option></select></label>
-      <label>Fixing tolerance <input id="cl-tol" type="number" min="0" max="50" step="1" value="${s.fixing_tolerance}" style="width:5em"> mm</label>
-      <label>Plaxis plates at the element's <select id="cl-plate"><option value="mid" ${s.plate_level === "mid" ? "selected" : ""}>mid-depth</option>
-        <option value="top" ${s.plate_level === "top" ? "selected" : ""}>top</option></select></label>
-      <label>Pile bars into a beam <select id="cl-beam"><option value="straight" ${s.beam_bars !== "l" ? "selected" : ""}>straight, under the top bars (as drawing SC-401)</option>
-        <option value="l" ${s.beam_bars === "l" ? "selected" : ""}>L, outwards under the top bars</option></select></label>
-      <label>Combi bars welded to the tube: fillet leg <input id="cl-leg" type="number" min="1" step="1" value="${s.weld?.leg ?? 16}" style="width:4em"> mm,
-        filler fu <input id="cl-fu" type="number" min="1" step="0.1" value="${s.weld?.filler_fu ?? 482.6}" style="width:5em"> MPa (E70XX)</label>
-      <label>Front beam clear height above the highest water <input id="cl-water" type="number" min="0" step="0.1" value="${s.water_margin ?? 0.5}" style="width:4em"> m</label>
-      <button id="cl-save">Find again</button></div>
+        <option value="ec2" ${s.rule === "ec2" ? "selected" : ""}>bars closer than EN 1992-1-1 8.2(2) allows</option></select>`, { wide: true })}
+      ${fieldHtml("Fixing tolerance", `<input id="cl-tol" type="number" min="0" max="50" step="1" value="${s.fixing_tolerance}">`, { unit: "mm" })}
+      ${fieldHtml("Plaxis plates at the element's", `<select id="cl-plate"><option value="mid" ${s.plate_level === "mid" ? "selected" : ""}>mid-depth</option>
+        <option value="top" ${s.plate_level === "top" ? "selected" : ""}>top</option></select>`)}
+      ${fieldHtml("Pile bars into a beam", `<select id="cl-beam"><option value="straight" ${s.beam_bars !== "l" ? "selected" : ""}>straight, under the top bars (as drawing SC-401)</option>
+        <option value="l" ${s.beam_bars === "l" ? "selected" : ""}>L, outwards under the top bars</option></select>`, { wide: true })}
+      ${fieldHtml("Combi bar weld: fillet leg", `<input id="cl-leg" type="number" min="1" step="1" value="${s.weld?.leg ?? 16}">`, { unit: "mm" })}
+      ${fieldHtml("Weld filler fu (E70XX)", `<input id="cl-fu" type="number" min="1" step="0.1" value="${s.weld?.filler_fu ?? 482.6}">`, { unit: "MPa" })}
+      ${fieldHtml("Front beam clear height above the highest water", `<input id="cl-water" type="number" min="0" step="0.1" value="${s.water_margin ?? 0.5}">`, { unit: "m" })}
+      </div>
+      <div class="row" style="margin-top:12px"><button id="cl-save">Find again</button></div>
       <ul class="status">${data.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul></details>`;
   };
 
   const groupsHtml = () => `<div class="panel"><h2>Connections</h2>
     ${data.standard?.length ? `<p class="status">Not checked: ${esc(data.standard.join(", "))} ${data.standard.length === 1 ? "was" : "were"} designed in Standard mode, which has no bar layout. Design ${data.standard.length === 1 ? "it" : "them"} in Detailed mode to check clashes.</p>` : ""}
-    <p class="status">${data.heads_checked} pile heads checked, ${data.heads_clear} clear. Pick a row to see its heads, drawings and solutions.</p>
+    <p class="status">Pick a row to see its heads, drawings and solutions.</p>
     <div class="scroll"><table><thead><tr><th>Pile into</th><th>Connection</th><th class="num">Heads</th><th class="num">With clashes</th>
       <th class="num">Bars overlapping</th><th class="num">Too close</th><th class="num">Punching links</th><th>Recommended</th><th>Solution to use</th></tr></thead><tbody>
     ${data.groups.map((g) => {

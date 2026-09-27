@@ -100,8 +100,8 @@ export async function renderMovedPiles(host, h) {
           <td><select data-m="${i}" data-f="which" style="min-width:14em"><option value="">The whole row (${pts.length} piles)</option>${pts
             .map(([x, y]) => `<option value="${x},${y}" ${which === `${x},${y}` ? "selected" : ""}>Pile at ${where(x, y)}</option>`)
             .join("")}</select></td>
-          <td><input type="number" step="0.1" data-m="${i}" data-f="dx" value="${m.dx}" style="width:6em"> m</td>
-          <td><input type="number" step="0.1" data-m="${i}" data-f="dy" value="${m.dy}" style="width:6em"> m</td>
+          <td><span class="inputwrap"><input type="number" step="0.1" data-m="${i}" data-f="dx" value="${m.dx}"><span class="unit">m</span></span></td>
+          <td><span class="inputwrap"><input type="number" step="0.1" data-m="${i}" data-f="dy" value="${m.dy}"><span class="unit">m</span></span></td>
           <td><button class="small quiet" data-del-move="${i}" title="Take this move off">×</button></td></tr>`;
       })
       .join("");
@@ -110,7 +110,7 @@ export async function renderMovedPiles(host, h) {
       <details style="margin-top:8px"><summary>Model</summary>
         <div class="row" style="margin-top:6px"><label>Name <input id="mv-name" value="${esc(draft.name)}" style="width:14em"></label>
         <label>Pile head stiffness × <input type="number" step="0.1" min="0.1" id="mv-k" value="${draft.stiffness_factor}" style="width:5em"></label>
-        <label>Grillage spacing <input type="number" step="0.25" min="0.25" max="2" id="mv-grid" value="${draft.grid}" style="width:5em"> m</label></div>
+        <div class="field"><label for="mv-grid">Grillage spacing</label><span class="inputwrap"><input type="number" step="0.25" min="0.25" max="2" id="mv-grid" value="${draft.grid}"><span class="unit">m</span></span></div></div>
         <p class="status">Each pile is a spring at its head of E·A / (0.5 L), L its length in the workbook, times this factor: lower it for piles that
         settle more, raise it for piles on rock. The stiffer the piles against the deck, the more a move changes their loads.</p></details>`;
   };
