@@ -2669,8 +2669,12 @@ def find_clashes(
         g["summary"] = _group_summary(g)
         out.append(g)
     out.sort(key=lambda g: (-g["count"]["clash"], -g["count"]["pairs"], g["key"]))
+    from .dwall_clashes import wall_clashes  # imports this module
+
+    walls = wall_clashes(c.ctx, c.drawing, c.ctx.results)
     return _clean(
-        {
+        ({"walls": walls} if walls else {})  # only a section with a diaphragm wall has the key
+        | {
             "run_at": c.ctx.results.get("run_at"),
             "settings": rule.model_dump(mode="json"),
             "groups": out,

@@ -3759,7 +3759,7 @@ function drawCards(res, full = res, withBars = full) {
   const beams = res.beams || [];
   const slabs = res.slabs || [];
   // Drawings, AdSec files and bars for Revit: from the elements designed in Detailed.
-  const anyCages = withBars.piles.length || (withBars.combi_walls || []).length || (withBars.beams || []).length || (withBars.slabs || []).length;
+  const anyCages = withBars.piles.length || (withBars.combi_walls || []).length || (withBars.diaphragm_walls || []).length || (withBars.beams || []).length || (withBars.slabs || []).length;
   const ads = document.getElementById("ads");
   if (ads) ads.hidden = !anyCages;
   const reports = document.getElementById("reports");

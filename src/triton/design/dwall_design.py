@@ -374,8 +374,52 @@ def _zone(ctx: _Ctx, uls: pd.DataFrame, qp: pd.DataFrame, phi_h: float) -> dict:
         },
         "M_max": round(float(m.max()), 1) if len(m) else 0.0,
         "M_min": round(float(m.min()), 1) if len(m) else 0.0,
+        "sets": {"uls": _sets(uls), "qp": _sets(qp)},
         "_uf_points": util_m,
     }
+
+
+def _row(f: pd.DataFrame, i: int, case: str) -> dict:
+    return {
+        "case": case,
+        "combination": str(f["combination"].iloc[i]),
+        "z": round(float(f["Z"].iloc[i]), 2),
+        "N_kN_per_m": round(float(f["N"].iloc[i]), 1),
+        "M_kNm_per_m": round(float(f["M"].iloc[i]), 1),
+    }
+
+
+PICKS = {
+    "max M": lambda r: r["M_kNm_per_m"],
+    "min M": lambda r: -r["M_kNm_per_m"],
+    "max N": lambda r: (r["N_kN_per_m"], abs(r["M_kNm_per_m"])),
+    "min N": lambda r: (-r["N_kN_per_m"], abs(r["M_kNm_per_m"])),
+}
+
+
+def _pick(rows: list[dict]) -> list[dict]:
+    """The sets for AdSec from ``rows``: max M (front face in tension), min M, max N and min N, each once
+    (a set that is several of them names them all)."""
+    out: dict[tuple, dict] = {}
+    for case, key in PICKS.items():
+        if not rows:
+            break
+        r = max(rows, key=key)
+        k = (r["combination"], r["z"], r["N_kN_per_m"], r["M_kNm_per_m"])
+        if k in out:
+            if case not in out[k]["case"]:
+                out[k]["case"] += f", {case}"
+        else:
+            out[k] = {**r, "case": case}
+    return list(out.values())
+
+
+def _sets(f: pd.DataFrame) -> list[dict]:
+    if f.empty:
+        return []
+    m, n = f["M"].to_numpy(float), f["N"].to_numpy(float)
+    idx = {int(np.argmax(m)), int(np.argmin(m)), int(np.argmax(n)), int(np.argmin(n))}
+    return _pick([_row(f, i, "") for i in sorted(idx)])
 
 
 def _key(z: dict) -> tuple:
@@ -398,6 +442,7 @@ def _merge(zones: list[dict]) -> list[dict]:
             merged = {**keep, "top": prev["top"], "bottom": z["bottom"]}
             merged["M_max"] = max(prev["M_max"], z["M_max"])
             merged["M_min"] = min(prev["M_min"], z["M_min"])
+            merged["sets"] = {k: _pick(prev["sets"][k] + z["sets"][k]) for k in ("uls", "qp")}
             for face in FACES:
                 merged[face] = {
                     **keep[face],
@@ -459,6 +504,15 @@ def _steel(
         "kg_per_m3": round(per_m / (ctx.h / 1000 * height), 1) if height > 0 else None,
         "total_kg": round(per_m * wall.panel_width / 1000, 1),  # one panel's cage
     }
+
+
+def _line(xy: np.ndarray) -> list[list[float]] | None:
+    """The wall's line in plan (Plaxis X, Y, m): its two ends along the longer extent of its nodes."""
+    if not len(xy):
+        return None
+    k = 0 if np.ptp(xy[:, 0]) >= np.ptp(xy[:, 1]) else 1
+    a, b = xy[int(np.argmin(xy[:, k]))], xy[int(np.argmax(xy[:, k]))]
+    return [[round(float(a[0]), 3), round(float(a[1]), 3)], [round(float(b[0]), 3), round(float(b[1]), 3)]]
 
 
 def design_diaphragm_wall(
@@ -550,6 +604,7 @@ def design_diaphragm_wall(
         )
     xy = uls[["X", "Y"]].to_numpy(float)
     length = float(max(np.ptp(xy[:, 0]), np.ptp(xy[:, 1]))) if len(xy) else 0.0
+    line = _line(xy)
     count = wall.count or max(1, math.ceil(length * 1000 / wall.panel_width - 1e-6))
     steel = _steel(ctx, wall, settings, zones, height)
     run = max(length, count * wall.panel_width / 1000)
@@ -583,6 +638,7 @@ def design_diaphragm_wall(
         "toe": round(toe, 2),
         "height": round(height, 2),
         "length_m": round(length, 2),
+        "line": line,
         "count": count,
         "points": int(len(uls)),
         "qp_points": int(len(qp)),
