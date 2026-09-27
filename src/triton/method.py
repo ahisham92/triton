@@ -28,6 +28,7 @@ from .design import (
     curtailment,
     deflection,
     ductility,
+    dwall_design,
     furniture,
     governing,
     openings,
@@ -51,6 +52,7 @@ KIND_LABEL = {
     "pile": "Piles",
     "combi_wall": "Combi wall",
     "sheet_pile_wall": "Sheet pile wall",
+    "diaphragm_wall": "Diaphragm wall",
     "slab": "Slabs",
     "front_beam": "Beams",
     "rear_beam": "Beams",
@@ -76,6 +78,11 @@ TOPICS: dict[str, list[tuple[str, Any]]] = {
     "Sheet pile wall": [
         ("Actions checked", spw_design),
         ("Section checks (EN 1993-5)", sheet_piles),
+    ],
+    "Diaphragm wall": [
+        ("Bars, shear and cracks per metre run", dwall_design),
+        ("N–M capacity of the section", rect),
+        ("Crack widths", crack),
     ],
     "Slabs": [
         ("Bars, strips, shear and punching", slabs),

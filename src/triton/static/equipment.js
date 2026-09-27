@@ -161,6 +161,7 @@ function crew(K, s, d, z, count, seed) {
 export const LABEL = {
   steel_pipes: "Crawler crane with vibro hammer",
   sheet_piles: "Crawler crane with vibro hammer",
+  diaphragm_wall: "Crawler crane with a hydraulic grab; bentonite, cage and tremie concrete",
   combi_cages: "Crawler crane lifting the cage",
   combi_infill: "Concrete pump and truck mixer",
   pile_cages: "Piling rig boring the pile",
@@ -289,10 +290,10 @@ export function plant(work, spot, t, ctx) {
   }
   if (!spot) return K;
   const { s, d, top, bottom } = spot;
-  if (work === "steel_pipes" || work === "sheet_piles") {
+  if (work === "steel_pipes" || work === "sheet_piles" || work === "diaphragm_wall") {
     const hz = top + 3.0;
     crawlerCrane(K, s, d + 12, z, s, d, hz, tip);
-    K.box(s - 0.9, s + 0.9, d - 0.9, d + 0.9, top, top + 3.0, C.steel, "Vibro hammer on the pile");
+    K.box(s - 0.9, s + 0.9, d - 0.9, d + 0.9, top, top + 3.0, C.steel, work === "diaphragm_wall" ? "Hydraulic grab over the panel" : "Vibro hammer on the pile");
     crew(K, s, d + 5, z, 3, 0);
   } else if (work === "combi_cages" || (work === "pile_cages" && spot.phase === "cage")) {
     const hz = top + 12;

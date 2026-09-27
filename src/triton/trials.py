@@ -677,9 +677,9 @@ def variant_section(section: Section, variant: dict[str, Any]) -> Section:
 def _designable(section: Section, project: Project | None = None) -> list[str]:
     """Every element the Design tab designs, in its order (a sheet pile wall only when defined), and the
     project's approach slab last."""
-    from .project import CombiWallInput, SheetPileInput
+    from .project import CombiWallInput, DiaphragmWallInput, SheetPileInput
 
-    order = (PileInput, CombiWallInput, SheetPileInput, BeamInput, SlabInput)
+    order = (PileInput, CombiWallInput, SheetPileInput, DiaphragmWallInput, BeamInput, SlabInput)
     out = [n for t in order for n, e in section.elements.items() if isinstance(e, t)]
     return out + ([fresh.APPROACH] if project is not None and project.approach is not None else [])
 
@@ -706,7 +706,15 @@ def _save_scenarios(d: Path, data: dict[str, Any], which: str) -> None:
     tmp.replace(_scenario_file(d, which))
 
 
-DESIGN_KINDS = ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs")
+DESIGN_KINDS = (
+    "piles",
+    "combi_walls",
+    "sheet_pile_walls",
+    "diaphragm_walls",
+    "beams",
+    "slabs",
+    "approach_slabs",
+)
 
 
 def run_scenarios(
@@ -798,7 +806,7 @@ def _mark_no_results(d: Path, key: str) -> None:
 
 
 def design_kind(element: Any) -> str:
-    from .project import CombiWallInput, SheetPileInput
+    from .project import CombiWallInput, DiaphragmWallInput, SheetPileInput
 
     if element is None:
         return "approach_slabs"
@@ -806,6 +814,8 @@ def design_kind(element: Any) -> str:
         return "combi_walls"
     if isinstance(element, SheetPileInput):
         return "sheet_pile_walls"
+    if isinstance(element, DiaphragmWallInput):
+        return "diaphragm_walls"
     return kind_of(element)
 
 
@@ -813,6 +823,13 @@ def _element_summary(kind: str, design: dict[str, Any]) -> dict[str, Any]:
     if kind == "sheet_pile_walls":
         uf = (design.get("design") or {}).get("uf")
         return {"utilisation": uf, "passed": uf is not None and uf <= 1}
+    if kind == "diaphragm_walls":
+        st = design.get("steel") or {}
+        return {
+            "utilisation": design.get("utilisation"),
+            "passed": bool(design.get("passed")),
+            "kg_per_m3": st.get("kg_per_m3"),
+        }
     if kind == "combi_walls":
         from .design.combi import parts
 

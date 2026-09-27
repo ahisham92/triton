@@ -248,6 +248,14 @@ const spwArt = (e) => svg(620, 120, defs + `<path d="M10 70 l30 -40 h50 l30 40 h
   <text x="10" y="100" class="pa-s">${esc(e.section_name)} · steel ${esc(e.steel || "project grade")} · class ${esc(e.class_from)}</text>
   <text x="10" y="116" class="pa-s">top level ${e.top_level == null ? "not set" : `${n(e.top_level, 2)} m`} · buckling length ${e.buckling_length == null ? "0.7 L (assumed)" : `${n(e.buckling_length, 2)} m`} · shear from ${esc(e.shear)}</text>`, "Sheet pile profile");
 
+const dwallArt = (e) => svg(620, 130, defs + `<rect x="40" y="14" width="46" height="104" fill="${C.concrete || "#b9c0c9"}" fill-opacity=".45" stroke="#5b6b7f" stroke-width="2"/>
+  <path d="M50 18v96M76 18v96" stroke="#5b6b7f" stroke-width="2"/><path d="M44 30h38M44 50h38M44 70h38M44 90h38M44 110h38" stroke="#5b6b7f" stroke-width="1" stroke-dasharray="3 2"/>
+  <text x="20" y="10" class="pa-s">land</text><text x="92" y="10" class="pa-s">sea</text>
+  <text x="120" y="34" class="pa-t">Diaphragm wall ${n(e.thickness)} mm thick</text>
+  <text x="120" y="54" class="pa-s">panels ${n(e.panel_width)} mm long · cover ${e.cover == null ? "project pile cover" : `${n(e.cover)} mm`} · ${esc(e.concrete || "project concrete")}</text>
+  <text x="120" y="74" class="pa-s">vertical bars both faces, horizontal bars outside them, links where the shear needs them</text>
+  <text x="120" y="94" class="pa-s">top level ${e.top_level == null ? "not set" : `${n(e.top_level, 2)} m`} · crack limits ${n(e.crack_width_limit, 2)} front / ${n(e.crack_width_limit_back, 2)} back mm</text>`, "Diaphragm wall section");
+
 const BEAM_PAGES = [
   { title: "Size and cover", keys: ["width", "depth", "cover", "link_diameter", "concrete"], intro: "The beam's cross-section, its concrete and cover. Empty values use the project's.", art: beamArt },
   { title: "Cracking", keys: ["crack_width_limit", "crack_width_limit_bottom", "joint_spacing", "restraint_factor"], intro: "Crack width limits on each face and the restraint check along the beam." },
@@ -269,6 +277,11 @@ export const ELEMENT_PAGES = {
     { title: "Tube", keys: ["tube_diameter", "tube_thickness", "steel", "tube_fy", "corrosion_loss", "corrosion_zones", "fabrication_class", "count"], intro: "The steel king pile and the steel lost to corrosion.", art: combiArt },
     { title: "Concrete infill", keys: ["concrete", "concrete_bottom_level", "cover", "link_diameter", "bar_count", "top_level_to_ignore"], intro: "The reinforced concrete inside the tube, down to its bottom level." },
     { title: "Checks", keys: ["tube_share", "tube_check", "buckling_length_factor", "firm_soil_level", "column_ei", "buckling_curve"], intro: "How the actions are shared and how the tube is checked for buckling." },
+  ],
+  diaphragm_wall: [
+    { title: "Size and concrete", keys: ["thickness", "panel_width", "concrete", "cover", "top_level", "count"], intro: "The wall panel, its concrete and cover. Empty values use the project's.", art: dwallArt },
+    { title: "Bars", keys: ["vertical_spacings", "horizontal_spacings", "max_layers", "min_zone_length", "link_diameter"], intro: "The spacings Triton may choose from, and how often the vertical bars may change down the wall." },
+    { title: "Faces and cracking", keys: ["front_face", "shear", "crack_width_limit", "crack_width_limit_back"], intro: "Which Plaxis moment sign puts the sea face in tension, and the crack limits of each face." },
   ],
   sheet_pile_wall: [
     { title: "Section and steel", keys: ["section_name", "steel", "class_from", "use_wel_only", "flange_width", "web_angle", "welded_interlocks"], intro: "The sheet pile section and how its class is found.", art: spwArt },

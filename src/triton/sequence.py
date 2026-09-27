@@ -23,6 +23,7 @@ from .furniture import for_section
 from .project import (
     BeamInput,
     CombiWallInput,
+    DiaphragmWallInput,
     PileInput,
     Project,
     Section,
@@ -38,6 +39,7 @@ NAMES = {
     "combi_cages": "Place the cages in the pipes",
     "combi_infill": "Cast the combi wall's concrete infill",
     "sheet_piles": "Drive the sheet piles",
+    "diaphragm_wall": "Excavate the diaphragm wall panels under bentonite, lower the cages and concrete them",
     "demolition": "Demolish the existing front beam and slab",
     "pile_cages": "Bore the piles and place their cages",
     "pile_concrete": "Cast the piles, {above} m above the cut-off level",
@@ -64,6 +66,7 @@ BUILDS = {
     "combi_cages": ("combi_wall", "cage"),
     "combi_infill": ("combi_wall", "done"),
     "sheet_piles": ("sheet_pile_wall", "done"),
+    "diaphragm_wall": ("diaphragm_wall", "done"),
     "pile_cages": ("pile", "cage"),
     "pile_concrete": ("pile", "cast_high"),
     "pile_heads": ("pile", "done"),
@@ -98,7 +101,7 @@ def furniture_works(project: Project, section: Section) -> list[str]:
 
 
 def _kind(el: Any) -> str | None:
-    if isinstance(el, PileInput | CombiWallInput | SheetPileInput | SlabInput):
+    if isinstance(el, PileInput | CombiWallInput | SheetPileInput | DiaphragmWallInput | SlabInput):
         return el.kind
     if isinstance(el, BeamInput):
         return el.kind
@@ -114,6 +117,7 @@ def default_steps(project: Project, section: Section) -> list[SequenceStep]:
         ("combi_cages", False),
         ("combi_infill", False),
         ("sheet_piles", False),
+        ("diaphragm_wall", False),
         ("demolition", False),
         ("pile_cages", False),
         ("pile_concrete", False),

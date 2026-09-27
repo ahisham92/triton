@@ -3,6 +3,7 @@ import { GAP_WHY, View3D, directionArrows, heat } from "./view3d.js";
 import { costValues, rebarBands } from "./heat3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 import { spwCard } from "./spw.js";
+import { dwallCard } from "./dwall.js";
 import { renderTrials } from "./trials.js";
 import { renderValueEngineering } from "./ve.js";
 import { renderClashes } from "./clashes.js";
@@ -1106,7 +1107,7 @@ function prettyOption(o) {
   return map[o] || o;
 }
 
-const KIND_LABEL = { pile: "Pile", combi_wall: "Combi wall", sheet_pile_wall: "Sheet pile wall", slab: "Slab",
+const KIND_LABEL = { pile: "Pile", combi_wall: "Combi wall", sheet_pile_wall: "Sheet pile wall", diaphragm_wall: "Diaphragm wall", slab: "Slab",
   front_beam: "Front beam", rear_beam: "Rear beam", transverse_beam: "Transverse beam" };
 
 // ---------------------------------------------------------------- sections tab
@@ -2937,7 +2938,7 @@ const DESIGNED = new Set(["pile", "combi_wall", "front_beam", "rear_beam", "tran
 
 // What the Design tab can design: every pile, combi wall, beam and slab, and the sheet pile wall's
 // governing sets.
-const DESIGN_ORDER = { pile: 0, combi_wall: 0, sheet_pile_wall: 1, front_beam: 2, rear_beam: 2, transverse_beam: 2, slab: 3 };
+const DESIGN_ORDER = { pile: 0, combi_wall: 0, sheet_pile_wall: 1, diaphragm_wall: 1, front_beam: 2, rear_beam: 2, transverse_beam: 2, slab: 3 };
 const designUnits = (section, project = state?.project) =>
   Object.entries(section.elements)
     .filter(([, e]) => e.kind in DESIGN_ORDER)
@@ -3127,7 +3128,7 @@ async function renderDesignTab(host) {
     const job = designJob(section, picked, (res, done) => {
       if (!document.body.contains(out)) return;
       const view = { ...res };
-      for (const k of ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"]) view[k] = (res[k] || []).filter((e) => done.has(e.element));
+      for (const k of ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "diaphragm_walls", "approach_slabs"]) view[k] = (res[k] || []).filter((e) => done.has(e.element));
       view.stale = [];
       view.changed = [];
       drawResults(view);
@@ -3273,7 +3274,7 @@ async function designJob(section, chosen, onResults, mode = "detailed", pid = st
       // Not sent again after Stop, even when the host cut the request off.
       const first = !res;
       res = await again(() => (job.stopped ? Promise.reject(new Error("Stopped.")) : api(`${url}/design`, { method: "POST", body: JSON.stringify({ elements: ask, budget_s: 3, mode, run: WINDOW_ID, changed_only: changedOnly && !ask }) })));
-      const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"].flatMap((k) => res[k] || []);
+      const all = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "diaphragm_walls", "approach_slabs"].flatMap((k) => res[k] || []);
       if (first && changedOnly && !ask) {
         // The elements that did not change keep their results: listed as kept, safe or not.
         const taken = new Set([...res.designed, ...res.left]);
@@ -3576,7 +3577,7 @@ const fmt = (v, d = 0) => (v == null || !isFinite(v) ? "–" : (Math.abs(v) < 0.
 function renderResults(full) {
   const out = document.getElementById("design-out");
   if (!out) return;
-  const kinds = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"];
+  const kinds = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "diaphragm_walls", "approach_slabs"];
   const names = [...new Set(kinds.flatMap((k) => (full[k] || []).map((e) => e.element)))]; // a corner berth's parts: once
   state.designShow ??= {};
   let shown = (state.designShow[sec().id] || []).filter((n) => names.includes(n));
@@ -3700,7 +3701,7 @@ function wireExportPick(names, steelOnly, anyCages) {
 // Standard design: the full design (bars, cages, every check) without drawings, AdSec files and
 // clash checks. Its elements get their cards as usual and an overview table on top; the drawing,
 // AdSec and bar downloads are for the Detailed ones.
-const RESULT_KINDS = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs"];
+const RESULT_KINDS = ["piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "diaphragm_walls", "approach_slabs"];
 const isStandard = (e) => e?.design_mode === "standard";
 const withoutStandard = (r) => {
   const out = { ...r };
@@ -3754,6 +3755,7 @@ function drawCards(res, full = res, withBars = full) {
   const out = document.getElementById("design-out");
   const walls = res.combi_walls || [];
   const spws = res.sheet_pile_walls || [];
+  const dwalls = res.diaphragm_walls || [];
   const beams = res.beams || [];
   const slabs = res.slabs || [];
   // Drawings, AdSec files and bars for Revit: from the elements designed in Detailed.
@@ -3770,7 +3772,7 @@ function drawCards(res, full = res, withBars = full) {
   if (draw) draw.hidden = !anyCages;
   // In the order of the Design row's tick boxes.
   const order = designUnits(sec());
-  const exported = ["piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs"]
+  const exported = ["piles", "combi_walls", "sheet_pile_walls", "diaphragm_walls", "beams", "slabs", "approach_slabs"]
     .flatMap((k) => (full[k] || []).map((x) => x.element))
     .sort((a, b) => (order.indexOf(a) + 1 || 1e9) - (order.indexOf(b) + 1 || 1e9));
   wireExportPick(exported, new Set((full.sheet_pile_walls || []).map((x) => x.element)), anyCages);
@@ -3817,6 +3819,7 @@ function drawCards(res, full = res, withBars = full) {
     <div id="beam-cards"></div>
     ${slabs.length ? "<h2>Slab</h2>" : ""}<div id="slab-cards"></div>
     ${spws.length ? `<h2>Sheet pile wall</h2><div id="spw-cards"></div>` : ""}
+    ${dwalls.length ? `<h2>Diaphragm wall</h2><div id="dwall-cards"></div>` : ""}
     ${(res.approach_slabs || []).length ? `<h2>Approach slab and ledge</h2><div id="approach-cards"></div>` : ""}`;
   // One card that cannot be drawn shows why in its place; the others and the tiles still show.
   const put = (box, x, make) => {
@@ -3833,6 +3836,7 @@ function drawCards(res, full = res, withBars = full) {
   };
   for (const a of res.approach_slabs || []) put(document.getElementById("approach-cards"), a, (x) => approachCard(x, { esc, fmt }));
   for (const w of spws) put(document.getElementById("spw-cards"), w, spwWithSets);
+  for (const w of dwalls) put(document.getElementById("dwall-cards"), w, (x) => dwallCard(x, { fmt, esc, frame, showTip, v3dSlot }));
   const cards = document.getElementById("pile-cards");
   for (const p of res.piles) put(cards, p, pileCard);
   const combi = document.getElementById("combi-cards");
@@ -3848,7 +3852,7 @@ function drawCards(res, full = res, withBars = full) {
 // The results one element at a time: tiles coloured safe / near the limit / unsafe, Previous / Next
 // and a list to jump to one; "Show all" gives the whole page with the summary tables.
 function pickResults(res, out) {
-  const cards = [...out.querySelectorAll("#pile-cards > .panel, #combi-cards > .panel, #beam-cards > .panel, #slab-cards > .panel, #spw-cards > .panel, #approach-cards > .panel")]
+  const cards = [...out.querySelectorAll("#pile-cards > .panel, #combi-cards > .panel, #beam-cards > .panel, #slab-cards > .panel, #spw-cards > .panel, #dwall-cards > .panel, #approach-cards > .panel")]
     .map((card) => {
       const h = card.querySelector(".element-head h3") || card.querySelector("h3");
       const name = h ? [...h.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join("").trim() : "";
@@ -3862,7 +3866,7 @@ function pickResults(res, out) {
     const lvl = a.level === "safe" ? null : a.level;
     for (const n of String(a.el || a.name).split(", ")) if (lvl && (rank[lvl] > (rank[worst[n]] || 0))) worst[n] = lvl;
   }
-  const all = [...(res.piles || []), ...(res.combi_walls || []), ...(res.beams || []), ...(res.slabs || []), ...(res.sheet_pile_walls || []), ...(res.approach_slabs || [])];
+  const all = [...(res.piles || []), ...(res.combi_walls || []), ...(res.beams || []), ...(res.slabs || []), ...(res.sheet_pile_walls || []), ...(res.diaphragm_walls || []), ...(res.approach_slabs || [])];
   const util = (x) => {
     if (!x) return undefined;
     if (x.design) return x.design.uf ?? null;
@@ -4171,6 +4175,8 @@ function resultBands(res) {
     }
     bands[w.element] = [...by].map(([z, u]) => [0, 0, z, u]);
   }
+  // A diaphragm wall: each zone's Uf over its levels.
+  for (const w of res?.diaphragm_walls || []) bands[w.element] = (w.design?.zones || []).flatMap((z) => [[0, 0, z.top, z.uf], [0, 0, z.bottom, z.uf]]);
   return bands;
 }
 
@@ -4205,6 +4211,8 @@ function combiParts(w) {
     { element: combiPart(w.element, "steel"), part: "steel", utilisation: w.tube?.utilisation, passed: !!w.tube?.passed, governs: w.tube?.governing?.check || "", d: w.tube },
   ];
 }
+
+const DWALL_CHECK = { bending: "bending with N", shear: "shear", crack_front: "front face crack width", crack_back: "back face crack width" };
 
 function alerts(res) {
   // Unsafe first, then close to the limit, then very safe.
@@ -4259,6 +4267,16 @@ function alerts(res) {
     else if (d.uf >= 0.95) add("limit", w.element, `${d.section}: ${why}, close to the limit`);
     else if (d.uf < 0.5) add("safe", w.element, `${d.section}: Uf ${utilText(d.uf)}, very safe, a lighter section may do`);
     if (d.adjusted && !d.as_plaxis.ok) add("limit", w.element, `safe only with N or Q left out: with every Plaxis action Uf is ${utilText(d.as_plaxis.uf)}`);
+  }
+  for (const w of res.diaphragm_walls || []) {
+    const d = w.design;
+    if (!d) continue;
+    const g = d.governing;
+    const why = `${DWALL_CHECK[g.governs] || g.governs} Uf ${utilText(d.uf)} (${fmt(g.zone[0], 2)} to ${fmt(g.zone[1], 2)} m)`;
+    if (d.uf > 1) add("unsafe", w.element, why);
+    else if (d.uf >= 0.95) add("limit", w.element, `${why}, close to the limit`);
+    else if (d.uf < 0.5) add("safe", w.element, `Uf ${utilText(d.uf)}: very safe, a thinner wall may do`);
+    if (d.top_level_set === false) add("limit", w.element, "no top level set, so results inside the capping beam are included: set it on the Elements tab");
   }
   for (const b of res.beams || []) {
     const at2 = (g) => (g?.combination ? ` (${g.combination}, at ${fmt(g.s, 1)} m)` : "");
@@ -4735,6 +4753,7 @@ async function renderView3dTab(host) {
   for (const b of res?.beams || []) max[b.key || b.element] = b.utilisation;
   for (const d of res?.slabs || []) max[d.key || d.element] = d.utilisation;
   for (const w of res?.sheet_pile_walls || []) if (w.design?.uf != null) max[w.element] = w.design.uf;
+  for (const w of res?.diaphragm_walls || []) if (w.design?.uf != null) max[w.element] = w.design.uf;
   let selected = state.pick3d && geo.elements.some((e) => e.element === state.pick3d) ? state.pick3d : null;
   state.pick3d = null;
   const show = () => {

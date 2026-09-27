@@ -101,6 +101,11 @@ def checks(kind: str, entry: dict[str, Any]) -> list[dict[str, Any]]:
         tube = entry.get("tube") or {}
         found = [_check("Steel tube (EN 1993)", tube.get("utilisation"), tube.get("passed"))]
         found += _pile(entry.get("infill") or {}, "Concrete infill: ")
+    elif kind == "diaphragm_walls":
+        from .dwall_design import CHECK_TITLES
+
+        u = (entry.get("design") or {}).get("utilisation") or {}
+        found = [_check(CHECK_TITLES.get(k, k), v, v <= 1 + 1e-9) for k, v in u.items()]
     elif kind == "beams":
         found = _beam(entry)
     elif kind == "slabs":

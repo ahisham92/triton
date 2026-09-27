@@ -1582,7 +1582,15 @@ def design_all_state(project_id: str) -> dict:
 def design_status(project_id: str) -> list[dict]:
     """Each section at a glance for the Design tab: designed or not, when, and what is out of date."""
     project = _get(project_id)
-    kinds = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
+    kinds = (
+        "piles",
+        "combi_walls",
+        "beams",
+        "slabs",
+        "sheet_pile_walls",
+        "diaphragm_walls",
+        "approach_slabs",
+    )
     out = []
     for section in project.sections:
         row = {

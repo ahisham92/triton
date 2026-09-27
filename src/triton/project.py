@@ -969,6 +969,86 @@ class SheetPileInput(_Model):
         return self
 
 
+class DiaphragmWallInput(_ConcreteSection):
+    """A reinforced concrete diaphragm wall as the front wall: a vertical plate in Plaxis (like the sheet
+    pile wall), designed per metre run with vertical bars on both faces, horizontal bars, shear links and
+    QP crack widths (EN 1992-1-1)."""
+
+    kind: Literal["diaphragm_wall"] = "diaphragm_wall"
+    thickness: float = _mm(
+        "Wall thickness", 1000.0, gt=0, description="The grab (panel) width across the wall."
+    )
+    panel_width: float = _mm(
+        "Panel length along the berth",
+        2800.0,
+        gt=0,
+        description="One grab bite; sets the bars per cage, the cage weights and the panels in the costing.",
+    )
+    cover: float | None = _mm(
+        "Cover to the outer bars",
+        None,
+        gt=0,
+        description="Empty: the project's pile cover (75 mm), cast against soil under bentonite.",
+    )
+    top_level: float | None = _m(
+        "Top level of the wall (capping beam soffit)",
+        None,
+        description="Results more than the distance set in Design settings (default 10 cm) above it are "
+        "inside the capping beam and ignored. Empty: every result is used.",
+    )
+    crack_width_limit: float = _mm(
+        "Crack width limit wk (QP), front (sea) face", 0.2, gt=0, le=0.5, description="0.2 mm as BS 6349."
+    )
+    crack_width_limit_back: float = _mm("Crack width limit wk (QP), back (soil) face", 0.2, gt=0, le=0.5)
+    front_face: Literal["auto", "positive", "negative"] = Field(
+        "auto",
+        title="Front (sea) face is in tension under",
+        description="auto: the sign of the largest M_11, as a wall retaining soil bends towards the sea "
+        "in its span. positive / negative: M_11 of that sign puts the front face in tension.",
+    )
+    shear: Literal["Q_13", "Q_23"] = Field(
+        "Q_13", title="Shear", description="Q_13: the shear of the vertical bending (M_11)."
+    )
+    vertical_spacings: list[float] = Field(
+        default_factory=lambda: [100.0, 125.0, 150.0, 200.0],
+        title="Vertical bar spacings",
+        json_schema_extra={"unit": "mm"},
+        description="Centre to centre on each face; bars in a second layer sit behind the first.",
+    )
+    horizontal_spacings: list[float] = Field(
+        default_factory=lambda: [150.0, 200.0, 250.0],
+        title="Horizontal bar spacings",
+        json_schema_extra={"unit": "mm"},
+    )
+    max_layers: int = Field(2, title="Most vertical bar layers per face", ge=1, le=3)
+    min_zone_length: float = _m(
+        "Shortest zone of vertical bars",
+        3.0,
+        gt=0,
+        description="The bars change no more often down the wall.",
+    )
+    link_diameter: float = _mm(
+        "Smallest link diameter",
+        12.0,
+        gt=0,
+        description="Links where the shear needs them: from this size up, the first that carries it.",
+    )
+    count: int | None = Field(
+        None,
+        title="Number of panels",
+        ge=1,
+        description="Panels in the section. Empty: the wall's length in the workbook over the panel length.",
+    )
+
+    @model_validator(mode="after")
+    def _sizes(self) -> DiaphragmWallInput:
+        if not self.vertical_spacings or not self.horizontal_spacings:
+            raise ValueError("Give at least one vertical and one horizontal bar spacing.")
+        if any(s <= 0 for s in self.vertical_spacings + self.horizontal_spacings):
+            raise ValueError("Bar spacings must be positive.")
+        return self
+
+
 class SlabMesh(_Model):
     diameter: int = Field(16, title="Bar diameter", json_schema_extra={"unit": "mm"})
     spacing: float = _mm("Spacing", 150.0, gt=0)
@@ -1538,7 +1618,7 @@ class BeamInput(_ConcreteSection):
 
 
 ElementInput = Annotated[
-    PileInput | CombiWallInput | SheetPileInput | SlabInput | BeamInput,
+    PileInput | CombiWallInput | SheetPileInput | DiaphragmWallInput | SlabInput | BeamInput,
     Field(discriminator="kind"),
 ]
 
@@ -1546,6 +1626,7 @@ _KIND_FOR_TYPE = {
     ElementType.PILE: PileInput,
     ElementType.COMBI_WALL: CombiWallInput,
     ElementType.SHEET_PILE_WALL: SheetPileInput,
+    ElementType.DIAPHRAGM_WALL: DiaphragmWallInput,
     ElementType.SLAB: SlabInput,
     ElementType.FRONT_BEAM: BeamInput,
     ElementType.REAR_BEAM: BeamInput,
@@ -1575,6 +1656,8 @@ def with_project_grades(element: Any, materials: Materials, durability: Durabili
             update["cover_bottom"] = _or(element.cover_bottom, cv.slab_bottom)
         elif isinstance(element, BeamInput):
             update["cover"] = _or(element.cover, cv.beams)
+        elif isinstance(element, DiaphragmWallInput):
+            update["cover"] = _or(element.cover, cv.piles)
         casing = getattr(element, "casing", None)
         if casing is not None:
             update["casing"] = casing.model_copy(
@@ -1686,11 +1769,19 @@ class Prices(_Model):
         description="Empty: the beam concrete price.",
         json_schema_extra={"unit": "per m³"},
     )
+    concrete_diaphragm_wall: float | None = Field(
+        None,
+        title="Diaphragm wall, excavated and concreted",
+        ge=0,
+        description="Grab excavation under bentonite and tremie concrete. Empty: the beam concrete price.",
+        json_schema_extra={"unit": "per m³"},
+    )
     rebar: float | None = Field(
         None,
         title="Reinforcement",
         ge=0,
-        description="Slab, beams, combi infill, and pile reinforcement above what the pile price includes.",
+        description="Slab, beams, combi infill, diaphragm wall, and pile reinforcement above what the "
+        "pile price includes.",
         json_schema_extra={"unit": "per t"},
     )
     steel: float | None = Field(
@@ -2066,8 +2157,8 @@ class SheetMapping(_Model):
         if not self.ignore:
             if element_spec(self.element) is None:
                 raise ValueError(
-                    f"'{self.element}' is not an element Triton knows: use Pile(n), Combi Wall, SPW, Deck, "
-                    "Front Beam, Rear Beam or Transverse Beam."
+                    f"'{self.element}' is not an element Triton knows: use Pile(n), Combi Wall, SPW, D-Wall, "
+                    "Deck, Front Beam, Rear Beam or Transverse Beam."
                 )
             if not self.combination.strip():
                 raise ValueError("Give the sheet's combination, e.g. PT-B-Apron or QP.")
@@ -2554,6 +2645,7 @@ SEQUENCE_WORKS = (
     "combi_cages",
     "combi_infill",
     "sheet_piles",
+    "diaphragm_wall",
     "demolition",
     "pile_cages",
     "pile_concrete",

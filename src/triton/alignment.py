@@ -91,6 +91,9 @@ class Part:
 
 # --- Finding the alignment ------------------------------------------------------------------------
 
+# Vertical plates: drawn whole, never part by part.
+WALL_PLATES = ("sheet_pile_wall", "diaphragm_wall")
+
 
 def _line(p: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     """Total least squares line through points: centre, unit direction, sum of squared offsets."""
@@ -592,7 +595,7 @@ def plan_geometry(
         from .geometry import elements_geometry
 
         for g in elements_geometry(part_elements(elements, parts, part, axes)):
-            if "box" not in g or g.get("type") == "sheet_pile_wall":
+            if "box" not in g or g.get("type") in WALL_PLATES:
                 continue
             key = f"{g['element']} · {part.name}" if len(parts) > 1 else g["element"]
             entry = {**g, "key": key, "part": part.name}
@@ -601,7 +604,7 @@ def plan_geometry(
             boxes.setdefault(g["element"], []).append(entry)
     out = []
     for g in geometry:
-        out.extend(boxes.get(g["element"], [g]) if "box" in g and g.get("type") != "sheet_pile_wall" else [g])
+        out.extend(boxes.get(g["element"], [g]) if "box" in g and g.get("type") not in WALL_PLATES else [g])
     return out
 
 
