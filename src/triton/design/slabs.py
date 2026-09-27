@@ -759,82 +759,64 @@ def row_ductility(
         r["ductility"] = dct
 
 
-def fits_between(phi_a: float, mesh_phi: float, mesh_spacing: float, settings: DesignSettings) -> bool:
-    """Whether bars of Ø ``phi_a`` fit halfway between mesh bars with the clear spacing of EC2 8.2(2)."""
-    clear = max(settings.reinforcement.slab_min_clear_spacing, phi_a, mesh_phi)
-    return mesh_spacing / 2 - (phi_a + mesh_phi) / 2 >= clear - 1e-9
+def additional_label(phi: float, s: float, k: int, last: float) -> str:
+    """'Ø32 @ 150 in L1', 'Ø32 @ 150 in L1 to L3', 'Ø32 @ 150 in L1 + Ø32 @ 300 in L2'."""
+    if k == 1:
+        return f"Ø{phi:g} @ {last:g} in L1"
+    if last == s:
+        return f"Ø{phi:g} @ {s:g} in L1 to L{k}"
+    full = f"Ø{phi:g} @ {s:g} in L1" + (f" to L{k - 1}" if k > 2 else "")
+    return f"{full} + Ø{phi:g} @ {last:g} in L{k}"
 
 
 def additional_options(
-    mesh: tuple, settings: DesignSettings, room: float | None = None
+    mesh: tuple, settings: DesignSettings, room: float | None = None, cover: float | None = None
 ) -> tuple[list, list, list, list]:
     """The mesh alone, then the mesh with additional bars, least steel first.
 
-    Additional bars go between the mesh bars: in every second gap, in every gap, in every gap in two
-    layers, also behind the mesh bars (three per gap, two layers), or in every gap in 3, 4, ... layers,
-    as many as the design needs (Maximum bar layers is for beams and slab meshes). Layer 2 is inside
-    layer 1: above the bottom mesh, below the top mesh. ``room`` (mm) is how deep the layers may reach
-    from the face (to mid-depth); without it the additional bars stop at 3 layers. For crack widths the
-    mix has the equivalent Ø of 7.12 and the largest gap between tension bars. Returns (options as
-    (mm²/m, Ø, spacing, layers), Ø setting the depth, labels, bar layers): the bar layers are the
-    additional bars as [(Ø, spacing)] per layer, the first between the mesh bars.
+    The mesh stays as it is (Ø @ 150 stays @ 150): no bars go between its bars. Additional bars are
+    layers of their own inside the mesh (above the bottom mesh, below the top mesh), each behind the
+    mesh bars: L1 at the mesh spacing or twice it, then L2, L3... at the mesh spacing, the last one
+    maybe at twice it, as many as the design needs (Maximum bar layers is for beams and slab meshes)
+    while the stack stays on its side of mid-depth (``room``, mm from the face; without it 3 layers at
+    most). With the ``cover`` each option carries its centroid from the face, which sets its d. For
+    crack widths the mix has the equivalent Ø of 7.12 and the mesh spacing as the gap. Returns (options
+    as (mm²/m, Ø, spacing, layers[, centroid]), Ø setting the depth, labels, bar layers): the bar layers
+    are [None (mesh level), (Ø, spacing) of L1, of L2, ...].
     """
     area, phi_b, s_b, layers_b = mesh
-    n_b = layers_b * 1000 / s_b
-    least = settings.reinforcement.slab_min_bar_spacing
+    r = settings.reinforcement
+    least = r.slab_min_bar_spacing
     out = [(mesh, phi_b, label(mesh), [])]
-    for phi_a in settings.reinforcement.bar_diameters:
-        if phi_a < 10 or not fits_between(phi_a, phi_b, s_b, settings):
+    for phi_a in r.bar_diameters:
+        if phi_a < 10 or s_b - phi_a < max(r.slab_min_clear_spacing, phi_a) - 1e-9:
             continue
-        choices = [
-            (1000 / s_b, s_b / 2, layers_b, f"Ø{phi_a} @ {s_b:g}", [(phi_a, s_b)]),
-            (1000 / (2 * s_b), s_b, layers_b, f"Ø{phi_a} @ {2 * s_b:g}", [(phi_a, 2 * s_b)]),
-            (
-                2000 / s_b,
-                s_b / 2,
-                max(layers_b, 2),
-                f"Ø{phi_a} @ {s_b:g} in 2 layers",
-                [(phi_a, s_b), (phi_a, s_b)],
-            ),
-            (
-                3000 / s_b,
-                s_b / 2,
-                max(layers_b, 2),
-                f"Ø{phi_a} @ {s_b:g} in 2 layers + Ø{phi_a} behind the mesh bars",
-                [(phi_a, s_b), (phi_a, s_b / 2)],
-            ),
-        ]
-        # More layers in every gap, while the stack stays on its side of mid-depth.
         big = max(phi_a, phi_b)
         pitch = big + max(25.0, big)
-        k = 3
-        while k <= (3 if room is None else 12) and (room is None or big + (k - 1) * pitch <= room + 1e-9):
-            choices.append(
-                (
-                    k * 1000 / s_b,
-                    s_b / 2,
-                    max(layers_b, k),
-                    f"Ø{phi_a} @ {s_b:g} in {k} layers",
-                    [(phi_a, s_b)] * k,
-                )
-            )
-            k += 1
-        if least is not None:
-            # The user's least spacing of additional bars: no set closer than it (no bars @ 75 behind
-            # the mesh bars on a 150 mesh; more layers at the mesh spacing carry that steel instead).
-            choices = [c for c in choices if min(p[1] for p in c[4]) >= least - 1e-9]
-        for n_a, spacing, lay, text, spec in choices:
-            phi_eq = (n_b * phi_b**2 + n_a * phi_a**2) / (n_b * phi_b + n_a * phi_a)
-            o = (area + n_a * math.pi * phi_a**2 / 4, phi_eq, spacing, lay)
-            out.append((o, max(phi_a, phi_b), text, spec))
+        top = 3 if room is None else 12
+        choices = []
+        for k in range(1, top + 1):  # k layers of additional bars inside the mesh
+            if room is not None and big + (k + layers_b - 1) * pitch > room + 1e-9:
+                break
+            for last in (s_b, 2 * s_b):  # the last layer at the mesh spacing or every second bar
+                spec = [None] * layers_b + [(phi_a, s_b)] * (k - 1) + [(phi_a, last)]
+                if least is not None and min(p[1] for p in spec if p) < least - 1e-9:
+                    continue
+                choices.append((additional_label(phi_a, s_b, k, last), spec))
+        for text, spec in choices:
+            o, _ = spec_option(mesh, spec, cover or 0.0, 0.0)
+            if cover is None:
+                o = o[:4]
+            out.append((o, big, text, spec))
     out = out[:1] + sorted(out[1:], key=lambda t: t[0][0] * (1 + LAYER_PREMIUM * (t[0][3] - 1)))
     return [t[0] for t in out], [t[1] for t in out], [t[2] for t in out], [t[3] for t in out]
 
 
 def parse_layers(text: str) -> list[tuple[float, float] | None] | None:
-    """Bar layers set by the user: 'layers: Ø32@150 | Ø25@75', the first between the mesh bars ('–' for
-    none), the next ones in layers 2, 3, ... inside the mesh (above the bottom mesh, below the top
-    one). None when the text is not in this form."""
+    """Bar layers set by the user: 'layers: – | Ø32@150 | Ø25@300', the first at mesh level (always '–'
+    now: no bars go between the mesh bars; older lists may have one, which is left out with a note),
+    the next ones L1, L2, ... inside the mesh (above the bottom mesh, below the top one). None when
+    the text is not in this form."""
     if not text.startswith("layers:"):
         return None
     out: list[tuple[float, float] | None] = []
@@ -851,18 +833,20 @@ def parse_layers(text: str) -> list[tuple[float, float] | None] | None:
     return out
 
 
-def layer_name(n: int) -> str:
-    """A layer as the office numbers it: the mesh and the bars between its bars are at mesh level, L1 is
+def layer_name(n: int, mesh_layers: int = 1) -> str:
+    """A layer as the office numbers it: the mesh is at mesh level (no bars go between its bars), L1 is
     the first layer inside the mesh (above the bottom mesh, below the top one), then L2, L3..."""
-    return "mesh level" if n == 1 else f"L{n - 1}"
+    if n <= mesh_layers:
+        return "mesh level" if mesh_layers == 1 else f"mesh level {n}"
+    return f"L{n - mesh_layers}"
 
 
-def layers_text(spec: list) -> str:
+def layers_text(spec: list, mesh_layers: int = 1) -> str:
     parts = []
     for k, p in enumerate(spec):
         if p is None:
             continue
-        where = "between the mesh bars" if k == 0 else f"in {layer_name(k + 1)}"
+        where = "between the mesh bars" if k == 0 else f"in {layer_name(k + 1, mesh_layers)}"
         parts.append(f"Ø{p[0]:g} @ {p[1]:g} {where}")
     return " + ".join(parts) if parts else "mesh only"
 
@@ -2333,18 +2317,15 @@ def design_slab(
                 [forced]
                 if forced is not None
                 else [
-                    k
-                    for k, o in enumerate(options)
-                    if o[3] == 1
-                    and eff[k] >= a_min - 1e-6
-                    and fits_between(10, o[1], o[2], settings)
-                    and mesh_rest[k]
+                    k for k, o in enumerate(options) if o[3] == 1 and eff[k] >= a_min - 1e-6 and mesh_rest[k]
                 ]
                 or [int(np.argmax(mesh_rest))]
             )
             tried = []
             for k in cands:
-                combos, dphi, labels, specs = additional_options(options[k], settings, h / 2 - covers[face])
+                combos, dphi, labels, specs = additional_options(
+                    options[k], settings, h / 2 - covers[face], covers[face]
+                )
                 eff2, _, ok2, _ = assess(combos, dphi)
                 ok2 = (eff2[None, :] >= target[:, None] - 1e-6) & ok2
                 tried.append((k, combos, labels, eff2, ok2, dphi, specs))
@@ -2398,15 +2379,18 @@ def design_slab(
                 spec = parse_layers(text)
                 if spec is None or text in labels:
                     continue
+                if spec and spec[0] is not None:
+                    notes.append(
+                        f"{LAYER_TEXT[layer].capitalize()}: {layers_text(spec)} puts bars between the mesh "
+                        "bars; additional bars now go in layers of their own inside the mesh: left out, set "
+                        "it again."
+                    )
+                    continue
                 bad = [
                     p
-                    for k_, p in enumerate(spec)
+                    for p in spec
                     if p is not None
-                    and (
-                        not fits_between(p[0], mesh_o[1], mesh_o[2], settings)
-                        if k_ == 0
-                        else p[1] - p[0] < max(settings.reinforcement.slab_min_clear_spacing, p[0]) - 1e-9
-                    )
+                    and p[1] - p[0] < max(settings.reinforcement.slab_min_clear_spacing, p[0]) - 1e-9
                 ]
                 least = settings.reinforcement.slab_min_bar_spacing
                 close = [p for p in spec if p is not None and least is not None and p[1] < least - 1e-9]

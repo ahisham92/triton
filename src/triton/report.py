@@ -2359,7 +2359,8 @@ def _slab(r: Report, s: dict) -> None:
         )
     r.h(3, "Bars per metre")
     r.p(
-        "Wood–Armer moments with the in-plane N; a mesh everywhere and additional bars between its bars where needed."
+        "Wood–Armer moments with the in-plane N; a mesh everywhere and, where needed, additional bars in layers of "
+        "their own inside the mesh (L1, L2…), behind its bars."
     )
     rows = []
     for k, lay in (s.get("layers") or {}).items():
