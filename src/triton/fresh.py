@@ -88,6 +88,7 @@ SLAB_BARS_RULE = "additional bars inside the mesh"
 SLAB_ADSEC_RULE = "deck strength counts the compression bars; crack width by AdSec's outer-layer method"
 PILE_LINKS_RULE = "pile links: pitch 100, 150 or 200; least link steel of the sizes that pass"
 BEAM_BARS_RULE = "beam bars: even, top as many as bottom; layers behind: same count, half or 2"
+BEAM_N_RULE = "beam N: the peak node's own N x the design width, as the office sheets"
 
 
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
@@ -180,6 +181,8 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
             # top bar and the bottom bar under it, and a layer behind holds the same count, half of it
             # or 2 bars (Ahmed, 2026-09-27): beams designed before ask for a redesign.
             value = [value, BEAM_BARS_RULE]
+            # N with each peak moment is the node's own, not integrated (Ahmed, 2026-09-27).
+            value = [value, BEAM_N_RULE]
         parts[name] = _hash([value, sorted(each.items())] if each else value)
     if project.approach is not None:
         rear = _rear_beam(section)
