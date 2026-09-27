@@ -455,7 +455,7 @@ def _design(
             b["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
             if lengths and element.restraint_factor is None:
                 b["notes"].append(joint_note(element, placed.joint_spacing))
-            if lengths:
+            if lengths and isinstance(b.get("restraint"), dict):  # none: no ULS results, or no bars fit
                 b["restraint"]["length_from"] = "expansion joints"
             if element.construction_joints and not standard:
                 top = beam_top(section.clashes, name, b.get("level_m") or 0.0, float(b.get("depth_mm") or 0))

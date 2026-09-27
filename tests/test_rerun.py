@@ -140,3 +140,17 @@ def test_a_new_workbook_redesigns_everything(client, designed):
     s.save_results(pid, sid, results)
     client.post(f"{url}/design", json={"changed_only": True})
     assert asked == [["Deck", "Front Beam", "Pile(1)", "Pile(2)"]]
+
+
+def test_a_berth_length_puts_only_the_beams_and_slabs_out_of_date(client, designed):
+    """The berth length on the Costing tab sets the joints, which set only the beams' and slabs'
+    restraint length: the piles keep their results and are not redesigned."""
+    pid, url, asked = designed
+    project = client.get(f"/api/projects/{pid}").json()
+    project["sections"][0]["costing"]["berth_length"] = 300
+    assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
+    r = client.get(f"{url}/design").json()
+    assert r["changed"] == ["expansion joints"]
+    assert sorted(r["stale"]) == ["Deck", "Front Beam"]
+    r = client.post(f"{url}/design", json={"changed_only": True}).json()
+    assert asked == [["Deck", "Front Beam"]] and r["stale"] == []
