@@ -262,11 +262,25 @@ def get_project(project_id: str) -> Project:
 
 
 @app.get("/api/projects/{project_id}/project.trt")
-def download_project(project_id: str) -> StreamingResponse:
+def download_project(
+    project_id: str, section: str | None = None, parts: str | None = None
+) -> StreamingResponse:
     """The whole project as one file (.trt) to send to someone: settings, sections, workbooks, results
-    and trials."""
+    and trials. ``section`` (an id) keeps one section; ``parts`` (comma separated: workbook, rows,
+    results) what of it goes in (Storage tab links)."""
     project = _get(project_id)
-    f, size = package.spool(store(), project)
+    chosen = package.PARTS
+    if parts:
+        chosen = tuple(p for p in package.PARTS if p in {x.strip() for x in parts.split(",")})
+        if not chosen:
+            raise HTTPException(400, f"Parts are {', '.join(package.PARTS)}.")
+    name = ""
+    if section is not None:
+        found = next((s for s in project.sections if s.id == section), None)
+        if found is None:
+            raise HTTPException(404, "Section not found.")
+        name = found.name
+    f, size = package.spool(store(), project, [section] if section else None, chosen)
 
     def chunks():
         with f:
@@ -277,7 +291,7 @@ def download_project(project_id: str) -> StreamingResponse:
         chunks(),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{package.file_name(project)}"',
+            "Content-Disposition": f'attachment; filename="{package.file_name(project, name, chosen)}"',
             "Content-Length": str(size),
         },
     )

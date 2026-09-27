@@ -652,14 +652,23 @@ async function storagePanel(box, id) {
     return;
   }
   const mb = (b) => (b >= 1e6 ? `${fmt(b / 1e6, 1)} MB` : b ? `${fmt(b / 1e3, 0)} kB` : "—");
+  // Each size downloads what it counts as a .trt of that section alone, which opens as a project like
+  // any other; the total, the whole section; the project's total, the whole project.
+  const trt = (q) => `${ROOT}/api/projects/${id}/project.trt${q}`;
+  const link = (b, sid, parts, what) =>
+    b ? `<a href="${trt(`?section=${encodeURIComponent(sid)}${parts ? `&parts=${parts}` : ""}`)}" download title="Download ${esc(what)} as a .trt">${mb(b)}</a>` : mb(b);
   box.innerHTML = `<h2>Storage</h2>
     <p class="status" style="margin-top:0">This project uses <strong>${mb(d.total)}</strong>. The workbook is kept compressed, with its rows as uploaded
       for editing; results are deleted when the inputs they came from change, and deleting a section or the project frees all of it.
-      Upload leftovers and temporary files are cleared on their own.</p>
+      Upload leftovers and temporary files are cleared on their own. Click a size to download it as a .trt of that section:
+      the workbook alone is the lightest file that designs the same; the rows kept for editing are the sheets as uploaded;
+      the total is the whole section. <a href="${trt("")}" download>Download the whole project</a>.</p>
     <div class="scroll"><table class="factor-sheets"><thead><tr><th>Section</th><th class="num">Workbook</th><th class="num">Rows kept for editing</th>
       <th class="num">Design results</th><th class="num">Total</th></tr></thead><tbody>
-      ${d.sections.map((x) => `<tr><td>${esc(x.name)}</td><td class="num">${mb(x.workbook)}</td><td class="num">${mb(x.rows)}</td>
-        <td class="num">${mb(x.results)}</td><td class="num"><strong>${mb(x.total)}</strong></td></tr>`).join("")}
+      ${d.sections.map((x) => `<tr><td>${esc(x.name)}</td><td class="num">${link(x.workbook, x.id, "workbook", `${x.name}'s workbook`)}</td>
+        <td class="num">${link(x.rows, x.id, "rows", `${x.name}'s rows kept for editing`)}</td>
+        <td class="num">${link(x.results, x.id, "results", `${x.name}'s design results`)}</td>
+        <td class="num"><strong>${link(x.total, x.id, "", `the whole of ${x.name}`)}</strong></td></tr>`).join("")}
     </tbody></table></div>`;
 }
 
