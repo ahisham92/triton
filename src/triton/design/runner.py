@@ -20,11 +20,13 @@ from ..project import (
     BeamInput,
     CombiWallInput,
     DesignSettings,
+    DiaphragmWallInput,
     PileInput,
     Section,
     SheetPileInput,
     SlabInput,
     _now,
+    with_project_grades,
 )
 from ..validation import ImportResult
 from .approach import ELEMENT as APPROACH
@@ -32,6 +34,7 @@ from .approach import design_approach
 from .beams import design_beam
 from .combi import design_combi_wall
 from .construction_joints import add_weights, beam_lines, beam_top, for_beam, for_pile, for_slab
+from .dwall_design import design_diaphragm_wall
 from .governing import steel_sets, uls_frame
 from .peaks import treat_peaks
 from .pile_heads import assumed_heads
@@ -236,7 +239,15 @@ def run_section(
     return result
 
 
-RESULT_KINDS = ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs")
+RESULT_KINDS = (
+    "piles",
+    "combi_walls",
+    "sheet_pile_walls",
+    "diaphragm_walls",
+    "beams",
+    "slabs",
+    "approach_slabs",
+)
 
 
 def _design(
@@ -361,6 +372,35 @@ def _design(
     for name, element in section.elements.items():
         if isinstance(element, SheetPileInput) and name not in sheets and take(name):
             skipped.append(f"{name}: no usable results in the workbook.")
+    dwalls = found_so_far["diaphragm_walls"]
+    for name, element in section.elements.items():
+        if not isinstance(element, DiaphragmWallInput) or not take(name):
+            continue
+        combos = sheets.get(name) or {}
+        if not combos or all(s.frame.empty for s in combos.values()):
+            where = " inside the working zone" if name in sheets else ""
+            skipped.append(f"{name}: no usable results in the workbook{where}.")
+            continue
+        tick(name)
+        wall = with_project_grades(element, settings.materials, settings.durability)
+        d = design_diaphragm_wall(name, wall, settings, combos)
+        if d is None:
+            skipped.append(f"{name}: no usable results in the workbook.")
+            continue
+        notes = [n for n in (_multiplier_note(section, combos), _zone_note(section)) if n]
+        dwalls.append(
+            {
+                "element": name,
+                "kind": "diaphragm_wall",
+                "design": d,
+                "notes": notes,
+                "utilisation": d["uf"],
+                "passed": d["ok"],
+                "steel": d["steel"],
+                "count": d["count"],
+                "length_m": d["height"],
+            }
+        )
     beams = found_so_far["beams"]
     found = getattr(workbook, "axes", None) or []
     # The beams and slabs this run may design (taken one by one below, when their turn comes: taking

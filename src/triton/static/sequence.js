@@ -98,7 +98,7 @@ export async function renderSequence(host, h) {
     (data.existing?.found || []).filter((f) => f.at && f.level !== "note" && st.elements[f.element]).map((f) => ({ at: f.at, level: f.level, tip: `${f.element}: ${f.what}` }));
 
   const F = site?.frame ? frameOf(site) : null;
-  const WORK_KIND = { steel_pipes: "combi_wall", combi_cages: "combi_wall", combi_infill: "combi_wall", sheet_piles: "sheet_pile_wall",
+  const WORK_KIND = { steel_pipes: "combi_wall", combi_cages: "combi_wall", combi_infill: "combi_wall", sheet_piles: "sheet_pile_wall", diaphragm_wall: "diaphragm_wall",
     pile_cages: "pile", pile_concrete: "pile", pile_heads: "pile", front_beam: "front_beam", rear_beam: "rear_beam",
     transverse_beam: "transverse_beam", slab: "slab" };
   const kindOf = (e) => e.type;

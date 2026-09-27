@@ -337,6 +337,30 @@ def cost_section(
             _steel_cost(row, prices, item_name, tonnes, berth, area_m2, "sheet piles")
         rows.append(row)
 
+    for w in results.get("diaphragm_walls", []):
+        name = w["element"]
+        c = ec.get(name, ElementCosting())
+        d = w.get("design") or {}
+        st = w.get("steel") or {}
+        row = _Row(name, "diaphragm_wall")
+        # As the sheet pile wall: the length on the Costing tab is the wall's depth, the run the berth's.
+        height = c.length or d.get("height") or 0.0
+        run = berth or d.get("length_m") or 0.0
+        row.length = height
+        area = (d.get("thickness") or 0) / 1000 * height
+        row.concrete_m3 = area * run
+        scale = height / d["height"] if d.get("height") else 1.0
+        row.rebar_t = (st.get("kg_per_m") or 0.0) * scale * run / 1000
+        row.basis.append(
+            f"{run:.1f} m along the berth, {d.get('thickness', 0):.0f} mm thick, {height:.1f} m deep, "
+            f"{st.get('kg_per_m', 0):.0f} kg/m of bars"
+        )
+        price = prices.concrete_diaphragm_wall
+        price = prices.concrete_beams if price is None else price
+        row.add(_price(price, row.concrete_m3), "diaphragm wall concrete price")
+        row.add(_price(prices.rebar, row.rebar_t), "reinforcement price")
+        rows.append(row)
+
     for b in results.get("beams", []):
         name = b["element"]
         c = ec.get(name, ElementCosting())

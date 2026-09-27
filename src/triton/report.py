@@ -15,6 +15,8 @@ from .alignment import named_parts
 from .design import standard
 from .design.combi import failing_parts, part_name
 from .design.combi import parts as combi_parts
+from .design.dwall_design import CHECK_TITLES as DWALL_CHECKS
+from .design.dwall_design import fmt_uf as dwall_fmt
 from .design.spw_design import fmt_uf
 from .figures import deflected_shape, slab_bars, slab_stations
 from .materials import STEEL_DENSITY
@@ -162,6 +164,8 @@ def build_report(project: Project, section: Section, results: dict, detail: str 
             _joint_calcs(r, s)
         for w in results.get("sheet_pile_walls", []):
             _spw(r, w)
+        for w in results.get("diaphragm_walls", []):
+            _dwall(r, w)
         for a in results.get("approach_slabs", []):
             _approach(r, a)
     return r
@@ -568,7 +572,15 @@ def _check_rows(section: Section, res: dict) -> list[list[str]]:
     """Each designed element's checking status; a check given on an earlier design says so."""
     names = [
         x["element"]
-        for k in ("piles", "combi_walls", "sheet_pile_walls", "beams", "slabs", "approach_slabs")
+        for k in (
+            "piles",
+            "combi_walls",
+            "sheet_pile_walls",
+            "diaphragm_walls",
+            "beams",
+            "slabs",
+            "approach_slabs",
+        )
         for x in res.get(k, [])
     ]
     if not section.checks:
@@ -606,6 +618,11 @@ def _elements(res: dict) -> list[str]:
             else ", straining actions only)"
         )
         for w in res.get("sheet_pile_walls", [])
+    ]
+    out += [
+        f"{w['element']} (reinforced concrete diaphragm wall, {w['design']['thickness']:g} mm thick)"
+        for w in res.get("diaphragm_walls", [])
+        if w.get("design")
     ]
     return out
 
@@ -946,13 +963,15 @@ def _sections(r: Report, section: Section, res: dict) -> None:
         _slab_summary(r, s)
     for w in res.get("sheet_pile_walls", []):
         _spw_summary(r, w)
+    for w in res.get("diaphragm_walls", []):
+        _dwall_summary(r, w)
     _shear_summary(r, res)
     _punching_summary(r, res)
     _steel_summary(r, res)
     # A combi wall shows as its two parts, so the one that fails is named.
     failing = [
         name
-        for k in ("piles", "combi_walls", "beams", "slabs", "approach_slabs")
+        for k in ("piles", "combi_walls", "diaphragm_walls", "beams", "slabs", "approach_slabs")
         for x in res.get(k, [])
         if not x.get("passed")
         for name in (failing_parts(x) or [x["element"]] if k == "combi_walls" else [x["element"]])
@@ -2666,6 +2685,95 @@ def _spw(r: Report, w: dict) -> None:
             for x in gs.get("rows", [])
         ],
     )
+
+
+def _dwall_summary(r: Report, w: dict) -> None:
+    d = w["design"]
+    g = d["governing"]
+    r.p(
+        f"{w['element']}: reinforced concrete diaphragm wall {d['thickness']:g} mm thick, {d['concrete']['grade']}, "
+        f"from {d['top']:.2f} to {d['toe']:.2f} m, designed per metre run to EN 1992-1-1 at every Plaxis result: "
+        f"Uf = {dwall_fmt(d['uf'])} ({DWALL_CHECKS[g['governs']].lower()}, {g['zone'][0]:g} to {g['zone'][1]:g} m), "
+        f"{'passes' if d['ok'] else 'FAILS'}. Bars {d['steel']['kg_per_m']:.0f} kg per metre of wall "
+        f"({d['steel']['kg_per_m3'] or 0:.0f} kg/m³)."
+    )
+
+
+def _dwall(r: Report, w: dict) -> None:
+    r.h(1, f"{w['element']}: diaphragm wall")
+    d = w["design"]
+    r.p(
+        f"{d['thickness']:g} mm thick, panels {d['panel_width']:g} mm long, {d['concrete']['grade']} (fck "
+        f"{d['concrete']['fck']:g} MPa), bars fyk {d['fyk']:g} MPa, cover {d['cover']:g} mm to the horizontal bars "
+        f"(the outer layer; the vertical bars inside them). Designed per metre run at {d['points']} ULS and "
+        f"{d['qp_points']} QP Plaxis points: M_v = M_11, N_v = −N_1 (compression +), V = |Q|, M_h = M_22, "
+        f"N_h = −N_2. The front (sea) face is in tension under {d['front_sign']} M_11. Vertical bars per face: "
+        "ULS tension steel, the minimum of 9.2.1.1 and 9.6.2, and the QP crack width 7.3.4; bending with N "
+        "checked on the whole section (N–M curve). Horizontal bars: M_22 with N_2, at least 25% of the "
+        "vertical bars and 0.001·Ac (9.6.3). Shear 6.2.2, links 6.2.3 where VEd > VRd,c."
+    )
+    r.h(2, "Reinforcement by zone")
+    r.table(
+        ["From m", "To m", "Front vertical", "Back vertical", "Front horizontal", "Back horizontal", "Links"],
+        [
+            [
+                z["top"],
+                z["bottom"],
+                z["front"]["bars"],
+                z["back"]["bars"],
+                z["horizontal"]["front"]["bars"],
+                z["horizontal"]["back"]["bars"],
+                ((z["shear"]["links"] or {}).get("label") or "–") if z["shear"]["links"] else "none needed",
+            ]
+            for z in d["zones"]
+        ],
+    )
+    r.h(2, "Checks by zone")
+    r.table(
+        [
+            "From m",
+            "To m",
+            "M max kNm/m",
+            "M min kNm/m",
+            "As front req/prov",
+            "As back req/prov",
+            "wk front mm",
+            "wk back mm",
+            "V kN/m",
+            "VRd,c kN/m",
+            *[DWALL_CHECKS[k] for k in DWALL_CHECKS],
+            "Uf",
+        ],
+        [
+            [
+                z["top"],
+                z["bottom"],
+                z["M_max"],
+                z["M_min"],
+                f"{z['front']['least_mm2_per_m']}/{z['front']['area_mm2_per_m']}",
+                f"{z['back']['least_mm2_per_m']}/{z['back']['area_mm2_per_m']}",
+                z["front"]["wk_mm"],
+                z["back"]["wk_mm"],
+                z["shear"].get("V_kN_per_m"),
+                z["shear"].get("VRd_c_kN_per_m"),
+                *[dwall_fmt(z["util"][k]) for k in DWALL_CHECKS],
+                dwall_fmt(z["uf"]),
+            ]
+            for z in d["zones"]
+        ],
+    )
+    st = d["steel"]
+    r.bullets(
+        [
+            f"Bars per metre of wall: vertical {st['vertical_kg_per_m']:.0f} kg (laps and anchorage into the capping "
+            f"beam counted), horizontal {st['horizontal_kg_per_m']:.0f} kg, links {st['links_kg_per_m']:.0f} kg; "
+            f"{st['kg_per_m']:.0f} kg/m, {st['kg_per_m3'] or 0:.0f} kg/m³; one {d['panel_width']:g} mm cage "
+            f"{st['total_kg']:.0f} kg.",
+            f"Uf = {dwall_fmt(d['uf'])} ({DWALL_CHECKS[d['governing']['governs']].lower()}).",
+        ]
+    )
+    for n in [*(w.get("notes") or []), *d["notes"]]:
+        r.note(n)
 
 
 # --- Renderers --------------------------------------------------------------------------------------

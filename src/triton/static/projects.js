@@ -5,7 +5,7 @@ import { SECTION_COLOR, hasPoint, makeMap, pin, sectionPoint, siteColor } from "
 
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-const MAIN_KINDS = ["pile", "combi_wall", "sheet_pile_wall", "slab", "front_beam", "rear_beam"];
+const MAIN_KINDS = ["pile", "combi_wall", "sheet_pile_wall", "diaphragm_wall", "slab", "front_beam", "rear_beam"];
 const PREFS = "triton-projects-view";
 
 function prefs() {

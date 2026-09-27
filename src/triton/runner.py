@@ -114,7 +114,15 @@ def _outcome(res: dict[str, Any]) -> tuple[str, str]:
         return "stopped", "Stopped"
     if res.get("unchanged"):
         return "done", "Nothing changed: results kept"
-    kinds = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
+    kinds = (
+        "piles",
+        "combi_walls",
+        "beams",
+        "slabs",
+        "sheet_pile_walls",
+        "diaphragm_walls",
+        "approach_slabs",
+    )
     # The whole section as it stands: with only what changed designed, the rest kept their results.
     designed = [e for k in kinds for e in res.get(k) or []]
     # A combi wall counts as its two parts (concrete infill, steel), each safe or not.

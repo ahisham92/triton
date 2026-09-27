@@ -18,7 +18,16 @@ from typing import Any
 
 from . import existing, furniture
 from .design import sheet_piles
-from .project import BeamInput, CombiWallInput, PileInput, Project, Section, SheetPileInput, SlabInput
+from .project import (
+    BeamInput,
+    CombiWallInput,
+    DiaphragmWallInput,
+    PileInput,
+    Project,
+    Section,
+    SheetPileInput,
+    SlabInput,
+)
 
 SEA = 20.0  # m of sea bed drawn in front of the wall
 LAND = 5.0  # m of soil drawn beyond the model's landward end
@@ -140,6 +149,8 @@ def sizes(section: Section, geometry: list[dict[str, Any]]) -> dict[str, dict[st
             except ValueError:
                 h = 0.45
             out[name] = {"t": round(h, 3), "at": "mid"}
+        elif isinstance(el, DiaphragmWallInput):
+            out[name] = {"t": el.thickness / 1000, "at": "mid"}
         elif isinstance(el, SlabInput | BeamInput):
             depth = el.thickness if isinstance(el, SlabInput) else el.depth
             item: dict[str, Any] = {"t": depth / 1000, "at": top}
@@ -199,14 +210,16 @@ def scene(
     wall_d, wall_name = None, None
     for g in geometry:
         el = section.elements.get(g["element"])
-        if not isinstance(el, CombiWallInput | SheetPileInput) or not (b := _extent(g)):
+        if not isinstance(el, CombiWallInput | SheetPileInput | DiaphragmWallInput) or not (b := _extent(g)):
             continue
         d = d_of((b[across][0] + b[across][1]) / 2)
         if d < 5.0 and (wall_d is None or abs(d) < abs(wall_d)):
             wall_d, wall_name = d, g["element"]
     if wall_d is None:
         wall_d = 0.0
-        notes.append("No combi wall or sheet pile wall at the quay face: the soil steps down at the face.")
+        notes.append(
+            "No combi, sheet pile or diaphragm wall at the quay face: the soil steps down at the face."
+        )
     soffit = _soffit(section, geometry)
     ground = site.soil_level
     if ground is None:

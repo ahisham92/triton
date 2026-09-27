@@ -263,7 +263,7 @@ def _by_element(results: dict[str, Any], elements: Iterable[str]) -> dict[str, d
     return {n: {**shared, n: then[n]} for n in names if n in then}
 
 
-KINDS = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "approach_slabs")
+KINDS = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "diaphragm_walls", "approach_slabs")
 
 
 def _designed(results: dict[str, Any]) -> list[dict]:

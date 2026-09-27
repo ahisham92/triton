@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 
 from .design import sheet_piles
-from .project import CombiWallInput, PileInput, Project, Section, SheetPileInput
+from .project import CombiWallInput, DiaphragmWallInput, PileInput, Project, Section, SheetPileInput
 
 KING_SPACING = 2.8  # m, existing king piles along the wall (every second tie rod): assumed
 TIE_BELOW_COPE = 0.5  # m, tie rods below the existing cope when no level is given (Ahmed)
@@ -104,12 +104,14 @@ def front_wall(
     best = None
     for g in geometry:
         el = section.elements.get(g["element"])
-        if not isinstance(el, CombiWallInput | SheetPileInput) or not (b := _extent(g)):
+        if not isinstance(el, CombiWallInput | SheetPileInput | DiaphragmWallInput) or not (b := _extent(g)):
             continue
         d0, d1 = fr.d_range(b)
         d = (d0 + d1) / 2
         if isinstance(el, CombiWallInput):
             r = el.tube_diameter / 2000
+        elif isinstance(el, DiaphragmWallInput):
+            r = el.thickness / 2000
         else:
             try:
                 r = sheet_piles.section(el.section_name).h / 2000

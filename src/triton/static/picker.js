@@ -11,6 +11,7 @@ export const KINDS = {
   pile: { label: "Pile", color: "#2a78d6" },
   combi_wall: { label: "Combi wall", color: "#7b4bc4" },
   sheet_pile_wall: { label: "Sheet pile wall", color: "#8c6d1f" },
+  diaphragm_wall: { label: "Diaphragm wall", color: "#5b6b7f" },
   slab: { label: "Slab", color: "#1f9e89" },
   front_beam: { label: "Front beam", color: "#d9730d" },
   rear_beam: { label: "Rear beam", color: "#c2477d" },
@@ -25,6 +26,7 @@ export function guessKind(name) {
   const n = String(name).toLowerCase();
   if (/combi/.test(n)) return "combi_wall";
   if (/spw|sheet/.test(n)) return "sheet_pile_wall";
+  if (/^d[\s-]*wall$|diaphragm/.test(n)) return "diaphragm_wall";
   if (/approach|ledge/.test(n)) return "approach";
   if (/front/.test(n)) return "front_beam";
   if (/rear/.test(n)) return "rear_beam";
@@ -45,6 +47,8 @@ export function kindIcon(kind, size = 28) {
       <circle cx="23" cy="16" r="5" fill="${soft}" stroke="${c}" stroke-width="2"/>
       <path d="M14 16h4" stroke="${c}" stroke-width="2.5"/>`,
     sheet_pile_wall: `<path d="M3 20 l4 -8 h6 l4 8 h6 l4 -8 h2" fill="none" stroke="${c}" stroke-width="2.4" stroke-linejoin="round"/>`,
+    diaphragm_wall: `<rect x="11" y="3" width="10" height="26" rx="1.5" fill="${soft}" stroke="${c}" stroke-width="2"/>
+      <path d="M14 6v20M18 6v20" stroke="${c}" stroke-width="1.2" stroke-dasharray="2 2"/>`,
     slab: `<rect x="3" y="9" width="26" height="7" rx="1.5" fill="${soft}" stroke="${c}" stroke-width="2"/>
       <path d="M8 16v10M16 16v10M24 16v10" stroke="${c}" stroke-width="2"/>`,
     front_beam: `<rect x="5" y="7" width="22" height="16" rx="2" fill="${soft}" stroke="${c}" stroke-width="2"/>
@@ -175,7 +179,7 @@ export function quaySketch({ elements, geometry, selected, site, onPick }) {
   const sx = (x) => pad + ((x - xl) / (xh - xl)) * (W - 2 * pad);
   const sz = (z) => pad / 2 + ((zh - z) / (zh - zl)) * (H - pad - 16);
   const sea = xh; // the sea is on the high X side (the front wall's side) in Triton's sections
-  const front = Math.max(...items.filter((i) => ["combi_wall", "sheet_pile_wall", "front_beam"].includes(i.kind)).map((i) => i.x1), -Infinity);
+  const front = Math.max(...items.filter((i) => ["combi_wall", "sheet_pile_wall", "diaphragm_wall", "front_beam"].includes(i.kind)).map((i) => i.x1), -Infinity);
   const seaFrom = isFinite(front) ? front : xh - (xh - xl) * 0.2;
   const levels = water.length ? water : [{ name: "Water", level: 0 }];
   const top = Math.max(...levels.map((w) => w.level));
@@ -237,6 +241,7 @@ function placeElements(elements, geometry) {
       const typical = {
         combi_wall: { x0: -0.8, x1: 0.8, z0: -39, z1: 2.7, round: true },
         sheet_pile_wall: { x0: -0.3, x1: 0.3, z0: -19.5, z1: 2.7 },
+        diaphragm_wall: { x0: -0.5, x1: 0.5, z0: -26, z1: 2.7 },
         front_beam: { x0: -1, x1: 1, z0: 1.7, z1: 3.7 },
         rear_beam: { x0: -24.8, x1: -23.2, z0: 1.7, z1: 3.7 },
         transverse_beam: { x0: -23, x1: -1, z0: 2.1, z1: 3.3 },
@@ -250,7 +255,7 @@ function placeElements(elements, geometry) {
         item = { x0: x - 0.6, x1: x + 0.6, z0: -34, z1: 2.3, round: true };
       }
     }
-    if (item) out.push({ ...item, name: e.name, kind: e.kind, short, labelled: true, labelAbove: !["pile", "combi_wall", "sheet_pile_wall"].includes(e.kind) });
+    if (item) out.push({ ...item, name: e.name, kind: e.kind, short, labelled: true, labelAbove: !["pile", "combi_wall", "sheet_pile_wall", "diaphragm_wall"].includes(e.kind) });
   }
   // Walls and piles are labelled below their toe; plates above. Beams drawn over the slab.
   const order = { slab: 0, approach: 0, transverse_beam: 1 };

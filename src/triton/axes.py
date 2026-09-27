@@ -38,7 +38,7 @@ NEIGHBOURS = 16
 BRUTE_NODES = 6000
 GRID = 1.0  # m, cells the plate sign is read on
 SUPPORT_CLEAR = 1.8  # m, cells this close to a pile or wall are left out of it
-WALLS = (ElementType.COMBI_WALL, ElementType.SHEET_PILE_WALL)
+WALLS = (ElementType.COMBI_WALL, ElementType.SHEET_PILE_WALL, ElementType.DIAPHRAGM_WALL)
 
 
 def _corr(a: np.ndarray, b: np.ndarray) -> float:
@@ -496,7 +496,7 @@ def infer_axes(elements: dict[str, dict[str, SheetData]]) -> tuple[list[dict[str
                     f"{name}: {CORNER_NOTE}"
                     + (
                         "; it is designed from N1, M11 and its shear column as a sheet pile wall always is. "
-                        if spec.type is ElementType.SHEET_PILE_WALL
+                        if spec.type in (ElementType.SHEET_PILE_WALL, ElementType.DIAPHRAGM_WALL)
                         else "; it is designed for the resultant of its two moments, whichever local axis "
                         "carries more. "
                     )
