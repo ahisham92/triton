@@ -1076,7 +1076,13 @@ def _slab_summary(r: Report, s: dict) -> None:
         r.note(
             f"Stations are distances ({sd['along']}) from the {sd['from']}, on the sea side, increasing towards "
             f"the rear. Column strips are {sd['column_width_m']:g} m wide on the lines of piles, field strips "
-            f"{sd['field_width_m']:g} m between them; moments are per metre, averaged across the strip, and every "
+            f"{sd['field_width_m']:g} m between them; moments are per metre, "
+            + (
+                "averaged across the strip"
+                if sd.get("across") == "average"
+                else "the largest node across the strip"
+            )
+            + ", and every "
             "column (field) strip along the berth is designed together. Bars along the strips are given per "
             "station; bars along the berth are one mesh over the whole deck, with zones of additional bars "
             "only where it needs more. Each row shows its worst face; Appendix A has both."
@@ -2359,8 +2365,13 @@ def _slab(r: Report, s: dict) -> None:
             + ", ".join(f"{v:g}" for v in sd["lines"])
             + f" m, field strips {sd['field_width_m']:g} m between them. Stations: "
             + ", ".join(f"{v:g}" for v in sd["stations"])
-            + " m. At every cut along a strip the Wood–Armer moment and N are averaged across its width; the "
-            "worst cut of any column (field) strip in a station sets that station's bars, and the QP crack width "
+            + " m. At every cut along a strip "
+            + (
+                "the moment and N are averaged across its width; the "
+                if sd.get("across") == "average"
+                else "the moment is the largest node's across its width, with its own N; the "
+            )
+            + "worst cut of any column (field) strip in a station sets that station's bars, and the QP crack width "
             "is checked the same way. MRd with the tension bars only, rectangular block 0.8x."
         )
         r.table(
