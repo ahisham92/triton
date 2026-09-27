@@ -47,6 +47,7 @@ import pandas as pd
 from ..elements import CombinationType, combination_type
 from ..importer import SheetData
 from ..materials import structural_steel_fy
+from .sheet_piles import UF_CAP
 
 E_STEEL = 210_000.0  # MPa
 GAMMA_M0 = 1.0
@@ -217,8 +218,10 @@ def plastic_utilisation(
         ok = mid * m <= np.cos(np.pi * np.minimum(mid * n, 1.0) / 2) + 1e-12
         lo = np.where(ok, mid, lo)
         hi = np.where(ok, hi, mid)
-    u = np.where(lo > 0, 1 / np.maximum(lo, 1e-12), np.inf)
-    return np.where(v_kn >= r["V_pl_kN"], np.inf, u)
+    # Shear at or over Vpl: Uf is VEd / Vpl,Rd, as for the sheet pile wall (sheet_piles.py), and
+    # anything else is capped at UF_CAP (unsafe by far), never an infinity, which reads as no result.
+    u = np.minimum(np.where(lo > 0, 1 / np.maximum(lo, 1e-12), UF_CAP), UF_CAP)
+    return np.where(v_kn >= r["V_pl_kN"], v_kn / r["V_pl_kN"], u)
 
 
 def tube_loads(
@@ -383,7 +386,9 @@ def _office(
     u_sig = np.where(cls >= 3, (np.abs(n) * 1e3 / get("A") + m * 1e6 / get("W_el")) / get("fy"), 0.0)
     v_pl = get("V_pl")
     rho = np.where(v >= 0.5 * v_pl, (2 * v / v_pl - 1) ** 2, 0.0)
-    u_mv = np.where(rho > 0, u_m / np.clip(1 - rho, 1e-9, None), 0.0)
+    # rho >= 1 (V >= Vpl): Uf is V / Vpl, as for the sheet pile wall; below it capped at UF_CAP.
+    reduced = np.minimum(u_m / np.clip(1 - rho, 1e-9, None), UF_CAP)
+    u_mv = np.where(v >= v_pl, v / v_pl, np.where(rho > 0, reduced, 0.0))
     tau_rd = np.array([cols[j]["tau_Rd_shell"] or np.inf for j in seg_of], float)
     u_shell = tau / tau_rd
     stack = np.vstack([u_tau, u_nm, u_sig, u_mv, u_shell])
@@ -743,7 +748,9 @@ def office_sheet(
             V_pl=v_pl,
             u_V=v / v_pl,
             rho=rho,
-            u_MV=u_m / (1 - rho) if rho is not None and rho < 1 else (math.inf if rho is not None else None),
+            u_MV=min(u_m / (1 - rho), UF_CAP)
+            if rho is not None and rho < 1
+            else (v / v_pl if rho is not None else None),
             n=nn,
             MN_Rd=mn_rd,
             u_MN=(m / mn_rd if mn_rd else math.inf) if mn_rd is not None else None,
