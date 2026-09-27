@@ -106,12 +106,32 @@ def _cross(a: np.ndarray, b: np.ndarray) -> Any:
     return a[0] * b[..., 1] - a[1] * b[..., 0]
 
 
+def _outline(pts: np.ndarray) -> np.ndarray:
+    """The points that can be corners of the convex hull: the lowest and highest in each column of
+    equal x and the leftmost and rightmost in each row of equal y. A point between two others on the
+    same vertical or horizontal line is never a corner, so the hull is the same, found from far fewer
+    points (a big mesh's hull in a fraction of a second)."""
+
+    def ends(a: np.ndarray, b: np.ndarray) -> np.ndarray:  # first and last b in each run of equal a
+        order = np.lexsort((b, a))
+        sa = a[order]
+        first = np.r_[True, sa[1:] != sa[:-1]]
+        last = np.r_[sa[1:] != sa[:-1], True]
+        keep = np.zeros(len(a), bool)
+        keep[order[first | last]] = True
+        return keep
+
+    if len(pts) < 3:
+        return pts
+    return pts[ends(pts[:, 0], pts[:, 1]) & ends(pts[:, 1], pts[:, 0])]
+
+
 def _edge_direction(p: np.ndarray, u: np.ndarray) -> np.ndarray:
     """The direction of the least-area rectangle round the points nearest ``u``: for a strip drawn
     with straight edges (a beam's nodes) it is the edges' direction exactly, where a fitted line
     carries the scatter of the mesh."""
     try:
-        pts = np.unique(p, axis=0)
+        pts = _outline(np.unique(p, axis=0))
         if len(pts) < 3:
             return u
         # Convex hull (monotone chain).
