@@ -34,6 +34,8 @@ from .issues import Issue, Severity
 CLEAR = 0.3  # the better assignment's rank correlation must reach this
 MARGIN = 0.2  # and beat the other one by this much
 NEIGHBOURS = 16
+# Nodes up to which every pair is compared to find each node's neighbours (see _nearest).
+BRUTE_NODES = 6000
 GRID = 1.0  # m, cells the plate sign is read on
 SUPPORT_CLEAR = 1.8  # m, cells this close to a pile or wall are left out of it
 WALLS = (ElementType.COMBI_WALL, ElementType.SHEET_PILE_WALL)
@@ -148,14 +150,57 @@ def beam_axes(name: str, combos: dict[str, SheetData], line: str | None) -> dict
     }
 
 
+def _nearest(points: np.ndarray, k: int) -> np.ndarray:
+    """The k nearest nodes of each node (itself included), (n, k). Up to a few thousand nodes every
+    pair is compared; above that the nodes are put in a grid of about k per cell and each cell looks
+    through the ring of cells round it, widened until no node outside it can be nearer, so the time
+    grows with the node count instead of its square (a sheet of 100,000 nodes in seconds, not hours)."""
+    n = len(points)
+    if n <= BRUTE_NODES:
+        idx = np.empty((n, k), int)
+        for s in range(0, n, 400):
+            d = ((points[s : s + 400, None, :] - points[None, :, :]) ** 2).sum(-1)
+            idx[s : s + 400] = np.argsort(d, axis=1)[:, :k]
+        return idx
+    lo = points.min(axis=0)
+    ext = np.maximum(np.ptp(points, axis=0), 1e-9)
+    h = max(float(np.sqrt(ext[0] * ext[1] * k / n)), 1e-9)
+    cell = np.minimum(((points - lo) / h).astype(np.int64), (ext / h).astype(np.int64))
+    nx, ny = int(cell[:, 0].max()) + 1, int(cell[:, 1].max()) + 1
+    key = cell[:, 0] * ny + cell[:, 1]
+    order = np.argsort(key, kind="stable")
+    start = np.concatenate([[0], np.cumsum(np.bincount(key, minlength=nx * ny))])
+    idx = np.empty((n, k), int)
+    for c in np.flatnonzero(start[1:] > start[:-1]):
+        cx, cy = divmod(int(c), ny)
+        mine = order[start[c] : start[c + 1]]
+        r = 1
+        while True:
+            y0, y1 = max(cy - r, 0), min(cy + r, ny - 1)
+            cand = np.concatenate(
+                [
+                    order[start[x * ny + y0] : start[x * ny + y1 + 1]]
+                    for x in range(max(cx - r, 0), min(cx + r, nx - 1) + 1)
+                ]
+            )
+            whole = len(cand) == n
+            if len(cand) >= k:
+                d = ((points[mine, None, :] - points[None, cand, :]) ** 2).sum(-1)
+                near = np.argpartition(d, k - 1, axis=1)[:, :k]
+                dk = np.take_along_axis(d, near, axis=1)
+                if whole or dk.max() <= (r * h) ** 2:
+                    near = np.take_along_axis(near, np.argsort(dk, axis=1), axis=1)
+                    idx[mine] = cand[near]
+                    break
+            r += 1
+    return idx
+
+
 def _gradients(points: np.ndarray, frame: pd.DataFrame, cols: list[str]) -> dict[str, np.ndarray]:
     """Least-squares plane through each node and its nearest neighbours: (n, 2) gradients per column."""
     n = len(points)
     k = min(NEIGHBOURS, n)
-    idx = np.empty((n, k), int)
-    for s in range(0, n, 400):
-        d = ((points[s : s + 400, None, :] - points[None, :, :]) ** 2).sum(-1)
-        idx[s : s + 400] = np.argsort(d, axis=1)[:, :k]
+    idx = _nearest(points, k)
     a = np.concatenate([points[idx] - points[:, None, :], np.ones((n, k, 1))], axis=2)
     pinv = np.linalg.pinv(a)  # (n, 3, k)
     return {c: np.einsum("nik,nk->ni", pinv, frame[c].to_numpy(float)[idx])[:, :2] for c in cols}
