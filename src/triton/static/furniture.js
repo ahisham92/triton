@@ -4,6 +4,9 @@
 // laid out along this section's berth, clear of joints, piles, rails and each other.
 // app.js passes its helpers in: api, again, esc, fmt, secUrl, forms() -> [project form, section form], save().
 
+import { statTiles } from "./look.js";
+import { statusOf } from "./picker.js";
+
 const COL = { fenders: "#2a5fae", bollards: "#c87814", ladders: "#2e8b4a", storm_pins: "#7a4696", crane_stoppers: "#c62828", tie_downs: "#1f8a9a" };
 const NAMES = { fenders: "Fenders", bollards: "Bollards", ladders: "Ladders", storm_pins: "Storm pins", crane_stoppers: "Crane stoppers", tie_downs: "Crane tie-downs", crane_rails: "Crane rails", tie_rods: "Tie rods", fender_blocks: "Fender protrusions" };
 
@@ -24,6 +27,7 @@ export async function renderFurniture(host, h) {
   const status = host.querySelector("#fu-status");
   const f2 = (v) => (v == null ? "–" : fmt(v, 2));
   const util = (u, ok) => `<span class="${ok ? "flag-ok" : "flag-bad"}">${u == null ? "–" : fmt(u, 3)}</span>`;
+  const meter = (u, ok) => (u == null ? "" : `<span class="meter ${ok ? statusOf(u) || "safe" : "unsafe"} fu-meter"><i style="width:${Math.min(100, Math.max(2, u * 100)).toFixed(0)}%"></i></span>`);
 
   const plan = (r) => {
     const lay = r.layout;
@@ -97,9 +101,9 @@ export async function renderFurniture(host, h) {
 
   const draw = (r) => {
     const lay = r.layout;
-    const counts = Object.entries(lay.counts).map(([k, n]) => `<td><strong>${n}</strong><div class="hint">${NAMES[k] || k}</div></td>`).join("");
+    const counts = statTiles(Object.entries(lay.counts).map(([k, n]) => ({ label: NAMES[k] || k, value: n, color: COL[k] || "#6a7a8a" })));
     const itemsRows = r.items
-      .map((i) => `<details class="panel" style="margin-top:8px"><summary><strong>${esc(i.title)}</strong> · utilisation ${util(i.utilisation, i.passed)}${i.governing_case ? ` <span class="status">(${esc(i.governing_case)})</span>` : ""}</summary>
+      .map((i) => `<details class="panel" style="margin-top:8px"><summary>${meter(i.utilisation, i.passed)}<strong>${esc(i.title)}</strong> · utilisation ${util(i.utilisation, i.passed)}${i.governing_case ? ` <span class="status">(${esc(i.governing_case)})</span>` : ""}</summary>
         <table class="cost">${i.parts.map((p) => `<tr><td>${esc(p.part)}</td><td class="num">${util(p.utilisation, p.passed)}</td></tr>`).join("")}</table>
         ${detailsHtml(i)}
         ${anchorsHtml(i.anchors)}
@@ -107,16 +111,16 @@ export async function renderFurniture(host, h) {
       .join("");
     const all = Object.values(lay.items).flat();
     const listed = all.filter((it) => it.status !== "ok");
-    const arrangement = `<div class="scroll"><table class="cost"><tr><th>Item</th><th>Where</th><th class="num">At (m)</th><th class="num">Moved (m)</th><th>Clashes with</th></tr>
+    const arrangement = `<details class="panel fu-list"${lay.clashes ? " open" : ""}><summary>${listed.length ? `Items moved or still clashing (${listed.length})` : `Every item (${all.length})`}</summary><div class="scroll"><table class="cost"><tr><th>Item</th><th>Where</th><th class="num">At (m)</th><th class="num">Moved (m)</th><th>Clashes with</th></tr>
       ${(listed.length ? listed : all).map((it) => `<tr><td>${esc(it.label)}</td><td>${esc(it.tag || it.plane)}</td><td class="num">${f2(it.s_m)}</td><td class="num">${it.moved_m ? f2(it.moved_m) : ""}</td>
         <td class="${it.clashes.length ? "flag-bad" : ""}">${esc(it.clashes.join("; "))}</td></tr>`).join("")}</table></div>
-      <p class="status">${listed.length ? `Only the items moved from their spacing or still clashing are listed (${all.length - listed.length} others sit at their spacing).` : "Every item sits at its spacing."}</p>`;
+      <p class="status">${listed.length ? `Only the items moved from their spacing or still clashing are listed (${all.length - listed.length} others sit at their spacing).` : "Every item sits at its spacing."}</p></details>`;
     const dl = (x, t) => `<a href="${secUrl()}/furniture/${x}">${t}</a>`;
     out.innerHTML = `<div class="panel" style="margin-top:10px"><h2 style="margin-top:0">${esc(r.section)}: ${fmt(r.berth_length_m, 1)} m of berth</h2>
         <p class="status">Berth length from ${esc(r.berth_length_from)}; cope at ${f2(r.cope_m)} m.
           ${r.unsafe.length ? `<span class="flag-bad">Not safe: ${esc(r.unsafe.join(", "))}.</span>` : '<span class="flag-ok">Every item passes.</span>'}
           ${lay.clashes ? `<span class="flag-bad">${lay.clashes} item(s) still clash.</span>` : ""}</p>
-        <div class="scroll"><table class="cost"><tr>${counts}</tr></table></div>
+        ${counts}
         <p>${dl("calc.docx", "Calculation (Word)")} · ${dl("calc.pdf", "PDF")} · ${dl("calc.xlsx", "Excel")} · ${dl("plan.dxf", "Plan and bolts (AutoCAD)")} · ${dl("plan.crm", "for Revit (.crm)")}</p>
         <p class="status">Costing takes these numbers for its Fenders, Bollards, Ladders, Storm pins, Crane stoppers, Crane tie-downs and Tie rods rows where no number is given, and the section's drawings include this plan.</p></div>
       <div class="panel" style="margin-top:10px"><h2 style="margin-top:0">Arrangement</h2>${plan(r)}${arrangement}</div>

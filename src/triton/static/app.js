@@ -11,6 +11,7 @@ import { renderFurniture } from "./furniture.js";
 import { renderMovedPiles } from "./moved.js";
 import { renderSequence } from "./sequence.js";
 import { smooth, voyageHtml } from "./progress.js";
+import { tabBanner, tabGroupColor, statTiles, shareBar } from "./look.js";
 import { tubeZonesHtml } from "./tubeview.js";
 import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
 import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
@@ -479,12 +480,13 @@ async function projectPage(id, tab, sectionId) {
   $app.innerHTML = `<h1>${esc(p.info.name)}</h1>
     <p class="sub">${esc([p.info.number, p.sections.length > 1 ? `${p.sections.length} sections` : sec().name].filter(Boolean).join(" · "))}</p>
     <div class="tabs">${tabs.map(([k, t]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${t}</button>`).join("")}</div>
+    ${tabBanner(tab, tabs)}
     <div id="lockbar"></div>
-    ${picker}<div id="tab"></div>
+    ${picker}<div id="tab" data-for="${tab}" style="--tabc:${tabGroupColor(tab)}"></div>
     <div class="savebar"><span class="save-state" id="save-status"></span>
       <span style="flex:1"></span>${tab === "info" ? projectButtons : ""}</div>
     <ul class="errors" id="errors"></ul>`;
-  $app.querySelectorAll(".tabs button").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab))));
+  $app.querySelectorAll(".tabs button, [data-tab-go]").forEach((b) => (b.onclick = () => (location.hash = tabHash(b.dataset.tab || b.dataset.tabGo))));
   const pick = document.getElementById("section-pick");
   if (pick)
     pick.onchange = () => {
@@ -1517,7 +1519,9 @@ async function addElements(names) {
 
 // ---------------------------------------------------------------- workbook check
 function checkerHtml(slot = "upload-check") {
-  return `<div class="panel row">
+  return `<div class="panel row dropzone" id="dropzone">
+      <span class="dz-art" aria-hidden="true"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h10l4 4v14H5zM15 3v4h4M12 17v-6M9 13.5l3-3 3 3"/></svg></span>
+      <span class="dz-text"><b>Drop the Plaxis workbook here</b><span class="status">or choose it: .xlsb, .xlsx or .xlsm</span></span>
       <input type="file" id="file" accept=".xlsb,.xlsx,.xlsm">
       <select id="upload-mode" hidden title="What to do with the workbook this section already has">
         <option value="replace">Replace the whole workbook</option>
@@ -1782,6 +1786,19 @@ function wireChecker(onReport, url = ROOT + "/api/workbooks/check", slot = "uplo
   const ready = () => (run.disabled = !file.files.length || busyWith(slot));
   file.onchange = ready;
   ready();
+  // A file dropped anywhere on the upload box is taken as if chosen.
+  const zone = document.getElementById("dropzone");
+  if (zone) {
+    zone.ondragover = (e) => { e.preventDefault(); zone.classList.add("over"); };
+    zone.ondragleave = () => zone.classList.remove("over");
+    zone.ondrop = (e) => {
+      e.preventDefault();
+      zone.classList.remove("over");
+      if (!e.dataTransfer?.files?.length || file.disabled) return;
+      file.files = e.dataTransfer.files;
+      ready();
+    };
+  }
   run.onclick = async () => {
     const f = file.files[0];
     if (!f || busyWith(slot)) return;
@@ -1879,8 +1896,13 @@ async function renderWorkbookTab(host) {
   const c = brief.counts || {};
   note.outerHTML = `<div class="panel wb-brief" id="wb-note">
       <div class="row"><strong>Workbook in use: ${esc(brief.file)}</strong><span class="status">uploaded ${when(brief.uploaded_at)} (Cairo time)</span></div>
-      <p class="status">${brief.sheets.length} tab${brief.sheets.length === 1 ? "" : "s"}, ${brief.elements.length} element${brief.elements.length === 1 ? "" : "s"}
-        · ${c.error ?? 0} errors, ${c.warning ?? 0} warnings, ${c.info ?? 0} automatic clean-ups${brief.checked ? "" : " (as found on upload)"}</p>
+      ${statTiles([
+        { label: "Tabs", value: brief.sheets.length, color: "#1e8fc0" },
+        { label: "Elements", value: brief.elements.length, color: "#2a9d8f", sub: esc(brief.elements.slice(0, 4).join(", ") + (brief.elements.length > 4 ? " …" : "")) },
+        { label: "Errors", value: c.error ?? 0, tone: c.error ? "bad" : "ok", sub: c.error ? "to fix before designing" : "none" },
+        { label: "Warnings", value: c.warning ?? 0, tone: c.warning ? "warn" : "ok", sub: c.warning ? "worth a look" : "none" },
+        { label: "Automatic clean-ups", value: c.info ?? 0, sub: brief.checked ? "done on reading" : "as found on upload" },
+      ])}
       <div class="row" id="wb-open-row"><button id="wb-open">Open the workbook</button>
         <span class="status">Shows its checks, sheet mapping and warnings. To replace it, replace or add tabs, or delete tabs,
         you don't need to open it: use the upload box below.</span></div>
@@ -3714,6 +3736,15 @@ function pickResults(res, out) {
   const box = document.createElement("div");
   box.className = "panel pick-panel";
   box.innerHTML = `<div class="pick-head"><h3>Results by element</h3><span class="status">Green safe, amber near the limit (0.95 to 1.0), red unsafe. The bar shows the utilisation.</span></div>`;
+  const count = (st) => items.filter((i) => i.status === st).length;
+  const worstU = Math.max(0, ...items.map((i) => i.utilisation ?? 0));
+  box.insertAdjacentHTML("beforeend", statTiles([
+    { label: "Elements designed", value: items.length, color: "#d9730d" },
+    { label: "Safe", value: count("safe"), tone: "ok", sub: "below 0.95" },
+    { label: "Near the limit", value: count("limit"), tone: count("limit") ? "warn" : "ok", sub: "0.95 to 1.0" },
+    { label: "Unsafe", value: count("unsafe"), tone: count("unsafe") ? "bad" : "ok", sub: count("unsafe") ? esc(items.filter((i) => i.status === "unsafe").map((i) => i.label).join(", ")) : "none" },
+    worstU ? { label: "Highest utilisation", value: fmt(worstU, 2), tone: worstU > 1 ? "bad" : worstU >= 0.95 ? "warn" : "ok", sub: esc(items.find((i) => i.utilisation === worstU)?.label || "") } : null,
+  ]));
   box.append(stepper({ items, current, noun: "element", onPick: show, onFoldAll: (f) => cards.forEach((c) => setFolded(c.card, f)) }));
   const first = out.querySelector(":scope > h2, #pile-cards");
   out.insertBefore(box, first);
@@ -4201,6 +4232,32 @@ async function renderMethodTab(host) {
     ${m.empty ? '<p class="status">No elements yet: add them on the Elements tab.</p>' : ""}`;
 }
 
+// A section's cost at a glance: the totals as tiles, then the cost split by element in their colours.
+function costSummaryHtml(c, cur) {
+  const t = c.totals;
+  if (!t) return "";
+  const colour = (r) => (r.kind === "item" ? "#8a8a84" : kindColor(KINDS[r.kind] ? r.kind : guessKind(r.element)));
+  const els = c.rows.filter((r) => r.kind !== "item").map((r) => ({
+    label: r.element, color: colour(r), value: r.cost ?? (r.parts || []).reduce((a, x) => a + (x.cost || 0), 0) }));
+  const items = c.rows.filter((r) => r.kind === "item").reduce((a, r) => a + (r.cost || 0), 0);
+  const unit = cur ? ` ${esc(cur)}` : "";
+  const priced = els.some((e) => e.value > 0);
+  // With no prices yet, the split is by weight of reinforcement and steel instead.
+  const split = priced
+    ? `<p class="share-title">Where the money goes</p>${shareBar([...els, { label: "Other items", value: items, color: "#8a8a84" }], { fmt, unit: cur })}`
+    : `<p class="share-title">Reinforcement and steel by element (no prices yet)</p>${shareBar(c.rows.filter((r) => r.kind !== "item").map((r) => {
+        const q = r.parts?.[0] || r;
+        return { label: r.element, color: colour(r), value: (q.rebar_t || 0) + (q.steel_t || 0) + (r.parts?.[1]?.rebar_t || 0) };
+      }), { fmt: (v) => fmt(v, 1), unit: "t" })}`;
+  return `${statTiles([
+    { label: "Cost", value: t.cost || t.complete ? `${fmt(t.cost)}${unit}` : "–", color: "#7b4bc4", tone: t.complete ? "" : "warn", sub: t.complete ? `${fmt(c.berth_length_m, 1)} m of berth` : "prices missing" },
+    { label: "Per metre of berth", value: t.cost || t.complete ? `${fmt(c.per_m.cost)}${unit}` : "–", color: "#00467a" },
+    { label: "Concrete", value: `${fmt(t.concrete_m3, 0)} m³`, color: "#8c877c", sub: `${fmt(c.per_m.concrete_m3, 2)} m³/m` },
+    { label: "Reinforcement", value: `${fmt(t.rebar_t, 1)} t`, color: "#c2477d", sub: `${fmt(c.per_m.rebar_t, 3)} t/m` },
+    { label: "Structural steel", value: `${fmt(t.steel_t, 1)} t`, color: "#1e8fc0", sub: `${fmt(c.per_m.steel_t, 3)} t/m` },
+  ])}${split}`;
+}
+
 async function renderCostingTab(host) {
   let p = state.project;
   const cur = p.prices.currency || "";
@@ -4287,7 +4344,7 @@ async function renderCostingTab(host) {
           })
           .join("");
         const t = c.totals;
-        return `${head}<div class="panel">
+        return `${head}${costSummaryHtml(c, cur)}<div class="panel">
           <div class="row">
             <label>Berth length (m) ${input(c.section_id, "berth_length", fmt(c.berth_length_m, 1))}</label>
             <label>Length the model covers (m) ${input(c.section_id, "model_length", c.model_length_m != null ? fmt(c.model_length_m, 1) : "")}</label>
@@ -5586,9 +5643,10 @@ async function renderOpeningsTab(host) {
   const editor = (name, el, keys, def) => {
     const schema = { properties: Object.fromEntries(keys.map((k) => [k, def.properties[k]])) };
     const card = document.createElement("div");
-    card.className = "panel";
+    card.className = "panel kind-card";
     card.style.marginBottom = "16px";
-    card.innerHTML = `<div class="element-head"><h3>${esc(name)}<span class="type">${esc(KIND_LABEL[el.kind] || el.kind)}</span></h3></div>`;
+    card.style.setProperty("--kind", kindColor(el.kind));
+    card.innerHTML = `<div class="element-head"><h3>${kindIcon(el.kind, 30)}${esc(name)}<span class="type">${esc(KIND_LABEL[el.kind] || el.kind)}</span></h3></div>`;
     const fs = renderObject(schema, el, `sections.${idx}.elements.${name}`, "");
     fs.style.border = "0";
     fs.style.padding = "0";
