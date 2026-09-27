@@ -568,7 +568,7 @@ export class View3D {
               // A small overlap hides the seams between bands.
               const up = k ? (z + segs[k - 1][0]) / 2 + 0.04 : Math.min(z + 0.25, top);
               const down = k < segs.length - 1 ? (z + segs[k + 1][0]) / 2 - 0.04 : Math.max(z - 0.25, bottom);
-              const what = src.words ? src.words(u, row) : `utilisation ${u > 10 ? "> 10, unsafe by far" : u.toFixed(2)}`;
+              const what = src.words ? src.words(u, row) : u == null ? "not designed here" : `utilisation ${u > 10 ? "> 10, unsafe by far" : u.toFixed(2)}`;
               items.push({ kind: "line", a: [x, y, up], b: [x, y, down], color: src.color(u), width, faded, cap: "butt",
                 element: e.element, tip: `${e.element} at X ${x}, Y ${y}, z ${z.toFixed(1)} m: ${what}` });
             });
