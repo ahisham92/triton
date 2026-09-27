@@ -2121,8 +2121,8 @@ class SectionJoints(_Model):
     runs: list[float] = Field(
         default_factory=list,
         title="Straight runs of the berth",
-        description="Length of each straight run between corners, in order, m. Empty: the berth length "
-        "from Costing as one run, or for a corner berth the parts found in the model.",
+        description="Length of each straight run between corners, in order, m. Empty: no joints are "
+        "placed (the berth length on the Costing tab is for costing only).",
     )
     pile_spacing: float | None = _m(
         "Spacing of the pile rows along the berth",

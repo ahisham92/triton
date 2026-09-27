@@ -1344,7 +1344,7 @@ function jointsEditor(p, s) {
       longest segment of its part of the berth as its length between movement joints.</div>
     <div class="row" style="gap:10px;align-items:flex-start;flex-wrap:wrap">
       <select data-j="mode"><option value="auto">Placed by the rules</option><option value="manual">Only the joints set by hand</option></select>
-      <label class="hint" style="margin:0" title="${esc(def.runs.description)}">Straight runs, m <input data-j="runs" placeholder="berth length" style="width:150px"></label>
+      <label class="hint" style="margin:0" title="${esc(def.runs.description)}">Straight runs, m <input data-j="runs" placeholder="e.g. 300, 150" style="width:150px"></label>
       <label class="hint" style="margin:0" title="${esc(def.pile_spacing.description)}">Pile row spacing <input type="number" step="any" min="0" data-j="pile_spacing" placeholder="from the model" style="width:110px"> m</label>
       <label class="hint" style="margin:0" title="${esc(def.first_row.description)}">First row from each run's start <input type="number" step="any" min="0" data-j="first_row" placeholder="half a bay" style="width:100px"> m</label>
       <label class="hint" style="margin:0" title="${esc(def.fixed.description)}">Joints set by hand at <input data-j="fixed" placeholder="e.g. 120, 250" style="width:130px"> m</label>
@@ -4522,7 +4522,8 @@ async function renderCostingTab(host) {
             <div class="field"><label>Length the model covers</label>${input(c.section_id, "model_length", c.model_length_m != null ? fmt(c.model_length_m, 1) : "", "", "m")}</div>
           </div>
           <p class="status">Empty boxes use the value shown in grey, from the design. The number follows the berth length and spacing
-            as you type them; a number you give yourself stays until you press Use automatic.</p>
+            as you type them; a number you give yourself stays until you press Use automatic. The berth length is for
+            costing only: the expansion joints, and so the beams' and slabs' restraint length, come from the runs on the Sections tab.</p>
           <div class="scroll"><table class="cost"><tr><th>Element</th><th>Spacing</th><th>Number</th><th>Length</th><th>Steel price</th><th>Basis</th>
             <th>Concrete m³</th><th>Rebar t</th><th>Steel t</th><th>Cost (${esc(cur)})</th><th>Per m</th></tr>${rows}
             <tr class="total"><td>Total</td><td colspan="5">${fmt(c.berth_length_m, 1)} m of berth${t.complete ? "" : " (incomplete: prices missing)"}</td>

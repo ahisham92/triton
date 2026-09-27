@@ -49,7 +49,9 @@ def _furniture_spots(project: Project, section: Section) -> list | None:
 
     if section.joints.furniture:
         return None  # positions given for the section, already in its joints
-    berth = sum(section.joints.runs) or section.costing.berth_length or 0.0
+    # The joints are laid only along the section's own runs, never the Costing berth length
+    # (Ahmed, 2026-09-27).
+    berth = sum(section.joints.runs) or 0.0
     return nominal(project.furniture, section.furniture, berth) or None
 
 
@@ -97,7 +99,9 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
                 exclude=_SECTION_OWN | {k for k in ("end_trim", "side_trim") if not getattr(section, k)},
             )
         ),
-        "load multipliers": _hash([f.model_dump(mode="json") for f in section.load_factors]),
+        # A multiplier's note does not change the results, so it is blanked (Ahmed, 2026-09-27). Empty
+        # notes hash as they did before.
+        "load multipliers": _hash([{**f.model_dump(mode="json"), "note": ""} for f in section.load_factors]),
         "sheet mapping": _hash({k: v.model_dump(mode="json") for k, v in section.sheet_map.items()}),
         "load combinations": _hash([section.combinations, section.combination_map]),
         "reviewed warnings": _hash(sorted(section.review.items())),
@@ -107,16 +111,17 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
     plates = any(isinstance(e, (BeamInput, SlabInput)) for e in section.elements.values())
     if joints.use_in_restraint and plates:
         # The joint layout sets the beams' and slabs' restraint length: its rules, the section's runs
-        # (or the berth length on the Costing tab when no runs are given) and the furniture priced
-        # each. A section with no beam or slab does not use it, so its costing stays out of the design.
+        # and the furniture priced each. A section with no beam or slab does not use it, so its
+        # costing stays out of the design. The berth length on the Costing tab no longer lays the
+        # joints (Ahmed, 2026-09-27), so it is left out; the None in its place keeps earlier hashes.
         c = section.costing
         # Items with no berth place nothing; those added to the defaults later then keep earlier hashes.
-        berth = sum(section.joints.runs) or c.berth_length
+        berth = sum(section.joints.runs)
         parts[JOINTS] = _hash(
             [
                 joints.model_dump(mode="json"),
                 section.joints.model_dump(mode="json"),
-                None if section.joints.runs else c.berth_length,
+                None,
                 [
                     i.model_dump(mode="json")
                     for i in c.items
@@ -225,8 +230,8 @@ def element_inputs(
 
 def _own_joints(parts: dict[str, str], name: str, plates: set[str] | None) -> dict[str, str]:
     """The joint layout sets only the beams' and slabs' restraint length (``plates``, the elements
-    :func:`supports` names): the other elements leave it out, so a berth length typed on the Costing
-    tab never puts a pile or wall out of date. ``plates`` None: kept for every element as before."""
+    :func:`supports` names): the other elements leave it out, so a change to the joints never puts a
+    pile or wall out of date. ``plates`` None: kept for every element as before."""
     if plates is None or name in plates or JOINTS not in parts:
         return parts
     return {k: v for k, v in parts.items() if k != JOINTS}

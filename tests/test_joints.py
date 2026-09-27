@@ -98,14 +98,23 @@ def test_furniture_from_costing_items():
     assert [f["chainage"] for f in got] == [0.0, 25.0, 50.0, 75.0, 100.0]
 
 
-def test_section_layout_needs_a_berth_length():
+def test_section_layout_needs_the_runs():
+    """The joints are laid only along the section's own runs (Sections tab). The berth length on the
+    Costing tab is for costing only and places no joint (Ahmed, 2026-09-27): the expansion joints are
+    given, so it must not set the beams' and slabs' restraint length."""
     s = Section()
     assert section_joints(DesignSettings(), s, {})["segments"] == []
+    s = Section(costing=SectionCosting(berth_length=300.0))
+    out = section_joints(DesignSettings(), s, {})
+    assert out["segments"] == [] and "Sections tab" in out["text"]
     s = Section(
-        costing=SectionCosting(berth_length=300.0),
-        joints=SectionJoints(pile_spacing=6.0, furniture=[FurnitureAt(name="Bollard", chainage=60.0)]),
+        costing=SectionCosting(berth_length=500.0),
+        joints=SectionJoints(
+            runs=[300.0], pile_spacing=6.0, furniture=[FurnitureAt(name="Bollard", chainage=60.0)]
+        ),
     )
     out = section_joints(DesignSettings(), s, {})
+    assert out["berth_length_m"] == 300.0 and out["runs_from"] == "the runs given on the Sections tab"
     assert out["pile_spacing_from"] == "given" and out["furniture_from"].startswith("the positions")
     assert len(out["segments"]) == 6
     text = dxf.to_dxf(joints_drawing(out, DrawingSettings()))
@@ -117,7 +126,7 @@ def test_beam_restraint_uses_the_longest_segment():
     plain = run_section(DesignSettings(), section(), wb, only=ONLY)
     assert plain["joints"]["segments"] == []
     assert plain["beams"][0]["restraint"]["length_m"] == 58.0
-    s = section(costing=SectionCosting(berth_length=90.0))
+    s = section(joints=SectionJoints(runs=[90.0]))
     out = run_section(DesignSettings(), s, wb, only=ONLY)
     j = out["joints"]
     assert j["pile_spacing_m"] == pytest.approx(4.0)
@@ -132,9 +141,18 @@ def test_beam_restraint_uses_the_longest_segment():
     assert run_section(off, s, wb, only=ONLY)["beams"][0]["restraint"]["length_m"] == 58.0
 
 
+def test_a_berth_length_does_not_set_the_restraint_length():
+    """The berth length on the Costing tab does not set the beams' and slabs' restraint length
+    (Ahmed, 2026-09-27): with no runs on the Sections tab the beam keeps its own length."""
+    wb = berth()
+    out = run_section(DesignSettings(), section(costing=SectionCosting(berth_length=90.0)), wb, only=ONLY)
+    assert out["joints"]["segments"] == []
+    assert out["beams"][0]["restraint"]["length_m"] == 58.0
+
+
 def test_a_turned_berth_places_the_same_joints():
     wb = berth()
-    s = section(costing=SectionCosting(berth_length=90.0))
+    s = section(joints=SectionJoints(runs=[90.0]))
     straight = run_section(DesignSettings(), s, wb, only=ONLY)["joints"]
     turned = run_section(DesignSettings(), s, turn_workbook(wb, 30.0), only=ONLY)["joints"]
     assert turned["pile_spacing_m"] == pytest.approx(straight["pile_spacing_m"], abs=0.01)  # X, Y to 0.01 m

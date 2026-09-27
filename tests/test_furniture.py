@@ -294,6 +294,7 @@ def test_the_joints_keep_clear_of_the_furniture_and_the_furniture_of_the_joints(
 
     p = project()
     s = p.sections[0]
+    s.joints.runs = [300.0]  # the joints follow the runs, not the Costing berth length (Ahmed, 2026-09-27)
     at = F.positions_for(p, s)
     spots = at(300.0)
     assert {x["name"] for x in spots} >= {"Fender", "Bollard", "Ladder", "Crane stopper", "Storm pin"}
