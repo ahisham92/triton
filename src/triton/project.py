@@ -1242,6 +1242,15 @@ class SlabInput(_ConcreteSection):
         "spans between them. Stations can also be set on the diagram on the Design tab.",
         json_schema_extra={"unit": "m"},
     )
+    station_thicknesses: list[float] = Field(
+        default_factory=list,
+        title="Thickness at each station",
+        description="mm, one per station from the front beam (for a slab that slopes or steps): the bars "
+        "along the strips at each station are designed at its own thickness, as the calc report's AdSec "
+        "strips. Empty: one thickness (the slab thickness) everywhere. The bars across the strips, shear, "
+        "punching and restraint keep the slab thickness.",
+        json_schema_extra={"unit": "mm"},
+    )
     twisting: Literal["ignore", "wood_armer"] = Field(
         "ignore",
         title="Twisting moment Mxy",

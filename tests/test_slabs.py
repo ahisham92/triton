@@ -736,3 +736,19 @@ def test_additional_bars_never_go_between_the_mesh_bars():
     sec.slab_strips["Deck"] = SlabStrips(bars={k: "layers: Ø32@150 | Ø25@150" for k in row["keys"]["top"]})
     mine = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
     assert any("between the mesh bars" in n and "left out" in n for n in mine["notes"])
+
+
+def test_a_thickness_at_each_station():
+    one = design_deck()
+    each = design_deck(station_thicknesses=[800, 1000, 800])
+    rows = lambda d: {(r["layer"], tuple(r["station"]), r["strip"]): r for r in d["strip_design"]["rows"]}  # noqa: E731
+    a, b = rows(one), rows(each)
+    col = ("top_x", (2.0, 6.0), "column")
+    # The thicker station over the pile row: more lever arm, so less steel or more capacity.
+    assert b[col]["thickness_mm"] == 1000 and a[col]["thickness_mm"] == 800
+    assert b[col]["as_mm2_per_m"] <= a[col]["as_mm2_per_m"] and b[col]["ratio"] < a[col]["ratio"]
+    assert b[("top_x", (0.0, 2.0), "column")]["thickness_mm"] == 800
+    assert any("own thickness" in n for n in each["notes"])
+    wrong = design_deck(station_thicknesses=[800, 1000])
+    assert all(r["thickness_mm"] == 800 for r in wrong["strip_design"]["rows"] if "thickness_mm" in r)
+    assert any("one thickness" in n for n in wrong["notes"])

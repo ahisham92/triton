@@ -485,7 +485,14 @@ def test_the_beam_bar_rule_puts_only_beams_out_of_date():
     now = fresh.fingerprint(project, section, None)
     own = {n: e.model_dump(mode="json") for n, e in section.elements.items()}
     for o in own.values():
-        for key in ("rooms", "manholes", "channels", "construction_joints", "punching_piles"):
+        for key in (
+            "rooms",
+            "manholes",
+            "channels",
+            "construction_joints",
+            "punching_piles",
+            "station_thicknesses",
+        ):
             if not o.get(key):
                 o.pop(key, None)
         for key in ("link_size", "link_spacing"):
