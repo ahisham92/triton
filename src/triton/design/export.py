@@ -24,6 +24,9 @@ centreline, z up from mid-depth, mm), the links, and the transverse bars of the
 top and bottom faces per metre. ``level_m`` is the plate's level in the model. Rooms cut into the
 beam (``rooms``) give their hole in the section and the bars over their length.
 
+Diaphragm walls (``diaphragm_walls``, only when the section has one): one panel's cage zone by zone
+down the wall, both faces' vertical bars, the horizontal bars and the links, and the wall's line in plan.
+
 Slabs (``slabs``): per face and direction, the basic mesh and each zone of
 added bars (a plan rectangle), layer by layer with the distance of each layer
 from its face (mm), and the shear link zones.
@@ -121,8 +124,70 @@ def pile_cages(project_name: str, results: dict[str, Any], section: str = "") ->
         "slabs": [_slab(d) for d in results.get("slabs", []) if d.get("layers")],
         "approach": [_approach(a) for a in results.get("approach_slabs", []) if a.get("bending")],
     }
+    walls = [_dwall(w) for w in results.get("diaphragm_walls", []) if (w.get("design") or {}).get("zones")]
+    if walls:  # only when the engineer has a diaphragm wall: other projects' files stay as they were
+        out["diaphragm_walls"] = walls
     _connections(out, results, stored)
     return out
+
+
+def _dwall(w: dict[str, Any]) -> dict[str, Any]:
+    """A diaphragm wall: one panel's cage, zone by zone from the top down. Vertical bars per face
+    (``per_cage`` of them in a cage, ``layers`` deep, spread evenly between ``end_clear_mm`` from each
+    end of the cage), horizontal bars outermost with the cover to them, and the links across the wall."""
+    from .dwall_design import END_CLEAR
+
+    d = w["design"]
+
+    def face(f: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "bars": f["bars"],
+            "diameter_mm": f["phi"],
+            "spacing_mm": f["spacing"],
+            "layers": f.get("layers", 1),
+            "per_cage": f.get("per_cage"),
+        }
+
+    zones = []
+    for z in d["zones"]:
+        lk = z["shear"].get("links") or {}
+        zones.append(
+            {
+                "top_m": z["top"],
+                "bottom_m": z["bottom"],
+                "front": face(z["front"]),
+                "back": face(z["back"]),
+                "horizontal": {
+                    f: {
+                        "bars": z["horizontal"][f]["bars"],
+                        "diameter_mm": z["horizontal"][f]["phi"],
+                        "spacing_mm": z["horizontal"][f]["spacing"],
+                    }
+                    for f in ("front", "back")
+                },
+                "links": {
+                    "label": lk["label"],
+                    "diameter_mm": lk["phi"],
+                    "spacing_mm": lk["spacing"],
+                    "leg_spacing_mm": lk["leg_spacing"],
+                }
+                if lk.get("found")
+                else None,
+            }
+        )
+    return {
+        "element": w["element"],
+        "thickness_mm": d["thickness"],
+        "panel_width_mm": d["panel_width"],
+        "cover_mm": d["cover"],
+        "end_clear_mm": END_CLEAR,
+        "top_level_m": d["top"],
+        "toe_level_m": d["toe"],
+        "count": d.get("count"),
+        "line_m": d.get("line"),
+        "front_face": d.get("front_sign"),
+        "zones": zones,
+    }
 
 
 def _connections(out: dict[str, Any], results: dict[str, Any], stored: dict[tuple, list]) -> None:

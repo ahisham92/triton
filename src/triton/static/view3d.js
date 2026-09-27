@@ -805,7 +805,7 @@ export class View3D {
         const [z0, x0, y0] = pts[i - 1];
         const [z1, x1, y1] = pts[i];
         items.push({ kind: "line", a: [mb.x, mb.y, z0], b: [mb.x, mb.y, z1], da: [m(x0), m(y0), 0], db: [m(x1), m(y1), 0],
-          color: col(Math.hypot(x1, y1)), width: mb.kind === "combi_wall" ? 5 : mb.kind === "sheet_pile_wall" ? 1.5 : 3.5, deformed: true,
+          color: col(Math.hypot(x1, y1)), width: mb.kind === "combi_wall" ? 5 : mb.kind === "sheet_pile_wall" || mb.kind === "diaphragm_wall" ? 1.5 : 3.5, deformed: true,
           tip: `${mb.element} at X ${mb.x}, Y ${mb.y}, z ${z1.toFixed(1)} m: ${f1(x1)} mm in X, ${f1(y1)} mm in Y (${head}; ${d.combination}, estimate)` });
       }
     }
@@ -837,7 +837,7 @@ export class View3D {
   }
 
   // How far the front wall moves at a level (m in X and Y), from the king piles, else the sheet pile
-  // wall: the soil against the wall follows it.
+  // wall or the diaphragm wall: the soil against the wall follows it.
   _wallMove() {
     const d = this.def;
     if (!d) return null;
@@ -849,7 +849,7 @@ export class View3D {
     };
     for (const mb of d.members || []) if (mb.kind === "combi_wall") for (const [z, ux, uy] of mb.points) add(z, ux, uy);
     if (!bins.size)
-      for (const mb of d.members || []) if (mb.kind === "sheet_pile_wall") for (const [z, ux, uy] of mb.points) add(z, ux, uy);
+      for (const mb of d.members || []) if (mb.kind === "sheet_pile_wall" || mb.kind === "diaphragm_wall") for (const [z, ux, uy] of mb.points) add(z, ux, uy);
     if (!bins.size)
       for (const w of d.walls || [])
         for (const st of w.strips) for (const [z, u] of st.points) add(z, w.across === "X" ? u : 0, w.across === "Y" ? u : 0);

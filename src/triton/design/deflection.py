@@ -10,6 +10,8 @@ exact for them (a tip load on a cantilever gives P L³ / 3EI, a uniform moment M
   the element (every plan position) is worked out and the one that moves most is shown.
 * Sheet pile wall: M11 per metre down the wall, in 1 m strips along it (points inside the king
   piles left out), with the AZ section's EI per metre; the strip that moves most is shown.
+* Diaphragm wall: as the sheet pile wall, M11 per metre in 1 m strips, with the concrete strip's
+  Ec·h³/12 per metre (cracked: 7.4.3 with the designed bars of the face in tension).
 * Boundary conditions (Design tab). Tied at the deck (the default): the deck is stiff in its own plane,
   so every pile and wall head in it (within 2 m of the highest pile head: the deck and its beams)
   moves the same. That movement is the mean head displacement of all the piles, each fixed at its
@@ -65,6 +67,7 @@ from ..project import (
     CombiWallInput,
     DeflectionSettings,
     DesignSettings,
+    DiaphragmWallInput,
     PileInput,
     Section,
     SheetPileInput,
@@ -667,6 +670,134 @@ def _spw(
     )
 
 
+# --- Diaphragm wall -----------------------------------------------------------------------------------
+
+
+def _dwall_faces(design: dict | None, z: np.ndarray, h: float, cover: float) -> dict[str, np.ndarray]:
+    """Per level: the tension steel (mm²/m) and its depth d (mm) of each face as designed, else the
+    9.2.1.1 floor 0.0013·b·d."""
+    d_min = h - cover - 16 - 10  # a Ø20 inside Ø16 horizontal bars
+    out = {f: (np.full(len(z), 0.0013 * 1000 * d_min), np.full(len(z), d_min)) for f in ("front", "back")}
+    zones = (design or {}).get("zones") or []
+    if not zones:
+        return out
+    for f in ("front", "back"):
+        a, d = out[f]
+        for zn in zones:
+            inside = (z <= zn["top"] + 1e-6) & (z >= zn["bottom"] - 1e-6)
+            a[inside] = zn[f]["area_mm2_per_m"]
+            d[inside] = zn[f].get("d_mm") or d_min
+    return out
+
+
+def _dwall(
+    name: str,
+    wall: DiaphragmWallInput,
+    settings: DesignSettings,
+    ds: DeflectionSettings,
+    sheets: dict[str, SheetData],
+    design: dict | None,
+) -> _Tall | None:
+    """The diaphragm wall as the sheet pile wall: M11 per metre down the wall in 1 m strips, with the
+    concrete strip's E·I per metre: gross Ec·h³/12, or cracked by EN 1992-1-1 7.4.3 with the bars of the
+    face in tension as designed (the 9.2.1.1 minimum before it is designed)."""
+    wall = with_project_grades(wall, settings.materials, settings.durability)
+    combo, why = pick_combination(sheets, ["M_11"], ds.combination, ds.baseline)
+    if combo is None:
+        return None
+    top_cut = None if wall.top_level is None else wall.top_level + settings.results_into_connection / 1e3
+
+    def moments(c: str) -> pd.DataFrame:
+        f = sheets[c].frame[["X", "Y", "Z", "M_11"]].dropna()
+        return f if top_cut is None else f[f["Z"] <= top_cut + 1e-6]
+
+    f = moments(combo)
+    if f.empty:
+        return None
+    base, base_note = pick_baseline(sheets, ["M_11"], ds.baseline, combo)
+    fb = moments(base) if base else None
+    along = "X" if np.ptp(f["X"].to_numpy(float)) > np.ptp(f["Y"].to_numpy(float)) else "Y"
+    h = wall.thickness
+    cover = float(wall.cover if wall.cover is not None else settings.durability.covers.piles)
+    grade = wall.concrete or settings.materials.concrete
+    e_c, e_words = _e_concrete(grade, settings, ds)
+    ei = e_c * 1e3 * (h / 1e3) ** 3 / 12  # kN·m² per m
+    cracked = ds.stiffness == "cracked"
+    fctm = concrete(grade).fctm
+    alpha = 200_000.0 / e_c
+    front = 1.0 if (design or {}).get("front_sign", "positive") == "positive" else -1.0
+    mcr = fctm * 1000 * h * h / 6 / 1e6  # kNm/m
+
+    def kappa(z: np.ndarray, m: np.ndarray) -> np.ndarray:
+        k1 = m / ei
+        if not cracked:
+            return k1
+        faces = _dwall_faces(design, z, h, cover)
+        tens_front = m * front >= 0
+        a = np.where(tens_front, faces["front"][0], faces["back"][0])
+        d = np.where(tens_front, faces["front"][1], faces["back"][1])
+        rho = a / (1000 * d)
+        x = d * (-alpha * rho + np.sqrt((alpha * rho) ** 2 + 2 * alpha * rho))
+        i_cr = (1000 * x**3 / 3 + alpha * a * (d - x) ** 2) / 1e12  # m⁴ per m
+        k2 = m / (e_c * 1e3 * i_cr)
+        zeta = np.where(np.abs(m) > mcr, 1 - BETA * (mcr / np.maximum(np.abs(m), 1e-9)) ** 2, 0.0)
+        return zeta * k2 + (1 - zeta) * k1
+
+    def strips(frame: pd.DataFrame) -> dict[float, pd.Series]:
+        return {
+            strip: g.groupby((g["Z"] / LEVEL).round() * LEVEL)["M_11"].mean().sort_index()
+            for strip, g in frame.groupby(np.floor(frame[along] / STRIP))
+        }
+
+    based = strips(fb) if fb is not None else {}
+    out, lost = [], 0
+    full = np.ptp(f["Z"].to_numpy(float))
+    firm = ds.firm_soil_level
+    for strip, g in strips(f).items():
+        if len(g) < 4 or np.ptp(g.index.to_numpy(float)) < 0.9 * full:
+            continue
+        z, m = g.index.to_numpy(float), g.to_numpy(float)
+        if base:
+            gb = based.get(strip)
+            if gb is None or len(gb) < 2:
+                lost += 1
+            else:
+                m = m - np.interp(z, gb.index.to_numpy(float), gb.to_numpy(float))
+        centre = (strip + 0.5) * STRIP
+        line = float(f["Y" if along == "X" else "X"].mean())
+        xy = (centre, line) if along == "X" else (line, centre)
+        out.append(_Member(f"1 m strip at {along} {centre:g} m", z, {"M_11": kappa(z, m)}, firm, xy))
+    if not out:
+        return None
+    stiff = f"{h:g} mm concrete strip, {e_words}: gross EI {ei:,.0f} kN·m² per metre."
+    if cracked:
+        stiff += (
+            f" Cracked by EN 1992-1-1 7.4.3 (ζ = 1 − 0.5 (Mcr / M)², Mcr = fctm·h²/6 = {mcr:,.0f} kNm/m), "
+            + (
+                "with the designed bars of the face in tension."
+                if (design or {}).get("zones")
+                else "with the 9.2.1.1 minimum steel: design the wall for its own bars."
+            )
+        )
+    return _Tall(
+        {
+            "element": name,
+            "kind": "diaphragm_wall",
+            "axis": "level",
+            "combination": combo,
+            "combination_note": why,
+            "baseline": base,
+            "baseline_note": _lost(base_note, lost, len(out)),
+            "stiffness": stiff,
+            "notes": [],
+        },
+        False,
+        out,
+        {"M_11": "across the wall (from M11)"},
+        {"M_11": "Y" if along == "X" else "X"},
+    )
+
+
 # --- Boundary conditions and the deck -----------------------------------------------------------------
 
 WAY = {"M_3": "across", "M_11": "across", "M_2": "along"}
@@ -790,7 +921,7 @@ def _settle(t: _Tall, ds: DeflectionSettings, deck: dict | None) -> dict[str, An
     if tied:
         moves = ", ".join(f"{deck['move'][w] * 1e3:.1f} mm {w}" for w in dict.fromkeys(tied))
         words.append(f"The deck moves {moves}.")
-    noun = "strip" if t.entry["kind"] == "sheet_pile_wall" else "one"
+    noun = "strip" if t.entry["kind"] in ("sheet_pile_wall", "diaphragm_wall") else "one"
     return _summary(
         {
             **t.entry,
@@ -938,6 +1069,7 @@ def _collect(
                     sheets.setdefault(name, {})[combo] = sheet
     axes = {a["element"]: a for a in getattr(workbook, "axes", None) or []}
     designed = {p["element"]: p for p in (results or {}).get("piles") or []}
+    dwalls = {w["element"]: w.get("design") for w in (results or {}).get("diaphragm_walls") or []}
     out, skipped = [], []
     king = []
     for name, el in section.elements.items():
@@ -954,7 +1086,9 @@ def _collect(
         own = sheets.get(name) or {}
         own = {c: s for c, s in own.items() if not s.frame.empty}
         if not own:
-            if isinstance(el, PileInput | CombiWallInput | SheetPileInput | SlabInput | BeamInput):
+            if isinstance(
+                el, PileInput | CombiWallInput | SheetPileInput | DiaphragmWallInput | SlabInput | BeamInput
+            ):
                 skipped.append(f"{name}: no results in the workbook.")
             continue
         try:
@@ -964,6 +1098,8 @@ def _collect(
                 tall = _combi(name, el, settings, ds, own, axes.get(name))
             elif isinstance(el, SheetPileInput):
                 tall = _spw(name, el, ds, own, king)
+            elif isinstance(el, DiaphragmWallInput):
+                tall = _dwall(name, el, settings, ds, own, dwalls.get(name))
             elif isinstance(el, SlabInput | BeamInput):
                 if not plates:
                     continue

@@ -88,6 +88,15 @@ export async function renderClashes(host, h) {
       ${w.levels.map((l) => `<td class="num">${l.above_m >= 0 ? "+" : ""}${l.above_m.toFixed(2)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>
     <ul class="status">${data.water.filter((w) => w.severity !== "ok").map((w) => `<li>${esc(w.text)}</li>`).join("")}</ul></div>`;
 
+  const wpill = (n, tone) => `<span class="pill ${n ? tone : "none"}">${n}</span>`;
+  const wallsHtml = () => !data.walls?.length ? "" : `<div class="panel"><h2>Diaphragm wall bars into the beam</h2>
+    <p class="status">One panel's cage in the middle of the wall, its top zone of bars running straight up into the beam and stopping under its top bars (as the combi wall, SC-401). Nothing here changes a design.</p>
+    ${data.walls.map((w) => `<h3 style="margin-top:12px">${esc(w.element)}${w.host ? ` into ${esc(w.host)}` : ""}</h3>
+      <p class="status">${esc(w.text)}</p>
+      ${w.groups?.length ? `<div class="scroll"><table><thead><tr><th>Beam bars</th><th>Wall bars</th><th class="num">Clash</th><th class="num">Tight</th><th class="num">Least gap (mm)</th></tr></thead><tbody>
+        ${w.groups.map((g) => `<tr><td>${esc(g.beam_bars)}</td><td>${esc(g.wall_bars.join(", "))}</td><td class="num">${wpill(g.clash, "bad")}</td><td class="num">${wpill(g.tight, "warn")}</td><td class="num">${fmt(g.least_gap_mm, 1)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${w.ways?.length ? `<ul class="status">${w.ways.map((x) => `<li><b>${esc(x.title)}</b> ${yes(x.passes)}: ${esc(x.text)}</li>`).join("")}</ul>` : ""}`).join("")}</div>`;
+
   const whatifsHtml = () => !data.whatifs.length ? "" : `<div class="panel"><h2>What ifs kept</h2><div class="scroll"><table><thead><tr><th>Connection</th><th>Taken out</th><th>Note</th><th>Result</th><th>Steel</th><th>Calculation</th><th></th></tr></thead><tbody>
     ${data.whatifs.map((w) => `<tr><td>${esc(w.group.replace("|", " into "))}, head ${w.head + 1}</td><td>${w.bars.length} bar(s)${w.pile_bars.length ? `, ${w.pile_bars.length} pile bar(s)` : ""}</td>
       <td>${esc(w.note || "")}</td><td>${w.error ? `<span class="flag-bad">${esc(w.error)}</span>` : yes(w.passes)}</td><td class="num">${w.delta_kg == null ? "–" : `${f1(w.delta_kg)} kg`}</td>
@@ -104,12 +113,13 @@ export async function renderClashes(host, h) {
       { label: "Pile heads checked", value: data.heads_checked, color: "#2a78d6", sub: `${data.groups.length} connection${data.groups.length === 1 ? "" : "s"}` },
       { label: "Heads with clashes", value: clashing, tone: clashing ? "bad" : "ok", sub: clashing ? "before any way out" : "all clear" },
       of ? { label: "Solved by the chosen way out", value: `${solved}/${of}`, tone: solved === of ? "ok" : "warn", sub: passMeter(solved, of) } : null,
+      ...(data.walls || []).filter((w) => w.count).map((w) => ({ label: `${esc(w.element)} bars into the beam`, value: w.count.wall_bars, tone: w.count.pairs ? "bad" : "ok", sub: w.count.pairs ? `of ${w.bars} in a panel meet its bars` : "all clear" })),
       worst ? { label: "Front beam and the water", value: esc(worst.status), tone: TONE[worst.severity], sub: esc(worst.what) } : null,
     ]);
   };
 
   const draw = () => {
-    out.innerHTML = summaryHtml() + settingsHtml() + waterHtml() + groupsHtml() + whatifsHtml() + `<div id="cl-head"></div>`;
+    out.innerHTML = summaryHtml() + settingsHtml() + waterHtml() + groupsHtml() + wallsHtml() + whatifsHtml() + `<div id="cl-head"></div>`;
     out.querySelector("#cl-save").onclick = async () => {
       const body = { rule: out.querySelector("#cl-rule").value, fixing_tolerance: Number(out.querySelector("#cl-tol").value), plate_level: out.querySelector("#cl-plate").value, beam_bars: out.querySelector("#cl-beam").value, water_margin: Number(out.querySelector("#cl-water").value),
         weld: { ...(data.settings.weld || {}), leg: Number(out.querySelector("#cl-leg").value), filler_fu: Number(out.querySelector("#cl-fu").value) } };

@@ -1,9 +1,10 @@
 """The deformed shape of a section's whole structure, one load combination at a time, for the 3D view.
 
 It is the Design tab's displacement estimate (triton/design/deflection.py) drawn together: every pile
-and king pile (each plan position, not only the one that moves most), the sheet pile wall in 1 m
-strips and the deck's plates in 1 m strips, with the same settings: how the piles and walls are held
-(tied at the deck by default), the stiffness, long term, and the phase the movement is measured from.
+and king pile (each plan position, not only the one that moves most), the sheet pile and diaphragm
+walls in 1 m strips and the deck's plates in 1 m strips, with the same settings: how the piles and
+walls are held (tied at the deck by default), the stiffness, long term, and the phase the movement is
+measured from.
 So it has the same limits: it is not a Plaxis displacement result, and the ground's own movement is
 not in it.
 

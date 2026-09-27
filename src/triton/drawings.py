@@ -1385,6 +1385,139 @@ def _approach_views(a: dict[str, Any]) -> list[View]:
     return [v]
 
 
+# --- diaphragm walls ---------------------------------------------------------------------------------
+
+LAYER_CLEAR_MM = 32.0  # clear gap between two layers of vertical bars (the slabs' minimum clear spacing)
+
+
+def _dwall_zone_view(w: dict[str, Any], i: int, z: dict[str, Any], st: DrawingSettings) -> View:
+    """A plan section through one panel's cage in one zone: the front (sea) face at the bottom, the
+    horizontal bars outermost, the vertical bars inside them layer by layer, the links across."""
+    W, T, c = w["panel_width_mm"], w["thickness_mm"], w["cover_mm"] or 75.0
+    end = w.get("end_clear_mm") or 100.0
+    v = View(
+        f"{w['element']} - zone {i + 1} plan",
+        f"{w['element']}: zone {i + 1} plan section",
+        25,
+        w["element"],
+        (0.0, -T / 2),
+        "the front (sea) face at the middle of the panel",
+    )
+    v.rect("concrete", (-W / 2, -T / 2), (W / 2, T / 2))
+    sc = v.scale
+    for face, sgn in (("front", -1.0), ("back", 1.0)):
+        hz = z["horizontal"][face]
+        phi_h = hz["diameter_mm"] or 0.0
+        y_h = sgn * (T / 2 - c - phi_h / 2)
+        if phi_h:
+            v.line(bar_key(phi_h), (-W / 2 + c, y_h), (W / 2 - c, y_h))
+        f = z[face]
+        phi = f["diameter_mm"]
+        layers = max(int(f.get("layers") or 1), 1)
+        n = max(int((f.get("per_cage") or 2) / layers), 2)
+        xs = [-W / 2 + end + k * (W - 2 * end) / (n - 1) for k in range(n)]
+        gap = phi + max(phi, LAYER_CLEAR_MM)
+        for k in range(layers):
+            y = sgn * (T / 2 - c - phi_h - phi / 2 - k * gap)
+            for x in xs:
+                v.bar(phi, (x, y))
+        tip = (xs[-1], sgn * (T / 2 - c - phi_h - phi / 2))
+        words = f"{f.get('per_cage')}ø{_mm(phi)} ({f['bars']}) {face.upper()} FACE"
+        v.leader(tip, (W / 2 + 6 * sc, tip[1] + sgn * 6 * sc), words, 0.8)
+        v.leader(
+            (-W / 2 + c + 2 * sc, y_h),
+            (
+                -W / 2 - 10 * sc - 0.8 * TEXT_MM * 0.8 * sc * len(hz["bars"] + " HORIZONTAL"),
+                y_h + sgn * 6 * sc,
+            ),
+            f"{hz['bars']} HORIZONTAL",
+            0.8,
+        )
+    lk = z.get("links")
+    if lk:
+        phi_l = lk["diameter_mm"]
+        e = c + phi_l / 2
+        legs = max(int(round((W - 2 * end) / lk["leg_spacing_mm"])) + 1, 2)
+        for k in range(legs):
+            x = -W / 2 + end + k * (W - 2 * end) / (legs - 1)
+            v.line(bar_key(phi_l), (x, -T / 2 + e), (x, T / 2 - e))
+        v.caption.append(f"Links {lk['label']} (shear), hooked round the vertical bars of both faces")
+    v.text((-W / 2, -T / 2 - 9 * sc), "SEA (FRONT) FACE", 0.9)
+    v.text((-W / 2, T / 2 + 3 * sc), "SOIL (BACK) FACE", 0.9)
+    v.dim((-W / 2, -T / 2), (W / 2, -T / 2), -14 * sc)
+    v.dim((-W / 2, T / 2), (-W / 2, -T / 2), -6 * sc)
+    v.caption.append(
+        f"Zone {i + 1}, {_f(z['top_m'])} to {_f(z['bottom_m'])} m: panel {_mm(W)} x {_mm(T)}, "
+        f"cover {_mm(c)} to the horizontal bars"
+    )
+    v.caption.append(
+        f"Vertical bars from {_mm(end)} of each end of the cage; front face in tension under "
+        f"{w.get('front_face') or 'positive'} M_11"
+    )
+    return v
+
+
+def _dwall_section_view(w: dict[str, Any], st: DrawingSettings) -> View:
+    """A section down the wall (thickness across, level up, 1:100): the vertical bars of both faces zone
+    by zone with their laps, the zone limits and levels, each zone's bars named at the side."""
+    T, c = w["thickness_mm"], w["cover_mm"] or 75.0
+    top, toe = w["top_level_m"], w["toe_level_m"]
+    v = View(
+        f"{w['element']} - section",
+        f"{w['element']}: wall section",
+        100,
+        w["element"],
+        (0.0, 0.0),
+        "the wall's top level on its sea face",
+    )
+    sc = v.scale
+
+    def y(level: float) -> float:
+        return (level - top) * 1000
+
+    v.rect("concrete", (0.0, y(toe)), (T, y(top)))
+    zones = w["zones"]
+    for i, z in enumerate(zones):
+        y0, y1 = y(z["bottom_m"]), y(z["top_m"])
+        for face in ("front", "back"):
+            f = z[face]
+            phi = f["diameter_mm"]
+            phi_h = z["horizontal"][face]["diameter_mm"] or 0.0
+            x = (c + phi_h + phi / 2) if face == "front" else (T - c - phi_h - phi / 2)
+            lap = 45 * phi if i + 1 < len(zones) else 0.0  # lapped with the zone below
+            top_bar = y1 - c if i == 0 else y1
+            v.line(bar_key(phi), (x, max(y0 - lap, y(toe) + c)), (x, top_bar))
+        if i:
+            v.line("zones", (-6 * sc, y1), (T + 6 * sc, y1))
+        v.text((-6 * sc - 0.8 * TEXT_MM * 0.8 * sc * 8, y1 - 3 * sc), f"{z['top_m']:+.2f}", 0.8)
+        lk = z.get("links")
+        words = (
+            f"ZONE {i + 1}: FRONT {z['front']['bars']}, BACK {z['back']['bars']}, "
+            f"HOR. {z['horizontal']['front']['bars']} / {z['horizontal']['back']['bars']}"
+            + (f", LINKS {lk['label']}" if lk else "")
+        )
+        v.text((T + 8 * sc, (y0 + y1) / 2), words, 0.8)
+    v.text((-6 * sc - 0.8 * TEXT_MM * 0.8 * sc * 8, y(toe) - 3 * sc), f"{toe:+.2f}", 0.8)
+    v.text((-2 * sc, y(toe) - 9 * sc), "SEA", 0.9)
+    v.text((T - 2 * sc, y(toe) - 9 * sc), "SOIL", 0.9)
+    v.dim((0.0, y(toe)), (T, y(toe)), -14 * sc)
+    v.caption.append(
+        f"{w.get('count') or ''} panels {_mm(w['panel_width_mm'])} x {_mm(T)}, top {_f(top)} m, "
+        f"toe {_f(toe)} m; vertical bars lap 45ø into the zone below"
+    )
+    line = w.get("line_m")
+    if line:
+        v.caption.append(
+            f"Line from ({line[0][0]:.2f}, {line[0][1]:.2f}) to "
+            f"({line[1][0]:.2f}, {line[1][1]:.2f}) m (Plaxis)"
+        )
+    return v
+
+
+def _dwall_views(w: dict[str, Any], st: DrawingSettings) -> list[View]:
+    return [_dwall_section_view(w, st)] + [_dwall_zone_view(w, i, z, st) for i, z in enumerate(w["zones"])]
+
+
 def layer_names(settings: DrawingSettings, keys: set[str]) -> dict[str, dict[str, Any]]:
     """What each layer key is called in AutoCAD and Revit."""
     by_d = {b.diameter: b for b in settings.bars}
@@ -1452,6 +1585,8 @@ def from_cages(
     views: list[View] = []
     for p in data["piles"]:
         views += _pile_views(p, settings)
+    for w in data.get("diaphragm_walls") or []:
+        views += _dwall_views(w, settings)
     for b in data["beams"]:
         views += _beam_views(b, settings)
     for d in data["slabs"]:

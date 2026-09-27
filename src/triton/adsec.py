@@ -383,6 +383,8 @@ def section_files(
                 uls=st["uls"],
                 heading=heading,
             )
+    for w in results.get("diaphragm_walls", []):
+        files.update(dwall_files(job, section_name, w, rebar))
     for b in results.get("beams", []):
         files.update(beam_files(job, section_name, b, rebar))
     for d in results.get("slabs", []):
@@ -526,6 +528,70 @@ def beam_files(job: str, section_name: str, beam: dict[str, Any], rebar: str) ->
         forces_of=lambda r: (r["N_kN"], r["M3_kNm"], r["M2_kNm"]),  # My = vertical bending, sagging +
     )
     return {_safe(name) + ".ads": data}
+
+
+DWALL_LAYER_CLEAR = 32.0  # mm between two layers of a face's vertical bars (as the drawings)
+
+
+def dwall_files(job: str, section_name: str, wall: dict[str, Any], rebar: str) -> dict[str, bytes]:
+    """One .ads file per zone of a diaphragm wall: a strip of the wall a whole number of the tension
+    face's bars about 1 m wide (``strip_width``), the thickness as its depth, the front (sea) face at the
+    bottom and the back face on top, both faces' vertical bars layer by layer inside the horizontal bars
+    (given as the links). Loads: the zone's QP and ULS max M, min M, max N and min N per metre times the
+    strip width; My + puts the front face in tension."""
+    d = wall.get("design") or {}
+    zones = [z for z in d.get("zones") or [] if z.get("sets")]
+    if not zones:
+        return {}
+    grade = rebar_grade(rebar)
+    h, c = d["thickness"], d["cover"]
+    files: dict[str, bytes] = {}
+    for i, z in enumerate(zones, 1):
+        tension = "front" if z["M_max"] >= -z["M_min"] else "back"
+        width = strip_width(z[tension]["spacing"])
+        k = width / 1000
+        phi_h = max(z["horizontal"][f]["phi"] for f in ("front", "back"))
+        groups = []
+        for f, sign in (("front", -1), ("back", 1)):
+            face = z[f]
+            phi, sp = face["phi"], face["spacing"]
+            n = max(1, round(width / sp))
+            y0 = -width / 2 + sp / 2
+            for layer in range(face.get("layers") or 1):
+                depth = c + z["horizontal"][f]["phi"] + phi / 2 + layer * (phi + max(phi, DWALL_LAYER_CLEAR))
+                zz = sign * (h / 2 - depth) / 1e3
+                groups.append(line_group(phi, n, (y0 / 1e3, zz), ((y0 + (n - 1) * sp) / 1e3, zz), grade))
+        sec = rect_section(
+            f"{wall['element']} zone {i}", h, width, d["concrete"]["grade"], (c,) * 4, phi_h, groups
+        )
+
+        def rows(kind: str, k: float = k, z: dict[str, Any] = z) -> list[dict[str, Any]]:
+            return [
+                {
+                    "case": r["case"],
+                    "combination": r["combination"],
+                    "z": r["z"],
+                    "N_kN": r["N_kN_per_m"] * k,
+                    "M_kNm": r["M_kNm_per_m"] * k,
+                }
+                for r in z["sets"][kind]
+            ]
+
+        name = f"{wall['element']} {h:.0f}mm - Zone {i}"
+        files[_safe(name) + ".ads"] = ads_file(
+            job=job,
+            title=name,
+            subtitle=f"{z['top']:g} to {z['bottom']:g} m, strip {width:.0f} mm",
+            heading=(
+                f"{section_name}: front {z['front']['bars']}, back {z['back']['bars']}; "
+                f"forces per metre x {k:g}"
+            )[:80],
+            section_record=sec,
+            qp=rows("qp"),
+            uls=rows("uls"),
+            forces_of=lambda r: (r["N_kN"], r["M_kNm"], 0.0),  # front (bottom) face in tension +
+        )
+    return files
 
 
 _ADD = re.compile(r"Ø(\d+) @ ([\d.]+)( in 2 layers)?( \+ Ø\d+ (?:under the mesh|behind the mesh bars))?$")

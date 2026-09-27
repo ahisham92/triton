@@ -281,6 +281,7 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
     changes down the element), its name, then 7 QP rows and 7 ULS rows underneath.
     ``Slabs``: for each strip or zone of the slab's strip table, its QP and ULS sets per metre (max N,
     min N, max M, min M and the governing ones, as the slab .ads files).
+    ``Diaphragm walls`` (only with one): per zone, its QP and ULS sets per metre (as the wall .ads files).
     ``Steel``: for each combi wall tube and sheet pile wall, its name and 10 ULS rows.
     """
     import io
@@ -383,6 +384,37 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
                     )
         _widths(sl, (30, 10, 10, 16, 8))
 
+    dwalls = [w for w in results.get("diaphragm_walls", []) if any(z.get("sets") for z in _zones(w))]
+    if dwalls:
+        dw = wb.create_sheet("Diaphragm walls")
+        dw.append([f"{project} · {section} · diaphragm walls, per metre run (as the wall .ads files)"])
+        dw.append(
+            [
+                "N compression + (Plaxis N_1 × −1), M + puts the front (sea) face in tension. Per zone, for "
+                "QP and ULS: max M, min M, max N and min N over every combination."
+            ]
+        )
+        for w in dwalls:
+            for i, z in enumerate(_zones(w), 1):
+                if not z.get("sets"):
+                    continue
+                dw.append([])
+                dw.append(
+                    [
+                        f"{w['element']} · zone {i} · {z['top']:g} to {z['bottom']:g} m · "
+                        f"front {z['front']['bars']}, back {z['back']['bars']}"
+                    ]
+                )
+                dw.cell(dw.max_row, 1).font = bold
+                dw.append(["Set", "N kN/m", "M kNm/m", "Combination", "z"])
+                for c in dw[dw.max_row]:
+                    c.font = bold
+                for state, kind in (("QP", "qp"), ("ULS", "uls")):
+                    for x in z["sets"][kind]:
+                        row = [x["N_kN_per_m"], x["M_kNm_per_m"], x["combination"], x["z"]]
+                        dw.append([f"{state} {x['case']}", *row])
+        _widths(dw, (30, 10, 10, 16, 8))
+
     ss = wb.create_sheet("Steel")
     ss.append([f"{project} · {section} · steel elements"])
     ss.append(["Plaxis signs (N not multiplied by −1): max and min of each action along the element."])
@@ -409,6 +441,10 @@ def workbook(project: str, section: str, results: dict[str, Any]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _zones(w: dict[str, Any]) -> list[dict[str, Any]]:
+    return (w.get("design") or {}).get("zones") or []
 
 
 def _widths(ws, widths: tuple[int, ...]) -> None:

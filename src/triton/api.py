@@ -1691,7 +1691,7 @@ def _picked(section: Section, results: dict, elements: str | None) -> tuple[Sect
     return picked, out, " " + " ".join(names) if len(names) <= 3 else f" {len(names)} elements"
 
 
-_BARS = ("piles", "combi_walls", "beams", "slabs")
+_BARS = ("piles", "combi_walls", "diaphragm_walls", "beams", "slabs")
 
 
 def _detailed(results: dict, what: str) -> dict:
@@ -1749,7 +1749,7 @@ def _drawings(
     if not data["views"]:
         raise HTTPException(
             404,
-            "Nothing to draw: no designed pile, combi wall, beam or slab"
+            "Nothing to draw: no designed pile, combi wall, diaphragm wall, beam or slab"
             + (" among the picked elements." if suffix else "."),
         )
     name = drawings.safe_name(" ".join(x for x in (project.info.name, section.name + suffix) if x)).replace(
@@ -1850,7 +1850,8 @@ def governing_sets_export(project_id: str, section_id: str, elements: str | None
 
 @app.get(SECTION + "/design/adsec.zip")
 def adsec_export(project_id: str, section_id: str, elements: str | None = None) -> Response:
-    """AdSec 8.3 files (.ads): pile and combi infill parts, beams and slab strips, with QP and ULS loads."""
+    """AdSec 8.3 files (.ads): pile and combi infill parts, diaphragm wall zones, beams and slab strips,
+    with QP and ULS loads."""
     project = _get(project_id)
     section = _section(project, section_id)
     results = store().load_results(project_id, section_id)
