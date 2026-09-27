@@ -76,3 +76,30 @@ const SHIP = `<svg class="ship" viewBox="0 0 64 26" aria-hidden="true">
 export function voyageHtml() {
   return `<div class="bar big voyage"><span class="sea"><i>${SHIP}</i></span><span class="quay" aria-hidden="true"><b></b></span></div>`;
 }
+
+// A comparison designed in steps on its tab: the voyage bar, then what is being designed and the time
+// left. `run` is the tab's running state ({ text, f }); newRun() starts one, the tab draws runHtml(run)
+// and calls paintRun(host, run) after drawing and whenever `f` or `text` changes.
+export function newRun(key) {
+  forget(key);
+  return { key, text: "Starting…", stopped: false, began: Date.now(), f: 0, count: "" };
+}
+
+export function runHtml(run) {
+  return run ? `<div class="run-voyage">${voyageHtml()}<p class="status run-left"></p></div>` : "";
+}
+
+export function paintRun(host, run) {
+  if (!run || !host) return;
+  const bar = host.querySelector(".run-voyage .voyage i");
+  if (bar) smooth(run.key, bar, run.f, { ahead: 0.05 });
+  const t = host.querySelector(".run-voyage .run-left");
+  if (t) t.textContent = [run.count, leftText(run.began, run.f)].filter(Boolean).join(" · ");
+}
+
+export function leftText(began, f) {
+  const spent = (Date.now() - began) / 1000;
+  if (f < 0.04 || f >= 1 || spent < 4) return "";
+  const s = (spent * (1 - f)) / f;
+  return s < 60 ? `about ${Math.max(5, Math.ceil(s / 5) * 5)} s left` : `about ${Math.ceil(s / 60)} min left`;
+}

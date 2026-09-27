@@ -627,7 +627,7 @@ def error_details(code: str) -> Response:
 
 class _Progress:
     def __init__(self, key: str) -> None:
-        self.path, self.started, self.written = _progress_path(key), time.time(), 0.0
+        self.path, self.started, self.written, self.step = _progress_path(key), time.time(), 0.0, ""
         self.stop = self.path.with_suffix(".stop")
         self.stop.unlink(missing_ok=True)  # a Stop pressed on an earlier run
         self.stoppable = True
@@ -641,9 +641,11 @@ class _Progress:
         if self.asked():
             raise Stopped
         now = time.time()
-        if now - self.written < 0.5 and 0 < fraction < 1:
+        # The first step after "Starting" always shows (it came too soon and was dropped, so a
+        # comparison said "Starting" all through its first design).
+        if now - self.written < 0.5 and 0 < fraction < 1 and self.step != "Starting":
             return
-        self.written = now
+        self.written, self.step = now, step
         atomic.write_text(
             self.path, json.dumps({"fraction": round(fraction, 4), "step": step, "started": self.started})
         )

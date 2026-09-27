@@ -219,3 +219,50 @@ def test_comparisons_have_their_own_export(tmp_path, monkeypatch):
         assert c.get(f"{base}.{f}", params={"what": "all"}).status_code == 200
     assert c.get(f"{base}.docx", params={"what": "ve"}).status_code == 200
     assert c.get(f"{base}.docx", params={"what": "element", "element": "Nope"}).status_code == 404
+
+
+def test_two_tabs_on_one_section_keep_each_others_designs(tmp_path, monkeypatch):
+    """A comparison running in another tab saves its designs before it lists them: a prune from this
+    tab leaves new ones alone, and saving a list keeps what the other tab added to it meanwhile."""
+    import os
+    import time
+
+    (tmp_path / "trials").mkdir()
+    new, old = tmp_path / "trials" / "new.json.gz", tmp_path / "trials" / "old.json.gz"
+    new.write_bytes(b"x")
+    old.write_bytes(b"x")
+    past = time.time() - trials.PRUNE_GRACE_S - 60
+    os.utime(old, (past, past))
+    trials.prune(tmp_path, {})
+    assert new.exists() and not old.exists()
+
+    # This tab designs the Deck while another tab saves the piles' trials and a matrix option.
+    p, s = section()
+
+    def fake(settings, section, workbook, only=None, approach=None, furniture_at=None, **_):
+        trials.save(tmp_path, {**trials.load(tmp_path), "Pile(1)": {"sizes": [], "runs": {}}})
+        other = trials.load_scenarios(tmp_path, "matrix")
+        other.setdefault("runs", {})["theirs"] = {"Deck": "abc"}
+        trials._save_scenarios(tmp_path, other, "matrix")
+        return {"slabs": [deck_design()]}
+
+    monkeypatch.setattr(trials, "run_section", fake)
+    trials.run(p, s, None, None, tmp_path, "Deck", [{"thickness": 750.0}])
+    assert set(trials.load(tmp_path)) == {"Deck", "Pile(1)"}
+    variant = matrix.variants(matrix.clean_spec({**SPEC, "decks": []}, s), s)[0]
+    trials.run_scenarios(p, s, None, None, tmp_path, [variant, {"label": "x", "Deck": {}}], which="matrix")
+    runs = trials.load_scenarios(tmp_path, "matrix")["runs"]
+    assert trials.variant_key(variant) in runs
+
+
+def test_the_first_step_shows_at_once(tmp_path, monkeypatch):
+    """A comparison's first element came within half a second of "Starting" and was dropped, so the
+    page said "Starting" all through the first design."""
+    import json
+
+    from triton.api import _Progress, _progress_path
+
+    monkeypatch.setenv("TRITON_DATA_DIR", str(tmp_path))
+    with _Progress("trials-a-b") as tell:
+        tell(0.1, "Designing Deck")
+        assert json.loads(_progress_path("trials-a-b").read_text())["step"] == "Designing Deck"

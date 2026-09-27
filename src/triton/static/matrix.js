@@ -4,9 +4,11 @@
 // trials.js passes app.js's helpers in, with picker() / wirePicker() for the element choice and
 // barDiagrams(card, design) to draw an option's bars as the design page does.
 
+import { newRun, paintRun, runHtml } from "./progress.js";
+
 export async function renderMatrix(out, h) {
   const { api, again, esc, fmt, secUrl, ROOT } = h;
-  let data, running = null, form = null, sortBy = "cost";
+  let data, running = null, form = null, sortBy = "cost", pressing = false;
   const ticked = new Set(); // options left out of the report
   const open = []; // options whose details are shown
 
@@ -93,7 +95,8 @@ export async function renderMatrix(out, h) {
       The crack width limit is the deck's own, on both faces; every combination is designed with the whole section and without the bars you set by hand.
       Combinations already designed from the same inputs are not designed again.${s.decks.some((d) => d.type === "voided") && !data.current?.voids ? " Voids run across the quay from 1 m behind the front beam to 1 m before the rear beam, as the Elements tab's defaults." : ""}</p>
     <div class="row"><button class="primary" id="mx-run" ${running || n > data.max ? "disabled" : ""}>Design every combination</button>
-      ${running ? '<button id="mx-stop">Stop</button>' : ""}<span id="mx-status" class="status">${esc(running?.text || "")}</span></div>`;
+      ${running ? '<button id="mx-stop">Stop</button>' : ""}<span id="mx-status" class="status">${esc(running?.text || "")}</span></div>
+    ${runHtml(running)}`;
   };
 
   // The grid: thickness and deck type down, crack width and method across; each cell the deck's cost
@@ -156,6 +159,7 @@ export async function renderMatrix(out, h) {
     h.wirePicker();
     wire();
     showDetails();
+    paintRun(out, running);
   };
 
   const wire = () => {
@@ -163,7 +167,8 @@ export async function renderMatrix(out, h) {
       i.onchange = () => {
         const k = i.dataset.f;
         form[k] = i.type === "checkbox" ? i.checked : i.value;
-        draw();
+        // Typed a list and pressed Design straight away: redrawing now would lose the press.
+        if (!pressing) draw();
       };
     });
     out.querySelectorAll("[data-use]").forEach((i) => (i.onchange = () => {
@@ -186,7 +191,14 @@ export async function renderMatrix(out, h) {
       draw();
     }));
     const run = out.querySelector("#mx-run");
-    if (run) run.onclick = () => !running && go();
+    if (run) {
+      run.onpointerdown = () => (pressing = true);
+      run.onpointerleave = run.onpointercancel = () => pressing && ((pressing = false), draw());
+      run.onclick = () => {
+        pressing = false;
+        if (!running) go();
+      };
+    }
     const stop = out.querySelector("#mx-stop");
     if (stop) stop.onclick = () => running && (running.stopped = true, say("Stopping after this step…"));
     const sort = out.querySelector("#mx-sort");
@@ -244,15 +256,19 @@ export async function renderMatrix(out, h) {
     if (running) running.text = text;
     const s = out.querySelector("#mx-status");
     if (s) s.textContent = text;
+    paintRun(out, running);
   };
 
   const go = async () => {
-    running = { text: "Starting…", stopped: false };
-    draw();
     const key = `trials-${h.project().id}-${h.sectionId()}`;
+    document.activeElement?.blur?.(); // a list still being typed saves first, not while the page redraws
+    running = newRun(key);
+    const run = running;
+    draw();
     const poll = setInterval(async () => {
       try {
         const p = await api(`${ROOT}/api/progress/${key}`);
+        if (p.fraction != null) run.f = Math.max(run.f, Math.min(p.fraction, 0.99));
         if (p.step) say(`${p.step}…`);
       } catch {
         /* between requests */
@@ -261,6 +277,7 @@ export async function renderMatrix(out, h) {
     let total = null;
     try {
       // Steps without the table (it is the slow part of a big matrix); the table comes at the end.
+      // Counted in combinations; the bar goes by element designs (a thickness designs its beams too).
       const body = JSON.stringify({ spec: spec(), budget_s: 3, view: false });
       let done = 0;
       for (;;) {
@@ -268,8 +285,10 @@ export async function renderMatrix(out, h) {
         if (res.options) data = res;
         done += res.done;
         total = Math.max(total ?? 0, done + res.left);
+        if (res.combinations != null) run.count = `${res.combinations - res.combinations_left} of ${res.combinations} combinations designed`;
+        run.f = Math.max(run.f, total ? Math.min(done / total, 0.99) : 0);
+        paintRun(out, run);
         if (!res.left || running.stopped) break;
-        say(`${done} of ${total} element designs done…`);
       }
       data = await api(`${secUrl()}/matrix`);
       running = null;

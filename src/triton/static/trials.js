@@ -4,6 +4,7 @@
 // project(), costingHash, and used(answer) after a size was taken.
 
 import { renderMatrix } from "./matrix.js";
+import { newRun, paintRun, runHtml } from "./progress.js";
 
 const KIND = { slabs: "slab", beams: "beam", piles: "pile" };
 const FIELDS = {
@@ -151,6 +152,7 @@ export async function renderTrials(host, h) {
         <div class="row" style="margin-top:10px"><button id="tr-run">${running ? "Running…" : "Run the trials"}</button>
           ${running ? '<button id="tr-stop" class="quiet">Stop</button>' : ""}<span class="status" id="tr-status">${running ? esc(running.text) : ""}</span>
           ${done.length ? `<span style="margin-left:auto">Export: ${exportLinks(`what=element&element=${encodeURIComponent(el.element)}`)}</span>` : ""}</div>
+        ${runHtml(running)}
         <p class="status">Each trial is the full design of ${esc(el.element)} at that size${slab ? ": bending with the 150 / 200 mm mesh choice, crack widths, shear links and punching" : el.kind === "beams" ? ": bending, cracks, shear and torsion links" : ": N-M cage, cracks and links"}.
           Bars you set by hand belong to the current size, so each trial picks its own. Sizes already run from the same inputs are not run again.
           ${pile ? "The deck's punching and the beams' supports use the pile diameter; they are not redesigned in a pile trial." : ""}</p>
@@ -190,6 +192,7 @@ export async function renderTrials(host, h) {
     out.querySelector("#tr-run").onclick = () => !running && run(el);
     const stop = out.querySelector("#tr-stop");
     if (stop) stop.onclick = () => (running.stopped = true);
+    paintRun(out, running);
     out.querySelectorAll("[data-use]").forEach((b) => {
       b.onclick = () => use(el, el.rows.find((r) => r.key === b.dataset.use));
     });
@@ -241,6 +244,7 @@ export async function renderTrials(host, h) {
         <div class="row" style="margin-top:10px"><button id="sc-run">${running ? "Running…" : "Design the whole section"}</button>
           ${running ? '<button id="tr-stop" class="quiet">Stop</button>' : ""}<span class="status" id="tr-status">${running ? esc(running.text) : ""}</span>
           <span style="margin-left:auto">Export: ${exportLinks("what=all")}</span></div>
+        ${runHtml(running)}
         <p class="status">Every element is designed again for the section as set and for each limit, without the bars you set by hand, so the
           columns differ only by the limit. Elements with nothing to change (steel) are designed once. This takes a while: about as long as
           designing the section once per column. Nothing here changes your design; set the limit on the Elements tab to use it.</p>
@@ -276,16 +280,19 @@ export async function renderTrials(host, h) {
     out.querySelector("#sc-run").onclick = () => !running && runAll();
     const stop = out.querySelector("#tr-stop");
     if (stop) stop.onclick = () => (running.stopped = true);
+    paintRun(out, running);
   };
 
   const runAll = async () => {
     const variants = limits.filter((v) => v).map((v) => ({ crack_width_limit: v }));
-    running = { text: "Starting…", stopped: false };
-    drawAll();
     const key = `trials-${pid}-${h.sectionId()}`;
+    running = newRun(key);
+    const run = running;
+    drawAll();
     const poll = setInterval(async () => {
       try {
         const p = await api(`${ROOT}/api/progress/${key}`);
+        if (p.fraction != null) run.f = Math.max(run.f, Math.min(p.fraction, 0.99));
         if (p.step) say(`${p.step}…`);
       } catch {
         /* between requests */
@@ -297,8 +304,9 @@ export async function renderTrials(host, h) {
         const res = await again(() => api(`${secUrl()}/scenarios`, { method: "POST", body: JSON.stringify({ variants, budget_s: 3 }) }));
         scen = res;
         total ??= res.left + res.done;
+        run.f = Math.max(run.f, Math.min((total - res.left) / (total || 1), 0.99));
+        if (res.combinations) run.count = `${res.combinations - res.combinations_left} of ${res.combinations} limits designed`;
         if (!res.left || running.stopped) break;
-        running.text = `${total - res.left} of ${total} element designs done…`;
         drawAll();
       }
       running = null;
@@ -317,17 +325,20 @@ export async function renderTrials(host, h) {
     if (running) running.text = text;
     const s = out.querySelector("#tr-status");
     if (s) s.textContent = text;
+  paintRun(out, running);
   };
 
   const run = async (el) => {
     const asked = sizes.filter((s) => s[MAIN[el.kind]]);
     if (!asked.length) return say("List at least one size.");
-    running = { text: "Starting…", stopped: false };
-    draw();
     const key = `trials-${pid}-${h.sectionId()}`;
+    running = newRun(key);
+    const run = running;
+    draw();
     const poll = setInterval(async () => {
       try {
         const p = await api(`${ROOT}/api/progress/${key}`);
+        if (p.fraction != null) run.f = Math.max(run.f, Math.min(p.fraction, 0.99));
         if (p.step) say(`${p.step}…`);
       } catch {
         /* between requests */
@@ -341,6 +352,8 @@ export async function renderTrials(host, h) {
         data = res;
         sizes = data.elements.find((e) => e.element === el.element).sizes.map((s) => ({ ...s }));
         const n = asked.length - res.left.length;
+        run.f = Math.max(run.f, Math.min(n / asked.length, 0.99));
+        run.count = `${n} of ${asked.length} sizes designed`;
         say(res.left.length ? `${n} of ${asked.length} sizes designed…` : "");
         if (!res.left.length || running.stopped) break;
         draw();

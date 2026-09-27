@@ -643,3 +643,6 @@ fieldset.section-pages > .fields > .full + .full { margin-top: 12px; }
 .job-problem { margin: 6px 0; padding: 6px 10px; border-radius: 8px; font-size: 13px; background: color-mix(in srgb, var(--err) 10%, transparent); border: 1px solid color-mix(in srgb, var(--err) 35%, transparent); }
 .job-problem b { color: var(--err); }
 .job-problem button { margin-left: 6px; }
+
+.run-voyage { max-width: 640px; margin: 6px 0 4px; }
+.run-voyage .run-left { margin: 0; }
