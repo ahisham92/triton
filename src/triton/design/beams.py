@@ -16,6 +16,20 @@ could not tell). Across the beam, the per-metre moment, in-plane force and
 shear of the other local direction are used node by node for the transverse
 bars.
 
+A beam that turns (the front or rear beam round a corner berth, when the berth is
+designed in one piece) is not one straight run: it is cut into its straight runs
+(parts) where its centre line turns, as the berth's line is found (``alignment``),
+and each part is laid out along its own direction. The plate results are turned
+into the part's axes first, with θ the part's direction from local 1 towards
+local 2, c = cos θ, s = sin θ:
+
+    M_along = M11·c² + M22·s² + 2·M12·s·c,  M_across = M11·s² + M22·c² − 2·M12·s·c
+    M_twist = (M22 − M11)·s·c + M12·(c² − s²)
+
+and likewise N1, N2 and Q12; Q13 and Q23 turn as a vector. The width is the plate's
+extent across the part, and stations are the distance along the beam's line round
+the corner. The beam keeps one cage, from the envelope of every part's stations.
+
 Connections. Piles and king piles that reach the beam are supports. Results
 inside them are FE peaks: bending is taken at their face, shear at d (or 2d,
 Design settings) from it, and where supports are so close that no station is
@@ -46,6 +60,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..alignment import (
+    MIN_ANGLE,
+    TENSORS,
+    VECTORS,
+    fit_alignment,
+    make_parts,
+    part_of,
+    rotate_tensor,
+    rotate_vector,
+)
 from ..axes import sag_factor, sign_setting
 from ..elements import CombinationType, ElementType, combination_type
 from ..importer import SheetData
@@ -73,6 +97,21 @@ PEAK = 0.4  # m, half-length along the beam over which the peak nodal values are
 
 
 @dataclass(frozen=True)
+class Run:
+    """A straight part of a beam that turns, in its own axes."""
+
+    a: tuple[float, float]  # plan point on the beam's line where the part starts
+    u: tuple[float, float]  # unit vector along the part
+    n: tuple[float, float]  # unit vector across it: local 2 once the results are turned
+    theta: float  # degrees from local 1 to ``u``, towards local 2
+    s0: float  # m, distance along the beam's line at ``a``
+    centre: float  # m, the part's centre line off the beam's line (across)
+    width: float  # m, width in the model across the part
+    start: float  # m, along coordinate range of the part's nodes
+    end: float
+
+
+@dataclass(frozen=True)
 class Layout:
     along: str  # global axis along the beam
     across: str
@@ -82,6 +121,59 @@ class Layout:
     start: float  # m, along coordinate range
     end: float
     span_local: str  # "1" or "2": the local axis along the beam
+    # A beam that turns: its straight parts, each in its own axes (none: one run along X or Y).
+    runs: tuple[Run, ...] = ()
+    line: tuple[tuple[float, float], ...] = ()  # the beam's line in plan: start, corners, end
+
+    def place(self, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(along, across from the centre line, part) of plan points: the along coordinate is the
+        distance along the beam's line round its corners, each part's across its own."""
+        x, y = np.asarray(x, float), np.asarray(y, float)
+        if not self.runs:
+            p = {"X": x, "Y": y}
+            return p[self.along], p[self.across] - self.centre, np.zeros(len(x), int)
+        owner = part_of(_line_parts(self.line), x, y)
+        s, t = np.zeros(len(x)), np.zeros(len(x))
+        for i, r in enumerate(self.runs):
+            m = owner == i
+            dx, dy = x[m] - r.a[0], y[m] - r.a[1]
+            s[m] = r.s0 + dx * r.u[0] + dy * r.u[1]
+            t[m] = dx * r.n[0] + dy * r.n[1] - r.centre
+        return s, t, owner
+
+    def plan(self, s: float) -> tuple[float, float]:
+        """The plan point of the centre line at ``s`` along the beam."""
+        if not self.runs:
+            return (self.centre, s) if self.along == "Y" else (s, self.centre)
+        i = max([k for k, r in enumerate(self.runs) if r.s0 <= s + 1e-9] or [0])
+        r = self.runs[i]
+        d = s - r.s0
+        return r.a[0] + d * r.u[0] + r.centre * r.n[0], r.a[1] + d * r.u[1] + r.centre * r.n[1]
+
+    def turned(self, f: pd.DataFrame, owner: np.ndarray) -> pd.DataFrame:
+        """The plate results of a beam that turns in each part's axes (local 1 along it); as they are
+        for a straight one. ``owner``: each row's part."""
+        if not self.runs:
+            return f
+        f = f.copy()
+        for i, r in enumerate(self.runs):
+            m = owner == i
+            for c11, c22, c12 in TENSORS:
+                if {c11, c22, c12} <= set(f.columns):
+                    new = rotate_tensor(*(f.loc[m, c].to_numpy(float) for c in (c11, c22, c12)), -r.theta)
+                    for c, v in zip((c11, c22, c12), new, strict=True):
+                        f.loc[m, c] = v
+            for c1, c2 in VECTORS:
+                if {c1, c2} <= set(f.columns):
+                    new = rotate_vector(f.loc[m, c1].to_numpy(float), f.loc[m, c2].to_numpy(float), -r.theta)
+                    for c, v in zip((c1, c2), new, strict=True):
+                        f.loc[m, c] = v
+        # The min/max envelopes cannot be turned: they are dropped so nothing reads them unturned.
+        return f.drop(columns=[c for c in f.columns if c.endswith(("_min", "_max"))])
+
+
+def _line_parts(line: tuple[tuple[float, float], ...]) -> list:
+    return make_parts([list(q) for q in line])
 
 
 def layout(sheets: dict[str, SheetData], axes: dict[str, str] | None) -> Layout:
@@ -91,7 +183,7 @@ def layout(sheets: dict[str, SheetData], axes: dict[str, str] | None) -> Layout:
     across = "X" if along == "Y" else "Y"
     lo, hi = float(f[across].min()), float(f[across].max())
     one = (axes or {}).get("1", "X")
-    return Layout(
+    straight = Layout(
         along,
         across,
         (lo + hi) / 2,
@@ -100,6 +192,66 @@ def layout(sheets: dict[str, SheetData], axes: dict[str, str] | None) -> Layout:
         float(f[along].min()),
         float(f[along].max()),
         "1" if one == along else "2",
+    )
+    return _turning(straight, f, one) or straight
+
+
+def _turning(straight: Layout, f: pd.DataFrame, one: str) -> Layout | None:
+    """The layout of a beam that is not one straight run along X or Y: its parts, each along its own
+    direction; None for a straight one."""
+    pts = np.unique(f[["X", "Y"]].to_numpy(float), axis=0)
+    try:
+        line = fit_alignment(pts)
+    except (ValueError, IndexError, np.linalg.LinAlgError):
+        return None
+    if len(line) < 2:
+        return None
+    if len(line) == 2:
+        d = np.subtract(line[1], line[0])
+        off = math.degrees(math.atan2(abs(d[1]), abs(d[0])))  # 0: along X, 90: along Y
+        if min(off, 90.0 - off) < MIN_ANGLE:
+            return None  # one straight run along X or Y: laid out as it is
+    e1 = np.array([1.0, 0.0]) if one != "Y" else np.array([0.0, 1.0])
+    e2 = np.array([0.0, 1.0]) if one != "Y" else np.array([1.0, 0.0])
+    x, y = f["X"].to_numpy(float), f["Y"].to_numpy(float)
+    owner = part_of(_line_parts(tuple(map(tuple, line))), x, y)
+    runs, s0 = [], 0.0
+    for i, (a, b) in enumerate(zip(line, line[1:], strict=False)):
+        a, d = np.array(a), np.subtract(b, a)
+        length = float(np.hypot(*d))
+        u = d / length
+        theta = math.atan2(float(u @ e2), float(u @ e1))
+        n = -math.sin(theta) * e1 + math.cos(theta) * e2
+        m = owner == i
+        if not m.any():
+            return None
+        q = np.column_stack([x[m], y[m]]) - a
+        s, t = s0 + q @ u, q @ n
+        runs.append(
+            Run(
+                (float(a[0]), float(a[1])),
+                (float(u[0]), float(u[1])),
+                (float(n[0]), float(n[1])),
+                math.degrees(theta),
+                s0,
+                float(t.min() + t.max()) / 2,
+                float(np.ptp(t)),
+                float(s.min()),
+                float(s.max()),
+            )
+        )
+        s0 += length
+    return Layout(
+        straight.along,
+        straight.across,
+        straight.centre,
+        max(r.width for r in runs),
+        straight.level,
+        min(r.start for r in runs),
+        max(r.end for r in runs),
+        "1",
+        tuple(runs),
+        tuple((float(q[0]), float(q[1])) for q in line),
     )
 
 
@@ -121,17 +273,34 @@ def station_forces(
 
     With ``peak_width`` (m), Mv and V are the peak nodal values per metre within ±PEAK of the
     station times that width, as hand calculations take them: one row with the largest sagging
-    moment and one with the largest hogging moment. N, Mh, Vh and T stay integrated.
+    moment and one with the largest hogging moment. N, Mh, Vh and T stay integrated. A beam that
+    turns: each part is fitted on its own, over its own width, from its results turned into its axes.
     """
     cols = _columns(lay)
     f = frame.drop_duplicates(["X", "Y", "Z"])
-    s = f[lay.along].to_numpy(float)
-    t = f[lay.across].to_numpy(float) - lay.centre
-    B = lay.width
-    if stations is None:
-        stations = np.unique(np.round(s / 0.05) * 0.05)
-    values = {k: f[c].to_numpy(float) for k, c in (("N", cols["N"]), ("M", cols["M"]), ("V", cols["V"]))}
-    values |= {"Q12": f["Q_12"].to_numpy(float), "M12": f["M_12"].to_numpy(float)}
+    s_all, t_all, owner = lay.place(f["X"].to_numpy(float), f["Y"].to_numpy(float))
+    f = lay.turned(f, owner)
+    rows = []
+    for i, B in enumerate([r.width for r in lay.runs] or [lay.width]):
+        m = owner == i
+        values = {k: f.loc[m, cols[k]].to_numpy(float) for k in ("N", "M", "V")}
+        values |= {"Q12": f.loc[m, "Q_12"].to_numpy(float), "M12": f.loc[m, "M_12"].to_numpy(float)}
+        s, t = s_all[m], t_all[m]
+        at = np.unique(np.round(s / 0.05) * 0.05) if stations is None else stations
+        rows += _fits(s, t, values, B, at, sag, peak_width)
+    return pd.DataFrame(rows, columns=["s", "N", "Mv", "Mh", "V", "Vh", "T"])
+
+
+def _fits(
+    s: np.ndarray,
+    t: np.ndarray,
+    values: dict[str, np.ndarray],
+    B: float,
+    stations: np.ndarray,
+    sag: float,
+    peak_width: float | None,
+) -> list[dict]:
+    """station_forces' rows of one straight run of width B (s along it, t across from its centre)."""
     rows = []
     for s0 in stations:
         for w in (WINDOW, 1.2, 1.6):
@@ -164,7 +333,7 @@ def station_forces(
         rows.append({**row, "Mv": float(mv.max()) * peak_width})
         if mv.min() < mv.max():
             rows.append({**row, "Mv": float(mv.min()) * peak_width})
-    return pd.DataFrame(rows, columns=["s", "N", "Mv", "Mh", "V", "Vh", "T"])
+    return rows
 
 
 def beam_loads(
@@ -186,23 +355,24 @@ def beam_loads(
         if (ctype is CombinationType.SLS_QP) != qp or sheet.frame.empty:
             continue
         f = sheet.frame.drop_duplicates(["X", "Y", "Z"])
-        s, t = f[lay.along].to_numpy(float), f[lay.across].to_numpy(float) - lay.centre
+        s, t, owner = lay.place(f["X"].to_numpy(float), f["Y"].to_numpy(float))
         outside = np.ones(len(f), bool)
         for q in supports:
             outside &= np.hypot(s - q.s, t - q.t) >= q.r - 1e-6
-        f = f[outside]
+        f, s, t = f[outside], s[outside], t[outside]
         if f.empty:
             continue
         st = station_forces(f, lay, sag, peak_width=peak_width)
         parts.append(st.assign(combination=combo, category=ctype.value))
+        f = lay.turned(f, owner[outside])
         nodes.append(
             pd.DataFrame(
                 {
                     "combination": combo,
                     "category": ctype.value,
                     "Node": f["Node"].to_numpy() if "Node" in f else None,
-                    "s": f[lay.along].to_numpy(float),
-                    "t": f[lay.across].to_numpy(float) - lay.centre,
+                    "s": s,
+                    "t": t,
                     "N": -f[cols["Nt"]].to_numpy(float),
                     "M": sag * f[cols["Mt"]].to_numpy(float),
                     "V": f[cols["Vt"]].to_numpy(float),
@@ -253,9 +423,14 @@ def find_supports(lay: Layout, geometry: list[dict], elements: dict[str, Any]) -
         else:
             r = 0.6
         for x, y, ztop, _ in g.get("lines") or []:
-            p = {"X": x, "Y": y}
-            s, t = p[lay.along], p[lay.across] - lay.centre
-            inside = abs(t) <= lay.width / 2 + 1e-6 and lay.start - r <= s <= lay.end + r
+            if lay.runs:  # the part the head is in: its own width and length
+                sa, ta, i = lay.place(np.array([x]), np.array([y]))
+                s, t, run = float(sa[0]), float(ta[0]), lay.runs[int(i[0])]
+                inside = abs(t) <= run.width / 2 + 1e-6 and run.start - r <= s <= run.end + r
+            else:
+                p = {"X": x, "Y": y}
+                s, t = p[lay.along], p[lay.across] - lay.centre
+                inside = abs(t) <= lay.width / 2 + 1e-6 and lay.start - r <= s <= lay.end + r
             if inside and ztop >= lay.level - 1.0:
                 out.append(Support(g["element"], round(s, 3), round(t, 3), r))
     return sorted(out, key=lambda q: q.s)
@@ -1098,6 +1273,32 @@ def design_beam(
     }
     if added is not None:
         base["ledge_added"] = {k: round(v, 1) for k, v in added.items()}
+    if lay.runs:
+        base["line"] = [[round(v, 3) for v in q] for q in lay.line]
+        base["beam_parts"] = [
+            {
+                "start_m": round(r.start, 3),
+                "end_m": round(r.end, 3),
+                "direction_deg": round(math.degrees(math.atan2(r.u[1], r.u[0])), 2),
+                "width_m": round(r.width, 3),
+            }
+            for r in lay.runs
+        ]
+        notes[0] = (
+            f"Turns {len(lay.runs) - 1} corner{'s' if len(lay.runs) > 2 else ''}: laid out in "
+            f"{len(lay.runs)} straight parts along the beam's line ({lay.start:.2f} to {lay.end:.2f} m, "
+            f"{lay.end - lay.start:.1f} m), each along its own direction ("
+            + ", ".join(f"{d['direction_deg']:g}° from X" for d in base["beam_parts"])
+            + "). Each part's plate results are turned into its axes (M, N and Q along and across it) "
+            "before they are integrated over its own width; stations are the distance along the line."
+        )
+        notes[1] = notes[1].replace(
+            "Width in the model",
+            "Width in the model (parts: "
+            + ", ".join(f"{r.width * 1000:.0f}" for r in lay.runs)
+            + " mm), the widest",
+            1,
+        )
     if uls.empty:
         notes.append("No ULS results.")
         return {**base, "utilisation": None, "passed": False}
@@ -1676,8 +1877,7 @@ def beam_crack_bands(sec, g, cage, qp: pd.DataFrame, e_eff, conc, limits, lay: L
 
 
 def _band_at(lay: Layout, i: int) -> list[float]:
-    s = lay.start + (i + 0.5) * BAND
-    x, y = (lay.centre, s) if lay.along == "Y" else (s, lay.centre)
+    x, y = lay.plan(lay.start + (i + 0.5) * BAND)
     return [round(x, 3), round(y, 3), round(lay.level, 2)]
 
 
@@ -1686,9 +1886,7 @@ def beam_bands(lay: Layout, frame: pd.DataFrame) -> list[list[float]]:
     k = np.floor((frame["s"].to_numpy(float) - lay.start) / BAND).astype(int)
     out = []
     for i, u in frame.assign(k=k).groupby("k")["u"].max().items():
-        s = lay.start + (i + 0.5) * BAND
-        x, y = (lay.centre, s) if lay.along == "Y" else (s, lay.centre)
-        out.append([round(x, 3), round(y, 3), round(lay.level, 2), round(float(u), 3)])
+        out.append([*_band_at(lay, int(i)), round(float(u), 3)])
     return out
 
 

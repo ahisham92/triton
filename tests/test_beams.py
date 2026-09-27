@@ -513,3 +513,69 @@ def test_the_beam_bar_rule_puts_only_beams_out_of_date():
     results = {"element_inputs": {n: {**shared, n: before[n]} for n in section.elements}}
     changed, stale = fresh.status(results, now, list(section.elements))
     assert changed == ["Front Beam"] and stale == ["Front Beam"]
+
+
+def corner_rows(fn, turn=-153.4, length=40.0, width=2.0, z=2.7):
+    """Plate rows of a beam that turns: from the far end of an inclined part (``turn``°, from X) to a
+    corner at (0, 0), then straight along +Y. fn(along, across) -> the 8 plate actions in the part's
+    own axes (1 along it), given here in global X/Y (local 1 = X) as Plaxis gives them."""
+    from triton.alignment import rotate_tensor, rotate_vector
+
+    rows, node = [PLATE_HEADER], 1
+    ua = -np.array([math.cos(math.radians(turn)), math.sin(math.radians(turn))])  # towards the corner
+    split = ua + np.array([0.0, 1.0])  # the line halving the corner
+    for deg, back in ((math.degrees(math.atan2(ua[1], ua[0])), True), (90.0, False)):
+        u = np.array([math.cos(math.radians(deg)), math.sin(math.radians(deg))])
+        n = np.array([-u[1], u[0]])
+        for s in np.arange(0.0, length + 1e-9, 0.25):
+            for t in np.linspace(-width / 2, width / 2, 5):
+                p = (-s if back else s) * u + t * n
+                if (float(p @ split) > 1e-9) == back:
+                    continue  # the other part's side of the corner (the line halving it: inclined)
+                n1, n2, q12, q23, q13, m11, m22, m12 = fn(s, t)
+                n1, n2, q12 = rotate_tensor(n1, n2, q12, deg)
+                m11, m22, m12 = rotate_tensor(m11, m22, m12, deg)
+                q13, q23 = rotate_vector(q13, q23, deg)
+                row = ["Plate\\_1\\_1", node, 1, float(p[0]), float(p[1]), z]
+                for v in (n1, n2, q12, q23, q13, m11, m22, m12):
+                    row += [v, min(v, 0.0), max(v, 0.0)]
+                rows.append(row)
+                node += 1
+    return rows
+
+
+def test_a_beam_that_turns_is_laid_out_part_by_part_in_its_own_axes():
+    # Along each part: N 50 kN/m tension, M 100 kNm/m along, 20 across, twisting 5, shear 30 kN/m.
+    def own(s, t):
+        return [-50.0, 0.0, 0.0, 0.0, 30.0, 100.0, 20.0, 5.0]
+
+    raw = {"Front Beam-PT-B-Apron": corner_rows(own), "Front Beam-QP": corner_rows(own)}
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    lay = layout(sheets, {"1": "X", "2": "Y"})
+    # Two parts, each along its own direction and as wide as the plate across it (not the plan
+    # extent across the whole corner, ~38 m).
+    assert len(lay.runs) == 2 and lay.width == pytest.approx(2.0, abs=0.01)
+    inclined, straight = sorted(lay.runs, key=lambda r: abs(r.u[1]))
+    assert abs(inclined.u[1] / inclined.u[0]) == pytest.approx(0.5, abs=0.01)  # 26.6° from X
+    assert abs(straight.u[1]) == pytest.approx(1.0, abs=1e-6)
+    assert [r.width for r in lay.runs] == pytest.approx([2.0, 2.0], abs=0.01)
+    # Stations run along the beam's line round the corner, one part after the other.
+    assert lay.start == pytest.approx(0.0, abs=0.3) and lay.end == pytest.approx(80.0, abs=0.5)
+    assert lay.runs[0].end == pytest.approx(40.0, abs=0.6) and lay.runs[1].start > 38.0
+    f = station_forces(sheets["PT-B-Apron"].frame, lay, 1.0, np.array([20.0, 60.0]))
+    assert list(f["s"]) == [20.0, 60.0]  # each in the part it is in
+    for _, r in f.iterrows():
+        # The along-beam moment from the turned tensor, over the part's 2 m: not M11 or M22 of plan.
+        assert r["Mv"] == pytest.approx(200.0, abs=1e-6)
+        # (the shear's sign follows the way the line runs)
+        assert r["N"] == pytest.approx(100.0, abs=1e-6) and abs(r["V"]) == pytest.approx(60.0, abs=1e-6)
+        assert r["T"] == pytest.approx(10.0, abs=1e-6) and r["Mh"] == pytest.approx(0.0, abs=1e-6)
+    # The whole beam, one cage: stations over both parts, the parts in the notes.
+    el = BeamInput(depth=1500)
+    d = design_beam("Front Beam", el, DesignSettings(), sheets, [], {"Front Beam": el}, {"1": "X", "2": "Y"})
+    assert d["width_mm"] == 2000 and [p["width_m"] for p in d["beam_parts"]] == [2.0, 2.0]
+    assert d["notes"][0].startswith("Turns 1 corner: laid out in 2 straight parts")
+    ex = d["bending"]["extremes"]
+    assert ex["Mv"]["max"] == pytest.approx(200.0, abs=1e-3) and abs(ex["T"]["max"]) < 11
+    s = [p["s"] for p in d["profile"]]
+    assert min(s) < 1.0 and max(s) > 79.0
