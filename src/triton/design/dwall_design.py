@@ -142,7 +142,7 @@ class _Ctx:
         self.bars = settings.reinforcement.bar_diameters
         self.v_opts = _options(self.bars, wall.vertical_spacings, wall.max_layers, self.clear)
         self.h_opts = _options(self.bars, wall.horizontal_spacings, 1, self.clear)
-        self.laws = rect_laws(self.conc.fck, pf.gamma_c, pf.gamma_s, pf.alpha_cc, self.fyk)
+        self.laws = rect_laws(self.conc.fck, pf.gamma_c, pf.gamma_s, pf.alpha_cc, self.fyk, pf.steel_curve)
         self.limits = {"front": wall.crack_width_limit, "back": wall.crack_width_limit_back}
 
     def need(self, m: np.ndarray, n: np.ndarray, d: float) -> float:

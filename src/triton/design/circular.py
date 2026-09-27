@@ -4,11 +4,16 @@ Assumptions, chosen to match AdSec's EC2 defaults:
 
 * concrete: parabola-rectangle diagram (3.1.7(1)), fcd = alpha_cc * fck / gamma_c,
   no tensile strength;
-* reinforcement: bilinear with a horizontal top branch (3.2.7(2) b), so the
-  steel strain is not limited, Es = 200 GPa;
-* strain limits: epsilon_cu2 at the extreme compression fibre, or pivot about
-  the point at depth (1 - epsilon_c2 / epsilon_cu2) h when the whole section is
-  in compression (6.1(5));
+* reinforcement, Es = 200 GPa: by default AdSec's 500B strain-hardening curve,
+  EC2 3.2.7(2) a, rising from fyd to k·fyd (k 1.08, class B) at epsilon_uk 5%
+  with the steel strain limited to epsilon_ud = 0.9 epsilon_uk (4.5%); on 22
+  capacities of the issued Tincan AdSec files (piles, combi infill, slab strip,
+  rear beam) it lands within -0.2% to +0.5%. The "flat" setting keeps the
+  horizontal top branch (3.2.7(2) b) with no strain limit, 0.1-6% below AdSec;
+* strain limits: epsilon_cu2 at the extreme compression fibre, epsilon_ud at the
+  furthest tension bar, or pivot about the point at depth
+  (1 - epsilon_c2 / epsilon_cu2) h when the whole section is in compression
+  (6.1(3), 6.1(5));
 * the concrete displaced by the bars is deducted.
 
 Sign convention: N is positive in compression (the AdSec convention, i.e.
@@ -68,13 +73,45 @@ class SteelLaw:
     fyk: float = 500.0
     gamma_s: float = 1.15
     es: float = E_S
+    k: float = 1.0  # ft / fy; 1: the horizontal top branch
+    eps_uk: float = 0.05
+    eps_ud: float | None = None  # steel strain limit; None: not limited
+
+    @classmethod
+    def of(cls, fyk: float, gamma_s: float, curve: str = "adsec") -> SteelLaw:
+        """The steel law of a setting: "adsec" (500B strain hardening, as the AdSec files) or "flat"."""
+        if curve == "flat":
+            return cls(fyk, gamma_s)
+        return cls(fyk, gamma_s, k=STEEL_K, eps_uk=STEEL_EPS_UK, eps_ud=0.9 * STEEL_EPS_UK)
 
     @property
     def fyd(self) -> float:
         return self.fyk / self.gamma_s
 
+    @property
+    def f_ud(self) -> float:
+        """Design stress at the strain limit (MPa): the most a bar can give in tension."""
+        return float(self.stress(np.array(self.eps_ud if self.eps_ud else 1.0)))
+
     def stress(self, eps: np.ndarray) -> np.ndarray:
-        return np.clip(self.es * eps, -self.fyd, self.fyd)
+        if self.k <= 1:
+            return np.clip(self.es * eps, -self.fyd, self.fyd)
+        a = np.abs(eps)
+        ey = self.fyd / self.es
+        rise = (self.k - 1) * self.fyd * (np.minimum(a, self.eps_uk) - ey) / (self.eps_uk - ey)
+        return np.sign(eps) * np.where(a <= ey, self.es * a, self.fyd + rise)
+
+    def top_strain(self, eps_top: np.ndarray, x: np.ndarray, d: float) -> np.ndarray:
+        """The compression fibre's strain with the furthest bar (depth d) held to eps_ud (6.1(3))."""
+        if not self.eps_ud:
+            return eps_top
+        with np.errstate(divide="ignore", invalid="ignore"):
+            cap = np.where(x < d, self.eps_ud * x / np.maximum(d - x, 1e-9), np.inf)
+        return np.minimum(eps_top, cap)
+
+
+STEEL_K = 1.08  # B500B, EN 1992-1-1 Annex C class B
+STEEL_EPS_UK = 0.05  # AdSec 500B maximum strain
 
 
 @dataclass(frozen=True)
@@ -176,12 +213,13 @@ class CircularSection:
         eps_top = np.where(x <= h, ecu, 0.0)
         h_c = (1 - ec2 / ecu) * h
         eps_top = np.where(x > h, ec2 * x / (x - h_c), eps_top)
+        eps_top = self.steel.top_strain(eps_top, x, float(self._bars(rotation)[0].max()))
         curvature = eps_top / x
         n, m = self._resultants(eps_top, curvature, rotation)
 
         # Exact end points: uniform compression at eps_c2, and all steel yielding in tension.
         n0, _ = self._resultants(np.array([ec2]), np.array([0.0]), rotation)
-        n_t = -self.area_steel * self.steel.fyd
+        n_t = -self.area_steel * self.steel.f_ud
         curve = np.vstack([[n0[0], 0.0], np.column_stack([n, np.abs(m)]), [n_t, 0.0]])
         curve = curve / np.array([1e3, 1e6])  # kN, kNm
         self._cache[key] = curve

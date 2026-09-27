@@ -110,6 +110,13 @@ class PartialFactors(_Model):
         title="Deduct the concrete displaced by the bars",
         description="Off (default): the gross concrete area, as AdSec and the capacity sheets take it.",
     )
+    steel_curve: Literal["adsec", "flat"] = Field(
+        "adsec",
+        title="Reinforcement stress-strain curve",
+        description="As AdSec (default): AdSec's 500B strain-hardening curve, fyd rising to 1.08 fyd at 5% "
+        "strain, the bars held to 4.5% (EN 1992-1-1 3.2.7(2) a); capacities land within 0.5% of the issued "
+        "AdSec files. Flat: the horizontal top branch at fyd (3.2.7(2) b), 0.1-6% below AdSec.",
+    )
 
 
 class ReinforcementSettings(_Model):

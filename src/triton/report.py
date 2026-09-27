@@ -773,6 +773,12 @@ def _criteria(r: Report, s: DesignSettings, section: Section, res: dict) -> None
             ("αcc", f"{pf.alpha_cc:g}"),
             ("Concrete area", "net of the bars" if pf.deduct_bar_area else "gross (as AdSec)"),
             (
+                "Reinforcement curve",
+                "B500B strain hardening, fyd to 1.08 fyd at 5%, bars to 4.5% (as AdSec)"
+                if pf.steel_curve == "adsec"
+                else "horizontal top branch at fyd",
+            ),
+            (
                 "Plate moments",
                 "positive read from the results (Auto; see each slab and beam)"
                 if s.plate_positive_moment == "auto"

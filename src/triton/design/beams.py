@@ -539,7 +539,9 @@ def adsec_lines(g: Geometry, cage: Cage, dg: float) -> list[dict]:
 def _laws(beam: BeamInput, settings: DesignSettings) -> tuple[ConcreteLaw, SteelLaw]:
     pf = settings.partial_factors
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
-    return ConcreteLaw(concrete(beam.concrete).fck, pf.gamma_c, pf.alpha_cc), SteelLaw(fyk, pf.gamma_s)
+    return ConcreteLaw(concrete(beam.concrete).fck, pf.gamma_c, pf.alpha_cc), SteelLaw.of(
+        fyk, pf.gamma_s, pf.steel_curve
+    )
 
 
 def as_min_beam(fctm: float, fyk: float, b: float, d: float) -> float:

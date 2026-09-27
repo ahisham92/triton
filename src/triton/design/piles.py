@@ -379,7 +379,7 @@ def _section(pile: PileInput, a: Arrangement, settings: DesignSettings, accident
         pile.diameter,
         tuple(Ring(r.count, r.diameter, r.radius) for r in a.rings),
         ConcreteLaw(fck, gamma_c, pf.alpha_cc),
-        SteelLaw(fyk, gamma_s),
+        SteelLaw.of(fyk, gamma_s, pf.steel_curve),
         deduct=pf.deduct_bar_area,
     )
 
