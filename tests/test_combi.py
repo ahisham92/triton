@@ -255,3 +255,34 @@ def test_the_wall_shows_as_its_concrete_infill_and_its_steel():
     assert overview[1]["why"] == ["Steel tube (EN 1993) fails."]
     w["infill"]["passed"] = False
     assert _outcome({"designed": ["Combi Wall"], "combi_walls": [w]}) == ("done", "2 unsafe")
+
+
+def _corroded(loss, **kw):
+    s = DesignSettings()
+    s.durability.corrosion.combi_tube = loss
+    wall = CombiWallInput(top_level_to_ignore=0.0, tube_thickness=8.0, **kw)
+    return design_combi_wall("Combi Wall", wall, s, combi_sheets().elements()["Combi Wall"])
+
+
+def test_corrosion_through_the_tube_leaves_the_infill_alone():
+    # The project's 9 mm loss eats the 8 mm tube: the tube is not counted, the infill takes every
+    # action with its crack width checked, and the element says so.
+    from triton.design.sheet_piles import UF_CAP
+
+    w = _corroded(9.0)
+    assert w["steel_share"] == 0 and w["tube_gone"]
+    gone = "Corrosion 9 mm over the design life is more than the 8 mm tube wall"
+    assert any(n.startswith(gone) and "crack width checked" in n for n in w["notes"])
+    g = w["infill"]["governing"]
+    src = next(x for x in LOADS if abs(x[1] - g["z"]) < 1e-6)
+    assert g["M_kNm"] == pytest.approx(src[3], rel=1e-3)  # all of it
+    assert w["infill"]["cracks"]["wk_mm"] is not None and "casing" not in w["infill"]["cracks"]
+    # Below the infill only the tube carried the actions: nothing is left there.
+    assert w["tube"]["utilisation"] == UF_CAP and not w["tube"]["passed"] and not w["passed"]
+    assert w["utilisation"] == UF_CAP
+
+    # Infill down to the toe: the infill alone is the design.
+    full = _corroded(8.0, concrete_bottom_level=-40.0)
+    assert full["tube"]["utilisation"] is None and full["tube"]["passed"]
+    assert full["utilisation"] == full["infill"]["utilisation"]
+    assert any("8 mm over the design life is as much as the 8 mm tube wall" in n for n in full["notes"])

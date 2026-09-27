@@ -24,6 +24,7 @@ from .circular import CircularSection, ConcreteLaw, Ring, SteelLaw, hull_indices
 from .governing import qp_loads, station_sets
 from .pile_cracks import pile_crack_widths
 from .tension import pile_tension
+from .tube import steel_gone
 
 MIN_BAR = 16  # mm, EN 1992-1-1 9.8.5(3)
 MIN_BARS = 6  # 9.8.5(3)
@@ -506,6 +507,13 @@ def design_pile(
     """Choose the pile's cage, or check the one the user set (``cage``). ``standard``: the quick
     overview (Standard design): no alternatives or AdSec sets."""
     pile = with_project_grades(pile, settings.materials, settings.durability)
+    # A structural casing that corrosion eats before the end of the design life carries nothing: the
+    # pile is designed without it, with its crack width checked there too.
+    gone = None
+    if pile.casing is not None and pile.casing.role == "structural":
+        gone = steel_gone(pile.casing.corrosion_loss, pile.casing.thickness, "casing", "reinforced concrete")
+        if gone:
+            pile = pile.model_copy(update={"casing": None})
     above = settings.results_into_connection / 1e3
     full_loads = None
     casing_check = None
@@ -538,7 +546,7 @@ def design_pile(
             "casing_m": [pile.casing.bottom_level, pile.casing.top_level],
             "no_crack_m": [round(v, 3) for v in casing_band(pile, settings)],
         }
-    notes: list[str] = []
+    notes: list[str] = [gone] if gone else []
     if casing_check is not None:
         notes.append(casing_check["note"])
     if pile.head_level is None:
@@ -601,8 +609,16 @@ def design_pile(
         families = [[a for a in fam if a.area >= area_min] for fam in _families(pile, settings)]
         families = [f for f in families if f]
     if not families:
-        fixed = f" with {pile.bar_count} bars in the outer row" if pile.bar_count else ""
-        notes.append(f"No cage fits the pile{fixed} with the chosen bar sizes, rows and spacing limits.")
+        n = pile.bar_count
+        if n and n % 2 and settings.piles.even_bar_count and cage is None:
+            # The settings keep only even bar counts, so a typed odd count leaves no cage at all.
+            notes.append(
+                f"Bar counts must be even (pile settings): {n} bars in the outer row cannot be used; "
+                f"use {n - 1} or {n + 1}."
+            )
+        else:
+            fixed = f" with {n} bars in the outer row" if n else ""
+            notes.append(f"No cage fits the pile{fixed} with the chosen bar sizes, rows and spacing limits.")
         return PileDesign(
             name, None, math.inf, False, {}, area_min, area_max, 0.0, 0.0, limits, geom, notes=notes
         )

@@ -40,7 +40,8 @@ def _loads(v):
 def test_tube_shear_at_vpl_gives_a_number_not_a_billion(share):
     vpl = TUBE.resistances()["V_pl_kN"]
     out = check_tube([(math.inf, -math.inf, TUBE)], _loads(share * vpl), method="office", column=COLUMN)
-    assert out["utilisation"] is not None and 1 < out["utilisation"] <= UF_CAP
+    # Shear at or over Vpl with a moment acting leaves no moment resistance: unsafe by far.
+    assert out["utilisation"] == UF_CAP
     assert not out["passed"]
     assert all(p["util"] is None or p["util"] <= UF_CAP for p in out["profile"])
 
@@ -50,7 +51,10 @@ def test_plastic_utilisation_is_finite_at_and_over_vpl():
     u = plastic_utilisation(
         np.array([-1000.0, -1000.0]), np.array([10.0, 10.0]), np.array([vpl, 1.2 * vpl]), TUBE
     )
-    assert np.all(np.isfinite(u)) and u[1] == pytest.approx(1.2)
+    # N and M act, so shear at or over Vpl reads unsafe by far; with nothing else it is V / Vpl.
+    assert np.all(np.isfinite(u)) and np.all(u == UF_CAP)
+    alone = plastic_utilisation(np.array([0.0]), np.array([0.0]), np.array([1.2 * vpl]), TUBE)
+    assert alone[0] == pytest.approx(1.2)
 
 
 @pytest.mark.parametrize("ties", [[], [{"count": 2, "angle": 90.0}]])

@@ -376,9 +376,9 @@ def evaluate(
     loss_w = rho * av_web**2 / (4 * p["tw"] * sin_a) / bs  # mm³/mm = cm³/m
     Mv = np.minimum((W - loss_w) * fy_cls * rho_water / g0 / 1000, Mc)
     # Once VEd reaches Vpl,Rd (ρ ≥ 1) or the shear takes the whole modulus, no moment resistance is
-    # left: Uf is VEd / Vpl,Rd then, or UF_CAP (unsafe by far) where that is still below 1 with M acting.
-    no_mv = Mv <= 0
-    lost = np.where(V >= Vpl, V / Vpl, np.where(M > 0, UF_CAP, 0.0))
+    # left: with a moment acting Uf is UF_CAP (unsafe by far); with no moment it is VEd / Vpl,Rd.
+    no_mv = (Mv <= 0) | (V >= Vpl)
+    lost = np.where(M > 0, UF_CAP, V / Vpl)
     with_v = np.where(no_mv, lost, M / np.where(no_mv, 1.0, Mv))
     out["bending_shear"] = np.where(V > 0.5 * Vpl, np.maximum(V / Vpl, with_v), V / Vpl)
     # Web shear buckling.

@@ -62,6 +62,7 @@ from .rooms import (
     per_metre,
     room_shape,
 )
+from .sheet_piles import UF_CAP
 
 MIN_PHI = 16
 
@@ -249,8 +250,10 @@ def check_manhole(
             continue
         if share >= 1:
             notes.append(f"{p.get('pile')} is inside the opening: move the opening off the pile head.")
-        u0 = p.get("utilisation")
-        u = None if u0 is None else (u0 / (1 - share) if share < 1 else math.inf)
+        u0 = p.get("utilisation")  # as designed: with links where the pile head needs them
+        # A pile losing (nearly) all its perimeter is "unsafe by far": capped at UF_CAP, as when
+        # the pile is inside the opening, never a number in the thousands.
+        u = None if u0 is None else (min(u0 / (1 - share), UF_CAP) if share < 1 else UF_CAP)
         near.append(
             {
                 "pile": p.get("pile"),
@@ -258,11 +261,11 @@ def check_manhole(
                 "y": p["y"],
                 "share": round(share, 3),
                 "utilisation_before": u0,
-                "utilisation": round(u, 3) if u is not None and math.isfinite(u) else None,
+                "utilisation": round(u, 3) if u is not None else None,
                 "passed": u is not None and u <= 1 + 1e-6,
             }
         )
-        utils.append(u if u is not None and math.isfinite(u) else 9.99)
+        utils.append(u if u is not None else 9.99)
     # A pit: its floor per metre under its own weight and the load in it, over the shorter side.
     pit = None
     if mh.depth is not None:

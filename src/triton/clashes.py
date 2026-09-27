@@ -606,7 +606,8 @@ def _punching(settings: DesignSettings, head: Head) -> tuple[list[Leg], dict | N
         "asw_mm2_per_perimeter": asw,
         "radial_spacing_mm": p.get("radial_spacing_mm"),
         "first_from_face_mm": round(radii[0] - head.diameter / 2),
-        "utilisation": p.get("utilisation"),
+        # Concrete only: the head's utilisation is given with links where it needs them.
+        "utilisation": p.get("utilisation_no_links", p.get("utilisation")),
         "utilisation_with_links": p.get("utilisation_with_links"),
     }
     return legs, info

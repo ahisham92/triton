@@ -286,16 +286,18 @@ def build_calc(project: Project, section: Section, res: dict[str, Any]) -> Repor
                 ]
             )
         if i["item"] == "ladders":
+            # A rung or stringer eaten by corrosion has no stress or deflection: shown as "gone".
+            g = lambda v, unit: "gone" if v is None else f"{v:g} {unit}"  # noqa: E731
             r.kv(
                 [
                     ("Length", f"{i['length_m']:g} m, {i['rungs']} rungs"),
                     (
                         "Rung",
-                        f"Ø{i['rung']['diameter_after_loss_mm']:g} after loss, M {i['rung']['M_Ed_kNm']:g} kNm, σ {i['rung']['sigma_MPa']:g} MPa, δ {i['rung']['deflection_mm']:g} mm",
+                        f"Ø{i['rung']['diameter_after_loss_mm']:g} after loss, M {i['rung']['M_Ed_kNm']:g} kNm, σ {g(i['rung']['sigma_MPa'], 'MPa')}, δ {g(i['rung']['deflection_mm'], 'mm')}",
                     ),
                     (
                         "Stringer",
-                        f"{i['stringer']['section_after_loss']}, σ {i['stringer']['sigma_MPa']:g} MPa",
+                        f"{i['stringer']['section_after_loss']}, σ {g(i['stringer']['sigma_MPa'], 'MPa')}",
                     ),
                 ]
             )

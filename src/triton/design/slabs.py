@@ -1287,6 +1287,19 @@ def pile_heads(
 KMAX = 1.5  # EN 1992-1-1/A1 6.4.5(1), recommended
 
 
+def with_links(q: dict) -> dict:
+    """A pile head's punching utilisation as designed: where it needs links, the governing ratio of
+    the check with links (the face against vRd,max, and vEd against kmax·vRd,c; the links themselves
+    are sized to carry the rest), so it is at most 1 when the links suffice. The concrete-only ratio
+    is kept as ``utilisation_no_links``. Heads already read this way are left as they are."""
+    if "utilisation_no_links" in q or "vEd_face_MPa" not in q or q.get("utilisation") is None:
+        return q
+    q["utilisation_no_links"] = q["utilisation"]
+    if q.get("needs_reinforcement"):
+        q["utilisation"] = round(max(q["vEd_face_MPa"] / q["vRd_max_MPa"], q.get("kmax_ratio") or 0.0), 3)
+    return q
+
+
 def punching_depth(slab: SlabInput, x: float, y: float) -> tuple[float, str]:
     """Slab thickness for punching at a pile: its own entry, the slab's punching value, or the thickness."""
     for p in slab.punching_depths:
@@ -1382,6 +1395,7 @@ def punching(
         worst["kmax_ratio"] = round(worst["vEd_MPa"] / (KMAX * worst["vRd_c_MPa"]), 3)
         if needs and worst["kmax_ratio"] > 1:
             worst["passed"] = False
+        with_links(worst)
         if needs and worst["passed"]:
             # 6.52 with sr = 0.75d: Asw per perimeter.
             sr = 0.75 * d
@@ -1422,6 +1436,7 @@ _PUNCH_DESIGN = (
     "vEd_face_MPa",
     "vRd_max_MPa",
     "utilisation",
+    "utilisation_no_links",
     "r_u1_mm",
     "needs_reinforcement",
     "passed",
@@ -1448,6 +1463,7 @@ _PUNCH_OWN = (
     "vEd_face_MPa",
     "vRd_max_MPa",
     "utilisation",
+    "utilisation_no_links",
     "utilisation_with_links",
     "needs_reinforcement",
     "passed",
@@ -1458,7 +1474,8 @@ _PUNCH_OWN = (
 
 def _punch_rank(q: dict) -> tuple:
     """Worst first: failing, then needing links, then the largest vEd/vRd,c (or face) ratio."""
-    return (not q.get("passed"), bool(q.get("needs_reinforcement")), q.get("utilisation") or 0.0)
+    u = q.get("utilisation_no_links", q.get("utilisation"))
+    return (not q.get("passed"), bool(q.get("needs_reinforcement")), u or 0.0)
 
 
 def unify_punching(heads: list[dict], per: str = "type") -> tuple[list[dict], list[dict]]:
@@ -1485,6 +1502,7 @@ def unify_punching(heads: list[dict], per: str = "type") -> tuple[list[dict], li
                 "perimeters": n,
                 "asw_mm2_per_perimeter": max(q["asw_mm2_per_perimeter"] for q in linked),
                 "utilisation_with_links": max(q.get("utilisation_with_links", 0.0) for q in linked),
+                "utilisation": max(q.get("utilisation_with_links", 0.0) for q in linked),
                 "link_radii_mm": [round(first + i * sr) for i in range(n)],
                 "reinforced_to_mm": round(design["reinforced_to_mm"] + (n - design["perimeters"]) * sr),
             }
@@ -3219,9 +3237,7 @@ def design_slab(
         if vals:
             cx, cy = x0 + (i + 0.5) * size, y0 + (j + 0.5) * size
             crack_bands.append([round(cx, 2), round(cy, 2), round(level, 2), round(max(vals), 3), size, why])
-    punch_u = max(
-        [p.get("utilisation_with_links", p["utilisation"]) for p in punch if p.get("passed")], default=0.0
-    )
+    punch_u = max([p["utilisation"] for p in punch if p.get("passed")], default=0.0)
     lay_u = max(layers[layer]["utilisation"] for layer in LAYERS)
     row_ductility(strip_rows + overall_rows, layers, h, fcd_s, fyd, vsec)
     strip_design = None

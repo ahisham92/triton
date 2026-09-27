@@ -639,6 +639,28 @@ def test_punching_is_one_design_per_pile_type():
     assert any("not checked for Pile(2)" in n for n in only["notes"])
 
 
+def test_punching_with_links_shows_the_utilisation_with_links():
+    # A head whose links suffice shows the governing ratio with links (<= 1); the concrete-only
+    # ratio is kept under utilisation_no_links.
+    d = _unified_deck(punching_per="head")
+    linked = [q for q in d["punching"] if q["needs_reinforcement"] and q["passed"]]
+    assert linked
+    for q in linked:
+        assert q["utilisation_no_links"] > 1 >= q["utilisation"]
+        assert q["utilisation"] == q["utilisation_with_links"]
+        assert q["utilisation"] == max(round(q["vEd_face_MPa"] / q["vRd_max_MPa"], 3), q["kmax_ratio"])
+    plain = [q for q in d["punching"] if not q["needs_reinforcement"]]
+    assert all(q["utilisation"] == q["utilisation_no_links"] for q in plain)
+    # Older saved results read the same way.
+    from triton.store import _upgrade
+
+    old = {k: v for k, v in linked[0].items() if k != "utilisation_no_links"}
+    old["utilisation"] = linked[0]["utilisation_no_links"]
+    (s,) = _upgrade({"slabs": [{"punching": [old]}]})["slabs"]
+    assert s["punching"][0]["utilisation"] == linked[0]["utilisation"]
+    assert s["punching"][0]["utilisation_no_links"] == linked[0]["utilisation_no_links"]
+
+
 def test_older_results_are_unified_when_read(tmp_path):
     from triton.store import _upgrade
 

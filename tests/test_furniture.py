@@ -414,3 +414,17 @@ def test_a_corner_berth_is_laid_out_round_the_corner():
     # A length given still wins.
     s.furniture.berth_length = 250.0
     assert F.berth_length(s, frame, line)[0] == 250.0
+
+
+@pytest.mark.parametrize(
+    ("kw", "what"),
+    [({"corrosion": 13.0}, "rung"), ({"corrosion": 8.0, "stringer_thickness": 16.0}, "stringer")],
+)
+def test_ladder_eaten_by_corrosion_fails_and_says_so(kw, what):
+    # 2 × 13 mm lost is more than the 25 mm rung; 2 × 8 mm is the whole 16 mm stringer: no division by
+    # zero or negative section, the ladder fails and says why.
+    from triton.furniture_inputs import Ladders
+
+    r = D.ladder(Ladders(**kw), D.Beam(2000, 1600, "C40/50"), 3.0)
+    assert not r["passed"] and all(math.isfinite(p["utilisation"]) for p in r["parts"])
+    assert any(f"{what} is gone before the end of the design life" in n for n in r["notes"])
