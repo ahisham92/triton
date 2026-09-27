@@ -302,19 +302,69 @@ def transverse_nodes(nodes: pd.DataFrame, supports: list[Support], extra: float)
 # --- Reinforcement --------------------------------------------------------------------------------
 
 
+# Top and bottom bars of a beam Triton designs (Ahmed, 2026-09-27: "the number of bars for top should
+# be the same as bottom so that stirrups can be constructible"). The first (outer) layer of the top and
+# the first layer of the bottom have the SAME number of bars, so each top bar sits over a bottom bar
+# and each link leg ties a matching pair; the diameters may differ. A face that needs more takes
+# layers of the same diameter behind the first, each over first-layer bars; Ahmed, 11:30: "the second
+# layer should depend on the first layer it is either same count or half of it or 2 bars". So every
+# layer behind is a full layer (the same count), or, as the last one, half the count or 2 bars.
+# Bars the user types (BeamCage) are checked as typed; a note says when their counts differ.
+
+
+def layer_behind(n: int) -> tuple[int, ...]:
+    """The bar counts a part-layer behind a first layer of ``n`` bars may take: half of it or 2
+    (a layer of all ``n`` is a full layer)."""
+    return tuple(sorted({k for k in (n // 2, 2) if 1 <= k < n}))
+
+
+def spread(n: int, m: int) -> list[int]:
+    """``m`` of the ``n`` positions of a layer (0 … n−1), evenly spread and symmetric, both ends kept."""
+    if m >= n:
+        return list(range(n))
+    if m == 1:
+        return [(n - 1) // 2]
+    return [int(math.floor(x + 0.5)) for x in np.linspace(0, n - 1, m)]
+
+
+def extra_layers(extra: int, count: int) -> tuple[int, ...]:
+    """``extra`` additional bars (typed by the user) in layers of at most ``count`` each."""
+    out = []
+    while extra > 0 and count > 0:
+        out.append(min(extra, count))
+        extra -= out[-1]
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Face:
-    count: int  # bars per layer
+    count: int  # bars per layer: the first layer's
     phi: int
-    layers: int = 1
+    layers: int = 1  # full layers of ``count`` bars
+    extra: tuple[int, ...] = ()  # additional bars in each layer behind the full ones
+
+    @property
+    def total(self) -> int:
+        return self.count * self.layers + sum(self.extra)
 
     @property
     def area(self) -> float:
-        return self.count * self.layers * math.pi * self.phi**2 / 4
+        return self.total * math.pi * self.phi**2 / 4
+
+    @property
+    def rows(self) -> list[list[int]]:
+        """Each layer's bars, from the face inwards, as positions (0 … count−1) of the first layer's:
+        additional bars sit over first-layer bars, evenly spread."""
+        full = [list(range(self.count)) for _ in range(self.layers)]
+        return full + [spread(self.count, k) for k in self.extra if self.count > 0]
 
     @property
     def label(self) -> str:
-        n = self.count * self.layers
+        n = self.total
+        if self.extra:
+            first = f"{self.count}" if self.layers == 1 else f"{self.layers} × {self.count}"
+            more = " + ".join(str(k) for k in self.extra)
+            return f"{n}Ø{self.phi} ({first} + {more} in {len(self.rows)} layers)"
         return f"{n}Ø{self.phi}" + (f" ({self.layers} layers)" if self.layers > 1 else "")
 
 
@@ -335,21 +385,27 @@ class Cage:
     def to_dict(self, b: float, h: float) -> dict:
         return {
             "label": self.label,
-            "top": {
-                "count": self.top.count * self.top.layers,
-                "phi": self.top.phi,
-                "layers": self.top.layers,
-            },
-            "bottom": {
-                "count": self.bottom.count * self.bottom.layers,
-                "phi": self.bottom.phi,
-                "layers": self.bottom.layers,
-            },
+            "top": _face_dict(self.top),
+            "bottom": _face_dict(self.bottom),
             "side": {"count": self.side.count, "phi": self.side.phi},
             "area_mm2": round(self.area),
             "ratio_pct": round(100 * self.area / (b * h), 2),
             "kg_per_m": round(self.area / 1e6 * STEEL_DENSITY, 1),
         }
+
+
+def _face_dict(face: Face) -> dict:
+    """count: every bar of the face; layers: the rows they take; per_layer, full_layers and extra: as
+    typed on a BeamCage (per_layer bars in full_layers rows, and extra additional bars)."""
+    return {
+        "count": face.total,
+        "phi": face.phi,
+        "layers": len(face.rows),
+        "per_layer": face.count,
+        "full_layers": face.layers,
+        "extra": sum(face.extra),
+        "extra_layers": list(face.extra),
+    }
 
 
 @dataclass(frozen=True)
@@ -366,9 +422,27 @@ class Geometry:
     def layer_gap(self, phi: float, dg: float) -> float:
         return phi + max(phi, dg + 5, 20)
 
+    def centroid(self, face: Face, dg: float) -> float:
+        """Distance from the face to the centroid of its bars."""
+        rows = face.rows
+        n = sum(len(r) for r in rows) or 1
+        return (
+            self.inner(face.phi)
+            + sum(k * len(r) for k, r in enumerate(rows)) * self.layer_gap(face.phi, dg) / n
+        )
+
+    def row_u(self, face: Face, row: list[int]) -> np.ndarray:
+        """Across positions of a layer's bars (``row``: positions of the first layer's)."""
+        half_w = self.b / 2 - self.inner(face.phi)
+        u = np.linspace(-half_w, half_w, face.count) if face.count > 1 else np.zeros(face.count)
+        return u[row]
+
 
 def face_candidates(g: Geometry, settings: DesignSettings, width: float) -> list[Face]:
-    """Bars along one face of clear width ``width`` (mm), cheapest first, by area."""
+    """Bars along one face of clear width ``width`` (mm), cheapest first, by area: a first layer
+    within the spacing limits and, where the face needs more, layers of the same size behind it, each
+    the first layer's count, or (the last one) half of it or 2 bars (``layer_behind``), in no more than
+    the maximum layers. With even bar counts set, the first layer takes only even counts."""
     r = settings.reinforcement
     dg = settings.piles.aggregate_size
     out = []
@@ -380,9 +454,14 @@ def face_candidates(g: Geometry, settings: DesignSettings, width: float) -> list
         n_min = max(2, math.ceil(span / r.max_spacing) + 1)
         n_max = int(span // (clear_min + phi)) + 1
         for n in range(n_min, n_max + 1):
-            for layers in range(1, r.max_layers + 1):
-                out.append(Face(n, phi, layers))
-    return sorted(out, key=lambda f: (f.area, f.layers, -f.phi))
+            if n % 2 and settings.piles.even_bar_count:
+                continue  # even bar counts only (the setting), so top and bottom pair up
+            # Full layers of n, the last layer behind them either full or half of n or 2 bars.
+            for full in range(1, r.max_layers + 1):
+                out.append(Face(n, phi, full))
+                if full < r.max_layers:
+                    out.extend(Face(n, phi, full, (k,)) for k in layer_behind(n))
+    return sorted(out, key=lambda f: (f.area, len(f.rows), -f.phi, f.count))
 
 
 def side_candidates(g: Geometry, settings: DesignSettings, top: Face, bottom: Face) -> list[Face]:
@@ -415,11 +494,11 @@ def cage_bars(g: Geometry, cage: Cage, dg: float, torsion: float = 0.0) -> Bars:
 
     groups = []
     for face, up, name in ((cage.top, 1, "top"), (cage.bottom, -1, "bottom")):
-        half_w = g.b / 2 - g.inner(face.phi)
-        for k in range(face.layers):
+        a = math.pi * face.phi**2 / 4 * left(face, name)
+        for k, row in enumerate(face.rows):
             v = up * (g.h / 2 - g.inner(face.phi) - k * g.layer_gap(face.phi, dg))
-            row = Bars.row(face.count, face.phi, v, half_w)
-            groups.append(Bars(row.u, row.v, row.area * left(face, name)))
+            u = g.row_u(face, row)
+            groups.append(Bars(u, np.full(len(u), v), np.full(len(u), a)))
     if cage.side.count:
         v_top = g.h / 2 - g.inner(cage.top.phi)
         v_bot = -(g.h / 2 - g.inner(cage.bottom.phi))
@@ -436,11 +515,15 @@ def adsec_lines(g: Geometry, cage: Cage, dg: float) -> list[dict]:
     """The cage as bar lines for AdSec: {phi, count, a: [u, v], b: [u, v]} in mm, u across, v up."""
     out = []
     for face, up in ((cage.top, 1), (cage.bottom, -1)):
-        half_w = g.b / 2 - g.inner(face.phi)
-        for k in range(face.layers):
+        for k, row in enumerate(face.rows):
             v = up * (g.h / 2 - g.inner(face.phi) - k * g.layer_gap(face.phi, dg))
-            ends = (-half_w, half_w) if face.count > 1 else (0.0, 0.0)
-            out.append({"phi": face.phi, "count": face.count, "a": [ends[0], v], "b": [ends[1], v]})
+            u = g.row_u(face, row)
+            gaps = np.diff(u)
+            if len(u) < 2 or np.allclose(gaps, gaps[0]):
+                ends = (float(u[0]), float(u[-1])) if len(u) > 1 else (0.0, 0.0)
+                out.append({"phi": face.phi, "count": len(u), "a": [ends[0], v], "b": [ends[1], v]})
+            else:  # additional bars over first-layer bars, not evenly spread: one line per bar
+                out += [{"phi": face.phi, "count": 1, "a": [float(x), v], "b": [float(x), v]} for x in u]
     if cage.side.count:
         col = Bars.column(cage.side.count, cage.side.phi, 0.0, 1.0)
         v_top = g.h / 2 - g.inner(cage.top.phi)
@@ -686,12 +769,29 @@ def link_design(
     leg_gap_max = min(0.75 * d, 600.0)
     inner_w = b - 2 * (g.cover + g.link / 2)
     legs_min = max(2, math.ceil(inner_w / leg_gap_max) + 1)
+    # With as many top bars as bottom bars (first layers) each leg ties a top bar and the bottom bar
+    # under it: legs on first-layer bars, evenly spread (``spread``), the widest gap a whole number
+    # of bar pitches. The user's bars with other counts keep evenly spaced legs.
+    pairs = cage.top.count if cage.top.count == cage.bottom.count and cage.top.count >= 2 else None
+    if pairs:
+        pitch = (b - 2 * (g.cover + g.link) - max(cage.top.phi, cage.bottom.phi)) / (pairs - 1)
+
+        def leg_gap(legs: int) -> float:
+            return max(np.diff(spread(pairs, legs))) * pitch
+
+        choices = [n for n in range(2, pairs + 1) if leg_gap(n) <= leg_gap_max + 1e-6][:8] or [pairs]
+    else:
+
+        def leg_gap(legs: int) -> float:
+            return inner_w / (legs - 1)
+
+        choices = list(range(legs_min, legs_min + 8))
     step = settings.reinforcement.spacing_step
     phi = beam.link_diameter
     a_leg = math.pi * phi * phi / 4
     best = None
-    for legs in range(legs_min, legs_min + 8):
-        gap = inner_w / (legs - 1)
+    for legs in choices:
+        gap = leg_gap(legs)
         need_v = max(
             (asw_v.max() / legs + at_leg.max()) if len(asw_v) else 0.0,
             (ast_m2.max() * gap) if len(ast_m2) else 0.0,
@@ -711,6 +811,12 @@ def link_design(
         notes.append(f"Ø{phi:g} links would be closer than {MIN_LINK_SPACING:g} mm: use larger links.")
         return {"passed": False, "utilisation": None, "notes": notes}
     legs, s = best["legs"], best["spacing_mm"]
+    if pairs:
+        at = [i + 1 for i in spread(pairs, legs)]
+        notes.append(
+            f"The {legs} legs tie top and bottom bars {', '.join(map(str, at))} of the {pairs} in each "
+            "first layer, each top bar over a bottom bar."
+        )
     vrds = legs * a_leg / s * z * fywd * cot / 1e3
     trds_leg = a_leg / s * 2 * ak * fywd * cot / 1e6  # torsion if one outer leg took it all
     util_v = np.where(concrete_only, V / np.maximum(vrdc, 1e-9) + T / trdc, V / vrds + T / trds_leg)
@@ -730,6 +836,8 @@ def link_design(
             "spacing_mm": s,
             "label": f"Ø{phi:g} links, {legs} legs @ {s:g} mm",
             "kg_per_m": best["kg_per_m"],
+            "leg_gap_mm": round(best["leg_gap_mm"]),
+            **({"leg_bars": [i + 1 for i in spread(pairs, legs)]} if pairs else {}),
         },
         "utilisation": round(u, 3) if math.isfinite(u) else None,
         "passed": bool(math.isfinite(u) and u <= 1 + 1e-6) and not crushed.any(),
@@ -1018,65 +1126,100 @@ def design_beam(
         """The office's truss between king piles, tied by this cage's bottom bars."""
         if beam.truss is None:
             return None
-        z = g.h - g.inner(cage.top.phi) - (cage.top.layers - 1) * g.layer_gap(cage.top.phi, dg) / 2
-        z -= g.inner(cage.bottom.phi) + (cage.bottom.layers - 1) * g.layer_gap(cage.bottom.phi, dg) / 2
+        z = g.h - g.centroid(cage.top, dg) - g.centroid(cage.bottom, dg)
         return check_truss(beam.truss, g.b, g.h, z, cage.bottom.area, king_spacing)
+
+    # The candidates of each first-layer count, cheapest first: top and bottom always share one.
+    by_count: dict[int, list[int]] = {}
+    for i, f in enumerate(tops):
+        by_count.setdefault(f.count, []).append(i)
+
+    def step(ti: int, bi: int, face: str, need: float = 0.0) -> tuple[int, int] | None:
+        """The next top and bottom (indices into ``tops``) with ``face`` given more steel (at least
+        ``need`` mm²), the other face no less, both with the same first-layer count: the pair with
+        the least steel over both faces. None when ``face`` has nothing larger."""
+        grow, keep = (ti, bi) if face == "top" else (bi, ti)
+        floor = max(tops[grow].area + 1e-6, need)
+        best = None
+        for j in range(grow + 1, len(tops)):
+            if tops[j].area < floor:
+                continue
+            if best is not None and tops[j].area + tops[keep].area >= best[0]:
+                break  # sorted by area: nothing further is cheaper
+            k = next((k for k in by_count[tops[j].count] if tops[k].area >= tops[keep].area - 1e-6), None)
+            if k is None:
+                continue
+            total = tops[j].area + tops[k].area
+            if best is None or total < best[0] - 1e-6:
+                best = (total, j, k)
+        if best is None:
+            return None
+        return (best[1], best[2]) if face == "top" else (best[2], best[1])
+
+    def judge(cage: Cage, asl: float, use_truss: bool):
+        """The face to give more steel next (None: every check passes) and the minimum area it
+        needs (the truss tie's), with what the checks found."""
+        sec = RectSection(
+            g.b, g.h, cage_bars(g, cage, dg, asl), cl, sl, deduct=settings.partial_factors.deduct_bar_area
+        )
+        u = sec.utilisation(n, mv, mh)
+        full = sec
+        if asl:
+            full = RectSection(
+                g.b, g.h, cage_bars(g, cage, dg), cl, sl, deduct=settings.partial_factors.deduct_bar_area
+            )
+        restr = restraint_check(beam, settings, g, cage, conc)
+        cracks = None  # the slow check, left to last
+        grow = None
+        if u.max() > 1:
+            j = int(np.argmax(u))
+            rv = sec.m_rd("v", np.array([1 if mv[j] >= 0 else -1]), n[j : j + 1])[0]
+            rh = sec.m_rd("h", np.array([1 if mh[j] >= 0 else -1]), n[j : j + 1])[0]
+            tv = abs(mv[j]) / rv if rv > 0 else math.inf
+            th = abs(mh[j]) / rh if rh > 0 else math.inf
+            if th > tv:
+                grow = "side"
+            else:
+                grow = "bottom" if mv[j] >= 0 else "top"
+            if n[j] > 0 and abs(mv[j]) < 1e-6 and abs(mh[j]) < 1e-6:
+                grow = "top"
+        if grow is None:
+            for face in ("top", "bottom", "side"):
+                if restr["faces"][face]["wk"] > limits[face] + 1e-9:
+                    grow = face
+                    break
+        need = 0.0
+        if grow is None and use_truss:
+            tr = truss_for(cage) or {}
+            if (tr.get("utilisation") or 0.0) > 1:
+                grow = "bottom"
+                need = max(c["As_req_mm2"] for c in tr["cases"])
+        if grow is None:
+            # The likeliest QP rows first (fast), then every QP row, so no row is missed.
+            for rows in (qp_m, qp_all):
+                cracks = crack_check(full, g, cage, rows, e_eff, conc)
+                grow = next(
+                    (f for f in ("top", "bottom") if f in cracks and cracks[f]["wk"] > limits[f] + 1e-9),
+                    None,
+                )
+                if grow is not None or len(rows) == len(qp_all):
+                    break
+        return grow, need, (sec, u, full, restr, cracks)
 
     def grow_cage(asl: float, use_truss: bool = True):
         """Step the faces up until bending (with ``asl`` of torsion steel taken out of the faces),
-        cracking, restraint and (with ``use_truss``) the truss tie pass."""
-        ti = bi = next((i for i, f in enumerate(tops) if f.area >= as_min), len(tops) - 1)
+        cracking, restraint and (with ``use_truss``) the truss tie pass. Top and bottom keep the same
+        first-layer count."""
+        ti = bi = next(
+            (i for i, f in enumerate(tops) if f.area >= as_min and f.layers == 1 and not f.extra),
+            next((i for i, f in enumerate(tops) if f.area >= as_min), len(tops) - 1),
+        )
         sides = side_candidates(g, settings, tops[ti], tops[bi])
         si = 0
         status = "ok"
         for _ in range(400):
             cage = Cage(tops[ti], tops[bi], sides[si])
-            sec = RectSection(
-                g.b, g.h, cage_bars(g, cage, dg, asl), cl, sl, deduct=settings.partial_factors.deduct_bar_area
-            )
-            u = sec.utilisation(n, mv, mh)
-            full = sec
-            if asl:
-                full = RectSection(
-                    g.b, g.h, cage_bars(g, cage, dg), cl, sl, deduct=settings.partial_factors.deduct_bar_area
-                )
-            restr = restraint_check(beam, settings, g, cage, conc)
-            cracks = None  # the slow check, left to last
-            grow = None
-            if u.max() > 1:
-                j = int(np.argmax(u))
-                rv = sec.m_rd("v", np.array([1 if mv[j] >= 0 else -1]), n[j : j + 1])[0]
-                rh = sec.m_rd("h", np.array([1 if mh[j] >= 0 else -1]), n[j : j + 1])[0]
-                tv = abs(mv[j]) / rv if rv > 0 else math.inf
-                th = abs(mh[j]) / rh if rh > 0 else math.inf
-                if th > tv:
-                    grow = "side"
-                else:
-                    grow = "bottom" if mv[j] >= 0 else "top"
-                if n[j] > 0 and abs(mv[j]) < 1e-6 and abs(mh[j]) < 1e-6:
-                    grow = "top"
-            if grow is None:
-                for face in ("top", "bottom", "side"):
-                    if restr["faces"][face]["wk"] > limits[face] + 1e-9:
-                        grow = face
-                        break
-            jump = None
-            if grow is None and use_truss:
-                tr = truss_for(cage) or {}
-                if (tr.get("utilisation") or 0.0) > 1:
-                    grow = "bottom"
-                    need = max(c["As_req_mm2"] for c in tr["cases"])
-                    jump = next((i for i in range(bi + 1, len(tops)) if tops[i].area >= need), None)
-            if grow is None:
-                # The likeliest QP rows first (fast), then every QP row, so no row is missed.
-                for rows in (qp_m, qp_all):
-                    cracks = crack_check(full, g, cage, rows, e_eff, conc)
-                    grow = next(
-                        (f for f in ("top", "bottom") if f in cracks and cracks[f]["wk"] > limits[f] + 1e-9),
-                        None,
-                    )
-                    if grow is not None or len(rows) == len(qp_all):
-                        break
+            grow, need, found = judge(cage, asl, use_truss)
             if grow is None:
                 break
             if grow == "side":
@@ -1084,20 +1227,28 @@ def design_beam(
                     status = "side bars exhausted"
                     break
                 si += 1
-            elif grow == "top":
-                if ti + 1 >= len(tops):
-                    status = "top bars exhausted"
-                    break
-                ti += 1
-                sides = side_candidates(g, settings, tops[ti], tops[bi])
-                si = min(si, len(sides) - 1)
             else:
-                if bi + 1 >= len(tops):
-                    status = "bottom bars exhausted"
+                nxt = step(ti, bi, grow, need) or (step(ti, bi, grow) if need else None)
+                if nxt is None:
+                    status = f"{grow} bars exhausted"
                     break
-                bi = jump if jump is not None else bi + 1
+                ti, bi = nxt
                 sides = side_candidates(g, settings, tops[ti], tops[bi])
                 si = min(si, len(sides) - 1)
+        if status == "ok":
+            # Stepping both faces to one count can leave a face heavier than it needs (it never gives
+            # steel back on the way): each face takes the least steel of that count that still passes.
+            for face in ("top", "bottom"):
+                now = getattr(cage, face)
+                for k in by_count[now.count]:
+                    if tops[k].area >= now.area - 1e-6 or tops[k].area < as_min:
+                        continue
+                    trial = Cage(**{"top": cage.top, "bottom": cage.bottom, "side": cage.side, face: tops[k]})
+                    grow, _, trial_found = judge(trial, asl, use_truss)
+                    if grow is None:
+                        cage, found = trial, trial_found
+                        break
+        sec, u, full, restr, cracks = found
         if cracks is None or status != "ok":
             cracks = crack_check(full, g, cage, qp_all, e_eff, conc)
         return cage, sec, u, cracks, restr, status
@@ -1106,8 +1257,13 @@ def design_beam(
         """The user's bars, checked as they are."""
         uc = user_cage
         cage = Cage(
-            Face(uc.top.count, uc.top.diameter, uc.top.layers),
-            Face(uc.bottom.count, uc.bottom.diameter, uc.bottom.layers),
+            Face(uc.top.count, uc.top.diameter, uc.top.layers, extra_layers(uc.top.extra, uc.top.count)),
+            Face(
+                uc.bottom.count,
+                uc.bottom.diameter,
+                uc.bottom.layers,
+                extra_layers(uc.bottom.extra, uc.bottom.count),
+            ),
             Face(uc.side.count, uc.side.diameter),
         )
         sec = section(cage, asl)
@@ -1210,6 +1366,12 @@ def design_beam(
     plaxis_cage = grow_cage(asl, use_truss=False)[0] if beam.truss is not None else cage
     if user_cage is not None:
         notes.append(f"Bars set by you: {cage.label}. Triton checks them; it does not choose them.")
+        if cage.top.count != cage.bottom.count:
+            notes.append(
+                f"Your top and bottom have {cage.top.count} and {cage.bottom.count} bars per layer: the link "
+                "legs cannot tie each top bar to the bottom bar under it. Triton designs both faces with the "
+                "same number (layers behind: the same count, half of it or 2 bars)."
+            )
         for f in ("top", "bottom"):
             face = getattr(cage, f)
             span = g.b - 2 * (g.cover + g.link) - face.phi
@@ -1296,7 +1458,7 @@ def design_beam(
         cage_bars=cage_bars(g, cage, dg),
         top_phi=cage.top.phi,
         bottom_phi=cage.bottom.phi,
-        bottom_layers=cage.bottom.layers,
+        bottom_layers=len(cage.bottom.rows),
         side_phi=cage.side.phi,
         laws=(cl, sl),
         e_eff=e_eff,

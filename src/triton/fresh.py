@@ -85,6 +85,7 @@ def _settings_left_out(project: Project) -> dict:
 
 
 SLAB_BARS_RULE = "additional bars inside the mesh"
+BEAM_BARS_RULE = "beam bars: even, top as many as bottom; layers behind: same count, half or 2"
 
 
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
@@ -159,6 +160,11 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
             # Additional bars in layers of their own above the bottom mesh or below the top mesh,
             # none between its bars (Ahmed, 2026-09-26): slabs designed before ask for a redesign.
             value = [value, SLAB_BARS_RULE]
+        if isinstance(element, BeamInput):
+            # The first layers of top and bottom bars have the same count, so each link leg ties a
+            # top bar and the bottom bar under it, and a layer behind holds the same count, half of it
+            # or 2 bars (Ahmed, 2026-09-27): beams designed before ask for a redesign.
+            value = [value, BEAM_BARS_RULE]
         parts[name] = _hash([value, sorted(each.items())] if each else value)
     if project.approach is not None:
         rear = _rear_beam(section)

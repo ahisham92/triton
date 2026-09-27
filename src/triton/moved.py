@@ -763,6 +763,14 @@ def _change_summary(ch: dict[str, Any]) -> dict[str, Any]:
 # --- The bars as designed --------------------------------------------------------------------------
 
 
+def _beam_face(f: dict[str, Any]) -> BeamFace:
+    """A designed beam face as typed bars: bars per layer, full layers and additional bars (results
+    designed before these were kept give every bar as ``count`` over ``layers`` equal layers)."""
+    layers = f.get("full_layers") or f.get("layers") or 1
+    per = f.get("per_layer") or f["count"] // layers
+    return BeamFace(count=per, diameter=f["phi"], layers=layers, extra=f.get("extra") or 0)
+
+
 def as_designed(section: Section, results: dict[str, Any]) -> tuple[Section, list[str]]:
     """The section with the bars its current design has, set as if by the user, so that a run checks
     those bars instead of choosing new ones: each pile's and combi wall infill's head cage, each beam's
@@ -815,14 +823,8 @@ def as_designed(section: Section, results: dict[str, Any]) -> tuple[Section, lis
         c = b.get("cage") or {}
         try:
             beam_cages[key] = BeamCage(
-                top=BeamFace(
-                    count=c["top"]["count"], diameter=c["top"]["phi"], layers=c["top"].get("layers", 1)
-                ),
-                bottom=BeamFace(
-                    count=c["bottom"]["count"],
-                    diameter=c["bottom"]["phi"],
-                    layers=c["bottom"].get("layers", 1),
-                ),
+                top=_beam_face(c["top"]),
+                bottom=_beam_face(c["bottom"]),
                 side=BeamFace(count=c["side"]["count"], diameter=c["side"]["phi"]),
             )
         except (KeyError, TypeError, ValueError):
