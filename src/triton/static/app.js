@@ -3845,7 +3845,9 @@ function pickResults(res, out) {
     if (!x) return undefined;
     if (x.design) return x.design.uf ?? null;
     if (x.infill || x.tube) return Math.max(x.infill?.utilisation ?? 0, x.tube?.utilisation ?? 0) || null;
-    if (x.utilisation != null) return x.utilisation;
+    // A pile's QP crack width over its limit counts, as a beam's cracks count in its utilisation.
+    const crack = x.cracks?.wk_mm != null && x.cracks?.limit_mm ? x.cracks.wk_mm / x.cracks.limit_mm : null;
+    if (x.utilisation != null) return crack != null ? Math.max(x.utilisation, crack) : x.utilisation;
     const layers = Object.values(x.layers || {}).map((l) => l.utilisation).filter((u) => u != null);
     return layers.length ? Math.max(...layers) : null;
   };
