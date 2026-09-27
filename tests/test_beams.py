@@ -400,6 +400,9 @@ def test_top_and_bottom_have_the_same_bar_count_and_additional_bars_come_in_2_6_
     for f in face_candidates(g, settings, g.b):
         assert f.layers == 1 and len(f.extra) <= 1 and set(f.extra) <= set(EXTRA_BARS)
         assert all(set(r) <= set(range(f.count)) for r in f.rows)  # over first-layer bars
+        assert f.count % 2 == 0  # even bar counts (the default setting)
+    odd = DesignSettings(piles={"even_bar_count": False})
+    assert any(f.count % 2 for f in face_candidates(g, odd, g.b))
     # A third layer, where allowed, only behind a full 12, and again 2, 6 or 12.
     three = DesignSettings(reinforcement={"max_layers": 3})
     assert {f.extra[:-1] for f in face_candidates(g, three, g.b)} == {(), (12,)}
@@ -417,6 +420,7 @@ def test_top_and_bottom_have_the_same_bar_count_and_additional_bars_come_in_2_6_
         d = design_beam("Front Beam", beam, s, sheets, [], {}, None)
         top, bottom = d["cage"]["top"], d["cage"]["bottom"]
         assert top["per_layer"] == bottom["per_layer"]
+        assert top["per_layer"] % 2 == 0 and (top["per_layer"] + top["extra"]) % 2 == 0
         assert top["extra"] in (0, *EXTRA_BARS) and bottom["extra"] in (0, *EXTRA_BARS)
         assert bottom["count"] == bottom["per_layer"] + bottom["extra"]
         # The link legs stand on matching bars, evenly spread and symmetric.

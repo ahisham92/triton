@@ -436,7 +436,8 @@ class Geometry:
 def face_candidates(g: Geometry, settings: DesignSettings, width: float) -> list[Face]:
     """Bars along one face of clear width ``width`` (mm), cheapest first, by area: a first layer
     within the spacing limits and, where the face needs more, 2, 6 or 12 additional bars of the same
-    size behind it (EXTRA_BARS), in no more than the maximum layers."""
+    size behind it (EXTRA_BARS), in no more than the maximum layers. With even bar counts set, the
+    first layer takes only even counts (the additional 2, 6 or 12 keep the total even)."""
     r = settings.reinforcement
     dg = settings.piles.aggregate_size
     out = []
@@ -448,6 +449,8 @@ def face_candidates(g: Geometry, settings: DesignSettings, width: float) -> list
         n_min = max(2, math.ceil(span / r.max_spacing) + 1)
         n_max = int(span // (clear_min + phi)) + 1
         for n in range(n_min, n_max + 1):
+            if n % 2 and settings.piles.even_bar_count:
+                continue  # even bar counts only (the setting), so top and bottom pair up
             out.append(Face(n, phi))
             # Additional layers: 2, 6 or 12 bars (no more than the first layer has), a further layer
             # only behind a full 12.

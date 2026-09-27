@@ -83,7 +83,7 @@ def _settings_left_out(project: Project) -> dict:
 
 
 SLAB_BARS_RULE = "additional bars inside the mesh"
-BEAM_BARS_RULE = "beam bars: as many top bars as bottom bars per layer; additional bars 2, 6 or 12"
+BEAM_BARS_RULE = "beam bars: even counts, top as many as bottom per layer; additional bars 2, 6 or 12"
 
 
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
