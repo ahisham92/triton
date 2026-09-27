@@ -42,6 +42,12 @@ from ..project import Bollard, DesignSettings
 G = 9.81
 
 
+def _cos(angle: float) -> float:
+    """cos of a tie's angle, 0 at 90° and beyond (cos 90° is 6e-17 in floats, which gave Uf 1e16)."""
+    c = math.cos(math.radians(angle))
+    return c if c > 1e-9 else 0.0
+
+
 def check_bollard(
     b: Bollard,
     concrete_grade: str,
@@ -207,13 +213,11 @@ def at_step(
     beta = math.radians(b.tie_slope)
     need_bot = n * 1e3 * (z / 2 + e) / (z * fyd)
     need_top = max(n * 1e3 * (z / 2 - e) / (z * fyd), 0.0)
-    ties = sum(
-        x.count * math.pi * x.diameter**2 / 4 * max(math.cos(math.radians(x.angle)), 0.0) for x in b.ties
-    )
+    ties = sum(x.count * math.pi * x.diameter**2 / 4 * _cos(x.angle) for x in b.ties)
     mesh = width / b.slab_spacing * math.pi * b.slab_bar**2 / 4
     have_bot = ties  # the mesh is busy with the slab's own bending: only the ties are counted
     have_top = mesh
-    u_bot = need_bot / have_bot
+    u_bot = need_bot / have_bot if have_bot else math.inf  # no tie (or all at 90°): nothing carries it
     u_top = need_top / have_top if have_top else math.inf
     v = force * math.tan(beta)
     d = t - a_bot

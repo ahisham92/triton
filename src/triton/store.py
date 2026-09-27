@@ -11,6 +11,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import math
 import os
 import pickle
 import re
@@ -315,6 +316,7 @@ class ProjectStore:
             return pickle.load(f)
 
     def save_results(self, project_id: str, section_id: str, results: dict[str, Any]) -> None:
+        finite(results)  # in place: the caller answers with the same results
         self._write_json(self._dir(project_id, section_id) / "results.json", results)
 
     def delete_results(self, project_id: str, section_id: str) -> int:
@@ -347,11 +349,29 @@ class ProjectStore:
 
     def load_results(self, project_id: str, section_id: str) -> dict[str, Any] | None:
         path = self._dir(project_id, section_id) / "results.json"
-        return _upgrade(json.loads(path.read_text("utf-8"))) if path.exists() else None
+        # Infinity or NaN saved by an older Triton reads as no value (JSON answers refuse them).
+        return (
+            _upgrade(json.loads(path.read_text("utf-8"), parse_constant=lambda _: None))
+            if path.exists()
+            else None
+        )
 
     @staticmethod
     def _write_json(path: Path, data: Any) -> None:
         atomic.write_text(path, json.dumps(data, default=str))
+
+
+def finite(value: Any) -> Any:
+    """``value`` with every infinite or NaN number inside it turned into None, in place: a check with
+    no resistance left is unsafe by its ``passed`` flag and notes, and one such number would make the
+    whole section's results fail to load (JSON has no infinity)."""
+    items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
+    for k, v in list(items):
+        if isinstance(v, float) and not math.isfinite(v):
+            value[k] = None
+        elif isinstance(v, (dict, list)):
+            finite(v)
+    return value
 
 
 def _upgrade(results: Any) -> Any:
