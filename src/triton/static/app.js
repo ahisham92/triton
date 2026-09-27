@@ -16,7 +16,7 @@ import { tubeZonesHtml } from "./tubeview.js";
 import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
 import { projectsPage as renderProjectsPage } from "./projects.js";
 import { sectionPlace, sitesPanel } from "./sitemap.js";
-import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper } from "./picker.js";
+import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper, utilText } from "./picker.js";
 
 const $app = document.getElementById("app");
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
@@ -3845,7 +3845,7 @@ function pickResults(res, out) {
     const byU = u == null ? null : statusOf(u);
     const st = [worst[name], byU].filter(Boolean).sort((a, b) => rank[b] - rank[a])[0] || null;
     return { key: name, label: name, kind, utilisation: u, status: st || (u === undefined ? "" : "none"),
-      sub: u != null ? `utilisation ${fmt(u, 2)}` : KINDS[kind]?.label };
+      sub: u != null ? `utilisation ${utilText(u)}` : KINDS[kind]?.label };
   });
   const pickKey = `results:${sec().id}`;
   let current = picked(pickKey);
@@ -4178,10 +4178,10 @@ function alerts(res) {
   for (const p of res.piles || []) {
     const u = p.utilisation;
     if (u == null) add("unsafe", p.element, "no cage carries the loads");
-    else if (u > 1) add("unsafe", p.element, `N–M utilisation ${fmt(u, 2)}${at(p.governing)}: needs a stronger cage`);
-    else if (u >= 0.95) add("limit", p.element, `N–M utilisation ${fmt(u, 2)}${at(p.governing)}: close to the limit`);
-    else if (u < 0.5) add("safe", p.element, `N–M utilisation ${fmt(u, 2)}: very safe, could be lighter`);
-    if (p.shear && !p.shear.passed) add("unsafe", p.element, `shear utilisation ${fmt(p.shear.utilisation, 2)}`);
+    else if (u > 1) add("unsafe", p.element, `N–M utilisation ${utilText(u)}${at(p.governing)}: needs a stronger cage`);
+    else if (u >= 0.95) add("limit", p.element, `N–M utilisation ${utilText(u)}${at(p.governing)}: close to the limit`);
+    else if (u < 0.5) add("safe", p.element, `N–M utilisation ${utilText(u)}: very safe, could be lighter`);
+    if (p.shear && !p.shear.passed) add("unsafe", p.element, `shear utilisation ${utilText(p.shear.utilisation)}`);
     if (p.connection?.passed === false) add("unsafe", p.element, `casing connection utilisation ${fmt(p.connection.utilisation, 2)}`);
     if (p.casing?.tube?.passed === false) add("unsafe", p.element, `steel casing utilisation ${fmt(p.casing.tube.utilisation, 2)}`);
   }
@@ -4194,14 +4194,14 @@ function alerts(res) {
   for (const w of res.combi_walls || []) {
     const [inf, st] = combiParts(w);
     const u = w.infill?.utilisation;
-    if (u > 1) add("unsafe", inf.element, `N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}: needs a stronger cage`, w.element);
-    else if (u >= 0.95) add("limit", inf.element, `N–M utilisation ${fmt(u, 2)}${at(w.infill.governing)}: close to the limit`, w.element);
+    if (u > 1) add("unsafe", inf.element, `N–M utilisation ${utilText(u)}${at(w.infill.governing)}: needs a stronger cage`, w.element);
+    else if (u >= 0.95) add("limit", inf.element, `N–M utilisation ${utilText(u)}${at(w.infill.governing)}: close to the limit`, w.element);
     else if (w.infill && !w.infill.passed) add("unsafe", inf.element, (w.infill.failure || []).join(" ") || "does not pass: see its card", w.element);
-    if (w.infill?.shear && !w.infill.shear.passed) add("unsafe", inf.element, `shear utilisation ${fmt(w.infill.shear.utilisation, 2)}`, w.element);
+    if (w.infill?.shear && !w.infill.shear.passed) add("unsafe", inf.element, `shear utilisation ${utilText(w.infill.shear.utilisation)}`, w.element);
     if (w.top_level_set === false) add("limit", w.element, "no top level set, so results inside the front beam are included: set it on the Elements tab");
     const t = w.tube?.utilisation;
-    if (t > 1 || (w.tube && !w.tube.passed)) add("unsafe", st.element, `steel tube utilisation ${fmt(t, 2)} (${w.tube.governing?.check || ""})`, w.element);
-    else if (t >= 0.95) add("limit", st.element, `steel tube utilisation ${fmt(t, 2)}: close to the limit`, w.element);
+    if (t > 1 || (w.tube && !w.tube.passed)) add("unsafe", st.element, `steel tube utilisation ${utilText(t)} (${w.tube.governing?.check || ""})`, w.element);
+    else if (t >= 0.95) add("limit", st.element, `steel tube utilisation ${utilText(t)}: close to the limit`, w.element);
   }
   for (const w of res.sheet_pile_walls || []) {
     const d = w.design;
@@ -4237,14 +4237,14 @@ function alerts(res) {
     if (b.utilisation == null) add("unsafe", (b.key || b.element), "no reinforcement passes");
     for (const [what, u, g] of checks) {
       if (u == null) continue;
-      if (u > 1) add("unsafe", (b.key || b.element), `${what}: ${fmt(u, 2)}${at2(g)}`);
-      else if (u >= 0.95) add("limit", (b.key || b.element), `${what}: ${fmt(u, 2)}${at2(g)}, close to the limit`);
+      if (u > 1) add("unsafe", (b.key || b.element), `${what}: ${utilText(u)}${at2(g)}`);
+      else if (u >= 0.95) add("limit", (b.key || b.element), `${what}: ${utilText(u)}${at2(g)}, close to the limit`);
     }
     // Anything else in the beam's own utilisation (it takes the worst of every check).
     const listed = Math.max(0, ...checks.map(([, u]) => u ?? 0));
-    if (b.utilisation > 1 && listed <= 1) add("unsafe", (b.key || b.element), `max utilisation ${fmt(b.utilisation, 2)}: see its card`);
-    else if (b.utilisation >= 0.95 && listed < 0.95) add("limit", (b.key || b.element), `max utilisation ${fmt(b.utilisation, 2)}, close to the limit`);
-    if (b.utilisation != null && b.utilisation < 0.5) add("safe", (b.key || b.element), `max utilisation ${fmt(b.utilisation, 2)}: very safe`);
+    if (b.utilisation > 1 && listed <= 1) add("unsafe", (b.key || b.element), `max utilisation ${utilText(b.utilisation)}: see its card`);
+    else if (b.utilisation >= 0.95 && listed < 0.95) add("limit", (b.key || b.element), `max utilisation ${utilText(b.utilisation)}, close to the limit`);
+    if (b.utilisation != null && b.utilisation < 0.5) add("safe", (b.key || b.element), `max utilisation ${utilText(b.utilisation)}: very safe`);
   }
   for (const d of res.slabs || []) {
     for (const [k, l] of Object.entries(d.layers || {})) {

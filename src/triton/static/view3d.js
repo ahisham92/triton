@@ -568,7 +568,7 @@ export class View3D {
               // A small overlap hides the seams between bands.
               const up = k ? (z + segs[k - 1][0]) / 2 + 0.04 : Math.min(z + 0.25, top);
               const down = k < segs.length - 1 ? (z + segs[k + 1][0]) / 2 - 0.04 : Math.max(z - 0.25, bottom);
-              const what = src.words ? src.words(u, row) : `utilisation ${u.toFixed(2)}`;
+              const what = src.words ? src.words(u, row) : `utilisation ${u > 10 ? "> 10, unsafe by far" : u.toFixed(2)}`;
               items.push({ kind: "line", a: [x, y, up], b: [x, y, down], color: src.color(u), width, faded, cap: "butt",
                 element: e.element, tip: `${e.element} at X ${x}, Y ${y}, z ${z.toFixed(1)} m: ${what}` });
             });
@@ -623,7 +623,7 @@ export class View3D {
             const [t0, t1] = c[across];
             items.push({ kind: "quad", pts: [pt(s0, t0), pt(s1, t0), pt(s1, t1), pt(s0, t1)], faded, element: e.element,
               fill: src.color(u), stroke: false,
-              tip: `${e.element} at ${along} ${(along === "Y" ? y : x).toFixed(1)} m: ${src.words ? src.words(u, row) : `utilisation ${u.toFixed(2)}`}` });
+              tip: `${e.element} at ${along} ${(along === "Y" ? y : x).toFixed(1)} m: ${src.words ? src.words(u, row) : `utilisation ${u > 10 ? "> 10, unsafe by far" : u.toFixed(2)}`}` });
           }
         } else if (b.length) {
           // Walls: 0.5 m bands down the wall, along its full length.
@@ -639,7 +639,7 @@ export class View3D {
             const down = k < lv.length - 1 ? (z + lv[k + 1][2]) / 2 - 0.02 : Math.max(z - 0.25, c.Z[0]);
             items.push({ kind: "quad", pts: [pt(a0, down), pt(a1, down), pt(a1, up), pt(a0, up)], faded,
               element: e.element, fill: src.color(u), stroke: false,
-              tip: `${e.element} at z ${z.toFixed(1)} m: ${src.words ? src.words(u, row) : `utilisation ${u.toFixed(2)}`}` });
+              tip: `${e.element} at z ${z.toFixed(1)} m: ${src.words ? src.words(u, row) : `utilisation ${u > 10 ? "> 10, unsafe by far" : u.toFixed(2)}`}` });
           });
         }
         const mid = ["X", "Y", "Z"].map((a) => (c[a][0] + c[a][1]) / 2);

@@ -65,6 +65,12 @@ export function statusOf(u) {
   if (u == null || !isFinite(u)) return null;
   return u > 1 ? "unsafe" : u >= 0.95 ? "limit" : "safe";
 }
+// A utilisation as text: two decimals, or "> 10, unsafe by far" where the number itself would
+// only distract (a check with next to no resistance left).
+export function utilText(u) {
+  if (u == null || !isFinite(u)) return "–";
+  return u > 10 ? "> 10, unsafe by far" : u.toFixed(2);
+}
 const STATUS_TEXT = { unsafe: "Unsafe", limit: "Near the limit", safe: "Safe", none: "Not designed" };
 
 // What was picked, per list (elements of a section, results, sections), kept for the visit and, where
