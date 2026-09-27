@@ -3767,7 +3767,7 @@ function drawCards(res, full = res, withBars = full) {
       const sh = p.shear;
       const kg = p.steel?.kg_per_m3 ?? p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3;
       return `<tr><td>${esc(p.element)}</td><td>${a ? esc(a.label) : "–"}${p.user_set ? ' <span class="chip small-chip">set by you</span>' : ""}</td>
-        <td class="cell ${p.utilisation <= 1 ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
+        <td class="cell ${p.utilisation != null && p.utilisation <= 1 ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
         <td>${sh ? esc(sh.zones[0].link) : "–"}</td>
         <td class="cell ${sh ? (sh.passed ? "ok" : "error") : ""}">${sh ? fmt(sh.utilisation, 2) : "–"}</td>
         <td class="cell ${p.cracks?.wk_mm == null ? "" : p.cracks.passed ? "ok" : "error"}">${p.cracks?.wk_mm == null ? "–" : `${fmt(p.cracks.wk_mm, 2)} / ${fmt(p.cracks.limit_mm, 2)} = ${fmt(p.cracks.wk_mm / p.cracks.limit_mm, 2)}`}</td>
@@ -3796,16 +3796,29 @@ function drawCards(res, full = res, withBars = full) {
     ${slabs.length ? "<h2>Slab</h2>" : ""}<div id="slab-cards"></div>
     ${spws.length ? `<h2>Sheet pile wall</h2><div id="spw-cards"></div>` : ""}
     ${(res.approach_slabs || []).length ? `<h2>Approach slab and ledge</h2><div id="approach-cards"></div>` : ""}`;
-  for (const a of res.approach_slabs || []) document.getElementById("approach-cards").append(approachCard(a, { esc, fmt }));
-  for (const w of spws) document.getElementById("spw-cards").append(spwWithSets(w));
+  // One card that cannot be drawn shows why in its place; the others and the tiles still show.
+  const put = (box, x, make) => {
+    try {
+      box.append(make(x));
+    } catch (e) {
+      console.error(e);
+      const card = document.createElement("div");
+      card.className = "panel element-card";
+      card.innerHTML = `<div class="element-head"><h3>${esc(x.key || x.element)}</h3></div>
+        <p class="error">This result could not be shown (${esc(e.message)}). The other elements are not affected.</p>`;
+      box.append(card);
+    }
+  };
+  for (const a of res.approach_slabs || []) put(document.getElementById("approach-cards"), a, (x) => approachCard(x, { esc, fmt }));
+  for (const w of spws) put(document.getElementById("spw-cards"), w, spwWithSets);
   const cards = document.getElementById("pile-cards");
-  for (const p of res.piles) cards.append(pileCard(p));
+  for (const p of res.piles) put(cards, p, pileCard);
   const combi = document.getElementById("combi-cards");
-  for (const w of walls) combi.append(combiCard(w));
+  for (const w of walls) put(combi, w, combiCard);
   const bc = document.getElementById("beam-cards");
-  for (const b of beams) bc.append(beamCard(b));
+  for (const b of beams) put(bc, b, beamCard);
   const sc = document.getElementById("slab-cards");
-  for (const d of slabs) sc.append(slabCard(d));
+  for (const d of slabs) put(sc, d, slabCard);
   pickResults(res, out);
   mountElementViews(res);
 }
@@ -3872,7 +3885,7 @@ function pickResults(res, out) {
     { label: "Safe", value: count("safe"), tone: "ok", sub: "below 0.95" },
     { label: "Near the limit", value: count("limit"), tone: count("limit") ? "warn" : "ok", sub: "0.95 to 1.0" },
     { label: "Unsafe", value: count("unsafe"), tone: count("unsafe") ? "bad" : "ok", sub: count("unsafe") ? esc(items.filter((i) => i.status === "unsafe").map((i) => i.label).join(", ")) : "none" },
-    worstU ? { label: "Highest utilisation", value: fmt(worstU, 2), tone: worstU > 1 ? "bad" : worstU >= 0.95 ? "warn" : "ok", sub: esc(items.find((i) => i.utilisation === worstU)?.label || "") } : null,
+    worstU ? { label: "Highest utilisation", value: utilText(worstU), tone: worstU > 1 ? "bad" : worstU >= 0.95 ? "warn" : "ok", sub: esc(items.find((i) => i.utilisation === worstU)?.label || "") } : null,
   ]));
   box.append(stepper({ items, current, noun: "element", onPick: show, onFoldAll: (f) => cards.forEach((c) => setFolded(c.card, f)) }));
   const first = out.querySelector(":scope > h2, #pile-cards");
@@ -4184,6 +4197,15 @@ function alerts(res) {
     if (p.shear && !p.shear.passed) add("unsafe", p.element, `shear utilisation ${utilText(p.shear.utilisation)}`);
     if (p.connection?.passed === false) add("unsafe", p.element, `casing connection utilisation ${fmt(p.connection.utilisation, 2)}`);
     if (p.casing?.tube?.passed === false) add("unsafe", p.element, `steel casing utilisation ${fmt(p.casing.tube.utilisation, 2)}`);
+    const wk = p.cracks?.wk_mm, lim = p.cracks?.limit_mm;
+    if (wk != null && lim) {
+      const c = wk / lim, what = `QP crack width ${fmt(wk, 2)} mm of ${fmt(lim, 2)}`;
+      if (c > 1 || p.cracks.passed === false) add("unsafe", p.element, `${what}: ${utilText(c)}`);
+      else if (c >= 0.95) add("limit", p.element, `${what}: ${utilText(c)}, close to the limit`);
+    }
+    // A check that fails with no line above (steel limit, spacing, ...): never left looking safe.
+    if (p.passed === false && !out.some((a) => a.name === p.element && a.level === "unsafe"))
+      add("unsafe", p.element, (p.failure || []).join(" ") || "a check fails: see its card");
   }
   const noTop = (res.piles || []).filter((p) => p.section?.head_level_set === false).map((p) => p.element);
   if (noTop.length) add("limit", noTop.join(", "), "no top level set, so results inside the slab are included: set it on the Elements tab");
@@ -4195,8 +4217,8 @@ function alerts(res) {
     const [inf, st] = combiParts(w);
     const u = w.infill?.utilisation;
     if (u > 1) add("unsafe", inf.element, `N–M utilisation ${utilText(u)}${at(w.infill.governing)}: needs a stronger cage`, w.element);
-    else if (u >= 0.95) add("limit", inf.element, `N–M utilisation ${utilText(u)}${at(w.infill.governing)}: close to the limit`, w.element);
     else if (w.infill && !w.infill.passed) add("unsafe", inf.element, (w.infill.failure || []).join(" ") || "does not pass: see its card", w.element);
+    else if (u >= 0.95) add("limit", inf.element, `N–M utilisation ${utilText(u)}${at(w.infill.governing)}: close to the limit`, w.element);
     if (w.infill?.shear && !w.infill.shear.passed) add("unsafe", inf.element, `shear utilisation ${utilText(w.infill.shear.utilisation)}`, w.element);
     if (w.top_level_set === false) add("limit", w.element, "no top level set, so results inside the front beam are included: set it on the Elements tab");
     const t = w.tube?.utilisation;
@@ -4208,11 +4230,11 @@ function alerts(res) {
     if (!d) continue;
     if (d.error) { add("unsafe", w.element, d.error); continue; }
     const g = d.designed.governing;
-    const why = `${d.check_titles[g.governs].toLowerCase()} Uf ${fmt(d.uf, 2)}${at(g)}`;
+    const why = `${d.check_titles[g.governs].toLowerCase()} Uf ${utilText(d.uf)}${at(g)}`;
     if (d.uf > 1) add("unsafe", w.element, `${d.section}: ${why}`);
     else if (d.uf >= 0.95) add("limit", w.element, `${d.section}: ${why}, close to the limit`);
-    else if (d.uf < 0.5) add("safe", w.element, `${d.section}: Uf ${fmt(d.uf, 2)}, very safe, a lighter section may do`);
-    if (d.adjusted && !d.as_plaxis.ok) add("limit", w.element, `safe only with N or Q left out: with every Plaxis action Uf is ${fmt(d.as_plaxis.uf, 2)}`);
+    else if (d.uf < 0.5) add("safe", w.element, `${d.section}: Uf ${utilText(d.uf)}, very safe, a lighter section may do`);
+    if (d.adjusted && !d.as_plaxis.ok) add("limit", w.element, `safe only with N or Q left out: with every Plaxis action Uf is ${utilText(d.as_plaxis.uf)}`);
   }
   for (const b of res.beams || []) {
     const at2 = (g) => (g?.combination ? ` (${g.combination}, at ${fmt(g.s, 1)} m)` : "");
@@ -4244,7 +4266,9 @@ function alerts(res) {
     const listed = Math.max(0, ...checks.map(([, u]) => u ?? 0));
     if (b.utilisation > 1 && listed <= 1) add("unsafe", (b.key || b.element), `max utilisation ${utilText(b.utilisation)}: see its card`);
     else if (b.utilisation >= 0.95 && listed < 0.95) add("limit", (b.key || b.element), `max utilisation ${utilText(b.utilisation)}, close to the limit`);
-    if (b.utilisation != null && b.utilisation < 0.5) add("safe", (b.key || b.element), `max utilisation ${utilText(b.utilisation)}: very safe`);
+    if (b.passed === false && !out.some((a) => a.name === (b.key || b.element) && a.level === "unsafe"))
+      add("unsafe", (b.key || b.element), "a check fails: see its card");
+    else if (b.utilisation != null && b.utilisation < 0.5) add("safe", (b.key || b.element), `max utilisation ${utilText(b.utilisation)}: very safe`);
   }
   for (const d of res.slabs || []) {
     for (const [k, l] of Object.entries(d.layers || {})) {
