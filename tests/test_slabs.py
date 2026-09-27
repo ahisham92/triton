@@ -346,7 +346,7 @@ def test_bar_layers_set_by_the_user_and_the_mesh_across():
         "Pile(1)": PileInput(head_level=2.7),
     }
     sec = Section(elements=els)
-    spec = "layers: Ø32@150 | Ø25@150"
+    spec = "layers: – | Ø32@150 | Ø25@150"
     bars = {k: spec for k in row["keys"]["top"]} | {"top_y|mesh": "Ø20 @ 150"}
     sec.slab_strips["Deck"] = SlabStrips(bars=bars)
     mine = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
@@ -357,10 +357,11 @@ def test_bar_layers_set_by_the_user_and_the_mesh_across():
     )
     assert got["user_set"] and got["additional"]["top"] == spec and got["set_by"]["top"] == "your bars"
     lay = got["bar_layers"]["top"]
-    # Layer 1: the mesh with Ø32 between its bars, at the cover; layer 2 under it, deeper in.
-    assert [x["layer"] for x in lay] == [1, 2] and "Ø32 @ 150" in lay[0]["text"]
-    assert lay[0]["from_face_mm"] == 50 + 16 and lay[1]["from_face_mm"] > lay[0]["from_face_mm"] + 32
-    assert got["bars"]["top"].endswith("Ø32 @ 150 between the mesh bars + Ø25 @ 150 in L1")
+    # The mesh alone at the cover (nothing between its bars); L1 and L2 inside it, deeper in.
+    assert [x["layer"] for x in lay] == [1, 2, 3] and [b["kind"] for b in lay[0]["bars"]] == ["mesh"]
+    m = lay[0]["bars"][0]["diameter_mm"]
+    assert lay[0]["from_face_mm"] == round(50 + m / 2) and lay[1]["from_face_mm"] == round(50 + m + 32 + 16)
+    assert got["bars"]["top"].endswith("Ø32 @ 150 in L1 + Ø25 @ 150 in L2")
     assert got["ratio"] < row["ratio"]
     assert mine["layers"]["top_y"]["basic"]["label"] == "Ø20 @ 150"
     whole = next(r for r in mine["strip_design"]["table"] if r["label"] == "Whole deck, basic mesh")
@@ -538,14 +539,13 @@ def test_least_spacing_of_additional_bars():
     def labels(**r):
         return additional_options(mesh, DesignSettings(reinforcement=ReinforcementSettings(**r)))[2]
 
-    assert "Ø32 @ 150 in 2 layers + Ø32 behind the mesh bars" in labels()  # the bars @ 75
+    assert not any("behind" in t or "@ 75" in t for t in labels())  # no bars @ 75 any more
     kept = labels(slab_min_bar_spacing=150)
-    assert "Ø32 @ 300" in kept and "Ø32 @ 150 in 2 layers" in kept and "Ø32 @ 150 in 3 layers" in kept
-    assert not any("behind" in t for t in kept)
+    assert "Ø32 @ 300 in L1" in kept and "Ø32 @ 150 in L1 to L2" in kept and "Ø32 @ 150 in L1 to L3" in kept
     # As many layers as the design needs, whatever Maximum bar layers says, up to mid-depth.
     deep = additional_options(mesh, DesignSettings(), room=250)[2]
-    assert "Ø32 @ 150 in 4 layers" in deep and "Ø32 @ 150 in 5 layers" not in deep
-    assert all(t == "Ø20 @ 150" or t.endswith("@ 300") for t in labels(slab_min_bar_spacing=300))
+    assert "Ø32 @ 150 in L1 to L3" in deep and "Ø32 @ 150 in L1 to L4" not in deep
+    assert all(t == "Ø20 @ 150" or t.endswith("@ 300 in L1") for t in labels(slab_min_bar_spacing=300))
 
 
 def test_an_empty_least_spacing_keeps_stored_designs_fresh():
@@ -692,3 +692,25 @@ def test_punching_that_links_cannot_carry_gets_bars_over_the_pile():
     assert zones[0]["layers"][0]["from_face_mm"] > max(
         r["from_face_mm"] for r in d["layers"]["top_x"]["mesh_bar_layers"]
     )
+
+
+def test_additional_bars_never_go_between_the_mesh_bars():
+    from triton.design.slabs import additional_options, bar_layers
+
+    _, _, labels, specs = additional_options((1340.0, 16, 150.0, 1), DesignSettings(), 300, 50)
+    assert all(sp[0] is None for sp in specs[1:])  # nothing at mesh level
+    assert "Ø32 @ 150 in L1" in labels and "Ø32 @ 300 in L1" in labels
+    assert "Ø32 @ 150 in L1 to L2" in labels and "Ø32 @ 150 in L1 + Ø32 @ 300 in L2" in labels
+    lay = bar_layers((1340.0, 16, 150.0, 1), [None, (32, 150)], 50)
+    assert [q["bars"][0]["kind"] for q in lay] == ["mesh", "added"] and lay[0]["as_mm2_per_m"] == 1340
+    # A list saved with bars between the mesh bars is left out, with a note.
+    d = design_deck()
+    row = next(r for r in d["strip_design"]["table"] if r["moment"] == "M11" and r["strip"] == "column")
+    els = {
+        "Deck": SlabInput(thickness=800, crack_width_limit=0.3, crack_width_limit_bottom=0.3, peaks="design"),
+        "Pile(1)": PileInput(head_level=2.7),
+    }
+    sec = Section(elements=els)
+    sec.slab_strips["Deck"] = SlabStrips(bars={k: "layers: Ø32@150 | Ø25@150" for k in row["keys"]["top"]})
+    mine = run_section(DesignSettings(), sec, deck_workbook())["slabs"][0]
+    assert any("between the mesh bars" in n and "left out" in n for n in mine["notes"])

@@ -1031,7 +1031,9 @@ def _slab_views(
                     for b in lay["bars"]:
                         if lay["layer"] == 1 and b["kind"] == "mesh":
                             continue  # the mesh: drawn by hand
-                        off = s_mesh / 2 + (0 if b["kind"] == "mesh" else s_mesh / 2)
+                        # Layers inside the mesh sit behind its bars (bars between them only in
+                        # designs from before that was dropped).
+                        off = s_mesh / 2 + (s_mesh / 2 if b["kind"] == "between the mesh bars" else 0)
                         if lay["layer"] > 1:
                             off += 2 * b["diameter_mm"]  # beside the layer under it, to be seen
                         phi, sp = b["diameter_mm"], b["spacing_mm"]
@@ -1270,7 +1272,7 @@ def _slab_cuts(d: dict[str, Any]) -> list[View]:
                     continue
                 for b in lay["bars"]:
                     if f["bars_along"] == cut:  # runs through the cut: dots
-                        off = s / 2 + (0 if b["kind"] == "mesh" else s / 2)
+                        off = s / 2 + (s / 2 if b["kind"] == "between the mesh bars" else 0)
                         for c in _grid(0, 1000, b["spacing_mm"], off):
                             v.bar(b["diameter_mm"], (c, z))
                     else:

@@ -4589,7 +4589,7 @@ async function saveSlabStrips(name, change, status) {
 }
 
 function layerBuilder(d, r, f) {
-  // One face of a row: layer 1 is the mesh at the cover (with bars between its bars), then layers 2, 3…
+  // One face of a row: the mesh at the cover (nothing between its bars), then layers L1, L2…
   // inside it (above the bottom mesh, below the top mesh), each with its own bar and spacing. Returns the editor's element and a reader of its state.
   const layer = r.layers[f];
   const lay = d.layers[layer] || {};
@@ -4600,6 +4600,7 @@ function layerBuilder(d, r, f) {
   let mesh = { phi: mesh0.phi, s: mesh0.spacing_mm };
   let spec = (r.spec?.[f] || []).map((p) => (p ? [Number(p[0]), Number(p[1])] : null));
   if (!spec.length) spec = [null];
+  spec[0] = null; // no bars between the mesh bars: additional bars are layers of their own inside the mesh
   const along = layer.endsWith("_y");
   const cover = lay.cover_mm ?? (f === "top" ? d.cover_top_mm : d.cover_bottom_mm);
   const box = document.createElement("div");
@@ -4626,15 +4627,13 @@ function layerBuilder(d, r, f) {
   const draw = () => {
     const dep = Object.fromEntries(depths().map((x) => [x.k, x.at]));
     const s = mesh.s;
-    const between = spec[0];
     const inward = f === "bottom" ? "above" : "below";
     const first = `<div class="lb-row"><span class="lb-name">Mesh level</span>
         <label>Mesh <select data-mesh>${meshes.map((t) => opt(t, `Ø${mesh.phi} @ ${fmt(mesh.s)}`)).join("")}</select></label>
-        ${whole ? "" : `<label>between its bars <select data-between><option value="">none</option>${bars.flatMap((b) => [opt(`${b}@${s}`, between ? `${between[0]}@${between[1]}` : "", `Ø${b} @ ${fmt(s)} (every gap)`), opt(`${b}@${2 * s}`, between ? `${between[0]}@${between[1]}` : "", `Ø${b} @ ${fmt(2 * s)} (every second gap)`)]).join("")}</select></label>`}
         <span class="status">centre ${fmt(dep[0])} mm from the face (the mesh, nearest the ${f} face)</span></div>`;
     const inner = whole ? [] : spec.slice(1).map((p, i) => `<div class="lb-row"><span class="lb-name">L${i + 1}</span>
         <label>Ø <select data-lphi="${i + 1}">${bars.map((b) => opt(b, p ? p[0] : 25)).join("")}</select></label>
-        <label>@ <select data-ls="${i + 1}">${[s / 2, s, 2 * s].map((v) => opt(v, p ? p[1] : s, `${fmt(v)} mm${v < s ? ` (${inward} every bar and gap)` : v > s ? " (every second gap)" : ` (${inward} every gap)`}`)).join("")}</select></label>
+        <label>@ <select data-ls="${i + 1}">${[s, 2 * s].map((v) => opt(v, p ? p[1] : s, `${fmt(v)} mm (behind ${v > s ? "every second mesh bar" : "every mesh bar"})`)).join("")}</select></label>
         <span class="status">centre ${fmt(dep[i + 1])} mm from the face, ${inward} ${i ? `L${i}` : "the mesh"}</span> <button class="quiet" data-ldel="${i + 1}">Remove</button></div>`);
     // Drawn as they sit in the slab: the bottom mesh at the bottom with its layers above it, the top
     // mesh at the top with its layers below it.
@@ -4645,11 +4644,9 @@ function layerBuilder(d, r, f) {
     box.querySelector("[data-mesh]").onchange = (e) => {
       const m = /Ø(\d+) @ ([\d.]+)/.exec(e.target.value);
       if (m) mesh = { phi: Number(m[1]), s: Number(m[2]) };
-      spec = spec.map((p) => p && [p[0], Math.max(mesh.s / 2, Math.min(2 * mesh.s, p[1]))]);
+      spec = spec.map((p) => p && [p[0], p[1] > mesh.s ? 2 * mesh.s : mesh.s]);
       draw();
     };
-    const bt = box.querySelector("[data-between]");
-    if (bt) bt.onchange = () => { spec[0] = bt.value ? bt.value.split("@").map(Number) : null; draw(); };
     box.querySelectorAll("[data-lphi]").forEach((sel) => (sel.onchange = () => { const i = Number(sel.dataset.lphi); spec[i] = [Number(sel.value), spec[i]?.[1] ?? mesh.s]; draw(); }));
     box.querySelectorAll("[data-ls]").forEach((sel) => (sel.onchange = () => { const i = Number(sel.dataset.ls); spec[i] = [spec[i]?.[0] ?? 25, Number(sel.value)]; draw(); }));
     box.querySelectorAll("[data-ldel]").forEach((b) => (b.onclick = () => { spec.splice(Number(b.dataset.ldel), 1); draw(); }));
@@ -4867,11 +4864,13 @@ function shortBars(t) {
   return String(t || "").replace(" in 2 layers", " ×2 layers").replace(/ \+ Ø\d+ (under the mesh|behind the mesh bars)/, " + behind").replace(/ between the mesh bars/g, " between").replace(/ layer (\d)/g, " (L$1)");
 }
 
-// Layer names as the office counts them: the mesh and the bars between its bars are at mesh level,
-// L1 is the first layer inside the mesh (above the bottom mesh, below the top mesh), then L2, L3…
-function layerName(n) {
-  return n === 1 ? "Mesh level" : `L${n - 1}`;
+// Layer names as the office counts them: the mesh is at mesh level (no bars between its bars), L1 is
+// the first layer inside the mesh (above the bottom mesh, below the top mesh), then L2, L3…
+function layerName(n, meshLayers = 1) {
+  if (n <= meshLayers) return meshLayers > 1 ? `Mesh level ${n}` : "Mesh level";
+  return `L${n - meshLayers}`;
 }
+const meshLayersOf = (bl) => (bl || []).filter((q) => (q.bars || []).some((b) => b.kind === "mesh")).length || 1;
 
 // A face's bars layer by layer, outermost first: "Mesh level Ø16 @ 150 + Ø32 @ 150 (between) · L1 Ø32 @ 150".
 function layerLines(bl, withMesh = true) {
@@ -4879,7 +4878,7 @@ function layerLines(bl, withMesh = true) {
     .map((q) => {
       const bars = (q.bars || []).filter((b) => withMesh || b.kind !== "mesh");
       if (!bars.length) return null;
-      return `${layerName(q.layer)} ` + bars.map((b) => `Ø${fmt(b.diameter_mm)} @ ${fmt(b.spacing_mm)}${withMesh && b.kind === "between the mesh bars" ? " (between)" : ""}`).join(" + ");
+      return `${layerName(q.layer, meshLayersOf(bl))} ` + bars.map((b) => `Ø${fmt(b.diameter_mm)} @ ${fmt(b.spacing_mm)}${withMesh && b.kind === "between the mesh bars" ? " (between)" : ""}`).join(" + ");
     })
     .filter(Boolean);
 }
@@ -4902,9 +4901,10 @@ function barSection(bl, face, h, title) {
   const circles = [], labels = [];
   bl.forEach((q) => {
     q.bars.forEach((b) => {
-      const off = b.kind === "mesh" ? sMesh / 4 : b.kind === "between the mesh bars" ? sMesh / 4 + sMesh / 2 : b.spacing_mm >= sMesh - 1e-6 ? sMesh / 4 + sMesh / 2 : sMesh / 4;
+      // Layers inside the mesh sit behind its bars; bars between them only in older designs.
+      const off = b.kind === "between the mesh bars" ? sMesh / 4 + sMesh / 2 : sMesh / 4;
       for (let x = off; x < W; x += b.spacing_mm)
-        circles.push(`<circle class="${b.kind === "mesh" ? "sec-mesh" : "sec-add"}" cx="${(left + x * sc).toFixed(1)}" cy="${Y(q.from_face_mm).toFixed(1)}" r="${Math.max(2, (b.diameter_mm / 2) * sc).toFixed(1)}"><title>${layerName(q.layer)}: Ø${fmt(b.diameter_mm)} @ ${fmt(b.spacing_mm)} (${esc(b.kind)}), centre ${fmt(q.from_face_mm)} mm from the ${face} face</title></circle>`);
+        circles.push(`<circle class="${b.kind === "mesh" ? "sec-mesh" : "sec-add"}" cx="${(left + x * sc).toFixed(1)}" cy="${Y(q.from_face_mm).toFixed(1)}" r="${Math.max(2, (b.diameter_mm / 2) * sc).toFixed(1)}"><title>${layerName(q.layer, meshLayersOf(bl))}: Ø${fmt(b.diameter_mm)} @ ${fmt(b.spacing_mm)} (${esc(b.kind)}), centre ${fmt(q.from_face_mm)} mm from the ${face} face</title></circle>`);
     });
     labels.push(`<text class="tick" x="${left + W * sc + 10}" y="${(Y(q.from_face_mm) + 4).toFixed(1)}">${esc(layerLines([q])[0])} · ${fmt(q.from_face_mm)} mm</text>`);
   });
@@ -4969,7 +4969,7 @@ function barDiagrams(card, d) {
         });
       }
     }
-    // Every layer of additional bars is its own line, layer 1 (between the mesh bars) nearest the mesh.
+    // Every layer of additional bars is its own line, L1 nearest the mesh.
     for (const f of ["top", "bottom"]) segs[f].forEach((s) => (s.lines = layerLines(s.layers, false).length ? layerLines(s.layers, false) : [shortBars(s.text)]));
     const perLane = Math.max(1, ...segs.top.concat(segs.bottom).map((s) => s.lines.length));
     const nT = Math.max(1, ...segs.top.map((s) => s.lane + 1)), nB = Math.max(1, ...segs.bottom.map((s) => s.lane + 1));
@@ -4987,7 +4987,7 @@ function barDiagrams(card, d) {
     }).join("");
     const segSvg = (f) => segs[f].map((s, si) => {
       const x0 = X(s.a), x1 = X(s.b), w = Math.max(2, x1 - x0), room = Math.floor((w - 6) / 5.6);
-      const lay = (s.layers || []).map((q) => `${layerName(q.layer)}: ${q.text}, centre ${fmt(q.from_face_mm)} mm from the face`).join("\n");
+      const lay = (s.layers || []).map((q) => `${layerName(q.layer, meshLayersOf(s.layers))}: ${q.text}, centre ${fmt(q.from_face_mm)} mm from the face`).join("\n");
       const top = laneY(f, s.lane) - lane / 2;
       // Layer 1 nearest the mesh: downwards from the top mesh, upwards from the bottom mesh.
       const lines = s.lines.map((t, j) => {
@@ -5005,7 +5005,7 @@ function barDiagrams(card, d) {
     const piles = marks.map((m) => `<path class="pile-row" d="M${X(m).toFixed(1)},${axisY - 11} l-6,10 h12 z"><title>${isAlong ? "Row" : "Line"} of piles at ${fmt(m, 2)} m</title></path>`).join("");
     const stripPick = isAlong ? `<div class="row">${["column", "field"].map((k) => `<button class="quiet${k === strip ? " on" : ""}" data-strip="${k}">${k === "column" ? "Column" : "Field"} strip (${esc(mAlong)})</button>`).join("")}</div>` : "";
     el.innerHTML = `${stripPick}<div class="chart-title">${esc(v.title)}${isAlong ? `, ${strip} strip` : ""}: basic mesh of each face over the whole ${isAlong ? "deck" : "length"}, additional bars where they are added. ${isAlong ? "Sea side on the left; stations in m from the " + esc(sd.from) + "." : `${acrossAxis} in m along the quay.`}</div>
-      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (mesh level, at the cover)</span><span><i class="bd-add"></i>additional bars, one line per layer (mesh level = between the mesh bars; L1, L2… inside the mesh)${isAlong ? `, ${strip} strip, for ${mAlong}` : `, one group per zone, for ${across?.moment || ""}`}</span><span>▲ piles</span><span>click a group for its section</span></div>
+      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (mesh level, at the cover)</span><span><i class="bd-add"></i>additional bars, one line per layer (L1, L2… inside the mesh, behind its bars; the mesh stays as it is)${isAlong ? `, ${strip} strip, for ${mAlong}` : `, one group per zone, for ${across?.moment || ""}`}</span><span>▲ piles</span><span>click a group for its section</span></div>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(v.title)}">
         <rect x="${X(lo)}" y="${slabTop}" width="${X(hi) - X(lo)}" height="${slabBot - slabTop}" class="bd-slab"/>
         <line class="bd-mesh" x1="${X(lo)}" x2="${X(hi)}" y1="${yMeshT}" y2="${yMeshT}"><title>Top mesh ${esc(mesh("top"))}, centre ${fmt(depth("top"))} mm from the top</title></line>
@@ -5160,7 +5160,7 @@ function slabCard(d) {
       <div class="row" data-kind="mplan-pick"></div><div class="chart wide" data-kind="mplan"></div>
       ${crackPicturesHtml(slabCrackItems(d), "Crack pictures (QP, per strip and station)")}` : ""}
     <h3 style="margin-top:18px">Bars per metre</h3>
-    <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (between the mesh bars)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
+    <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (layers inside the mesh)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
       ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)${l.basic.set_by === "user" ? "<br><span class=\"status\">your mesh</span>" : ""}</td>
         <td>${l.mode === "mesh_only" ? "mesh only (your choice)" : l.zones.length ? `${l.zones.length} zones: ${esc([...new Set(l.zones.map((z) => z.label))].join(", "))}` : "none needed"}</td>
         <td class="cell ${l.utilisation <= 1 ? "ok" : "error"}">${fmt(l.utilisation, 2)}</td><td>${fmt(l.cells_set_by_cracks)} cells</td><td>${fmt(l.d_mm)} mm</td></tr>`).join("")}

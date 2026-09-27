@@ -199,7 +199,8 @@ def test_designs_without_joints_keep_their_fingerprint():
     punching = ("punching_piles", "punching_per", "punching_fix")  # empty or at their defaults
     for key in ("construction_joints", "manholes", "channels", *punching):
         own.pop(key, None)
-    assert before["Deck"] == fresh._hash(own)
+    # (Slabs also carry the bar rule of 2026-09-26: additional bars inside the mesh.)
+    assert before["Deck"] == fresh._hash([own, fresh.SLAB_BARS_RULE])
     with_joint = _deck_section(slab=[SlabJoint(at=-2.0)])
     assert fresh.fingerprint(Project(sections=[with_joint]), with_joint, None)["Deck"] != before["Deck"]
 

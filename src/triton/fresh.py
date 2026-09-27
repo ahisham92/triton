@@ -81,6 +81,9 @@ def _settings_left_out(project: Project) -> dict:
     return out
 
 
+SLAB_BARS_RULE = "additional bars inside the mesh"
+
+
 def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | None) -> dict[str, str]:
     """What the design of a section depends on, part by part, as short hashes."""
     parts = {
@@ -146,6 +149,10 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         value = own if cage is None else [own, cage.model_dump(mode="json")]
         if project.approach is not None and getattr(element, "kind", None) == "rear_beam":
             value = [value, project.approach.model_dump(mode="json")]  # the ledge's load and torque
+        if isinstance(element, SlabInput):
+            # Additional bars in layers of their own inside the mesh, none between its bars (Ahmed,
+            # 2026-09-26): slabs designed before ask for a redesign.
+            value = [value, SLAB_BARS_RULE]
         parts[name] = _hash([value, sorted(each.items())] if each else value)
     if project.approach is not None:
         rear = _rear_beam(section)
