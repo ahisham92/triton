@@ -658,16 +658,16 @@ def strips_with_other_face(rows: list[dict], tension_layers, mrd_of, cw_adsec, h
         )
         if c is None or r["voided"] or q is None or "_calc" not in q:
             continue
-        qc = q["_calc"]
-        other = [(a, h - dd) for a, dd, _, _ in tension_layers(qc["o"], qc["d"], q["face"])]
-        mrd = mrd_of(c["o"], c["d"], c["n"], face, direction, False, other)
+        qc, hh = q["_calc"], c["h"]
+        other = [(a, hh - dd) for a, dd, _, _ in tension_layers(qc["o"], qc["d"], q["face"], hh)]
+        mrd = mrd_of(c["o"], c["d"], c["n"], face, direction, False, other, hh=hh)
         r["MRd_kNm_per_m"] = round(mrd, 1)
         r["ratio"] = round(r["M_kNm_per_m"] / mrd, 3) if mrd > 0 else None
         if c["qp"] is not None:
             qm, qn, qcomb, qv = c["qp"]
             solid = ~np.asarray(qv, bool)
             if solid.all():
-                w = cw_adsec(qm, qn, c["o"], c["d"], face, direction, other)
+                w = cw_adsec(qm, qn, c["o"], c["d"], face, direction, other, hh=hh)
                 wi = int(np.argmax(w))
                 r["wk_mm"], r["qp_combination"] = round(float(w[wi]), 3), str(qcomb[wi])
                 r["qp"] = {"M_kNm_per_m": round(float(qm[wi]), 1), "N_kN_per_m": round(float(qn[wi]), 1)}
@@ -681,12 +681,13 @@ def strips_with_other_face(rows: list[dict], tension_layers, mrd_of, cw_adsec, h
                         direction,
                         other,
                         terms=True,
+                        hh=hh,
                     )
                     x = float(t[3][0])
                     s_["crack"] = {
                         **s_["crack"],
                         **crack_terms(
-                            t[0][0], limits[face], t[1][0], t[2][0], x if np.isfinite(x) else 0.0, h
+                            t[0][0], limits[face], t[1][0], t[2][0], x if np.isfinite(x) else 0.0, hh
                         ),
                     }
     for r in rows:
@@ -2167,6 +2168,22 @@ def design_slab(
         else None
     )
     strips = frame is not None
+    # Thickness at each station (a slab that slopes or steps), for the bars along the strips.
+    h_st: dict[int, float] = {}
+    if strips and slab.station_thicknesses:
+        n_st = len(frame["bounds"]) - 1
+        if len(slab.station_thicknesses) == n_st:
+            h_st = {i: float(t) for i, t in enumerate(slab.station_thicknesses)}
+            notes.append(
+                "Bars along the strips designed at each station's own thickness ("
+                + ", ".join(f"{t:g}" for t in slab.station_thicknesses)
+                + " mm, slab setting); the rest at the slab thickness."
+            )
+        else:
+            notes.append(
+                f"Thickness at each station: {len(slab.station_thicknesses)} given for {n_st} stations, "
+                f"so one thickness ({slab.thickness:g} mm) is used everywhere."
+            )
     if slab.strips == "column_and_field" and not strips:
         notes.append("No piles under the slab to set out the column strips: designed as a uniform slab.")
     strip_rows: list[dict] = []
@@ -2201,66 +2218,77 @@ def design_slab(
 
     opt_parts: dict[tuple, tuple] = {}  # option -> (mesh, bar layers), for its layers of bars
 
-    def tension_layers(o: tuple, d_o: float, face: str) -> list[tuple[float, float, float, float]]:
+    def h_of(st) -> float:
+        """The slab thickness at station index ``st`` (the bars along the strips)."""
+        return h_st.get(int(st), h)
+
+    def tension_layers(
+        o: tuple, d_o: float, face: str, hh: float = h
+    ) -> list[tuple[float, float, float, float]]:
         """The option's layers (mm²/m, depth from the other face, Ø, spacing), outermost first, with
-        their centroid at d_o."""
+        their centroid at d_o, in a slab ``hh`` thick."""
         mesh, spec = opt_parts.get(o, (o, []))
         lay = bar_layers(tuple(mesh[:4]), spec, covers[face], 0.0)
         total = sum(r["_area"] for r in lay)
         cen = sum(r["_area"] * r["from_face_mm"] for r in lay) / total
-        off = (h - d_o) - cen
+        off = (hh - d_o) - cen
         return [
-            (r["_area"], h - r["from_face_mm"] - off, r["bars"][0]["diameter_mm"], r["bars"][0]["spacing_mm"])
+            (
+                r["_area"],
+                hh - r["from_face_mm"] - off,
+                r["bars"][0]["diameter_mm"],
+                r["bars"][0]["spacing_mm"],
+            )
             for r in lay
         ]
 
-    def other_min(face: str, direction: str) -> list[tuple[float, float]]:
+    def other_min(face: str, direction: str, hh: float = h) -> list[tuple[float, float]]:
         """The other face's minimum steel, at its depth from this face's compressed side: at least that
         much is there while this face is sized."""
         other = "top" if face == "bottom" else "bottom"
-        d_other = depth(other, direction)
-        return [(max(0.26 * conc.fctm / fyk, 0.0013) * 1000 * d_other, h - d_other)]
+        d_other = depth(other, direction) + hh - h
+        return [(max(0.26 * conc.fctm / fyk, 0.0013) * 1000 * d_other, hh - d_other)]
 
-    def req_as(m, n, d, face, direction, d2, voided):
+    def req_as(m, n, d, face, direction, d2, voided, hh=h):
         """``required_as``, on the voided section where ``voided``; else by strain compatibility as AdSec
         where it applies."""
-        out = required_as(m, n, h, d, conc.fck, fyd, d2)
-        exact = ss.required_as(m, n, h, d, fcd_s, steel, other_min(face, direction))
+        out = required_as(m, n, hh, d, conc.fck, fyd, d2)
+        exact = ss.required_as(m, n, hh, d, fcd_s, steel, other_min(face, direction, hh))
         fine = np.isfinite(exact)
         out = (np.where(fine, exact, out[0]), out[1], np.where(fine, 0.0, out[2]))
         voided = np.asarray(voided, bool)
         if direction not in vsec or not voided.any():
             return out
-        v_out = vd.required_as(m, n, h, d, conc.fck, fyd, d2, vsec[direction], face)
+        v_out = vd.required_as(m, n, hh, d, conc.fck, fyd, d2, vsec[direction], face)
         return tuple(np.where(voided, b_, a_) for a_, b_ in zip(out, v_out, strict=True))
 
-    def cw_adsec(m, n, o, d_o, face, direction, other=None, terms=False):
+    def cw_adsec(m, n, o, d_o, face, direction, other=None, terms=False, hh=h):
         """AdSec's crack width of option ``o`` (``slab_section.crack_widths``)."""
         return ss.crack_widths(
             np.abs(np.asarray(m, float)),
             np.asarray(n, float),
-            tension_layers(o, d_o, face),
-            h,
-            other if other is not None else other_min(face, direction),
+            tension_layers(o, d_o, face, hh),
+            hh,
+            other if other is not None else other_min(face, direction, hh),
             conc,
             e_eff,
             terms=terms,
         )
 
-    def cw_solid(m, n, o, d_o, face, direction, terms=False):
+    def cw_solid(m, n, o, d_o, face, direction, terms=False, hh=h):
         """Crack width of the solid slab as AdSec; rows well under the limit keep the quick estimate."""
         if terms:
-            t = cw_adsec(m, n, o, d_o, face, direction, terms=True)
+            t = cw_adsec(m, n, o, d_o, face, direction, terms=True, hh=hh)
             x = float(t[3][0])
             return t[0], t[1], float(t[2][0]), x if np.isfinite(x) else 0.0
-        w = crack_widths(m, n, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+        w = crack_widths(m, n, o[0], o[1], o[2], hh, d_o, covers[face], conc, e_eff)
         near = np.asarray(w >= CRACK_SCREEN * limits[face])
         if near.any():
             w = np.array(w, float)
-            w[near] = cw_adsec(np.asarray(m)[near], np.asarray(n)[near], o, d_o, face, direction)
+            w[near] = cw_adsec(np.asarray(m)[near], np.asarray(n)[near], o, d_o, face, direction, hh=hh)
         return w
 
-    def cw(m, n, o, d_o, face, direction, voided, terms=False):
+    def cw(m, n, o, d_o, face, direction, voided, terms=False, hh=h):
         """Crack widths of option ``o``, on the voided section where ``voided``."""
         voided = np.asarray(voided, bool)
         if direction in vsec and voided.any():
@@ -2270,7 +2298,7 @@ def design_slab(
                 o[0],
                 o[1],
                 o[2],
-                h,
+                hh,
                 d_o,
                 covers[face],
                 conc,
@@ -2287,17 +2315,17 @@ def design_slab(
                 return vw
             if voided.all():
                 return vw
-            return np.where(voided, vw, cw_solid(m, n, o, d_o, face, direction))
-        return cw_solid(m, n, o, d_o, face, direction, terms=terms)
+            return np.where(voided, vw, cw_solid(m, n, o, d_o, face, direction, hh=hh))
+        return cw_solid(m, n, o, d_o, face, direction, terms=terms, hh=hh)
 
-    def mrd_of(o, d_o, n_, face, direction, voided, other=None):
+    def mrd_of(o, d_o, n_, face, direction, voided, other=None, hh=h):
         """MRd (kNm/m) of option ``o`` with N: as AdSec (every bar of both faces at its own strain), the
         other face's ``other`` bars or else its minimum steel."""
         if voided and direction in vsec:
-            return vd.mrd(o[0], d_o, h, n_, fcd_s, fyd, vsec[direction], face)
-        lay = [(a, dd) for a, dd, _, _ in tension_layers(o, d_o, face)]
-        m = ss.mrd(lay, h, n_, fcd_s, steel, other if other is not None else other_min(face, direction))
-        return m if np.isfinite(m) else strip_mrd(o[0], d_o, h, n_, fcd_s, fyd, steel)
+            return vd.mrd(o[0], d_o, hh, n_, fcd_s, fyd, vsec[direction], face)
+        lay = [(a, dd) for a, dd, _, _ in tension_layers(o, d_o, face, hh)]
+        m = ss.mrd(lay, hh, n_, fcd_s, steel, other if other is not None else other_min(face, direction, hh))
+        return m if np.isfinite(m) else strip_mrd(o[0], d_o, hh, n_, fcd_s, fyd, steel)
 
     mesh_labels = {label(o): o for o in options}
     # Steel per node for each layer; where K > K' the opposite face's bars work in compression.
@@ -2345,15 +2373,21 @@ def design_slab(
             # is the worst cut across a strip's width, averaged over that width.
             other = "top" if face == "bottom" else "bottom"
             env = strip_average(uls_m, wa[layer], n_u, uloc, size, vm_u, slab.strip_moments)
-            a_env, _, _ = req_as(
-                env["m"].to_numpy(),
-                env["n"].to_numpy(),
-                d,
-                face,
-                direction,
-                h - depth(other, direction),
-                env["v"].to_numpy() > 0.5,
-            )
+            # Each station at its own thickness: the bars keep their covers, so d grows with it.
+            a_env = np.zeros(len(env))
+            for st in np.unique(env["st"].to_numpy()):
+                sel = (env["st"] == st).to_numpy()
+                hh = h_of(st)
+                a_env[sel] = req_as(
+                    env["m"].to_numpy()[sel],
+                    env["n"].to_numpy()[sel],
+                    d + hh - h,
+                    face,
+                    direction,
+                    h - depth(other, direction),
+                    env["v"].to_numpy()[sel] > 0.5,
+                    hh,
+                )[0]
             env["req"] = np.maximum(a_env, a_min)
             gov = env.loc[env.groupby(["st", "kind"])["req"].idxmax()]
             groups = {(int(r.st), int(r.kind)): r for r in gov.itertuples(index=False)}
@@ -2412,7 +2446,8 @@ def design_slab(
                         for k, (qm, qn, _, qv) in qgroups.items():
                             if k not in members:
                                 continue
-                            w = cw(qm, qn, o, d_opt[oi], face, direction, qv)
+                            hh = h_of(k[0])
+                            w = cw(qm, qn, o, d_opt[oi] + hh - h, face, direction, qv, hh=hh)
                             if w.max() > limits[face] + 1e-9:
                                 crack_ok[members[k], oi] = False
                         continue
@@ -2683,15 +2718,16 @@ def design_slab(
                 c = idxs[int(np.argmin(eff_c[idxs]))]
                 oi = int(chosen[c])
                 o = opts[oi]
-                d_o = d_all[oi]
+                hk = h_of(k[0])
+                d_o = d_all[oi] + hk - h
                 g_void = bool(g.v > 0.5)
-                mrd = mrd_of(o, d_o, float(g.n), face, direction, g_void)
+                mrd = mrd_of(o, d_o, float(g.n), face, direction, g_void, hh=hk)
                 wk = qcomb = qcase = None
                 strip_sets = sets.setdefault(k, {"uls": [], "qp": []})
                 q_void = np.zeros(0, bool)
                 if k in qgroups:
                     qm, qn, qc, q_void = qgroups[k]
-                    w = cw(qm, qn, o, d_o, face, direction, q_void)
+                    w = cw(qm, qn, o, d_o, face, direction, q_void, hh=hk)
                     wi = int(np.argmax(w))
                     wk, qcomb = round(float(w[wi]), 3), str(qc[wi])
                     qcase = {"M_kNm_per_m": round(float(qm[wi]), 1), "N_kN_per_m": round(float(qn[wi]), 1)}
@@ -2706,9 +2742,10 @@ def design_slab(
                         direction,
                         [bool(q_void.any())],
                         terms=True,
+                        hh=hk,
                     )
                     q["crack"] = {
-                        **crack_terms(t[0][0], limits[face], t[1][0], t[2], t[3], h),
+                        **crack_terms(t[0][0], limits[face], t[1][0], t[2], t[3], hk),
                         "face": face,
                         "d_mm": round(d_o),
                         "phi_mm": o[1],
@@ -2746,7 +2783,8 @@ def design_slab(
                         "spec": [list(p) if p else None for p in specs[oi]],
                         "sets": strip_sets,
                         "voided": g_void,
-                        "_calc": {"o": o, "d": d_o, "n": float(g.n), "qp": qgroups.get(k)},
+                        "thickness_mm": hk,
+                        "_calc": {"o": o, "d": d_o, "n": float(g.n), "qp": qgroups.get(k), "h": hk},
                     }
                 )
         else:

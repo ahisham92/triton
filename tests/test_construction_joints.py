@@ -197,7 +197,7 @@ def test_designs_without_joints_keep_their_fingerprint():
     # The element's own hash does not see the empty list, so designs made before joints stay current.
     own = section.elements["Deck"].model_dump(mode="json")
     punching = ("punching_piles", "punching_per", "punching_fix")  # empty or at their defaults
-    for key in ("construction_joints", "manholes", "channels", *punching):
+    for key in ("construction_joints", "manholes", "channels", "station_thicknesses", *punching):
         own.pop(key, None)
     # (Slabs also carry the bar rule of 2026-09-26 and the AdSec strength and crack rule of 2026-09-27.)
     assert before["Deck"] == fresh._hash([[own, fresh.SLAB_BARS_RULE], fresh.SLAB_ADSEC_RULE])

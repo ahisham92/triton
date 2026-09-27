@@ -688,7 +688,6 @@ def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) ->
     if not rows or not sd.get("table"):
         return {}
     grade = rebar_grade(rebar)
-    h = slab["thickness_mm"]
     covers = {"top": slab["cover_top_mm"], "bottom": slab["cover_bottom_mm"]}
     basic = {k: (v.get("basic") or {}) for k, v in (slab.get("layers") or {}).items()}
     files: dict[str, bytes] = {}
@@ -697,6 +696,7 @@ def slab_files(job: str, section_name: str, slab: dict[str, Any], rebar: str) ->
         if not all(faces.values()):
             continue
         first = {f: faces[f][0] for f in faces}
+        h = first[tension_face(row)].get("thickness_mm") or slab["thickness_mm"]  # its station's own
         width = strip_width(first[tension_face(row)]["mesh"]["spacing_mm"])
         groups = []
         for f, sign in (("bottom", -1), ("top", 1)):
