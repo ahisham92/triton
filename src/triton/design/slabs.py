@@ -12,11 +12,14 @@ they are or averaged, by the slab's "Moments at the pile faces" method (Method t
 
 Bars per metre, EN 1992-1-1, for each face and direction:
 
-* ULS: tension steel of a 1 m strip under N and M, As = (M + N(d − h/2))/(z·fyd) − N/fyd,
-  z = d/2·(1 + √(1 − 3.53K)) ≤ 0.95d with K = Ms/(b·d²·fck); K > 0.167 is flagged;
+* ULS, as AdSec: tension steel of a 1 m strip under N and M by strain compatibility (parabola-rectangle
+  concrete, the steel law of the setting, the other face's minimum steel working at its own strain);
+  where that does not apply, As = (M + N(d − h/2))/(z·fyd) − N/fyd, z = d/2·(1 + √(1 − 3.53K)) ≤ 0.95d
+  with K = Ms/(b·d²·fck); K > 0.167 is flagged;
 * minimum steel 9.3.1.1 (9.2.1.1): max(0.26·fctm/fyk, 0.0013)·b·d;
-* QP crack width 7.3.4 per face and limit, from the cracked-section stress
-  σs = (Ms/z − N)/As with z = d(1 − k/3);
+* QP crack width 7.3.4 per face and limit, as AdSec: the outermost bar's stress from a cracked elastic
+  section of every bar, ρp,eff of that bar over its own concrete, k2 from the strains
+  (``slab_section.crack_widths``); results well under the limit keep the quick σs = (Ms/z − N)/As;
 * the outer layer is the bars along X, the bars along Y are one bar further in.
 
 Zones. The slab is cut into square cells (1 m by default). Each face and direction gets a
@@ -31,7 +34,7 @@ strip's width, with its own axial force, as the calc report (or, as a slab setti
 across the width); every column strip is designed together, and every field strip, at
 stations along the strips (2 m each side of every row of piles and the spans between, or the
 user's). Each station and strip gets one set of bars for its worst cut (ULS) and QP crack width;
-M/MRd uses the rectangular block with the tension steel only.
+M/MRd is by strain compatibility with every bar of both faces at its own strain, as AdSec.
 
 Shear per metre, 6.2.2: v = √(Vx² + Vy²) against VRd,c with σcp from compression; in
 tension no concrete contribution. Cells where links are needed are listed.
@@ -62,6 +65,7 @@ from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, SlabInput, SlabStrips, with_project_grades
 from . import ductility
+from . import slab_section as ss
 from . import voids as vd
 from .circular import SteelLaw
 from .crack import K1, K3, K4, KT, autogenous_shrinkage, restraint_crack, restraint_factor
@@ -185,6 +189,7 @@ def label(o: tuple) -> str:
 
 
 K_BAL = 0.167  # K' without moment redistribution (fck <= 50 MPa)
+CRACK_SCREEN = 0.4  # crack widths under this share of the limit keep the quick estimate
 
 
 def required_as(
@@ -639,6 +644,53 @@ def strip_mrd(
         eps = min(0.0035 * (d - x) / x, steel.eps_ud or 1.0)
         fs = max(float(steel.stress(np.array(eps))) * fyd / steel.fyd, fyd)
     return max(fc * (h / 2 - 0.4 * x) + area * fs * (d - h / 2), 0.0) / 1e6
+
+
+def strips_with_other_face(rows: list[dict], tension_layers, mrd_of, cw_adsec, h: float, limits) -> None:
+    """MRd and crack widths of each station and strip again with the other face's own bars there (the
+    strip's bars were sized with its minimum steel), as AdSec takes the whole cage."""
+    by = {(r["layer"], tuple(r["station"]), r["strip"]): r for r in rows}
+    for r in rows:
+        c = r.get("_calc")
+        face, direction = r["layer"].split("_")
+        q = by.get(
+            (("top" if face == "bottom" else "bottom") + "_" + direction, tuple(r["station"]), r["strip"])
+        )
+        if c is None or r["voided"] or q is None or "_calc" not in q:
+            continue
+        qc = q["_calc"]
+        other = [(a, h - dd) for a, dd, _, _ in tension_layers(qc["o"], qc["d"], q["face"])]
+        mrd = mrd_of(c["o"], c["d"], c["n"], face, direction, False, other)
+        r["MRd_kNm_per_m"] = round(mrd, 1)
+        r["ratio"] = round(r["M_kNm_per_m"] / mrd, 3) if mrd > 0 else None
+        if c["qp"] is not None:
+            qm, qn, qcomb, qv = c["qp"]
+            solid = ~np.asarray(qv, bool)
+            if solid.all():
+                w = cw_adsec(qm, qn, c["o"], c["d"], face, direction, other)
+                wi = int(np.argmax(w))
+                r["wk_mm"], r["qp_combination"] = round(float(w[wi]), 3), str(qcomb[wi])
+                r["qp"] = {"M_kNm_per_m": round(float(qm[wi]), 1), "N_kN_per_m": round(float(qn[wi]), 1)}
+                for s_ in r["sets"]["qp"]:
+                    t = cw_adsec(
+                        np.array([s_["M_kNm_per_m"]]),
+                        np.array([s_["N_kN_per_m"]]),
+                        c["o"],
+                        c["d"],
+                        face,
+                        direction,
+                        other,
+                        terms=True,
+                    )
+                    x = float(t[3][0])
+                    s_["crack"] = {
+                        **s_["crack"],
+                        **crack_terms(
+                            t[0][0], limits[face], t[1][0], t[2][0], x if np.isfinite(x) else 0.0, h
+                        ),
+                    }
+    for r in rows:
+        r.pop("_calc", None)
 
 
 def add_crane(uls: pd.DataFrame, slab: SlabInput) -> tuple[pd.DataFrame, int]:
@@ -2147,17 +2199,69 @@ def design_slab(
             return h - o[4] - (f if direction == "y" else 0)
         return h - covers[face] - f / 2 - (f if direction == "y" else 0) - (o[3] - 1) * (f + 25) / 2
 
+    opt_parts: dict[tuple, tuple] = {}  # option -> (mesh, bar layers), for its layers of bars
+
+    def tension_layers(o: tuple, d_o: float, face: str) -> list[tuple[float, float, float, float]]:
+        """The option's layers (mm²/m, depth from the other face, Ø, spacing), outermost first, with
+        their centroid at d_o."""
+        mesh, spec = opt_parts.get(o, (o, []))
+        lay = bar_layers(tuple(mesh[:4]), spec, covers[face], 0.0)
+        total = sum(r["_area"] for r in lay)
+        cen = sum(r["_area"] * r["from_face_mm"] for r in lay) / total
+        off = (h - d_o) - cen
+        return [
+            (r["_area"], h - r["from_face_mm"] - off, r["bars"][0]["diameter_mm"], r["bars"][0]["spacing_mm"])
+            for r in lay
+        ]
+
+    def other_min(face: str, direction: str) -> list[tuple[float, float]]:
+        """The other face's minimum steel, at its depth from this face's compressed side: at least that
+        much is there while this face is sized."""
+        other = "top" if face == "bottom" else "bottom"
+        d_other = depth(other, direction)
+        return [(max(0.26 * conc.fctm / fyk, 0.0013) * 1000 * d_other, h - d_other)]
+
     def req_as(m, n, d, face, direction, d2, voided):
-        """``required_as``, on the voided section where ``voided``."""
+        """``required_as``, on the voided section where ``voided``; else by strain compatibility as AdSec
+        where it applies."""
         out = required_as(m, n, h, d, conc.fck, fyd, d2)
+        exact = ss.required_as(m, n, h, d, fcd_s, steel, other_min(face, direction))
+        fine = np.isfinite(exact)
+        out = (np.where(fine, exact, out[0]), out[1], np.where(fine, 0.0, out[2]))
         voided = np.asarray(voided, bool)
         if direction not in vsec or not voided.any():
             return out
         v_out = vd.required_as(m, n, h, d, conc.fck, fyd, d2, vsec[direction], face)
         return tuple(np.where(voided, b_, a_) for a_, b_ in zip(out, v_out, strict=True))
 
+    def cw_adsec(m, n, o, d_o, face, direction, other=None, terms=False):
+        """AdSec's crack width of option ``o`` (``slab_section.crack_widths``)."""
+        return ss.crack_widths(
+            np.abs(np.asarray(m, float)),
+            np.asarray(n, float),
+            tension_layers(o, d_o, face),
+            h,
+            other if other is not None else other_min(face, direction),
+            conc,
+            e_eff,
+            terms=terms,
+        )
+
+    def cw_solid(m, n, o, d_o, face, direction, terms=False):
+        """Crack width of the solid slab as AdSec; rows well under the limit keep the quick estimate."""
+        if terms:
+            t = cw_adsec(m, n, o, d_o, face, direction, terms=True)
+            x = float(t[3][0])
+            return t[0], t[1], float(t[2][0]), x if np.isfinite(x) else 0.0
+        w = crack_widths(m, n, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
+        near = np.asarray(w >= CRACK_SCREEN * limits[face])
+        if near.any():
+            w = np.array(w, float)
+            w[near] = cw_adsec(np.asarray(m)[near], np.asarray(n)[near], o, d_o, face, direction)
+        return w
+
     def cw(m, n, o, d_o, face, direction, voided, terms=False):
-        """``crack_widths`` of option ``o``, on the voided section where ``voided``."""
+        """Crack widths of option ``o``, on the voided section where ``voided``."""
         voided = np.asarray(voided, bool)
         if direction in vsec and voided.any():
             vw = vd.crack_widths(
@@ -2183,15 +2287,17 @@ def design_slab(
                 return vw
             if voided.all():
                 return vw
-            return np.where(
-                voided, vw, crack_widths(m, n, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff)
-            )
-        return crack_widths(m, n, o[0], o[1], o[2], h, d_o, covers[face], conc, e_eff, terms=terms)
+            return np.where(voided, vw, cw_solid(m, n, o, d_o, face, direction))
+        return cw_solid(m, n, o, d_o, face, direction, terms=terms)
 
-    def mrd_of(area, d_o, n_, face, direction, voided):
+    def mrd_of(o, d_o, n_, face, direction, voided, other=None):
+        """MRd (kNm/m) of option ``o`` with N: as AdSec (every bar of both faces at its own strain), the
+        other face's ``other`` bars or else its minimum steel."""
         if voided and direction in vsec:
-            return vd.mrd(area, d_o, h, n_, fcd_s, fyd, vsec[direction], face)
-        return strip_mrd(area, d_o, h, n_, fcd_s, fyd, steel)
+            return vd.mrd(o[0], d_o, h, n_, fcd_s, fyd, vsec[direction], face)
+        lay = [(a, dd) for a, dd, _, _ in tension_layers(o, d_o, face)]
+        m = ss.mrd(lay, h, n_, fcd_s, steel, other if other is not None else other_min(face, direction))
+        return m if np.isfinite(m) else strip_mrd(o[0], d_o, h, n_, fcd_s, fyd, steel)
 
     mesh_labels = {label(o): o for o in options}
     # Steel per node for each layer; where K > K' the opposite face's bars work in compression.
@@ -2369,6 +2475,8 @@ def design_slab(
                 combos, dphi, labels, specs = additional_options(
                     options[k], settings, h / 2 - covers[face], covers[face]
                 )
+                for c_, sp in zip(combos, specs, strict=True):
+                    opt_parts.setdefault(c_, (options[k], sp))
                 eff2, _, ok2, _ = assess(combos, dphi)
                 ok2 = (eff2[None, :] >= target[:, None] - 1e-6) & ok2
                 tried.append((k, combos, labels, eff2, ok2, dphi, specs))
@@ -2450,6 +2558,7 @@ def design_slab(
                     )
                     continue
                 o, big = spec_option(mesh_o, spec, covers[face], 0.0)
+                opt_parts.setdefault(o, (mesh_o, spec))
                 opts.append(o)
                 labels.append(text)
                 dphis.append(big)
@@ -2576,7 +2685,7 @@ def design_slab(
                 o = opts[oi]
                 d_o = d_all[oi]
                 g_void = bool(g.v > 0.5)
-                mrd = mrd_of(o[0], d_o, float(g.n), face, direction, g_void)
+                mrd = mrd_of(o, d_o, float(g.n), face, direction, g_void)
                 wk = qcomb = qcase = None
                 strip_sets = sets.setdefault(k, {"uls": [], "qp": []})
                 q_void = np.zeros(0, bool)
@@ -2637,6 +2746,7 @@ def design_slab(
                         "spec": [list(p) if p else None for p in specs[oi]],
                         "sets": strip_sets,
                         "voided": g_void,
+                        "_calc": {"o": o, "d": d_o, "n": float(g.n), "qp": qgroups.get(k)},
                     }
                 )
         else:
@@ -2668,7 +2778,7 @@ def design_slab(
                 m_ = float(wa[layer][node])
                 n_ = float(n_u[node])
                 g_void = bool(vm_u[node])
-                mrd = mrd_of(o[0], d_o, n_, face, direction, g_void)
+                mrd = mrd_of(o, d_o, n_, face, direction, g_void)
                 wk = None
                 cu = crack_u[idxs]
                 if np.isfinite(cu).any():
@@ -2809,6 +2919,7 @@ def design_slab(
                 "crack": crack_u,
             }
         )
+    strips_with_other_face(strip_rows, tension_layers, mrd_of, cw_adsec, h, limits)
     if worst_k > K_BAL:
         notes.append(
             f"K up to {worst_k:.2f} > {K_BAL} ({LAYER_TEXT[worst_k_at[0]]} at X {worst_k_at[1]:.1f}, "
