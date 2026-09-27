@@ -59,6 +59,18 @@ export async function renderSequence(host, h) {
     <p class="status" id="seq-notes"></p>`;
   const $ = (s) => host.querySelector(s);
   $("#seq-existing").append(h.existingForm());
+  // Play pressed while the stages and the view are still loading: remembered, and started as soon
+  // as they are ready (pressed again before then, it is called off).
+  let wantPlay = false;
+  const playBtn = $("[data-play]");
+  playBtn.onclick = () => {
+    wantPlay = !wantPlay;
+    playBtn.textContent = wantPlay ? "Stop" : "Play";
+  };
+  const cannotPlay = () => {
+    playBtn.disabled = true;
+    playBtn.textContent = "Play";
+  };
   let combo = "";
   let data;
   let geo;
@@ -67,11 +79,13 @@ export async function renderSequence(host, h) {
     [data, geo, site] = await Promise.all([tabData(`sequence?combination=${encodeURIComponent(combo)}`), h.sectionGeometry(), h.sectionSite()]);
   } catch (e) {
     $("#seq-view").innerHTML = `<p class="status">${esc(e.message)}</p>`;
+    cannotPlay();
     return;
   }
   if (!host.isConnected) return;
   if (!geo) {
     $("#seq-view").innerHTML = '<p class="status">Upload this section\'s workbook on the Workbook tab first.</p>';
+    cannotPlay();
     return;
   }
   const view = new h.View3D($("#seq-view"), { height: 520, onSite: h.saveSite, legend: false });
@@ -291,21 +305,26 @@ export async function renderSequence(host, h) {
   // Play: every stage takes the same time, whatever its real duration (the animation is not a
   // programme: the model is only the length analysed), the plant moving from pile to pile.
   let playing = false;
+  // Each play has its own number: a loop whose play was stopped or replaced ends at its next frame,
+  // so Stop then Play within one frame never leaves two loops running at once.
+  let run = 0;
   const SECONDS = 6;
-  const playBtn = $("[data-play]");
   const stop = () => {
     playing = false;
+    run += 1;
     playBtn.textContent = "Play";
   };
   const play = (onEnd) => {
     playing = true;
+    const me = ++run;
     playBtn.textContent = "Stop";
     let last = performance.now();
     let drawn = 0;
     const step = (now) => {
-      if (!playing || !host.isConnected) return onEnd?.(false);
-      t += (now - last) / 1000 / SECONDS;
-      last = now;
+      if (me !== run || !playing || !host.isConnected) return onEnd?.(false);
+      // The first frame can carry a time from before the play started: never step backwards.
+      t += Math.max(0, now - last) / 1000 / SECONDS;
+      last = Math.max(now, last);
       if (t >= 1) {
         if (n >= stages.length) {
           t = 1;
@@ -318,18 +337,28 @@ export async function renderSequence(host, h) {
       }
       if (now - drawn > 50) {
         drawn = now;
-        show(false);
+        try {
+          show(false);
+        } catch (e) {
+          // A frame that cannot be drawn stops the play (the button back to Play) instead of
+          // leaving it stuck on Stop with nothing moving.
+          console.error(e);
+          stop();
+          return onEnd?.(false);
+        }
       }
       requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
   };
-  playBtn.onclick = () => {
-    if (playing) return stop();
+  // Play from the stage shown, or from the start when the last stage is shown whole.
+  const start = () => {
+    if (!stages.length) return;
     if (n >= stages.length && t >= 1) n = 1;
     if (t >= 1) t = 0;
     play();
   };
+  playBtn.onclick = () => (playing ? stop() : start());
 
   // Video: the whole sequence played from the start and recorded from the view (MP4 where the
   // browser records MP4: Safari, and Chrome or Edge from 2024; else WebM).
@@ -480,4 +509,6 @@ export async function renderSequence(host, h) {
   }
   $("#seq-notes").innerHTML = data.notes.map(esc).join(" ");
   show();
+  if (!stages.length) cannotPlay();
+  else if (wantPlay) start();
 }
