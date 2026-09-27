@@ -2372,7 +2372,9 @@ def _slab(r: Report, s: dict) -> None:
                 else "the moment is the largest node's across its width, with its own N; the "
             )
             + "worst cut of any column (field) strip in a station sets that station's bars, and the QP crack width "
-            "is checked the same way. MRd with the tension bars only, rectangular block 0.8x."
+            "is checked the same way. As AdSec: MRd by strain compatibility with every bar of both faces at its "
+            "own strain (parabola-rectangle concrete); the crack width at the outermost bar, from a cracked "
+            "section of every bar, with that bar's own effective area and k2 from the strains."
         )
         r.table(
             [
