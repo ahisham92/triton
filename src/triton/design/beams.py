@@ -70,7 +70,7 @@ from ..alignment import (
     rotate_tensor,
     rotate_vector,
 )
-from ..axes import sag_factor
+from ..axes import sag_factor, sign_setting
 from ..elements import CombinationType, ElementType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
@@ -1193,7 +1193,7 @@ def design_beam(
     give the widest crack only."""
     beam = with_project_grades(beam, settings.materials, settings.durability)
     lay = layout(sheets, axes)
-    sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
+    sag, sign_note = sag_factor(sign_setting(settings, beam), sign)
     conc = concrete(beam.concrete)
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     b = beam.width if beam.width is not None else round(lay.width * 1000)

@@ -51,7 +51,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..axes import sag_factor
+from ..axes import sag_factor, sign_setting
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, concrete
 from ..project import (
@@ -843,7 +843,7 @@ def for_beam(
     if not beam.construction_joints:
         return []
     lay = layout(own, axes)
-    sag, _ = sag_factor(settings.plate_positive_moment, sign)
+    sag, _ = sag_factor(sign_setting(settings, beam), sign)
     cut = find_supports(lay, geometry, elements) if settings.beam_support_results == "faces" else []
     peak = float(design.get("width_mm") or 0) / 1000 if settings.beam_actions == "peak_width" else None
     uls, _ = beam_loads(own, lay, sag, qp=False, supports=cut, peak_width=peak or None)
@@ -893,6 +893,6 @@ def for_slab(
 
     if not slab.construction_joints:
         return []
-    sag, _ = sag_factor(settings.plate_positive_moment, sign)
+    sag, _ = sag_factor(sign_setting(settings, slab), sign)
     uls, _ = add_crane(slab_loads(own, axes, sag, qp=False), slab)
     return slab_joints(name, slab, settings, design, uls, beams)

@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from . import atomic, fresh
 from .alignment import combine_parts
-from .axes import infer_axes, sag_factor
+from .axes import infer_axes, sag_factor, sign_setting
 from .design.grillage import Grid, Solver, Spring, actions, sample
 from .design.runner import run_section
 from .design.slabs import _map
@@ -274,7 +274,7 @@ def _moved_position(s: dict[str, Any], moves: list[PileMove]) -> tuple[float, fl
 
 
 def plate_signs(
-    settings: Any, workbook: ImportResult, names: list[str]
+    settings: Any, workbook: ImportResult, names: list[str], elements: dict[str, Any] | None = None
 ) -> tuple[dict[str, dict[str, str] | None], dict[str, float], list[str]]:
     """Local axes and the sagging factor of each plate, as the slab and beam designs read them."""
     found = list(getattr(workbook, "axes", None) or [])
@@ -286,7 +286,7 @@ def plate_signs(
     signs = {a["element"]: a for a in found if a["kind"] == "plate"}
     sag, notes = {}, []
     for n in names:
-        sag[n], note = sag_factor(settings.plate_positive_moment, signs.get(n))
+        sag[n], note = sag_factor(sign_setting(settings, (elements or {}).get(n)), signs.get(n))
         notes.append(f"{n}: {note}")
     return axes, sag, notes
 
@@ -476,7 +476,7 @@ def moved_workbook(
     col = {c: j for j, c in enumerate(combos)}
     sup = ch["supports"]
     names = [n for n, e in section.elements.items() if isinstance(e, SlabInput | BeamInput)]
-    axes, sag, sign_notes = plate_signs(project.design, workbook, names)
+    axes, sag, sign_notes = plate_signs(project.design, workbook, names, section.elements)
     # Plaxis's moments are one tensor (M11 = sag·Mx, M12 = sag·Mxy) and its shears Q = s·div M, with s
     # read from the slab's own results.
     elements = workbook.elements()

@@ -59,7 +59,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..axes import sag_factor
+from ..axes import sag_factor, sign_setting
 from ..elements import CombinationType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
@@ -1927,7 +1927,7 @@ def _with_openings(d: dict, slab: SlabInput, settings: DesignSettings, sheets, a
     from .openings import design_slab_openings
 
     slab = with_project_grades(slab, settings.materials, settings.durability)
-    sag, _ = sag_factor(settings.plate_positive_moment, sign)
+    sag, _ = sag_factor(sign_setting(settings, slab), sign)
     uls = slab_loads(sheets, axes, sag, qp=False)
     qp = slab_loads(sheets, axes, sag, qp=True)
     op = design_slab_openings(slab, settings, uls, qp, d)
@@ -2045,7 +2045,7 @@ def design_slab(
     fyd = fyk / settings.partial_factors.gamma_s
     steel = SteelLaw.of(fyk, settings.partial_factors.gamma_s, settings.partial_factors.steel_curve)
     e_eff = conc.ecm / (1 + settings.cracking.creep_coefficient)
-    sag, sign_note = sag_factor(settings.plate_positive_moment, sign)
+    sag, sign_note = sag_factor(sign_setting(settings, slab), sign)
     h = slab.thickness
     size = slab.zone_size
     uls = slab_loads(sheets, axes, sag, qp=False)
