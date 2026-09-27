@@ -112,7 +112,7 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         c = section.costing
         # Items with no berth place nothing; those added to the defaults later then keep earlier hashes.
         berth = sum(section.joints.runs) or c.berth_length
-        parts["expansion joints"] = _hash(
+        parts[JOINTS] = _hash(
             [
                 joints.model_dump(mode="json"),
                 section.joints.model_dump(mode="json"),
@@ -167,6 +167,7 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
 
 
 SUPPORTS = "piles and walls under it"
+JOINTS = "expansion joints"
 
 
 def supports(section: Section) -> dict[str, str]:
@@ -210,11 +211,25 @@ def element_inputs(
     """What each of ``names`` was designed from: the section-wide parts, its own and, for a beam or
     slab, the elements under it (``under``, from :func:`supports`)."""
     shared = {k: v for k, v in now.items() if k not in set(elements)}
+    plates = None if under is None else set(under)
     under = under or {}
     return {
-        n: {**shared, **({n: now[n]} if n in now else {}), **({SUPPORTS: under[n]} if n in under else {})}
+        n: _own_joints(
+            {**shared, **({n: now[n]} if n in now else {}), **({SUPPORTS: under[n]} if n in under else {})},
+            n,
+            plates,
+        )
         for n in names
     }
+
+
+def _own_joints(parts: dict[str, str], name: str, plates: set[str] | None) -> dict[str, str]:
+    """The joint layout sets only the beams' and slabs' restraint length (``plates``, the elements
+    :func:`supports` names): the other elements leave it out, so a berth length typed on the Costing
+    tab never puts a pile or wall out of date. ``plates`` None: kept for every element as before."""
+    if plates is None or name in plates or JOINTS not in parts:
+        return parts
+    return {k: v for k, v in parts.items() if k != JOINTS}
 
 
 def _by_element(results: dict[str, Any], elements: Iterable[str]) -> dict[str, dict[str, str]] | None:
@@ -245,6 +260,7 @@ def status(
     before fingerprints were kept), and the elements whose results are out of date. ``under``: the
     beams' and slabs' supports now (:func:`supports`), compared where the results kept them."""
     elements = list(elements)
+    plates = None if under is None else set(under)
     under = under or {}
     by = _by_element(results, elements)
     if by is None:
@@ -256,7 +272,7 @@ def status(
         own = {**shared, name: now[name]} if name in now else dict(shared)
         if name in under:
             own[SUPPORTS] = under[name]
-        diff = _diff(then, own)
+        diff = _diff(_own_joints(then, name, plates), _own_joints(own, name, plates))
         if diff:
             stale.append(name)
         changed += [d for d in diff if d not in changed]
