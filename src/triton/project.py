@@ -141,8 +141,8 @@ class ReinforcementSettings(_Model):
     slab_spacings: list[float] = Field(
         default_factory=lambda: [150.0, 200.0],
         title="Slab mesh spacings",
-        description="The only spacings of slab meshes (additional bars go in layers inside the mesh, behind "
-        "its bars). "
+        description="The only spacings of slab meshes (additional bars go in layers above the bottom mesh "
+        "or below the top mesh, behind its bars). "
         "Empty: from the maximum spacing down in the spacing increment.",
         json_schema_extra={"unit": "mm"},
     )

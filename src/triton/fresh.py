@@ -151,8 +151,8 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
         if project.approach is not None and getattr(element, "kind", None) == "rear_beam":
             value = [value, project.approach.model_dump(mode="json")]  # the ledge's load and torque
         if isinstance(element, SlabInput):
-            # Additional bars in layers of their own inside the mesh, none between its bars (Ahmed,
-            # 2026-09-26): slabs designed before ask for a redesign.
+            # Additional bars in layers of their own above the bottom mesh or below the top mesh,
+            # none between its bars (Ahmed, 2026-09-26): slabs designed before ask for a redesign.
             value = [value, SLAB_BARS_RULE]
         parts[name] = _hash([value, sorted(each.items())] if each else value)
     if project.approach is not None:

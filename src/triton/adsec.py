@@ -704,8 +704,8 @@ def spec_bars(
 ) -> list[tuple[float, int, float, float, float]]:
     """As ``slab_bars`` for bar layers: [(Ø, spacing) or None] per layer, the first at mesh level
     (between the mesh bars, only in lists saved before that was dropped), the next ones L1, L2, ...
-    inside the mesh, each behind the mesh bars (every one, or every second at twice the spacing) with
-    a clear gap of max(25 mm, Ø) to the layer before."""
+    above the bottom mesh or below the top mesh, each behind the mesh bars (every one, or every
+    second at twice the spacing) with a clear gap of max(25 mm, Ø) to the layer before."""
     phi_b, s_b, lay_b = mesh["phi"], mesh["spacing_mm"], mesh.get("layers") or 1
     n = max(1, round(width_mm / s_b))
     y0 = -width_mm / 2 + s_b / 4
@@ -727,7 +727,7 @@ def spec_bars(
         for kind, phi, sp in items:
             if kind == "mesh":
                 out.append((phi, n, *mesh_y, at))
-            elif k > 0 and sp > s_b / 2 + 1e-6:  # a layer inside the mesh, behind its bars
+            elif k > 0 and sp > s_b / 2 + 1e-6:  # an added layer, behind the mesh bars
                 every = 2 if sp > s_b + 1e-6 else 1
                 behind = list(range(0, n, every))
                 out.append((phi, len(behind), y0 + behind[0] * s_b, y0 + behind[-1] * s_b, at))

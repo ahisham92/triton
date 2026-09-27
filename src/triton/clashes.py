@@ -16,7 +16,7 @@ Geometry
   slab, where they would run past the top bars, they turn horizontal, outwards, just under the top bars:
   an L bar. The legs are checked against the punching links.
 * A slab's bars along X sit at Y = the slab's edge + cover + Ø/2 + k × spacing (the clash settings can
-  move where the mesh starts); added layers inside the mesh sit behind its bars. A beam's
+  move where the mesh starts); added layers (above the bottom mesh, below the top mesh) sit behind its bars. A beam's
   links start 75 mm from its end at their spacing, their legs evenly across the width; its transverse
   bars sit just inside the longitudinal bars of their face, half a link pitch from the links.
 * Slab shear links are left out over a pile head (the pile is the support there); the punching links
@@ -2800,7 +2800,7 @@ def assumptions(rule: ClashSettings, settings: DesignSettings) -> list[str]:
         + ("a slab's" if rule.beam_bars == "straight" else "the")
         + " top bars they turn outwards just under them (L bars).",
         "Slab bars start at the slab's edge + cover + Ø/2 and repeat at their spacing; layers of additional bars "
-        "inside the mesh sit behind its bars. Beam links start 75 mm from the beam's end; transverse bars sit just inside the longitudinal bars "
+        "above the bottom mesh or below the top mesh sit behind its bars. Beam links start 75 mm from the beam's end; transverse bars sit just inside the longitudinal bars "
         "of their face, half a link pitch from the links.",
         "Punching links: the smallest project bar whose legs give Asw per perimeter at no more than 1.5d apart round it "
         "(2d beyond 2d from the face), perimeters staggered.",

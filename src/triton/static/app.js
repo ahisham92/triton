@@ -4715,7 +4715,7 @@ async function saveSlabStrips(name, change, status) {
 
 function layerBuilder(d, r, f) {
   // One face of a row: the mesh at the cover (nothing between its bars), then layers L1, L2…
-  // inside it (above the bottom mesh, below the top mesh), each with its own bar and spacing. Returns the editor's element and a reader of its state.
+  // above the bottom mesh or below the top mesh, each with its own bar and spacing. Returns the editor's element and a reader of its state.
   const layer = r.layers[f];
   const lay = d.layers[layer] || {};
   const whole = (r.keys[f] || []).every((k) => k.endsWith("|mesh"));
@@ -4725,7 +4725,7 @@ function layerBuilder(d, r, f) {
   let mesh = { phi: mesh0.phi, s: mesh0.spacing_mm };
   let spec = (r.spec?.[f] || []).map((p) => (p ? [Number(p[0]), Number(p[1])] : null));
   if (!spec.length) spec = [null];
-  spec[0] = null; // no bars between the mesh bars: additional bars are layers of their own inside the mesh
+  spec[0] = null; // no bars between the mesh bars: additional bars are layers of their own above the bottom mesh or below the top mesh
   const along = layer.endsWith("_y");
   const cover = lay.cover_mm ?? (f === "top" ? d.cover_top_mm : d.cover_bottom_mm);
   const box = document.createElement("div");
@@ -4807,7 +4807,7 @@ function wireStripTable(card, d) {
     const hasOwn = faces.some((f) => (r.keys[f] || []).some((k) => k in mine) || `${r.layers[f]}|mesh` in mine);
     const edit = document.createElement("tr");
     edit.className = "bars-edit";
-    edit.innerHTML = `<td colspan="10"><b>${esc(stripRowName(r))}.</b> Layer 1 is the mesh at the cover; each added layer goes inside it (above the bottom mesh, below the top mesh), with its own bar and spacing.
+    edit.innerHTML = `<td colspan="10"><b>${esc(stripRowName(r))}.</b> The mesh is at the cover; each added layer goes above the bottom mesh or below the top mesh, never in the mesh, with its own bar and spacing.
       <div class="layer-builders"></div>
       <button data-recheck>Re-check</button>${hasOwn ? ' <button class="quiet" data-auto>Use Triton\'s bars</button>' : ""} <span class="status" data-bars-status></span>
       <div class="status">Re-check keeps these bars for this row and checks bending and crack widths with them.</div></td>`;
@@ -4990,7 +4990,7 @@ function shortBars(t) {
 }
 
 // Layer names as the office counts them: the mesh is at mesh level (no bars between its bars), L1 is
-// the first layer inside the mesh (above the bottom mesh, below the top mesh), then L2, L3…
+// the first layer above the bottom mesh or below the top mesh, then L2, L3…
 function layerName(n, meshLayers = 1) {
   if (n <= meshLayers) return meshLayers > 1 ? `Mesh level ${n}` : "Mesh level";
   return `L${n - meshLayers}`;
@@ -5026,7 +5026,7 @@ function barSection(bl, face, h, title) {
   const circles = [], labels = [];
   bl.forEach((q) => {
     q.bars.forEach((b) => {
-      // Layers inside the mesh sit behind its bars; bars between them only in older designs.
+      // Added layers sit behind the mesh bars; bars between them only in older designs.
       const off = b.kind === "between the mesh bars" ? sMesh / 4 + sMesh / 2 : sMesh / 4;
       for (let x = off; x < W; x += b.spacing_mm)
         circles.push(`<circle class="${b.kind === "mesh" ? "sec-mesh" : "sec-add"}" cx="${(left + x * sc).toFixed(1)}" cy="${Y(q.from_face_mm).toFixed(1)}" r="${Math.max(2, (b.diameter_mm / 2) * sc).toFixed(1)}"><title>${layerName(q.layer, meshLayersOf(bl))}: Ø${fmt(b.diameter_mm)} @ ${fmt(b.spacing_mm)} (${esc(b.kind)}), centre ${fmt(q.from_face_mm)} mm from the ${face} face</title></circle>`);
@@ -5130,7 +5130,7 @@ function barDiagrams(card, d) {
     const piles = marks.map((m) => `<path class="pile-row" d="M${X(m).toFixed(1)},${axisY - 11} l-6,10 h12 z"><title>${isAlong ? "Row" : "Line"} of piles at ${fmt(m, 2)} m</title></path>`).join("");
     const stripPick = isAlong ? `<div class="row">${["column", "field"].map((k) => `<button class="quiet${k === strip ? " on" : ""}" data-strip="${k}">${k === "column" ? "Column" : "Field"} strip (${esc(mAlong)})</button>`).join("")}</div>` : "";
     el.innerHTML = `${stripPick}<div class="chart-title">${esc(v.title)}${isAlong ? `, ${strip} strip` : ""}: basic mesh of each face over the whole ${isAlong ? "deck" : "length"}, additional bars where they are added. ${isAlong ? "Sea side on the left; stations in m from the " + esc(sd.from) + "." : `${acrossAxis} in m along the quay.`}</div>
-      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (mesh level, at the cover)</span><span><i class="bd-add"></i>additional bars, one line per layer (L1, L2… inside the mesh, behind its bars; the mesh stays as it is)${isAlong ? `, ${strip} strip, for ${mAlong}` : `, one group per zone, for ${across?.moment || ""}`}</span><span>▲ piles</span><span>click a group for its section</span></div>
+      <div class="legend"><span><i class="bd-mesh"></i>basic mesh (mesh level, at the cover)</span><span><i class="bd-add"></i>additional bars, one line per layer (L1, L2… above the bottom mesh or below the top mesh, behind its bars; the mesh stays as it is)${isAlong ? `, ${strip} strip, for ${mAlong}` : `, one group per zone, for ${across?.moment || ""}`}</span><span>▲ piles</span><span>click a group for its section</span></div>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(v.title)}">
         <rect x="${X(lo)}" y="${slabTop}" width="${X(hi) - X(lo)}" height="${slabBot - slabTop}" class="bd-slab"/>
         <line class="bd-mesh" x1="${X(lo)}" x2="${X(hi)}" y1="${yMeshT}" y2="${yMeshT}"><title>Top mesh ${esc(mesh("top"))}, centre ${fmt(depth("top"))} mm from the top</title></line>
@@ -5285,7 +5285,7 @@ function slabCard(d) {
       <div class="row" data-kind="mplan-pick"></div><div class="chart wide" data-kind="mplan"></div>
       ${crackPicturesHtml(slabCrackItems(d), "Crack pictures (QP, per strip and station)")}` : ""}
     <h3 style="margin-top:18px">Bars per metre</h3>
-    <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (layers inside the mesh)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
+    <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (layers above the bottom mesh / below the top mesh)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
       ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)${l.basic.set_by === "user" ? "<br><span class=\"status\">your mesh</span>" : ""}</td>
         <td>${l.mode === "mesh_only" ? "mesh only (your choice)" : l.zones.length ? `${l.zones.length} zones: ${esc([...new Set(l.zones.map((z) => z.label))].join(", "))}` : "none needed"}</td>
         <td class="cell ${l.utilisation <= 1 ? "ok" : "error"}">${fmt(l.utilisation, 2)}</td><td>${fmt(l.cells_set_by_cracks)} cells</td><td>${fmt(l.d_mm)} mm</td></tr>`).join("")}
