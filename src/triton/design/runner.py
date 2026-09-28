@@ -7,7 +7,7 @@ from collections.abc import Callable, Collection
 from dataclasses import replace
 from typing import Any
 
-from ..alignment import element_in_part, part_elements, section_parts, tag_part, trim_ends
+from ..alignment import corner_zones, element_in_part, part_elements, section_parts, tag_part, trim_ends
 from ..axes import infer_axes
 from ..elements import ElementType
 from ..forces import scale_forces
@@ -462,6 +462,57 @@ def _design(
                 out.append((part, own, geo, f"{name} · {part.name}" if len(parts) > 1 else name))
         return out
 
+    def piles_in(around: dict[str, dict[str, SheetData]]) -> dict[str, dict[str, SheetData]]:
+        return {n: around[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in around}
+
+    def slab_runs(name: str, element: SlabInput) -> list[tuple]:
+        """runs() with each part's pile sheets, and, when the slab's corner zone is designed on its
+        own, each part without its corner zones and then each corner zone side by side (the corner
+        index; None for a part)."""
+        if not parts or element.corner_zone != "own" or len(parts) < 2:
+            return [
+                (part, own, geo, key, piles_in(views[part.index][1] if part else sheets), None)
+                for part, own, geo, key in runs(name)
+            ]
+        length = element.corner_zone_length
+        pile_names = {
+            n: sheets[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in sheets
+        }
+        out = []
+        pieces = [(p, None) for p in parts]
+        pieces += [(parts[k + i], k) for k in range(len(parts) - 1) for i in (0, 1)]
+        for part, zone in pieces:
+            want = -1 if zone is None else zone
+
+            def keep(x, y, want=want):
+                return corner_zones(parts, x, y, length) == want
+
+            own = part_elements({name: sheets[name]}, parts, part, axes, keep).get(name) or {}
+            own = {c: sh for c, sh in own.items() if not sh.frame.empty}
+            if not own:
+                continue
+            if zone is None:
+                key = f"{name} · {part.name}"
+            else:
+                corner = "Corner" if len(parts) == 2 else f"Corner {zone + 1}"
+                key = f"{name} · {corner}, {part.name} side"
+            piles = part_elements(pile_names, parts, part, axes, keep)
+            out.append((part, own, views[part.index][2], key, piles, zone))
+        return out
+
+    def corner_note(element: SlabInput, part: Any, zone: int | None, n: int) -> str:
+        if zone is None:
+            return (
+                f"Corner zone designed on its own (slab setting): the deck within "
+                f"{element.corner_zone_length:g} m of the corner along the front beam is left out of this "
+                "part's strips and stations."
+            )
+        return (
+            f"Corner zone{'' if n == 2 else f' {zone + 1}'}, {part.name}'s side: the deck within "
+            f"{element.corner_zone_length:g} m of the corner along the front beam, designed per 1 m cell "
+            f"(no strips) in {part.name}'s bar directions, its moments resolved into them."
+        )
+
     rear = next(
         (e for e in section.elements.values() if isinstance(e, BeamInput) and e.kind == "rear_beam"), None
     )
@@ -523,12 +574,11 @@ def _design(
             skipped.append(f"{name}: no usable results in the workbook{where}.")
             continue
         tick(name)
-        for part, own, geo, key in runs(name):
+        for part, own, geo, key, pile_sheets, zone in slab_runs(name, element):
             around = views[part.index][1] if part else sheets
-            pile_sheets = {
-                n: around[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in around
-            }
             placed, lengths = with_joints(element, part)
+            if zone is not None:
+                placed = placed.model_copy(update={"strips": "uniform"})
             d = design_slab_meshes(
                 name,
                 element_in_part(placed, part),
@@ -553,7 +603,22 @@ def _design(
                     d["notes"].append(joint_note(element, placed.joint_spacing))
                 if isinstance(d.get("restraint"), dict):
                     d["restraint"]["length_from"] = "expansion joints"
-            slabs.append(d if part is None else tag_part(d, part, parts))
+            if part is not None and element.corner_zone == "own" and len(parts) > 1:
+                d["notes"].insert(0, corner_note(element, part, zone, len(parts)))
+            d = d if part is None else tag_part(d, part, parts)
+            if zone is not None:
+                d["key"] = key
+                d["part"] = {
+                    **d["part"],
+                    "name": key.split(" · ", 1)[1],
+                    "length_m": element.corner_zone_length,
+                }
+                d["corner_zone"] = {
+                    "corner": zone + 1,
+                    "side": part.name,
+                    "length_m": element.corner_zone_length,
+                }
+            slabs.append(d)
     approach_slabs = found_so_far["approach_slabs"]
     if approach_design is not None and take(APPROACH):
         tick(APPROACH)

@@ -1281,6 +1281,20 @@ class SlabInput(_ConcreteSection):
         "punching and restraint keep the slab thickness.",
         json_schema_extra={"unit": "mm"},
     )
+    corner_zone: Literal["strips", "own"] = Field(
+        "strips",
+        title="Corner zone",
+        description="A corner berth: In the strips: each part's column and field strips run up to the "
+        "corner. Designed on its own: the deck within the corner zone length either side of each corner "
+        "(along the front beam) is left out of the strips and stations and designed per 1 m cell, each "
+        "side in its own part's bar directions.",
+    )
+    corner_zone_length: float = _m(
+        "Corner zone length, each side of the corner",
+        5.0,
+        gt=0,
+        description="Measured along the front beam from the corner, square to each part.",
+    )
     twisting: Literal["ignore", "wood_armer"] = Field(
         "ignore",
         title="Twisting moment Mxy",

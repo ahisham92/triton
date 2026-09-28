@@ -198,6 +198,7 @@ def test_designs_without_joints_keep_their_fingerprint():
     own = section.elements["Deck"].model_dump(mode="json")
     punching = ("punching_piles", "punching_per", "punching_fix")  # empty or at their defaults
     own_keys = ("construction_joints", "manholes", "channels", "station_thicknesses", "positive_moment")
+    own_keys += ("corner_zone", "corner_zone_length")  # in the strips: as before
     for key in (*own_keys, *punching):
         own.pop(key, None)
     # (Slabs also carry the bar rule of 2026-09-26 and the AdSec strength and crack rule of 2026-09-27.)
