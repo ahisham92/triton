@@ -17,6 +17,8 @@ import math
 from dataclasses import replace
 from typing import Any
 
+import numpy as np
+
 from ..forces import CombiSection, scale_forces
 from ..importer import SheetData
 from ..materials import concrete
@@ -32,33 +34,56 @@ from ..project import (
 from .governing import placeholder_sets, steel_sets
 from .piles import design_pile
 from .sheet_piles import UF_CAP
-from .tube import Tube, check_tube, steel_gone, tube_loads
+from .tube import Tube, check_tube, steel_gone, tube_loads, zone_index
 
 
 def split_loss(wall: CombiWallInput) -> float:
-    """The loss (mm) off the tube's diameter for the E·I split: with zones, the largest average of the sea
-    and land sides over the filled length, as the office sheets (splash 4.5 / 0 gives 2.25 and the
-    infill 67%); without land sides typed (walls stored before), the single loss, as before."""
-    gone = wall.corrosion_loss is not None and wall.corrosion_loss >= wall.tube_thickness
-    if gone or all(z.land is None for z in wall.corrosion_zones):
-        return wall.corrosion_loss
-    top, filled = math.inf, []
-    for z in wall.corrosion_zones:
-        if top > wall.concrete_bottom_level:
-            filled.append(z.mean_outside)
-        top = z.bottom_level
-    return max(filled) if filled else wall.corrosion_loss
+    """The loss (mm) off the tube's diameter for the E·I split where one loss holds over the filled length:
+    the single loss (walls without land sides typed, or a tube eaten by corrosion)."""
+    return wall.corrosion_loss
 
 
-def combi_section(wall: CombiWallInput) -> CombiSection:
+def _section(wall: CombiWallInput, loss: float) -> CombiSection:
     return CombiSection(
         wall.tube_diameter / 1e3,
         wall.tube_thickness / 1e3,
-        split_loss(wall) / 1e3,
+        loss / 1e3,
         e_steel=210e6,
         e_concrete=concrete(wall.concrete).ecm * 1e3,
         concrete_bottom_level=wall.concrete_bottom_level,
     )
+
+
+def combi_section(wall: CombiWallInput) -> CombiSection:
+    """The section of the filled zone where the infill takes most (the largest average loss)."""
+    shares = share_zones(wall)
+    return min((s for s in shares if s[3] is not None), key=lambda s: s[2].steel_share, default=shares[0])[2]
+
+
+ShareZones = list[tuple[float, float, CombiSection, "str | None"]]  # (top, bottom, section, zone name)
+
+
+def share_zones(wall: CombiWallInput) -> ShareZones:
+    """(top, bottom, section, name) of the E·I split down the filled length, one per corrosion zone: each
+    zone's average of the sea and land sides, as the office sheets (splash 4.5 / 0 gives 2.25 and the
+    infill 67%). Without land sides typed (walls stored before) or with the tube gone, the single loss over
+    the whole length, as before. Zones wholly below the infill come back with no name."""
+    gone = wall.corrosion_loss is not None and wall.corrosion_loss >= wall.tube_thickness
+    if gone or not wall.corrosion_zones or all(z.land is None for z in wall.corrosion_zones):
+        return [(math.inf, -math.inf, _section(wall, wall.corrosion_loss), "")]
+    out, top = [], math.inf
+    for (_, _, tube), z in zip(tube_zones(wall), wall.corrosion_zones, strict=True):
+        loss = wall.corrosion_loss if z.land is None else z.mean_outside
+        filled = top > wall.concrete_bottom_level + 1e-9
+        out.append((top, z.bottom_level, _section(wall, loss), tube.name if filled else None))
+        top = z.bottom_level
+    return out
+
+
+def steel_share_at(zones: ShareZones, z) -> np.ndarray:
+    """The steel's E·I share at each level (the zone's; the last zone carries on to the toe)."""
+    shares = np.array([s[2].steel_share for s in zones])
+    return shares[zone_index(zones, np.asarray(z, dtype=float))]
 
 
 def tube_zones(wall: CombiWallInput) -> list[tuple[float, float, Tube]]:
@@ -123,8 +148,8 @@ def design_combi_wall(
 ) -> dict[str, Any]:
     wall = with_project_grades(wall, settings.materials, settings.durability)
     gone = tube_gone(wall)
-    sec = combi_section(wall)
-    share = sec.steel_share  # 0 when the tube is gone
+    split = share_zones(wall)
+    share = combi_section(wall).steel_share  # the smallest over the filled zones; 0 when the tube is gone
     bottom = wall.concrete_bottom_level
 
     infill_sheets = {}
@@ -132,7 +157,7 @@ def design_combi_wall(
         f = sheet.frame
         f = f[f["Z"] >= bottom - 1e-9]
         if not f.empty:
-            infill_sheets[combo] = replace(sheet, frame=scale_forces(f, 1 - share))
+            infill_sheets[combo] = replace(sheet, frame=scale_forces(f, 1 - steel_share_at(split, f["Z"])))
     infill = design_pile(name, infill_as_pile(wall), settings, infill_sheets, cage, standard).to_dict()
     infill["notes"] = [
         n.replace("into the slab", "into the front beam")
@@ -147,7 +172,7 @@ def design_combi_wall(
         station["qp"] = placeholder_sets()  # the tube is a casing: no crack width check
 
     above = settings.results_into_connection / 1e3
-    tube_share = 1.0 if wall.tube_share == "all" else share
+    tube_share = 1.0 if wall.tube_share == "all" else (lambda z: steel_share_at(split, z))
     loads = tube_loads(sheets, tube_share, bottom, wall.top_level_to_ignore, above)
     pf = settings.partial_factors
     conc = concrete(wall.concrete)
@@ -201,18 +226,28 @@ def design_combi_wall(
         )
     steel["governing_sets"] = steel_sets(loads, "beam")
 
-    split = (
+    filled = [(s[3], s[2].steel_share) for s in split if s[3] is not None]
+    by_zone = len(filled) > 1 and len({round(v, 4) for _, v in filled}) > 1
+    each = ", ".join(f"{n or 'zone ' + str(i + 1)} {1 - v:.0%}" for i, (n, v) in enumerate(filled))
+    split_note = (
         f"Actions where the tube is filled: {share:.0%} to the steel tube and {1 - share:.0%} to the "
         f"infill (E·I, corroded tube, Ecm {conc.ecm / 1e3:.1f} GPa). Below {bottom:g} m the tube carries "
         "everything."
     )
+    if by_zone:
+        split_note = (
+            f"Actions where the tube is filled are shared by E·I zone by zone, with each zone's corroded "
+            f"tube (average of the sea and land sides, Ecm {conc.ecm / 1e3:.1f} GPa); the infill takes "
+            f"{each}. Below {bottom:g} m the tube carries everything."
+        )
     if wall.tube_share == "all":
-        split = (
+        split_note = (
             f"The tube carries every action along its length (checked elastically, class 4 effective "
-            f"properties); the infill is still designed for its E·I share, {1 - share:.0%}."
+            f"properties); the infill is still designed for its E·I share, "
+            f"{each if by_zone else f'{1 - share:.0%}'}."
         )
     notes = [
-        split,
+        split_note,
         "The tube is a permanent casing, so the infill has no crack width check.",
     ]
     if gone:
@@ -235,6 +270,17 @@ def design_combi_wall(
         "infill_bottom_level": bottom,
         "positions": positions,
         "steel_share": round(share, 3),
+        # The steel's share in each filled zone, top down (one entry when one loss holds throughout).
+        "steel_shares": [
+            {
+                "zone": n or "",
+                "top": None if math.isinf(t) else t,
+                "bottom": None if math.isinf(b) else b,
+                "share": round(sec.steel_share, 3),
+            }
+            for t, b, sec, n in split
+            if n is not None
+        ],
         "tube_gone": bool(gone),
         "top_level_set": wall.top_level_to_ignore is not None,
         "utilisation": whole,
@@ -243,6 +289,15 @@ def design_combi_wall(
         "tube": steel,
         "notes": notes,
     }
+
+
+def zone_share(w: dict[str, Any], z: float) -> float:
+    """The steel's E·I share at level ``z`` of a designed combi wall: its zone's; the last zone carries on."""
+    zones = w.get("steel_shares") or []
+    for s in zones:
+        if s["bottom"] is None or z >= s["bottom"] - 1e-9:
+            return s["share"]
+    return zones[-1]["share"] if zones else w["steel_share"]
 
 
 # The combi wall is designed and mapped as one element, but its two parts are reported as two

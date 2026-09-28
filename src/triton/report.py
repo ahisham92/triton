@@ -1834,7 +1834,12 @@ def _combi(r: Report, w: dict) -> None:
         [
             ("King piles", w.get("count")),
             ("Infill bottom level", f"{w.get('infill_bottom_level')} m"),
-            ("Share carried by the steel (E·I)", f"{w.get('steel_share', 0) * 100:.0f}%"),
+            (
+                "Share carried by the steel (E·I)",
+                ", ".join(f"{z['zone'] or 'zone'} {z['share'] * 100:.0f}%" for z in w["steel_shares"])
+                if len(w.get("steel_shares") or []) > 1
+                else f"{w.get('steel_share', 0) * 100:.0f}%",
+            ),
             (
                 "Tube check",
                 "office sheets: elastic, class 4 effective properties"

@@ -805,8 +805,9 @@ class CombiWallInput(_Model):
         description="From the top down; the last zone runs on to the toe. Losses on the sea side, the land "
         "side and inside the tube (only where it has no concrete). The values are the office's king pile "
         "sheets: splash 4.5 / 0, immersion 2.5 / 0 to −14.5, 2.5 / 1.75 to −16.12, soil 1.75 / 1.75 to "
-        "−25, then 1.75 inside too below the infill. The infill's E·I share takes the largest average "
-        "loss of the filled zones. Empty: the single loss above, outside only.",
+        "−25, then 1.75 inside too below the infill. The E·I share of the infill is worked out zone by "
+        "zone, with each filled zone's average of the sea and land sides. Empty: the single loss above, "
+        "outside only.",
     )
     buckling_length_factor: float = Field(
         0.7,

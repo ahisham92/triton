@@ -32,7 +32,7 @@ from ..validation import ImportResult
 from .approach import ELEMENT as APPROACH
 from .approach import design_approach
 from .beams import design_beam
-from .combi import design_combi_wall
+from .combi import design_combi_wall, zone_share
 from .construction_joints import add_weights, beam_lines, beam_top, for_beam, for_pile, for_slab
 from .dwall_design import design_diaphragm_wall
 from .governing import steel_sets, uls_frame
@@ -305,7 +305,7 @@ def _design(
             wall = design_combi_wall(name, element, settings, own, section.user_cages.get(name), standard)
             wall["notes"][:0] = notes
             wall["peaks"] = peaks
-            share = 1 - wall["steel_share"]  # the infill's moments are its share of the Plaxis ones
+            # The infill's moments are its share of the Plaxis ones, the share of the peak's zone.
             wall["infill"]["peaks"] = [
                 {
                     **q,
@@ -313,6 +313,7 @@ def _design(
                     "neighbours_M_kNm": round(q["neighbours_M_kNm"] * share, 1),
                 }
                 for q in peaks
+                for share in [1 - zone_share(wall, q["z"])]
             ]
             wall["bands"] = combi_bands(wall, positions)
             wall["tension"] = wall["infill"].get("tension") or {}

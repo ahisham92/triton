@@ -316,3 +316,40 @@ def test_sea_and_land_sides_as_the_office_pipe_sheet():
         corrosion_zones=[CorrosionZone(bottom_level=-0.5, outside=4.5)],
     )
     assert 1 - combi_section(old).steel_share == pytest.approx(0.706, abs=0.002)
+
+
+def test_the_ei_share_is_worked_out_zone_by_zone():
+    # Office zones: splash 4.5 / 0 to -0.5, 2.5 / 0 to -14.5, 2.5 / 1.75 to -16.12, 1.75 / 1.75 to -25,
+    # then steel only (bottom typed as -50: the last zone runs on to the toe either way).
+    from triton.design.combi import share_zones, zone_share
+    from triton.design.tube import tube_loads
+    from triton.forces import CombiSection
+    from triton.materials import concrete
+
+    wall = CombiWallInput(top_level_to_ignore=1.0, tube_diameter=1626, tube_thickness=18, concrete="C40/50")
+    wall.corrosion_zones[-1].bottom_level = -50.0
+    ecm = concrete("C40/50").ecm * 1e3
+
+    def steel(loss):
+        return CombiSection(1.626, 0.018, loss / 1e3, e_concrete=ecm).steel_share
+
+    zones = share_zones(wall)
+    filled = [round(s[2].steel_share, 4) for s in zones if s[3] is not None]
+    assert filled == [round(steel(x), 4) for x in (2.25, 1.25, 2.125, 1.75)]
+    sheets = combi_sheets().elements()["Combi Wall"]
+    w = design_combi_wall("Combi Wall", wall, DesignSettings(), sheets)
+    assert w["steel_share"] == pytest.approx(steel(2.25), abs=1e-3)  # the splash zone, the least steel
+    assert [s["share"] for s in w["steel_shares"]] == pytest.approx(filled, abs=1e-3)
+    assert zone_share(w, -5.0) == pytest.approx(steel(1.25), abs=1e-3)
+    assert zone_share(w, -40.0) == w["steel_shares"][-1]["share"]
+    assert "zone by zone" in w["notes"][0]
+    # Each filled level goes to the tube at its own zone's share; below the infill, all of it.
+    loads = tube_loads(sheets, lambda z: np.array([zone_share(w, x) for x in z]), -25.0, 1.0)
+    for z, loss in ((0.0, 2.25), (-5.0, 1.25), (-16.0, 2.125), (-20.0, 1.75), (-30.0, None)):
+        row = loads[(loads["Z"] == z) & (loads["combination"] == loads["combination"].iloc[0])].iloc[0]
+        expect = 1.0 if loss is None else steel(loss)
+        assert row["N"] == pytest.approx(row["N_total"] * expect, rel=3e-3)  # shares kept to 3 places
+    # The infill is designed for its zone's share at the governing level.
+    g = w["infill"]["governing"]
+    src = next(x for x in LOADS if abs(x[1] - g["z"]) < 1e-6)
+    assert g["M_kNm"] == pytest.approx(src[3] * (1 - zone_share(w, g["z"])), rel=1e-3)
