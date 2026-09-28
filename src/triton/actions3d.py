@@ -68,7 +68,11 @@ def _flat_axis(frames: list[pd.DataFrame]) -> str:
 def element_actions(sheets: dict[str, Any]) -> dict[str, Any] | None:
     """One element's actions on its grid, for every combination: combination -> sheet (SheetData
     with ``frame`` and ``parsed.spec``), multipliers and working zone already applied."""
-    usable = {c: s for c, s in sheets.items() if s.parsed and {"X", "Y", "Z"} <= set(s.frame.columns) and len(s.frame)}
+    usable = {
+        c: s
+        for c, s in sheets.items()
+        if s.parsed and {"X", "Y", "Z"} <= set(s.frame.columns) and len(s.frame)
+    }
     if not usable:
         return None
     spec = next(iter(usable.values())).parsed.spec
@@ -111,7 +115,9 @@ def element_actions(sheets: dict[str, Any]) -> dict[str, Any] | None:
         "points": points,
         "combinations": combos,
         "design": [c for c in combos if combination_type(c) is not CombinationType.SLS_QP] or combos,
-        "actions": [{"key": k, "label": labels[k][0], "unit": labels[k][1], "what": labels[k][2]} for k in cols],
+        "actions": [
+            {"key": k, "label": labels[k][0], "unit": labels[k][1], "what": labels[k][2]} for k in cols
+        ],
         "lo": lo,
         "hi": hi,
     }
@@ -128,8 +134,12 @@ def pick(data: dict[str, Any], case: str, action: str) -> dict[str, Any]:
     if action not in keys:
         action = keys[0]
     n = len(data["points"])
-    lo = np.array([[np.nan if v is None else v for v in data["lo"][c][action]] for c in data["combinations"]]).reshape(-1, n)
-    hi = np.array([[np.nan if v is None else v for v in data["hi"][c][action]] for c in data["combinations"]]).reshape(-1, n)
+    lo = np.array(
+        [[np.nan if v is None else v for v in data["lo"][c][action]] for c in data["combinations"]]
+    ).reshape(-1, n)
+    hi = np.array(
+        [[np.nan if v is None else v for v in data["hi"][c][action]] for c in data["combinations"]]
+    ).reshape(-1, n)
     combos = data["combinations"]
     out: dict[str, Any] = {"case": case, "action": action}
     if case in combos:

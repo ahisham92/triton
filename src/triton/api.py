@@ -2805,7 +2805,8 @@ def element_actions(
             views.put(d, f"actions-{element}", key, data)
     if not data:
         raise HTTPException(404, f"No Plaxis results for {element} in this section's workbook.")
-    meta = {k: data[k] for k in ("kind", "type", "flat", "size", "points", "combinations", "design", "actions")}
+    shown = ("kind", "type", "flat", "size", "points", "combinations", "design", "actions")
+    meta = {k: data[k] for k in shown}
     return {"element": element, **meta, **actions3d.pick(data, case, action)}
 
 
