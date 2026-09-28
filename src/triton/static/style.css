@@ -157,6 +157,11 @@ ul.alerts { list-style: none; padding: 0; margin: 0; display: flex; flex-directi
 .heat-legend .ticks span { position: absolute; transform: translateX(-50%); }
 .heat-legend .ticks span:first-child { transform: none; left: 0; }
 .heat-legend .ticks span:last-child { transform: translateX(-100%); }
+.view3d.acting .v3d-site { display: none; }
+.act-legend .bar { position: relative; }
+.act-legend .bar .zero { position: absolute; top: -3px; bottom: -3px; width: 3px; margin-left: -1px; background: #fff;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.45); border-radius: 1px; }
+.act-legend .ticks span { white-space: nowrap; }
 .heat-legend .grey i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; }
 .v3d-details { margin-top: 12px; }
 .v3d-details .view3d { margin-top: 8px; }

@@ -3940,7 +3940,7 @@ function pickResults(res, out) {
 
 // ---------------------------------------------------------------- 3D
 function v3dSlot(name) {
-  return `<details class="v3d-details" open><summary>In 3D, with the directions of the actions</summary>
+  return `<details class="v3d-details" open><summary>In 3D: the directions of the actions, and the straining actions</summary>
     <div class="v3d-slot" data-element="${esc(name)}"></div></details>`;
 }
 
@@ -4208,7 +4208,8 @@ async function mountElementViews(res) {
     if (!document.body.contains(slot)) continue; // redrawn meanwhile (a design run's new results)
     const name = slot.dataset.element;
     const el = geo.elements.find((e) => e.element === name);
-    const view = new View3D(slot, { height: 380, compact: true, onSite: saveSite });
+    const view = new View3D(slot, { height: 380, compact: true, onSite: saveSite,
+      actions: (q) => api(`${secUrl()}/actions?${new URLSearchParams(q)}`) });
     view.setScene({ elements: geo.elements, bands, tension, crack, selected: name, focus: name, site,
       arrows: directionArrows(el, geo.axes.find((a) => a.element === name)) });
   }
