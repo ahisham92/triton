@@ -99,6 +99,7 @@ legend { font-weight: 600; padding: 0 6px; }
 .legend i { display: inline-block; width: 22px; height: 0; border-top: 2px solid var(--series-1); vertical-align: middle; margin-right: 6px; }
 .legend i.field { border-color: var(--series-2); } .legend i.low { border-top-style: dashed; }
 .legend i.ramp { height: 10px; width: 90px; border: 0; }
+.legend i.sw { width: 14px; height: 14px; border: 0; border-radius: 3px; }
 .bars-edit { background: var(--accent-bg); } .bars-edit td { padding: 10px; }
 .bars-edit select { margin-right: 8px; }
 .user-chip { font-size: 11px; background: var(--accent-bg); color: var(--accent); border-radius: 6px; padding: 1px 6px; margin-left: 6px; white-space: nowrap; }
@@ -162,6 +163,8 @@ ul.alerts { list-style: none; padding: 0; margin: 0; display: flex; flex-directi
 .gov-list ol { margin: 6px 0; padding-left: 22px; max-height: 320px; overflow-y: auto; }
 .gov-list li { margin-bottom: 6px; color: var(--text); }
 .gov-list li::marker { font-weight: 600; color: #1e3a8a; }
+.gov-pick { display: block; margin: 6px 0; color: var(--text); }
+.gov-pick select { margin-left: 6px; max-width: 100%; }
 .gov-list li div { color: var(--muted); }
 .act-legend .bar { position: relative; }
 .act-legend .bar .zero { position: absolute; top: -3px; bottom: -3px; width: 3px; margin-left: -1px; background: #fff;

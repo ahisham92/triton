@@ -130,15 +130,67 @@ def test_the_deck_bars_are_pinned_where_they_are_most_used():
         "layers": {"bottom_x": lay, "top_x": {"utilisation": 0.4}},
     }
     pins = element_points({"slabs": [deck]}, "Deck", {})
-    bars = next(p for p in pins if p["lines"][0]["title"].startswith("Bottom bars along X"))
+    bars = next(p for p in pins if p["lines"][0]["title"].startswith("Bottom reinforcement in X direction"))
     assert bars["at"] == [3.5, 1.5, 3.0] and bars["utilisation"] == 0.9 and bars["n"] == 1
     assert "ULS M11 -20 to 300 kNm/m here" in bars["lines"][0]["text"]
     # No square kept (a design from before): the largest moment, not counted as governing.
-    top = [ln for p in pins for ln in p["lines"] if ln["title"].startswith("Top bars along X")]
+    top = [
+        ln for p in pins for ln in p["lines"] if ln["title"].startswith("Top reinforcement in X direction")
+    ]
     assert top == [
         {
-            "title": "Top bars along X: largest M11",
+            "title": "Top reinforcement in X direction: largest M11",
             "text": "M11 -20 kNm/m (the bars' utilisation 0.40 is where they are most used, which may be "
             "elsewhere: design again to pin it)",
         }
+    ]
+
+
+def test_a_deck_in_stations_is_pinned_station_by_station():
+    from triton.governing3d import element_points
+
+    def row(face, strip, ratio, at):
+        return {
+            "layer": f"{face}_x", "face": face, "strip": strip, "station": [0.0, 4.0], "moment": "M11",
+            "ratio": ratio, "wk_mm": 0.1, "wk_limit_mm": 0.2, "M_kNm_per_m": 500, "MRd_kNm_per_m": 600,
+            "combination": "ULS1", "bars": "Ø16 @ 150", "at": at,
+        }  # fmt: skip
+
+    deck = {
+        "element": "Deck",
+        "level_m": 3.0,
+        "strip_design": {
+            "along": "X",
+            "stations": [0.0, 4.0],
+            "rows": [
+                row("bottom", "column", 0.9, [1.0, 0.0]),
+                row("bottom", "field", 0.7, [1.0, 2.0]),
+                row("top", "field", 0.6, [3.0, 2.0]),
+            ],
+        },
+        "shear": {
+            "by_station": [
+                {
+                    "station": [0.0, 4.0],
+                    "x": 2.0,
+                    "y": 1.0,
+                    "combination": "ULS1",
+                    "V_kN_per_m": 300,
+                    "VRd_c_kN_per_m": 250,
+                    "VRd_max_kN_per_m": 2000,
+                    "links": True,
+                    "utilisation": 0.15,
+                }
+            ]
+        },  # fmt: skip
+        "layers": {
+            "bottom_y": {"utilisation": 0.5, "governing_cell": {"x": 2.5, "y": 2.5, "utilisation": 0.5}}
+        },
+    }
+    titles = [ln["title"] for p in element_points({"slabs": [deck]}, "Deck", {}) for ln in p["lines"]]
+    assert titles == [
+        "Station 0.00 to 4.00, bottom reinforcement in X direction (M11), column strip: utilisation 0.90",
+        "Station 0.00 to 4.00, top reinforcement in X direction (M11), field strip: utilisation 0.60",
+        "Bottom reinforcement in Y direction, utilisation 0.50",
+        "Station 0.00 to 4.00, shear: utilisation 0.15",
     ]

@@ -616,6 +616,9 @@ def strip_average(
             "m": m,
             "n": n,
             "v": np.zeros(len(m)) if v is None else np.asarray(v, float),
+            # where the value is taken, for the governing points in 3D
+            "x": f["X"].to_numpy(float) if "X" in f else np.zeros(len(m)),
+            "y": f["Y"].to_numpy(float) if "Y" in f else np.zeros(len(m)),
         }
     )[loc["averaged"]]
     keys = ["st", "kind", "inst", "cut", "combination"]
@@ -623,8 +626,8 @@ def strip_average(
         # The largest sagging and the largest hogging node, each with its own N: a face needs its own sign.
         g = df.groupby(keys, sort=False)["m"]
         rows = np.unique(np.concatenate([g.idxmax().to_numpy(), g.idxmin().to_numpy()]))
-        return df.loc[rows, [*keys, "m", "n", "v"]].reset_index(drop=True)
-    return df.groupby(keys, sort=False)[["m", "n", "v"]].mean().reset_index()
+        return df.loc[rows, [*keys, "m", "n", "v", "x", "y"]].reset_index(drop=True)
+    return df.groupby(keys, sort=False)[["m", "n", "v", "x", "y"]].mean().reset_index()
 
 
 def strip_mrd(
@@ -2784,6 +2787,7 @@ def design_slab(
                         "sets": strip_sets,
                         "voided": g_void,
                         "thickness_mm": hk,
+                        "at": [round(float(g.x), 2), round(float(g.y), 2)],
                         "_calc": {"o": o, "d": d_o, "n": float(g.n), "qp": qgroups.get(k), "h": hk},
                     }
                 )
@@ -3194,6 +3198,31 @@ def design_slab(
             "utilisation": round(max(u_max, 1.01 if short else 0.0), 3),
             "passed": u_max <= 1 and not short,
         }
+        if frame is not None:
+            # Each station's worst shear, for the governing points in 3D.
+            s_sh = (sh[frame["along"]].to_numpy() - frame["origin"]) * frame["sign"]
+            b_st = frame["bounds"]
+            u_sh = v / vrd_max_at
+            by_station = []
+            for a_, b_ in zip(b_st[:-1], b_st[1:], strict=True):
+                sel = np.flatnonzero((s_sh >= a_ - 1e-9) & (s_sh < b_ + 1e-9))
+                if not len(sel):
+                    continue
+                w = int(sel[np.argmax(u_sh[sel])])
+                by_station.append(
+                    {
+                        "station": [a_, b_],
+                        "x": round(float(sh["X"].iloc[w]), 2),
+                        "y": round(float(sh["Y"].iloc[w]), 2),
+                        "combination": sh["combination"].iloc[w],
+                        "V_kN_per_m": round(float(v[w]), 1),
+                        "VRd_c_kN_per_m": round(float(vrdc[w]), 1),
+                        "VRd_max_kN_per_m": round(float(vrd_max_at[w]), 1),
+                        "links": bool(need[w]),
+                        "utilisation": round(float(u_sh[w]), 3),
+                    }
+                )
+            shear["by_station"] = by_station
         if links:
             notes.append(
                 f"{len(cells)} cells need shear links (the slab is in tension there, or v > VRd,c), in "

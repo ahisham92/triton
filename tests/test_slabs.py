@@ -240,6 +240,10 @@ def test_column_and_field_strips_by_station():
     # Every node of the column strip at the pile row (outside the pile) hogs 600 kNm/m.
     assert col["M_kNm_per_m"] == pytest.approx(600.0) and col["moment"] == "M11"
     assert col["MRd_kNm_per_m"] >= 600 and col["ratio"] <= 1 and col["wk_mm"] <= 0.3
+    # Where each strip's governing cut is taken (for the 3D governing points): inside its station.
+    assert 2.0 <= (col["at"][0] - sd["origin"]) * sd["sign"] <= 6.0 and abs(col["at"][1]) <= 1.1
+    by = d["shear"].get("by_station")
+    assert by is None or all(q["station"][0] < q["station"][1] and 0 <= q["utilisation"] for q in by)
     field = rows[("top_x", (2.0, 6.0), "field")]
     assert field["M_kNm_per_m"] < 600 and field["as_mm2_per_m"] <= col["as_mm2_per_m"]
     assert {(r["moment"], r["strip"]) for r in sd["summary"]} == {("M11", "column"), ("M11", "field")}

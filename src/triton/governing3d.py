@@ -16,10 +16,10 @@ from .alignment import Part, rotate_points
 
 KINDS = ("piles", "combi_walls", "beams", "slabs", "sheet_pile_walls", "diaphragm_walls")
 FACES = {
-    "bottom_x": ("Bottom bars along X", "x", "max"),
-    "bottom_y": ("Bottom bars along Y", "y", "max"),
-    "top_x": ("Top bars along X", "x", "min"),
-    "top_y": ("Top bars along Y", "y", "min"),
+    "bottom_x": ("Bottom reinforcement in X direction", "x", "max"),
+    "bottom_y": ("Bottom reinforcement in Y direction", "y", "max"),
+    "top_x": ("Top reinforcement in X direction", "x", "min"),
+    "top_y": ("Top reinforcement in Y direction", "y", "min"),
 }
 
 
@@ -123,7 +123,7 @@ def element_points(results: dict[str, Any], element: str, sheets: dict[str, Any]
         pin = pins.setdefault(k, {"at": at, "part": pname, "lines": [], "utilisation": None})
         pin["lines"].append({"title": title, "text": text})
         if util is not None:
-            pin["utilisation"] = max(pin["utilisation"] or 0.0, util)
+            pin["utilisation"] = round(max(pin["utilisation"] or 0.0, util), 3)
     out = sorted(pins.values(), key=lambda p: -(p["utilisation"] or 0.0))
     for n, p in enumerate(out, 1):
         p["n"] = n
@@ -268,7 +268,14 @@ def _slab(d: dict, part: Part | None, pname, add) -> None:
     cells = [c for c in mc.get("cells") or [] if len(c) == 6]  # squares with a result of their own
     names = mc.get("names") or {"x": "M11", "y": "M22"}
     a = np.array(cells, float) if cells and size else None
+    sd = d.get("strip_design") or {}
+    along = str(sd.get("along") or "").lower()
+    rows = [r for r in sd.get("rows") or [] if r.get("at") and r.get("layer", "").endswith("_" + along)]
+    if rows:
+        _stations(d, sd, rows, part, pname, level, add)
     for key, (title, axis, which) in FACES.items():
+        if rows and axis == along:
+            continue  # these bars are pinned station by station above
         lay = (d.get("layers") or {}).get(key) or {}
         u = lay.get("utilisation")
         g = lay.get("governing_cell")
@@ -287,7 +294,7 @@ def _slab(d: dict, part: Part | None, pname, add) -> None:
                 [*_plan(part, g["x"], g["y"]), level],
                 pname,
                 f"{title}, utilisation {_f(g.get('utilisation', u), 2)}",
-                "where these bars are most used (bending steel needed over the steel given)"
+                "where this reinforcement is most used (bending steel needed over the steel given)"
                 + (f", ULS {names[axis]} {m} kNm/m here" if m is not None else ""),
                 g.get("utilisation", u),
             )
@@ -311,7 +318,9 @@ def _slab(d: dict, part: Part | None, pname, add) -> None:
         )
     sh = d.get("shear") or {}
     g = sh.get("governing")
-    if isinstance(g, dict) and g.get("x") is not None:
+    if rows and sh.get("by_station"):
+        pass  # shear is pinned station by station above
+    elif isinstance(g, dict) and g.get("x") is not None:
         xy = (g["plan_x"], g["plan_y"]) if "plan_x" in g else _plan(part, g["x"], g["y"])
         add(
             [*xy, level],
@@ -332,6 +341,57 @@ def _slab(d: dict, part: Part | None, pname, add) -> None:
             f"{t.get('combination')}: V {_f(t.get('V_kN'))} kN, {t.get('heads')} heads of this type",
             u,
         )
+
+
+def _stations(d: dict, sd: dict, rows: list, part: Part | None, pname, level: float, add) -> None:
+    """The deck designed in stations and strips: for each station the governing bottom bars, the
+    governing top bars (the worse of its column and field strips) and the governing shear."""
+    shear = {tuple(q["station"]): q for q in (d.get("shear") or {}).get("by_station") or []}
+    bounds = sd.get("stations") or sorted({tuple(r["station"]) for r in rows})
+    spans = (
+        list(zip(bounds[:-1], bounds[1:], strict=True))
+        if bounds and not isinstance(bounds[0], (list, tuple))
+        else bounds
+    )
+
+    def util(r: dict) -> float:
+        crack = (r.get("wk_mm") or 0) / r["wk_limit_mm"] if r.get("wk_limit_mm") else 0.0
+        return max(r.get("ratio") or 0.0, crack)
+
+    for a_, b_ in spans:
+        name = f"Station {_f(a_, 2)} to {_f(b_, 2)}"
+        mine = [r for r in rows if abs(r["station"][0] - a_) < 1e-6 and abs(r["station"][1] - b_) < 1e-6]
+        for face in ("bottom", "top"):
+            got = [r for r in mine if r["face"] == face]
+            if not got:
+                continue
+            r = max(got, key=util)
+            u = util(r)
+            crack = (
+                f"; QP crack {_f(r['wk_mm'], 3)} of {_f(r['wk_limit_mm'], 2)} mm"
+                if r.get("wk_mm") is not None
+                else ""
+            )
+            add(
+                [*_plan(part, *r["at"]), level],
+                pname,
+                f"{name}, {face} reinforcement in {r['layer'][-1].upper()} direction ({r['moment']}), "
+                f"{r['strip']} strip: utilisation {_f(u, 2)}",
+                f"{r['combination']}: {r['moment']} {_f(r['M_kNm_per_m'])} kNm/m, "
+                f"MRd {_f(r['MRd_kNm_per_m'])} kNm/m with {r['bars']}{crack}",
+                u,
+            )
+        q = shear.get((a_, b_))
+        if q:
+            add(
+                [*_plan(part, q["x"], q["y"]), level],
+                pname,
+                f"{name}, shear: utilisation {_f(q['utilisation'], 2)}",
+                f"{q['combination']}: V {_f(q['V_kN_per_m'])} kN/m, VRd,c {_f(q['VRd_c_kN_per_m'])}, "
+                f"VRd,max {_f(q['VRd_max_kN_per_m'])} kN/m"
+                + (", links needed" if q["links"] else ", no links needed"),
+                q["utilisation"],
+            )
 
 
 def _spw(d: dict, nodes: _Nodes, pname, add) -> None:
