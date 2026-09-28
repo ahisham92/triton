@@ -2933,8 +2933,17 @@ def design_slab(
                         {k: v for k, v in r.items() if k != "_area"}
                         for r in bar_layers(mesh_o, specs[labels.index(zz["label"])], covers[face], shift)
                     ]
+        # The square where these bars are most used, for the 3D view's governing points.
+        gw = int(np.argmax(ratio)) if len(ratio) else None
         layers[layer] = {
             **z,
+            "governing_cell": None
+            if gw is None
+            else {
+                "x": round(float(x0 + (cell["i"].iloc[gw] + 0.5) * size), 2),
+                "y": round(float(y0 + (cell["j"].iloc[gw] + 0.5) * size), 2),
+                "utilisation": round(float(ratio[gw]), 3),
+            },
             "additional_labels": ["mesh only", *labels[1:n_std]] if mode != "mesh_only" else [],
             "mesh_labels": list(mesh_labels),
             "d_mm": round(d),

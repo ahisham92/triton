@@ -267,27 +267,48 @@ def _slab(d: dict, part: Part | None, pname, add) -> None:
     size, x0, y0 = mc.get("size"), mc.get("x0"), mc.get("y0")
     cells = [c for c in mc.get("cells") or [] if len(c) == 6]  # squares with a result of their own
     names = mc.get("names") or {"x": "M11", "y": "M22"}
-    if cells and size:
-        a = np.array(cells, float)
-        col = {("x", "max"): 2, ("x", "min"): 3, ("y", "max"): 4, ("y", "min"): 5}
-        for key, (title, axis, which) in FACES.items():
-            k = col[(axis, which)]
-            i = int(np.argmax(a[:, k]) if which == "max" else np.argmin(a[:, k]))
-            m = a[i, k]
-            if (which == "max" and m <= 0) or (which == "min" and m >= 0):
-                continue
-            x = x0 + (a[i, 0] + 0.5) * size
-            y = y0 + (a[i, 1] + 0.5) * size
-            lay = (d.get("layers") or {}).get(key) or {}
-            u = lay.get("utilisation")
+    a = np.array(cells, float) if cells and size else None
+    for key, (title, axis, which) in FACES.items():
+        lay = (d.get("layers") or {}).get(key) or {}
+        u = lay.get("utilisation")
+        g = lay.get("governing_cell")
+        if isinstance(g, dict) and g.get("x") is not None:
+            # Where these bars are most used: the square whose steel needed over steel given is the
+            # layer's utilisation (so it is the reddest square of that face).
+            m = None
+            if a is not None:
+                hit = (np.floor((g["x"] - x0) / size) == a[:, 0]) & (
+                    np.floor((g["y"] - y0) / size) == a[:, 1]
+                )
+                if hit.any():
+                    c = a[np.argmax(hit)][{"x": 2, "y": 4}[axis] :][:2]
+                    m = f"{_f(min(c))} to {_f(max(c))}"
             add(
-                [*_plan(part, x, y), level],
+                [*_plan(part, g["x"], g["y"]), level],
                 pname,
-                f"{title}: peak {names[axis]} (ULS), layer utilisation {_f(u, 2)}",
-                f"{names[axis]} {_f(m)} kNm/m, "
-                f"the largest {'sagging' if which == 'max' else 'hogging'} moment for these bars",
-                u,
+                f"{title}, utilisation {_f(g.get('utilisation', u), 2)}",
+                "where these bars are most used (bending steel needed over the steel given)"
+                + (f", ULS {names[axis]} {m} kNm/m here" if m is not None else ""),
+                g.get("utilisation", u),
             )
+            continue
+        if a is None:
+            continue
+        # A design from before the governing square was kept: the largest moment only, which is not
+        # always where the bars are most used (more bars may be given there).
+        k = {("x", "max"): 2, ("x", "min"): 3, ("y", "max"): 4, ("y", "min"): 5}[(axis, which)]
+        i = int(np.argmax(a[:, k]) if which == "max" else np.argmin(a[:, k]))
+        m = a[i, k]
+        if (which == "max" and m <= 0) or (which == "min" and m >= 0):
+            continue
+        add(
+            [*_plan(part, x0 + (a[i, 0] + 0.5) * size, y0 + (a[i, 1] + 0.5) * size), level],
+            pname,
+            f"{title}: largest {names[axis]}",
+            f"{names[axis]} {_f(m)} kNm/m (the bars' utilisation {_f(u, 2)} is where they are most "
+            "used, which may be elsewhere: design again to pin it)",
+            None,
+        )
     sh = d.get("shear") or {}
     g = sh.get("governing")
     if isinstance(g, dict) and g.get("x") is not None:

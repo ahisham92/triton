@@ -145,10 +145,11 @@ function governingListHtml(g) {
   if (!g) return `<div class="heat-legend"><p>Loading the governing points…</p></div>`;
   if (g.error) return `<div class="heat-legend"><p>${esc(g.error)}</p></div>`;
   if (!g.points?.length) return `<div class="heat-legend"><p>No governing points recorded for this element.</p></div>`;
-  return `<div class="heat-legend gov-list"><span>Governing points: where each check and AdSec set is taken (most utilised first)</span><ol>${g.points
+  return `<div class="heat-legend gov-list"><span>Governing points: one pin where each check is taken, for each design part (most utilised first)</span><ol>${g.points
     .map((p) => `<li value="${p.n}"><b>${p.part ? `${esc(p.part)} · ` : ""}X ${p.at[0]}, Y ${p.at[1]}, z ${p.at[2]} m</b>${p.lines
       .map((l) => `<div>${esc(l.title)}: ${esc(l.text)}</div>`).join("")}</li>`).join("")}</ol>
-    <p>Colours: utilisation, as the Utilisation view. Hover or tap a numbered pin for its values.</p></div>`;
+    <p>Pins: red over 1.0, amber 0.95 to 1.0, blue below. The squares are coloured by the bending and crack
+    utilisation of their bars, so a shear or punching pin can stand on a lighter square. Hover or tap a pin for its values.</p></div>`;
 }
 
 function actionsLegendHtml(a, range) {
@@ -772,11 +773,12 @@ export class View3D {
     if (govern) {
       for (const it of items) if (it.kind === "label") it.force = true; // each part's name
       for (const p of this.gov?.points || [])
-        items.push({ kind: "pin", at: p.at, n: p.n, level: p.utilisation > 1 ? "clash" : "gov", element: selected,
+        items.push({ kind: "pin", at: p.at, n: p.n, level: p.utilisation > 1 ? "clash" : p.utilisation >= 0.95 ? "warn" : "gov", element: selected,
           tip: `${p.n}. ${selected}${p.part ? ` · ${p.part}` : ""} at X ${p.at[0]}, Y ${p.at[1]}, z ${p.at[2]} m\n` +
             p.lines.map((l) => `${l.title}: ${l.text}`).join("\n") });
     }
-    for (const a of this.scene.arrows || []) items.push({ kind: "arrow", ...a });
+    // The local axes stay off the governing points: their labels hid the pins.
+    if (!govern) for (const a of this.scene.arrows || []) items.push({ kind: "arrow", ...a });
     // Extra lines a tab adds (a pile cast above its cut-off, its head broken down) and pins (clashes).
     for (const x of this.scene.extras || []) items.push({ kind: "line", width: 4, cap: "butt", ...x });
     for (const p of this.scene.pins || []) items.push({ kind: "pin", ...p });
