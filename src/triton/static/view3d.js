@@ -492,6 +492,15 @@ export class View3D {
     this.update(this.scene);
   }
 
+  // The site (seabed, water, soil, furniture) once it has loaded, drawn from the same camera: the
+  // element is shown first, as the site can take a while after an update.
+  setSite(site) {
+    if (!this.scene || !site) return;
+    this.siteView = { ...(site.site || {}) };
+    this.update({ ...this.scene, site });
+    this._siteControls();
+  }
+
   // A new scene drawn from the same camera and centre (an animation's next frame).
   update(scene) {
     const keep = this.center && { center: this.center, bounds: this.bounds, size: this.size };
