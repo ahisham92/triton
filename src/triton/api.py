@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import html
 import json
@@ -11,7 +12,9 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Literal
@@ -1029,12 +1032,71 @@ def _workbook(project_id: str, section: Section) -> ImportResult | None:
     """The section's stored workbook as the section reads it: its sheet mapping applied and each
     combination read as one of the section's load combinations. The axis findings are kept once
     worked out (seconds on a big workbook), so each design step, tab and report reuses them."""
+    summary = store().workbook_summary(project_id, section.id)
+    # Worked out before reading the workbook: one saved meanwhile is then kept under a key that
+    # no longer matches, never the other way round.
+    last = None if summary is None else _last_view_key(project_id, section, summary)
+    hit = _last_view(last)
+    if hit is not None:
+        return hit
     wb = store().load_workbook(project_id, section.id)
-    return None if wb is None else _kept_view(project_id, section, wb)
+    return None if wb is None else _kept_view(project_id, section, wb, last)
 
 
-def _kept_view(project_id: str, section: Section, wb: ImportResult) -> ImportResult:
-    """``_view`` of the stored workbook, with its axis findings kept for the next time."""
+# The last few workbooks as their sections read them, kept in this worker: opening one on a big
+# workbook reads and checks every sheet (over a minute on a 10-sheet workbook), and a tab asks for
+# it several times. Each is keyed by everything it is read from, so any change reads it again, and
+# handed out as a copy, so no caller can change what the next one gets.
+_LAST_VIEWS: OrderedDict[tuple, ImportResult] = OrderedDict()
+_LAST_VIEWS_KEEP = 2
+_LAST_VIEWS_LOCK = threading.Lock()
+
+
+def _last_view_key(project_id: str, section: Section, summary: dict) -> tuple | None:
+    d = store()._dir(project_id, section.id)
+    for name in ("workbook.pkl.gz", "workbook.pkl"):
+        with contextlib.suppress(OSError):
+            st = (d / name).stat()
+            return (
+                str(store().root.resolve()),
+                project_id,
+                section.id,
+                _view_key(summary, section),
+                summary.get("uploaded_at"),
+                name,
+                st.st_mtime_ns,
+                st.st_size,
+            )
+    return None
+
+
+def _last_view(key: tuple | None) -> ImportResult | None:
+    if key is None:
+        return None
+    with _LAST_VIEWS_LOCK:
+        view = _LAST_VIEWS.get(key)
+        if view is None:
+            return None
+        _LAST_VIEWS.move_to_end(key)
+    return copy.deepcopy(view)
+
+
+def _keep_last_view(key: tuple | None, view: ImportResult) -> None:
+    if key is None:
+        return
+    view = copy.deepcopy(view)
+    with _LAST_VIEWS_LOCK:
+        _LAST_VIEWS[key] = view
+        _LAST_VIEWS.move_to_end(key)
+        while len(_LAST_VIEWS) > _LAST_VIEWS_KEEP:
+            _LAST_VIEWS.popitem(last=False)
+
+
+def _kept_view(
+    project_id: str, section: Section, wb: ImportResult, last: tuple | None = None
+) -> ImportResult:
+    """``_view`` of the stored workbook, with its axis findings kept for the next time (and the
+    view itself in this worker, under ``last``)."""
     summary = store().workbook_summary(project_id, section.id) or {}
     key = _view_key(summary, section)
     kept = store().load_axes(project_id, section.id, key)
@@ -1049,6 +1111,7 @@ def _kept_view(project_id: str, section: Section, wb: ImportResult) -> ImportRes
     )
     if kept is None:
         store().save_axes(project_id, section.id, key, view.found_axes)
+    _keep_last_view(last, view)
     return view
 
 

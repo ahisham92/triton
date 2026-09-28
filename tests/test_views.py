@@ -2,6 +2,7 @@
 
 import time
 
+import pytest
 from test_clashes import api, designed  # noqa: F401 - fixtures
 
 from triton import api as api_mod
@@ -46,3 +47,43 @@ def test_a_kept_view_is_used_only_with_its_key(tmp_path):
     assert views.get(tmp_path, "x", "b") is None
     assert views.kept(tmp_path, "x", "b", lambda: {"n": 2}) == {"n": 2}
     assert views.get(tmp_path, "x", "b") == {"n": 2}
+
+
+def test_a_worker_keeps_the_last_workbooks_it_read(tmp_path, monkeypatch):
+    from test_slabs import deck_workbook
+
+    from triton.project import PileInput, Project, Section, SlabInput
+
+    monkeypatch.setenv("TRITON_DATA_DIR", str(tmp_path))
+    api_mod._LAST_VIEWS.clear()
+    section = Section(
+        name="Section 01",
+        elements={"Deck": SlabInput(thickness=800), "Pile(1)": PileInput(head_level=2.7)},
+    )
+    p = Project(sections=[section])
+    store().save(p)
+    assert api_mod._workbook(p.id, section) is None
+    store().save_workbook(p.id, section.id, "deck.xlsx", deck_workbook())
+    first = api_mod._workbook(p.id, section)
+    sheets = [s.name for s in first.sheets]
+
+    # Read again without opening the workbook, and a caller changing its copy changes nothing.
+    first.sheets.clear()
+    first.issues.append("changed")
+    with monkeypatch.context() as m:
+        m.setattr(store().__class__, "load_workbook", lambda *_a, **_k: 1 / 0)
+        again = api_mod._workbook(p.id, section)
+    assert [s.name for s in again.sheets] == sheets and "changed" not in again.issues
+
+    # A new upload, or the section reading it another way, reads it again.
+    store().save_workbook(p.id, section.id, "deck.xlsx", deck_workbook())
+    with monkeypatch.context() as m:
+        m.setattr(store().__class__, "load_workbook", lambda *_a, **_k: 1 / 0)
+        with pytest.raises(ZeroDivisionError):
+            api_mod._workbook(p.id, section)
+    api_mod._workbook(p.id, section)
+    with monkeypatch.context() as m:
+        m.setattr(store().__class__, "load_workbook", lambda *_a, **_k: 1 / 0)
+        api_mod._workbook(p.id, section)
+        with pytest.raises(ZeroDivisionError):
+            api_mod._workbook(p.id, section.model_copy(update={"review": {"x": "accept"}}))

@@ -566,8 +566,11 @@ def _node_values(s: SheetData) -> pd.DataFrame:
 
 def _check_identical_combinations(result: ImportResult) -> None:
     for element, combos in result.elements().items():
-        for (ca, a), (cb, b) in combinations(sorted(combos.items()), 2):
-            va, vb = _node_values(a), _node_values(b)
+        # Each sheet's node values once, not once for every pair it is in (a big workbook has
+        # dozens of combinations per element, so the pairs ran the same grouping thousands of times).
+        values = {c: _node_values(s) for c, s in combos.items()}
+        for (ca, _a), (cb, b) in combinations(sorted(combos.items()), 2):
+            va, vb = values[ca], values[cb]
             common = va.index.intersection(vb.index)
             cols = [c for c in va.columns if c in vb.columns]
             if len(common) == 0 or not cols:
