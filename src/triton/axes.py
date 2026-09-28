@@ -74,19 +74,25 @@ def _flat(frame: pd.DataFrame, cols: tuple[str, ...]) -> bool:
 
 
 def quay_line(elements: dict[str, dict[str, SheetData]]) -> str | None:
-    """Global axis ("X" or "Y") the quay runs along, from the walls or else the beams."""
-    for kinds in (WALLS, (ElementType.FRONT_BEAM, ElementType.REAR_BEAM)):
-        frames = [
-            s.frame
-            for combos in elements.values()
-            for s in combos.values()
-            if s.parsed and s.parsed.spec.type in kinds and {"X", "Y"} <= set(s.frame.columns)
-        ]
-        if frames:
+    """Global axis ("X" or "Y") the quay runs along: the front beam's longer side, else the rear beam's,
+    else the walls'. Each element is measured on its own: the front and rear beams together (or a combi
+    wall with a sheet pile return at the side) span the quay's width as well as its length."""
+    for kinds in ((ElementType.FRONT_BEAM,), (ElementType.REAR_BEAM,), WALLS):
+        best: tuple[float, str] | None = None
+        for combos in elements.values():
+            frames = [
+                s.frame
+                for s in combos.values()
+                if s.parsed and s.parsed.spec.type in kinds and {"X", "Y"} <= set(s.frame.columns)
+            ]
+            if not frames:
+                continue
             f = pd.concat(frames)
             dx, dy = np.ptp(f["X"].to_numpy(float)), np.ptp(f["Y"].to_numpy(float))
-            if max(dx, dy) > 1.0:
-                return "Y" if dy >= dx else "X"
+            if max(dx, dy) > 1.0 and (best is None or max(dx, dy) > best[0]):
+                best = (max(dx, dy), "Y" if dy >= dx else "X")
+        if best:
+            return best[1]
     return None
 
 

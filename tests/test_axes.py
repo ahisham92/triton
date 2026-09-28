@@ -236,3 +236,21 @@ def test_the_element_sign_leaves_old_fingerprints_alone():
     from triton.project import SlabInput
 
     assert "positive_moment" in SlabInput().model_dump()  # the fingerprint drops it at "project"
+
+
+def test_quay_line_is_each_beams_own_length_not_both_beams_together():
+    """A 34 m berth along Y whose rear beam is 30 m inland: both beams together span as far in X as in
+    Y, but each beam alone runs along Y."""
+    from triton.axes import quay_line
+
+    ys = np.linspace(-16.8, 16.8, 57)
+
+    def beam(x0, width):
+        xs, yy = np.meshgrid(np.linspace(x0, x0 + width, 4), ys)
+        return pd.DataFrame({"Node": np.arange(xs.size) + 1, "X": xs.ravel(), "Y": yy.ravel(), "Z": 3.5})
+
+    elements = {
+        "Front Beam": {"PT-C-Apron": sheet("Front Beam-PT-C-Apron", beam(-2.5, 4.5))},
+        "Rear Beam": {"PT-C-Apron": sheet("Rear Beam-PT-C-Apron", beam(-32.5, 4.0))},
+    }
+    assert quay_line(elements) == "Y"
