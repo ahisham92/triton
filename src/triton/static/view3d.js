@@ -141,6 +141,16 @@ const ACTION_RAMP = [
 const fmtAct = (v) =>
   v == null ? "–" : v.toLocaleString("en-GB", { maximumFractionDigits: Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2 });
 
+function governingListHtml(g) {
+  if (!g) return `<div class="heat-legend"><p>Loading the governing points…</p></div>`;
+  if (g.error) return `<div class="heat-legend"><p>${esc(g.error)}</p></div>`;
+  if (!g.points?.length) return `<div class="heat-legend"><p>No governing points recorded for this element.</p></div>`;
+  return `<div class="heat-legend gov-list"><span>Governing points: where each check and AdSec set is taken (most utilised first)</span><ol>${g.points
+    .map((p) => `<li value="${p.n}"><b>${p.part ? `${esc(p.part)} · ` : ""}X ${p.at[0]}, Y ${p.at[1]}, z ${p.at[2]} m</b>${p.lines
+      .map((l) => `<div>${esc(l.title)}: ${esc(l.text)}</div>`).join("")}</li>`).join("")}</ol>
+    <p>Colours: utilisation, as the Utilisation view. Hover or tap a numbered pin for its values.</p></div>`;
+}
+
 function actionsLegendHtml(a, range) {
   if (!a) return `<div class="heat-legend"><span>Straining actions</span><p>Loading the Plaxis results…</p></div>`;
   if (a.error) return `<div class="heat-legend"><span>Straining actions</span><p>${esc(a.error)}</p></div>`;
@@ -159,7 +169,8 @@ function actionsLegendHtml(a, range) {
     <div class="ticks">${ticks}</div>
     <div class="grey">Least ${fmtAct(lo)} ${esc(act.unit)}, largest ${fmtAct(hi)} ${esc(act.unit)}${z == null ? "" : "; the white mark on the scale is zero"}.</div>
     <p>Plaxis values and signs (N as Plaxis gives it, not turned for concrete), with this section's load multipliers and working zone.
-    Shown in ${cell}: each shows its node value of largest size, with its sign. ${a.combinations.length > a.design.length ? "Envelopes leave out the QP combinations; pick QP as a load case to see it." : ""}
+    Shown in ${cell}: each shows its node value of largest size, with its sign. Where the Plaxis mesh is coarser than the squares, a square with no node takes the nearest square's value (the readout says so).
+    ${a.regions ? "Black lines: the parts the element is designed in, each named." : ""} ${a.combinations.length > a.design.length ? "Envelopes leave out the QP combinations; pick QP as a load case to see it." : ""}
     Hover, or tap on a phone, to read a value.</p></div>`;
 }
 
@@ -262,10 +273,12 @@ export const GAP_WHY = {
 };
 
 export class View3D {
-  constructor(host, { height = 460, compact = false, legend = true, onSite = null, deformed = null, modes = null, actions = null } = {}) {
+  constructor(host, { height = 460, compact = false, legend = true, onSite = null, deformed = null, modes = null, actions = null, governing = null } = {}) {
     this.host = host;
     // async ({element, case, action}) => the element's straining actions (the Design tab's views only)
     this.loadActions = actions;
+    // async ({element}) => where the element's design is governed (the Design tab's views only)
+    this.loadGoverning = governing;
     this.actCase = "env_abs";
     this.actAction = "";
     this.modes = modes; // the colour choices this view offers (default: all)
@@ -283,7 +296,7 @@ export class View3D {
       <span class="v3d-mode"><select data-mode aria-label="Colour by"><option value="util">Utilisation</option>
       <option value="tension">Tension zones</option><option value="crack">Crack width (QP)</option>
       <option value="cost">Cost</option><option value="rebar">Reinforcement ratio</option>
-      <option value="actions">Straining actions</option></select>
+      <option value="actions">Straining actions</option><option value="governing">Governing points</option></select>
       <select data-case aria-label="Load case or envelope" hidden></select>
       <select data-action aria-label="Straining action" hidden></select>
       <select data-combo aria-label="Combination" hidden></select>
@@ -319,8 +332,9 @@ export class View3D {
     for (const key of ["mode", "combo", "dir"]) {
       host.querySelector(`[data-${key}]`).onchange = (e) => {
         // Straining actions stay on this view only: each one fetches its element's results.
-        if (key === "mode") this.ownMode = e.target.value === "actions" ? "actions" : null;
-        if (key !== "mode" || e.target.value !== "actions") prefs[key] = e.target.value;
+        const own = ["actions", "governing"].includes(e.target.value);
+        if (key === "mode") this.ownMode = own ? e.target.value : null;
+        if (key !== "mode" || !own) prefs[key] = e.target.value;
         this._controls();
         this._build();
         this.draw();
@@ -494,8 +508,9 @@ export class View3D {
     if (prefs.combo && !combos.includes(prefs.combo)) prefs.combo = "";
     const ck = Object.values(this.scene?.crack || {}).filter((b) => b?.length);
     const rb = Object.values(this.scene?.rebar || {}).filter((b) => b?.length);
-    const has = { util: true, tension: tz.length > 0, crack: ck.length > 0, cost: !!this.scene?.cost, rebar: rb.length > 0, actions: !!this.loadActions };
-    const modes = this.modes || Object.keys(has).filter((k) => k !== "actions" || has.actions);
+    const has = { util: true, tension: tz.length > 0, crack: ck.length > 0, cost: !!this.scene?.cost, rebar: rb.length > 0, actions: !!this.loadActions,
+      governing: !!this.loadGoverning };
+    const modes = this.modes || Object.keys(has).filter((k) => !["actions", "governing"].includes(k) || has[k]);
     const mode = this.host.querySelector("[data-mode]");
     for (const o of mode.options) {
       o.hidden = !modes.includes(o.value);
@@ -503,9 +518,9 @@ export class View3D {
     }
     mode.disabled = [...mode.options].filter((o) => !o.disabled).length < 2;
     mode.title = mode.disabled ? "Run the design to see the other colours" : "";
-    this.view = this.ownMode === "actions" && has.actions
-      ? "actions"
-      : modes.includes(prefs.mode) && has[prefs.mode] && prefs.mode !== "actions" ? prefs.mode : modes.find((m) => has[m]) || modes[0];
+    this.view = this.ownMode && has[this.ownMode]
+      ? this.ownMode
+      : modes.includes(prefs.mode) && has[prefs.mode] && !["actions", "governing"].includes(prefs.mode) ? prefs.mode : modes.find((m) => has[m]) || modes[0];
     this.range = this.view === "cost"
       ? span(Object.values(this.scene.cost?.values || {}).map((v) => v.value))
       : this.view === "rebar"
@@ -526,7 +541,9 @@ export class View3D {
     const cs = this.host.querySelector("[data-case]");
     const as = this.host.querySelector("[data-action]");
     cs.hidden = as.hidden = !acting;
-    this.host.classList.toggle("acting", acting); // the site switches have nothing to show then
+    const govern = this.view === "governing";
+    this.host.classList.toggle("acting", acting || govern); // the site switches have nothing to show then
+    if (govern) this._loadGoverning();
     if (acting) {
       const a = this.act?.actions ? this.act : null;
       const opt = (v, t, title = "") => `<option value="${esc(v)}"${title ? ` title="${esc(title)}"` : ""}>${esc(t)}</option>`;
@@ -540,6 +557,8 @@ export class View3D {
     }
     this.host.querySelector(".v3d-legend").innerHTML = acting
       ? actionsLegendHtml(this.act, this.actRange)
+      : govern
+      ? legendHtml() + governingListHtml(this.gov)
       : this.def
       ? deformedLegendHtml(this.def)
       : on
@@ -608,7 +627,8 @@ export class View3D {
     // A construction stage: only what is built so far.
     // Straining actions: the element on its own, nothing else drawn.
     const acting = this.view === "actions";
-    const elements = acting ? [] : stage ? this.scene.elements.filter((e) => stage.elements[e.element]) : this.scene.elements;
+    const govern = this.view === "governing";
+    const elements = acting ? [] : govern ? this.scene.elements.filter((e) => e.element === selected) : stage ? this.scene.elements.filter((e) => stage.elements[e.element]) : this.scene.elements;
     const sizes = this.siteView?.extrude !== false ? this.scene.site?.sizes || null : null;
     this.tops = {};
     let items = [];
@@ -740,18 +760,25 @@ export class View3D {
       }
     }
     if (acting) this._actionItems(items);
+    if (govern) {
+      for (const it of items) if (it.kind === "label") it.force = true; // each part's name
+      for (const p of this.gov?.points || [])
+        items.push({ kind: "pin", at: p.at, n: p.n, level: p.utilisation > 1 ? "clash" : "gov", element: selected,
+          tip: `${p.n}. ${selected}${p.part ? ` · ${p.part}` : ""} at X ${p.at[0]}, Y ${p.at[1]}, z ${p.at[2]} m\n` +
+            p.lines.map((l) => `${l.title}: ${l.text}`).join("\n") });
+    }
     for (const a of this.scene.arrows || []) items.push({ kind: "arrow", ...a });
     // Extra lines a tab adds (a pile cast above its cut-off, its head broken down) and pins (clashes).
     for (const x of this.scene.extras || []) items.push({ kind: "line", width: 4, cap: "butt", ...x });
     for (const p of this.scene.pins || []) items.push({ kind: "pin", ...p });
     // Solids a tab adds (the construction sequence's equipment and workers).
     for (const b of this.scene.solids || []) solid(items, b.box, b.color, b.tip);
-    if (this.def && !acting) {
+    if (this.def && !acting && !govern) {
       // The structure as it stands stays faint behind its deformed shape.
       for (const it of items) if (it.element && it.kind !== "label") it.ghost = true;
       this._deformedItems(items);
     }
-    if (this.scene.site?.soil && !acting) {
+    if (this.scene.site?.soil && !acting && !govern) {
       this._siteItems(items);
       if (this.siteView.soil === "full") items = this._bury(items);
     }
@@ -800,6 +827,21 @@ export class View3D {
     else this.draw();
   }
 
+  // Where the element's design is governed, from the server (once per view).
+  async _loadGoverning() {
+    if (!this.loadGoverning || !this.scene?.selected || this.govKey === this.scene.selected) return;
+    this.govKey = this.scene.selected;
+    try {
+      this.gov = await this.loadGoverning({ element: this.scene.selected });
+    } catch (err) {
+      this.gov = { error: err?.message || String(err) };
+    }
+    if (this.view !== "governing") return;
+    this._controls();
+    this._build();
+    this.draw();
+  }
+
   // The element coloured by one straining action: frames 0.5 m steps down each member, plates square
   // cells on the plate. Each piece's readout gives its value, and the case it comes from.
   _actionItems(items) {
@@ -818,6 +860,7 @@ export class View3D {
       const spread = a.lo[i] !== a.hi[i] ? ` (from ${fmtAct(a.lo[i])} to ${fmtAct(a.hi[i])} here)` : "";
       return `${act.label} ${f(v)} in ${a.case}${spread}`;
     };
+    const where = (i) => (a.regions ? ` [${a.regions[i]}]` : "") + (a.filled?.[i] != null ? ". No Plaxis node in this square (the mesh is coarser here): the nearest square's value" : "");
     const n = (v) => +v.toFixed(2);
     if (a.kind === "frame") {
       const by = new Map();
@@ -834,7 +877,7 @@ export class View3D {
           const up = k ? (z + a.points[idx[k - 1]][2]) / 2 + 0.03 : z + a.size / 2;
           const down = k < idx.length - 1 ? (z + a.points[idx[k + 1]][2]) / 2 - 0.03 : z - a.size / 2;
           items.push({ kind: "line", a: [x, y, up], b: [x, y, down], color: col(a.values[i]), width: 7, cap: "butt", element: name,
-            tip: `${name} at X ${n(x)}, Y ${n(y)}, z ${z.toFixed(2)} m: ${words(i)}` });
+            tip: `${name} at X ${n(x)}, Y ${n(y)}, z ${z.toFixed(2)} m: ${words(i)}${where(i)}` });
         });
         if (!labelled) {
           const [x, y, z] = a.points[idx[0]];
@@ -858,10 +901,44 @@ export class View3D {
         return q;
       };
       items.push({ kind: "quad", pts: [at(-h, -h), at(h, -h), at(h, h), at(-h, h)], fill: col(a.values[i]), stroke: false, element: name,
-        tip: `${name} at X ${n(p[0])}, Y ${n(p[1])}, Z ${n(p[2])}: ${words(i)}` });
+        tip: `${name} at X ${n(p[0])}, Y ${n(p[1])}, Z ${n(p[2])}: ${words(i)}${where(i)}` });
       if (!top || p[2] > top[2]) top = p;
     });
     if (top) items.push({ kind: "label", at: top, text: name, element: name });
+    if (a.regions) this._regionItems(items, a, u, v, ax);
+  }
+
+  // A corner berth: a line round each design part (Part 1, Part 2, the corner zone) and its name.
+  _regionItems(items, a, u, v, ax) {
+    const s = a.size;
+    const key = (p) => `${Math.round((p[ax[u]] - s / 2) / s)},${Math.round((p[ax[v]] - s / 2) / s)}`;
+    const at = new Map(a.points.map((p, i) => [key(p), i]));
+    const mid = {};
+    a.points.forEach((p, i) => {
+      const r = a.regions[i];
+      const m = (mid[r] ||= { n: 0, sum: [0, 0, 0] });
+      m.n++;
+      p.forEach((c, k) => (m.sum[k] += c));
+      const [iu, iv] = key(p).split(",").map(Number);
+      // Each side of the square that borders another part (or nothing): one edge of the outline.
+      for (const [du, dv] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const j = at.get(`${iu + du},${iv + dv}`);
+        if (j != null && a.regions[j] === r) continue;
+        if (j != null && j < i) continue; // a shared edge drawn once
+        const h = s / 2;
+        const corner = (cu, cv) => {
+          const q = [...p];
+          q[ax[u]] += cu;
+          q[ax[v]] += cv;
+          q[ax[a.flat || "Z"]] += 0.02;
+          return q;
+        };
+        const e = du ? [corner(du * h, -h), corner(du * h, h)] : [corner(-h, dv * h), corner(h, dv * h)];
+        items.push({ kind: "line", a: e[0], b: e[1], color: j == null ? "rgba(40,40,40,0.55)" : "#111", width: j == null ? 1.2 : 2.6, cap: "round" });
+      }
+    });
+    for (const [r, m] of Object.entries(mid))
+      items.push({ kind: "label", at: m.sum.map((c) => c / m.n), text: r, force: true, element: this.scene.selected });
   }
 
   // A plate element drawn with its real thickness (site3d.sizes): its colour bands move onto the
@@ -1361,12 +1438,21 @@ export class View3D {
       const [px, py] = this._project(it.at);
       ctx.globalAlpha = 1;
       ctx.beginPath();
-      ctx.arc(px, py, 6, 0, 2 * Math.PI);
-      ctx.fillStyle = it.level === "clash" ? "#dc2626" : "#d97706";
+      ctx.arc(px, py, it.n ? 10 : 6, 0, 2 * Math.PI);
+      ctx.fillStyle = it.level === "clash" ? "#dc2626" : it.level === "gov" ? "#1e3a8a" : "#d97706";
       ctx.fill();
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 2;
       ctx.stroke();
+      if (it.n) {
+        ctx.fillStyle = "#fff";
+        ctx.font = "600 11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(it.n), px, py + 0.5);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
+      }
       if (it.tip) this.hits.push({ it, a: [px, py], b: [px, py] });
     }
     // Crack marks on top: a small zigzag where wk is over half the limit.
@@ -1397,9 +1483,10 @@ export class View3D {
     }
     ctx.globalAlpha = 1;
     ctx.font = "12px system-ui, sans-serif";
-    if (this.labels) {
+    {
       for (const it of this.items) {
         if (it.kind !== "label" || it.faded) continue;
+        if (!this.labels && !it.force) continue;
         const p = this._project(it.at);
         ctx.fillStyle = ink;
         ctx.fillText(it.text, p[0] + 6, p[1] - 6);

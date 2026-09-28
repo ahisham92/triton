@@ -107,6 +107,9 @@ def element_actions(sheets: dict[str, Any]) -> dict[str, Any] | None:
         lo[c] = {k: _list(mn[k]) if k in mn else [None] * len(points) for k in cols}
         hi[c] = {k: _list(mx[k]) if k in mx else [None] * len(points) for k in cols}
     labels = {k: (lab, unit, what) for k, lab, unit, what in table}
+    filled = [None] * len(points)
+    if flat:
+        filled = _fill_gaps(points, lo, hi, cell, flat)
     return {
         "kind": "frame" if kind is ResultKind.BEAM else "plate",
         "type": spec.type.value,
@@ -120,7 +123,77 @@ def element_actions(sheets: dict[str, Any]) -> dict[str, Any] | None:
         ],
         "lo": lo,
         "hi": hi,
+        "filled": filled,
     }
+
+
+FILL_REACH = 4  # cells: a square with no node of its own is filled when nodes lie both sides of it
+
+
+def _fill_gaps(points: list, lo: dict, hi: dict, cell: float, flat: str) -> list:
+    """Squares with no Plaxis node in them where the mesh is coarser than the grid: each square that
+    has squares with nodes on both sides of it (along X, Y or a diagonal, within ``FILL_REACH``) takes
+    the nearest one's values, so the plate reads as one surface; its edges and openings stay as they
+    are. Adds the squares to ``points``, ``lo`` and ``hi`` in place; returns, per point, the index of
+    the square it copies (None for a square with nodes of its own)."""
+    u, v = [a for a in "XYZ" if a != flat]
+    ax = {"X": 0, "Y": 1, "Z": 2}
+    at = {}
+    for n, p in enumerate(points):
+        at[(round((p[ax[u]] - cell / 2) / cell), round((p[ax[v]] - cell / 2) / cell))] = n
+    if not at:
+        return [None] * len(points)
+    iu = [k[0] for k in at]
+    iv = [k[1] for k in at]
+    steps = [(1, 0), (0, 1), (1, 1), (1, -1)]
+    new: list[tuple[tuple[int, int], int]] = []
+    for i in range(min(iu), max(iu) + 1):
+        for j in range(min(iv), max(iv) + 1):
+            if (i, j) in at:
+                continue
+            best = None
+            for di, dj in steps:
+                ahead = next((t for t in range(1, FILL_REACH + 1) if (i + t * di, j + t * dj) in at), None)
+                back = next((t for t in range(1, FILL_REACH + 1) if (i - t * di, j - t * dj) in at), None)
+                if ahead is None or back is None:
+                    continue
+                for t, sgn in ((ahead, 1), (back, -1)):
+                    d = t * (2**0.5 if di and dj else 1)
+                    if best is None or d < best[0]:
+                        best = (d, at[(i + sgn * t * di, j + sgn * t * dj)])
+            if best is not None:
+                new.append(((i, j), best[1]))
+    filled: list = [None] * len(points)
+    for (i, j), donor in new:
+        p = list(points[donor])
+        p[ax[u]] = round(i * cell + cell / 2, 3)
+        p[ax[v]] = round(j * cell + cell / 2, 3)
+        points.append(p)
+        filled.append(donor)
+        for table in (lo, hi):
+            for by in table.values():
+                for vals in by.values():
+                    vals.append(vals[donor])
+    return filled
+
+
+def regions(points: list, parts: list, zone_length: float | None) -> list[str] | None:
+    """The design part each point is in (Part 1, Part 2, ... and, when the slab's corner zone is
+    designed on its own, the corner zone), or None on a straight berth."""
+    from .alignment import corner_zones, part_of
+
+    if len(parts) < 2 or not points:
+        return None
+    x = np.array([p[0] for p in points], float)
+    y = np.array([p[1] for p in points], float)
+    owner = part_of(parts, x, y)
+    names = [parts[int(i)].name for i in owner]
+    if zone_length:
+        zone = corner_zones(parts, x, y, zone_length)
+        for n, k in enumerate(zone):
+            if k >= 0:
+                names[n] = "Corner zone" if len(parts) == 2 else f"Corner zone {int(k) + 1}"
+    return names
 
 
 def _list(s: pd.Series) -> list:

@@ -3940,7 +3940,7 @@ function pickResults(res, out) {
 
 // ---------------------------------------------------------------- 3D
 function v3dSlot(name) {
-  return `<details class="v3d-details" open><summary>In 3D: the directions of the actions, and the straining actions</summary>
+  return `<details class="v3d-details" open><summary>In 3D: the directions of the actions, the straining actions and the governing points</summary>
     <div class="v3d-slot" data-element="${esc(name)}"></div></details>`;
 }
 
@@ -4168,7 +4168,12 @@ function resultCracks(res) {
   const out = {};
   for (const p of res?.piles || []) if (p.cracks?.bands?.length) out[p.element] = p.cracks.bands;
   for (const w of res?.combi_walls || []) if (w.infill?.cracks?.bands?.length) out[w.element] = w.infill.cracks.bands;
-  for (const k of ["beams", "slabs"]) for (const d of res?.[k] || []) if (d.crack_bands?.length) out[d.key || d.element] = d.crack_bands;
+  for (const k of ["beams", "slabs"])
+    for (const d of res?.[k] || []) {
+      if (!d.crack_bands?.length) continue;
+      const key = d.corner_zone ? `${d.element} · ${d.corner_zone.side}` : d.key || d.element;
+      out[key] = [...(out[key] || []), ...d.crack_bands];
+    }
   return out;
 }
 
@@ -4177,7 +4182,11 @@ function resultBands(res) {
   for (const p of res?.piles || []) bands[p.element] = p.bands || [];
   for (const w of res?.combi_walls || []) bands[w.element] = w.bands || [];
   for (const b of res?.beams || []) bands[b.key || b.element] = b.bands || [];
-  for (const d of res?.slabs || []) bands[d.key || d.element] = d.bands || [];
+  for (const d of res?.slabs || []) {
+    // A corner zone designed on its own is drawn with the part whose frame it is designed in.
+    const k = d.corner_zone ? `${d.element} · ${d.corner_zone.side}` : d.key || d.element;
+    bands[k] = [...(bands[k] || []), ...(d.bands || [])];
+  }
   for (const w of res?.sheet_pile_walls || []) {
     // The wall's largest Uf per level, in 0.5 m bands (the same all along the wall).
     const by = new Map();
@@ -4209,7 +4218,8 @@ async function mountElementViews(res) {
     const name = slot.dataset.element;
     const el = geo.elements.find((e) => e.element === name);
     const view = new View3D(slot, { height: 380, compact: true, onSite: saveSite,
-      actions: (q) => api(`${secUrl()}/actions?${new URLSearchParams(q)}`) });
+      actions: (q) => api(`${secUrl()}/actions?${new URLSearchParams(q)}`),
+      governing: (q) => api(`${secUrl()}/governing?${new URLSearchParams(q)}`) });
     view.setScene({ elements: geo.elements, bands, tension, crack, selected: name, focus: name, site,
       arrows: directionArrows(el, geo.axes.find((a) => a.element === name)) });
   }

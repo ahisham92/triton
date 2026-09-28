@@ -70,3 +70,44 @@ def test_the_deck_on_its_grid_and_no_stale_design(section):
     assert "M11" in [a["label"] for a in out["actions"]]
     assert len(out["points"]) == len(out["values"]) > 0
     assert client.get(f"{url}/actions", params={"element": "Nothing"}).status_code == 404
+
+
+def test_squares_between_coarse_nodes_are_filled_but_not_past_the_edge():
+    from triton.actions3d import _fill_gaps
+
+    # Nodes every 2 m on a 1 m grid: the squares between them take the nearest node's values.
+    points = [[x + 0.5, y + 0.5, 1.0] for x in (0.0, 2.0, 4.0) for y in (0.0, 2.0)]
+    lo = {"C": {"M_11": [float(i) for i in range(len(points))]}}
+    hi = {"C": {"M_11": [float(i) for i in range(len(points))]}}
+    filled = _fill_gaps(points, lo, hi, 1.0, "Z")
+    cells = {(p[0], p[1]) for p in points}
+    assert (1.5, 0.5) in cells and (3.5, 2.5) in cells and (1.5, 1.5) in cells
+    assert not any(p[0] > 4.5 or p[1] > 2.5 or p[0] < 0.5 or p[1] < 0.5 for p in points)  # nothing outside
+    assert filled[:6] == [None] * 6 and all(f is not None for f in filled[6:])
+    assert len(lo["C"]["M_11"]) == len(points) == len(hi["C"]["M_11"])
+
+
+def test_the_governing_points_of_a_designed_pile(section):
+    client, url = section
+    assert client.get(f"{url}/governing", params={"element": "Pile(1)"}).status_code == 404  # not designed
+    assert client.post(f"{url}/design").status_code == 200
+    out = client.get(f"{url}/governing", params={"element": "Pile(1)"}).json()
+    assert out["points"] and out["points"][0]["n"] == 1
+    titles = [line["title"] for p in out["points"] for line in p["lines"]]
+    assert any(t.startswith("Bending with N (N–M)") for t in titles)
+    assert any(t.startswith("AdSec set ULS") for t in titles)
+    assert all(len(p["at"]) == 3 for p in out["points"])
+
+
+def test_each_square_is_named_by_its_design_part_and_corner_zone():
+    from triton.actions3d import regions
+    from triton.alignment import Part
+
+    parts = [
+        Part(0, "Part 1", (0.0, -20.0), (0.0, 0.0), 0.0, (0.0, 0.0)),
+        Part(1, "Part 2", (0.0, 0.0), (14.1, 14.1), -45.0, (0.0, 0.0)),
+    ]
+    pts = [[-3.0, -15.0, 2.7], [-3.0, -2.0, 2.7], [5.0, 12.0, 2.7]]
+    assert regions(pts, parts, None) == ["Part 1", "Part 1", "Part 2"]
+    assert regions(pts, parts, 5.0) == ["Part 1", "Corner zone", "Part 2"]
+    assert regions(pts, parts[:1], 5.0) is None  # a straight berth: nothing to outline

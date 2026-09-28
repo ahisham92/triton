@@ -35,6 +35,7 @@ from . import (
     existing,
     fresh,
     furniture_report,
+    governing3d,
     matrix,
     method,
     package,
@@ -75,6 +76,7 @@ from .project import (
     Section,
     SheetPileInput,
     Site,
+    SlabInput,
     WeldSettings,
     WhatIf,
     _now,
@@ -2799,15 +2801,39 @@ def element_actions(
         wb = _workbook(project_id, section)
         if wb is None:
             raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
-        sheets = factored_elements(section, wb).get(element)
+        factored = factored_elements(section, wb)
+        sheets = factored.get(element)
         data = actions3d.element_actions(sheets) if sheets else None
+        if data and data["kind"] == "plate":
+            parts, _ = section_alignment(section, factored)
+            el = section.elements.get(element)
+            own = isinstance(el, SlabInput) and el.corner_zone == "own"
+            data["regions"] = actions3d.regions(data["points"], parts, el.corner_zone_length if own else None)
         if data:
             views.put(d, f"actions-{element}", key, data)
     if not data:
         raise HTTPException(404, f"No Plaxis results for {element} in this section's workbook.")
     shown = ("kind", "type", "flat", "size", "points", "combinations", "design", "actions")
-    meta = {k: data[k] for k in shown}
+    shown += ("filled", "regions")
+    meta = {k: data.get(k) for k in shown}
     return {"element": element, **meta, **actions3d.pick(data, case, action)}
+
+
+@app.get(SECTION + "/governing")
+def element_governing(project_id: str, section_id: str, element: str) -> dict:
+    """Where the design of one element is governed, for its 3D view on the Design tab
+    (triton/governing3d.py): a pin at each place a check or AdSec set is taken. Display only."""
+    project, section, results = _results(project_id, section_id)
+    d = store()._dir(project_id, section_id)
+    key = views.key(_view_parts(project, section), _results_stat(project_id, section_id), element)
+    kept = views.get(d, f"governing-{element}", key)
+    if kept is not None:
+        return kept
+    wb = _workbook(project_id, section)
+    sheets = factored_elements(section, wb).get(element) if wb is not None else None
+    out = {"element": element, "points": governing3d.element_points(results, element, sheets or {})}
+    views.put(d, f"governing-{element}", key, out)
+    return out
 
 
 @app.get(SECTION + "/site")
