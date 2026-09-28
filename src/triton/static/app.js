@@ -1,5 +1,5 @@
 // Triton front end: projects, schema-driven setup forms and the workbook check.
-import { GAP_WHY, View3D, directionArrows, heat } from "./view3d.js";
+import { GAP_WHY, STATION_TINTS, View3D, directionArrows, heat, stripCell } from "./view3d.js";
 import { costValues, rebarBands } from "./heat3d.js";
 import { crackPicturesHtml, mountCrackPictures } from "./cracks.js";
 import { spwCard } from "./spw.js";
@@ -4215,6 +4215,8 @@ async function mountElementViews(res) {
   const bands = resultBands(res);
   const tension = resultTension(res);
   const crack = resultCracks(res);
+  // Decks designed in column and field strips: their strips and stations, for the 3D view's options.
+  const strips = Object.fromEntries((res?.slabs || []).filter((d) => d.strip_design?.stations?.length).map((d) => [d.key || d.element, d.strip_design]));
   // The element first; the seabed, water and furniture join it when they have loaded (they are
   // worked out again after an update too, and the view must not wait for them).
   const views = [];
@@ -4226,7 +4228,7 @@ async function mountElementViews(res) {
     const view = new View3D(slot, { height: 380, compact: true, onSite: saveSite,
       actions: (q) => api(`${secUrl()}/actions?${new URLSearchParams(q)}`),
       governing: (q) => api(`${secUrl()}/governing?${new URLSearchParams(q)}`) });
-    view.setScene({ elements: geo.elements, bands, tension, crack, selected: name, focus: name, site: null,
+    view.setScene({ elements: geo.elements, bands, tension, crack, strips, selected: name, focus: name, site: null,
       arrows: directionArrows(el, geo.axes.find((a) => a.element === name)) });
     views.push(view);
   }
@@ -4346,7 +4348,7 @@ function alerts(res) {
   }
   for (const d of res.slabs || []) {
     for (const [k, l] of Object.entries(d.layers || {})) {
-      if (l.utilisation > 1) add("unsafe", (d.key || d.element), `${k.replace("_", " bars along ")}: ${fmt(l.utilisation, 2)} of the steel needed`);
+      if (l.utilisation > 1) add("unsafe", (d.key || d.element), `${LAYER_NAME[k] || k}: ${fmt(l.utilisation, 2)} of the steel needed`);
     }
     const where = (q) => q._type ? `${q.pile} X ${fmt(q.x, 1)}, Y ${fmt(q.y, 1)})` : `${q.pile} (X ${fmt(q.plan_x ?? q.x, 1)}, Y ${fmt(q.plan_y ?? q.y, 1)})`;
     // Unified per pile type: one line per type (from its governing head), not one per head.
@@ -4839,7 +4841,7 @@ function pickSwatches(side, geo, mode, view, { max, cost, res }) {
 }
 
 // ---------------------------------------------------------------- Slabs
-const LAYER_NAME = { bottom_x: "Bottom, bars along X", bottom_y: "Bottom, bars along Y", top_x: "Top, bars along X", top_y: "Top, bars along Y" };
+const LAYER_NAME = { bottom_x: "Bottom, reinforcement in X direction", bottom_y: "Bottom, reinforcement in Y direction", top_x: "Top, reinforcement in X direction", top_y: "Top, reinforcement in Y direction" };
 
 function stripRowName(r) {
   return r.strip === "all" ? `${r.moment} – ${r.label}` : `${r.moment} – ${r.label} – ${r.strip === "column" ? "Column Strip" : "Field Strip"}`;
@@ -5242,8 +5244,8 @@ function barDiagrams(card, d) {
   const across = sd.across_profile;
   const mAlong = (sd.table || []).find((r) => r.along_strips)?.moment || (al === "x" ? "M11" : "M22");
   const views = [
-    { key: "along", dir: al, title: `Bars along ${sd.along} (${mAlong})` },
-    { key: "across", dir: cl, title: `Bars along ${acrossAxis} (${across?.moment || ""})` },
+    { key: "along", dir: al, title: `Reinforcement in ${sd.along} direction (${mAlong})` },
+    { key: "across", dir: cl, title: `Reinforcement in ${acrossAxis} direction (${across?.moment || ""})` },
   ];
   let view = 0, strip = "column";
   pick.innerHTML = views.map((v, i) => `<button class="quiet${i ? "" : " on"}" data-bd="${i}">${esc(v.title)}</button>`).join("");
@@ -5403,6 +5405,66 @@ function momentPlan(card, d) {
   draw();
 }
 
+function stripPlan(card, d) {
+  // Plan of the deck, sea side on the left, square by square: which column or field strip each square
+  // is averaged in (as triton/design/slabs.py locate()), or which station it belongs to.
+  const mc = d.moment_cells, sd = d.strip_design;
+  const el = card.querySelector('[data-kind="splan"]'), pick = card.querySelector('[data-kind="splan-pick"]');
+  if (!mc || !sd || !el || !pick || !sd.stations?.length) return;
+  const alongX = sd.along === "X";
+  const acrossName = alongX ? "Y" : "X";
+  const lines = [...sd.lines].sort((a, b) => a - b);
+  const mids = lines.slice(1).map((L, i) => (L + lines[i]) / 2);
+  const b = sd.stations;
+  const cells = mc.cells.map((v) => stripCell(sd, mc.x0 + (v[0] + 0.5) * mc.size, mc.y0 + (v[1] + 0.5) * mc.size));
+  let mode = "strips";
+  pick.innerHTML = `<button class="quiet on" data-sp="strips">Column and field strips</button><button class="quiet" data-sp="stations">Stations</button>`;
+  const t0 = Math.min(...cells.map((q) => q.t)) - mc.size / 2, t1 = Math.max(...cells.map((q) => q.t)) + mc.size / 2;
+  const s0 = Math.min(sd.start, ...cells.map((q) => q.s - mc.size / 2)), s1 = Math.max(sd.end, ...cells.map((q) => q.s + mc.size / 2));
+  const pad = 44, sc = Math.min((820 - 2 * pad) / (s1 - s0), (560 - 2 * pad) / (t1 - t0));
+  const W = (s1 - s0) * sc + 2 * pad, H = (t1 - t0) * sc + 2 * pad;
+  const X = (s) => pad + (s - s0) * sc, Y = (t) => H - pad - (t - t0) * sc;
+  const heads = (d.punching || []).map((p) => {
+    const ps = ((alongX ? p.x : p.y) - sd.origin) * sd.sign, pt = alongX ? p.y : p.x;
+    return `<circle cx="${X(ps).toFixed(1)}" cy="${Y(pt).toFixed(1)}" r="${((p.D_mm / 2000) * sc).toFixed(1)}" fill="none" stroke="var(--text)" stroke-width="1.2"><title>${esc(p.pile)}</title></circle>`;
+  }).join("");
+  const sq = (q, fill, tip) => `<rect x="${X(q.s - mc.size / 2).toFixed(1)}" y="${Y(q.t + mc.size / 2).toFixed(1)}" width="${(mc.size * sc).toFixed(1)}" height="${(mc.size * sc).toFixed(1)}" fill="${fill}"><title>${esc(tip)}</title></rect>`;
+  const stationLines = b.map((s) => `<line x1="${X(s)}" x2="${X(s)}" y1="${pad - 6}" y2="${H - pad}" stroke="var(--text)" stroke-width="1.2"/><text class="tick" x="${X(s)}" y="${pad - 10}" text-anchor="middle">${fmt(s, 2)}</text>`).join("");
+  const draw = () => {
+    let body = "", legend = "", title = "";
+    if (mode === "strips") {
+      const fill = { column: "rgba(46,125,196,.55)", field: "rgba(217,115,13,.45)", between: "rgba(120,120,120,.18)" };
+      body = cells.map((q) => sq(q, fill[q.strip.kind], q.strip.kind === "column"
+        ? `Column strip on the pile line at ${acrossName} ${fmt(q.strip.at, 1)}, ${fmt(sd.column_width_m, 1)} m wide`
+        : q.strip.kind === "field" ? `Field strip between the pile lines, centred at ${acrossName} ${fmt(q.strip.at, 1)}, ${fmt(sd.field_width_m, 1)} m wide`
+        : "Between the strips: designed with the field strip's bars, its moments not taken in the strip's peak")).join("");
+      // C and F at the rear end, each strip once, none on top of another.
+      let last = -1e9;
+      body += [...lines.map((L) => [Y(L), "C"]), ...mids.map((M) => [Y(M), "F"])].sort((p, q) => p[0] - q[0])
+        .filter(([y]) => (y - last >= 12 ? ((last = y), true) : false))
+        .map(([y, t]) => `<text class="tick" x="${X(s1) + 4}" y="${y + 4}">${t}</text>`).join("");
+      title = `Column strips (C) on the ${lines.length} pile lines, ${fmt(sd.column_width_m, 1)} m wide, and field strips (F) between them, ${fmt(sd.field_width_m, 1)} m wide. The reinforcement in ${sd.along} direction is designed strip by strip at each station, from the ${sd.across === "peak" ? "peak" : "average"} moment across the strip's width.`;
+      legend = `<span><i class="sw" style="background:${fill.column}"></i>column strip</span><span><i class="sw" style="background:${fill.field}"></i>field strip</span>${cells.some((q) => q.strip.kind === "between") ? `<span><i class="sw" style="background:${fill.between}"></i>between the strips</span>` : ""}<span>circles: pile heads</span><span>lines: stations</span>`;
+    } else {
+      body = cells.map((q) => q.st < 0 ? sq(q, "rgba(120,120,120,.18)", "Outside the stations (the edge left out)")
+        : sq(q, `rgba(${STATION_TINTS[q.st % STATION_TINTS.length]},${q.st % 2 ? 0.5 : 0.32})`,
+          `Station ${q.st + 1}: ${fmt(b[q.st], 2)} to ${fmt(b[q.st + 1], 2)} m, ${fmt(b[q.st + 1] - b[q.st], 2)} m wide`)).join("");
+      body += b.slice(0, -1).map((s, i) => `<text x="${X((s + b[i + 1]) / 2)}" y="${Y(t1) - 4}" text-anchor="middle" font-size="12" font-weight="600" fill="var(--text)">S${i + 1}</text>`).join("");
+      title = `${b.length - 1} stations along ${sd.along}, measured from the ${esc(sd.from)}: each station takes the worst cut inside it, and every square of it gets that station's bars.`;
+      legend = b.slice(0, -1).map((s, i) => `<span><i class="sw" style="background:rgba(${STATION_TINTS[i % STATION_TINTS.length]},${i % 2 ? 0.5 : 0.32})"></i>S${i + 1}: ${fmt(s, 2)} to ${fmt(b[i + 1], 2)} m (${fmt(b[i + 1] - s, 2)} m)</span>`).join("");
+    }
+    el.innerHTML = `<div class="chart-title">${title} Sea side on the left.</div><div class="legend">${legend}</div>
+      <svg viewBox="0 0 ${W + 16} ${H}" style="max-width:${Math.round(W + 16)}px" role="img" aria-label="Strips and stations"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${body}${heads}${stationLines}
+      <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text></svg>`;
+  };
+  pick.querySelectorAll("[data-sp]").forEach((x) => (x.onclick = () => {
+    mode = x.dataset.sp;
+    pick.querySelectorAll("[data-sp]").forEach((y) => y.classList.toggle("on", y === x));
+    draw();
+  }));
+  draw();
+}
+
 // The slab is designed with a 150 and a 200 mm mesh; the one picked drives everything below it.
 function meshChooser(d) {
   const mc = d.mesh_choice;
@@ -5472,6 +5534,8 @@ function slabCard(d) {
       <div class="row" data-kind="bardiag-pick"></div><div class="chart wide" data-kind="bardiag"></div>
       <h3 style="margin-top:18px">Moments in plan: where the deck is in tension</h3>
       <div class="row" data-kind="mplan-pick"></div><div class="chart wide" data-kind="mplan"></div>
+      <h3 style="margin-top:18px">Strips and stations in plan: the part of the deck each one covers</h3>
+      <div class="row" data-kind="splan-pick"></div><div class="chart wide" data-kind="splan"></div>
       ${crackPicturesHtml(slabCrackItems(d), "Crack pictures (QP, per strip and station)")}` : ""}
     <h3 style="margin-top:18px">Bars per metre</h3>
     <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (layers above the bottom mesh / below the top mesh)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
@@ -5526,6 +5590,7 @@ function slabCard(d) {
     wireStripTable(card, d);
     barDiagrams(card, d);
     momentPlan(card, d);
+    stripPlan(card, d);
   }
   const plan = card.querySelector('[data-kind="plan"]');
   const draw = (k) => slabPlan(plan, d, k);
