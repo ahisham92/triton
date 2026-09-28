@@ -655,3 +655,25 @@ def test_a_beam_that_turns_is_laid_out_part_by_part_in_its_own_axes():
     assert ex["Mv"]["max"] == pytest.approx(200.0, abs=1e-3) and abs(ex["T"]["max"]) < 11
     s = [p["s"] for p in d["profile"]]
     assert min(s) < 1.0 and max(s) > 79.0
+
+
+def test_a_short_wide_beam_piece_is_laid_out_straight():
+    """The end of a corner leg left after the end cut (4 m wide, 4.8 m long, turned onto the quay axis) is
+    too squat to show a direction: it is laid out along its longer side at its full width, not read as a
+    skewed run 3 m wide."""
+    import pandas as pd
+
+    from triton.design.beams import layout
+    from triton.elements import parse_sheet_name
+    from triton.importer import SheetData
+
+    rng = np.random.default_rng(1)
+    x = rng.uniform(-33.15, -29.15, 40)
+    y = rng.uniform(6.0, 10.8, 40)
+    frame = pd.DataFrame({"X": x, "Y": y, "Z": 3.5})
+    lay = layout(
+        {"PT-C-Apron": SheetData("Rear Beam-PT-C-Apron", parse_sheet_name("Rear Beam-PT-C-Apron"), frame)},
+        None,
+    )
+    assert lay.runs == () and lay.along == "Y"
+    assert lay.width == pytest.approx(4.0, abs=0.2)
