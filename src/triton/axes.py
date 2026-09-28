@@ -442,6 +442,41 @@ def sign_setting(settings: Any, element: Any = None) -> str:
     return settings.plate_positive_moment if own in (None, "project") else own
 
 
+def set_signs(
+    found: dict[str, dict[str, Any]], elements: dict[str, Any], settings: Any
+) -> dict[str, dict[str, Any]]:
+    """The plate findings by element, where a plate left on Auto that cannot read its own sign takes the
+    sign set by hand on a plate with the same local axes (the deck set to Hogging, say): plates of one
+    model share Plaxis's convention, so a beam must not fall back to sagging beside a deck set to
+    hogging."""
+    told = {
+        n: own
+        for n, e in elements.items()
+        if (own := getattr(e, "positive_moment", None)) in ("hogging", "sagging") and n in found
+    }
+    if not told:
+        return found
+    out = dict(found)
+    for n, e in elements.items():
+        a = found.get(n)
+        if a is None or a.get("kind") != "plate" or sign_setting(settings, e) != "auto" or a.get("positive"):
+            continue
+        same = [m for m in told if found[m].get("local") == a.get("local")]
+        if not same:
+            continue
+        src = max(same, key=lambda m: found[m].get("nodes", 0))
+        out[n] = {
+            **a,
+            "positive": told[src],
+            "sign_text": (
+                f"Positive M11 and M22 taken as {told[src]}, as set on {src}, which has the same local axes "
+                "(its own results could not tell)."
+            ),
+            "sign_from": src,
+        }
+    return out
+
+
 def sag_factor(setting: str, found: dict[str, Any] | None) -> tuple[float, str]:
     """+1 when positive plate moments are sagging, -1 when hogging, and the note that says why."""
     if setting != "auto":

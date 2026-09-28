@@ -254,3 +254,31 @@ def test_quay_line_is_each_beams_own_length_not_both_beams_together():
         "Rear Beam": {"PT-C-Apron": sheet("Rear Beam-PT-C-Apron", beam(-32.5, 4.0))},
     }
     assert quay_line(elements) == "Y"
+
+
+def test_a_beam_that_cannot_read_its_sign_follows_the_deck_set_by_hand():
+    """Plates of one model share Plaxis's sign: a beam left on Auto whose results cannot tell must not fall
+    back to sagging beside a deck the engineer set to hogging."""
+    from types import SimpleNamespace
+
+    from triton.axes import sag_factor, set_signs, sign_setting
+
+    local = {"1": "X", "2": "Y"}
+    found = {
+        "Deck": {"kind": "plate", "local": local, "nodes": 1400},
+        "Front Beam": {"kind": "plate", "local": local, "nodes": 400},
+        "Other Beam": {"kind": "plate", "local": {"1": "Y", "2": "X"}, "nodes": 100},
+    }
+    settings = SimpleNamespace(plate_positive_moment="auto")
+    elements = {
+        "Deck": SimpleNamespace(positive_moment="hogging"),
+        "Front Beam": SimpleNamespace(positive_moment="project"),
+        "Other Beam": SimpleNamespace(positive_moment="project"),
+    }
+    signs = set_signs(found, elements, settings)
+    beam = elements["Front Beam"]
+    assert sag_factor(sign_setting(settings, beam), signs["Front Beam"])[0] == -1.0
+    assert signs["Front Beam"]["sign_from"] == "Deck"
+    assert "positive" not in signs["Other Beam"]  # other local axes: nothing to share
+    elements["Deck"] = SimpleNamespace(positive_moment="project")
+    assert set_signs(found, elements, settings) is found

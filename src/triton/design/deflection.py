@@ -57,7 +57,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..axes import CLEAR, _corr, sag_factor, sign_setting
+from ..axes import CLEAR, _corr, sag_factor, set_signs, sign_setting
 from ..elements import CombinationType, combination_type
 from ..forces import design_forces
 from ..importer import LABEL, SheetData
@@ -1067,7 +1067,9 @@ def _collect(
             for combo, sheet in combos.items():
                 if combo.lower() == wanted and not any(c.lower() == wanted for c in sheets.get(name, {})):
                     sheets.setdefault(name, {})[combo] = sheet
-    axes = {a["element"]: a for a in getattr(workbook, "axes", None) or []}
+    axes = set_signs(
+        {a["element"]: a for a in getattr(workbook, "axes", None) or []}, section.elements, settings
+    )
     designed = {p["element"]: p for p in (results or {}).get("piles") or []}
     dwalls = {w["element"]: w.get("design") for w in (results or {}).get("diaphragm_walls") or []}
     out, skipped = [], []

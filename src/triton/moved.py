@@ -41,7 +41,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from . import atomic, fresh
 from .alignment import combine_parts
-from .axes import infer_axes, sag_factor, sign_setting
+from .axes import infer_axes, sag_factor, set_signs, sign_setting
 from .design.grillage import Grid, Solver, Spring, actions, sample
 from .design.runner import run_section
 from .design.slabs import _map
@@ -283,7 +283,7 @@ def plate_signs(
     ):
         found = infer_axes(workbook.elements())[0]
     axes = {a["element"]: a.get("local") for a in found}
-    signs = {a["element"]: a for a in found if a["kind"] == "plate"}
+    signs = set_signs({a["element"]: a for a in found if a["kind"] == "plate"}, elements or {}, settings)
     sag, notes = {}, []
     for n in names:
         sag[n], note = sag_factor(sign_setting(settings, (elements or {}).get(n)), signs.get(n))
