@@ -129,46 +129,64 @@ def _outline(pts: np.ndarray) -> np.ndarray:
     return pts[ends(pts[:, 0], pts[:, 1]) & ends(pts[:, 1], pts[:, 0])]
 
 
-def _edge_direction(p: np.ndarray, u: np.ndarray) -> np.ndarray:
+def _rectangle(p: np.ndarray) -> tuple[float, np.ndarray] | None:
+    """The least-area rectangle round the points: its area and the direction of its long side."""
+    pts = np.unique(_outline(p), axis=0)
+    if len(pts) < 3:
+        return None
+    # Convex hull (monotone chain).
+    pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
+
+    def half(seq):
+        h: list = []
+        for q in seq:
+            while len(h) >= 2 and _cross(h[-1] - h[-2], q - h[-2]) <= 1e-12:
+                h.pop()
+            h.append(q)
+        return h
+
+    hull = np.array(half(pts)[:-1] + half(pts[::-1])[:-1])
+    best = None
+    for a, b in zip(hull, np.roll(hull, -1, axis=0), strict=True):
+        e = b - a
+        n = float(np.hypot(*e))
+        if n < 1e-9:
+            continue
+        e = e / n
+        w = np.array([-e[1], e[0]])
+        area = float(np.ptp(hull @ e) * np.ptp(hull @ w))
+        if best is None or area < best[0] - 1e-9:
+            best = (area, e)
+    if best is None:
+        return None
+    area, e = best
+    # The rectangle's long side runs along the strip.
+    w = np.array([-e[1], e[0]])
+    if np.ptp(hull @ w) > np.ptp(hull @ e):
+        e = w
+    return area, e
+
+
+SHORT_RUN = 1.3  # a run less than this many times longer than wide: its fitted line is no guide
+
+
+def _edge_direction(p: np.ndarray, u: np.ndarray, hint: np.ndarray | None = None) -> np.ndarray:
     """The direction of the least-area rectangle round the points nearest ``u``: for a strip drawn
     with straight edges (a beam's nodes) it is the edges' direction exactly, where a fitted line
-    carries the scatter of the mesh."""
+    carries the scatter of the mesh. A short, wide run (a beam's few metres past a corner) is
+    scattered as much across as along, so its fitted line can point anywhere: its rectangle's long
+    side is taken when it is nearer the line's way (``hint``) than across it."""
     try:
-        pts = np.unique(_outline(p), axis=0)
-        if len(pts) < 3:
+        got = _rectangle(p)
+        if got is None:
             return u
-        # Convex hull (monotone chain).
-        pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
-
-        def half(seq):
-            h: list = []
-            for q in seq:
-                while len(h) >= 2 and _cross(h[-1] - h[-2], q - h[-2]) <= 1e-12:
-                    h.pop()
-                h.append(q)
-            return h
-
-        hull = np.array(half(pts)[:-1] + half(pts[::-1])[:-1])
-        best = None
-        for a, b in zip(hull, np.roll(hull, -1, axis=0), strict=True):
-            e = b - a
-            n = float(np.hypot(*e))
-            if n < 1e-9:
-                continue
-            e = e / n
-            w = np.array([-e[1], e[0]])
-            area = float(np.ptp(hull @ e) * np.ptp(hull @ w))
-            if best is None or area < best[0] - 1e-9:
-                best = (area, e)
-        if best is None:
-            return u
-        e = best[1]
-        # The rectangle's long side runs along the strip.
-        w = np.array([-e[1], e[0]])
-        if np.ptp(hull @ w) > np.ptp(hull @ e):
-            e = w
+        e = got[1]
         if _angle_between(e, u) > 5.0:
-            return u
+            along = np.ptp(p @ e)
+            across = np.ptp(p @ np.array([-e[1], e[0]]))
+            if hint is None or along < SHORT_RUN * across or _angle_between(e, hint) >= 45.0:
+                return u
+            u = hint
         return e if float(e @ u) >= 0 else -e
     except (ValueError, np.linalg.LinAlgError):
         return u
@@ -179,29 +197,31 @@ def _angle_between(u: np.ndarray, v: np.ndarray) -> float:
     return math.degrees(math.acos(min(1.0, abs(float(u @ v)))))
 
 
+SPLIT_GAIN = 0.8  # a corner found by cutting must fit the strip in this share of one rectangle's area
+
+
 def _split(p: np.ndarray, t: np.ndarray, min_angle: float, depth: int) -> list[np.ndarray]:
-    """Points ordered along ``t`` cut into straight runs, recursively, where two halves turn."""
+    """Points ordered along ``t`` cut into straight runs, recursively, where two tight rectangles
+    fit the strip much better than one (a corner the centre line misses: a short, wide beam on a
+    coarse mesh, whose centre line wanders more than a straight run's may)."""
     n = len(p)
-    if depth <= 0 or n < 20:
+    whole = _rectangle(p) if depth > 0 and n >= 20 else None
+    if whole is None:
         return [p]
-    _, u, whole = _line(p)
     best = None
-    for q in np.linspace(0.08, 0.92, 43):
-        k = int(q * n)
-        if k < 10 or n - k < 10 or t[k - 1] - t[0] < MIN_PART or t[-1] - t[k] < MIN_PART:
+    for k in np.unique(np.linspace(10, n - 10, min(n - 19, 200)).astype(int)):
+        if t[k - 1] - t[0] < MIN_PART or t[-1] - t[k] < MIN_PART:
             continue
-        _, ua, ea = _line(p[:k])
-        _, ub, eb = _line(p[k:])
-        cost = ea + eb
+        ra, rb = _rectangle(p[:k]), _rectangle(p[k:])
+        if ra is None or rb is None:
+            continue
+        cost = ra[0] + rb[0]
         if best is None or cost < best[0]:
-            best = (cost, k, ua, ub)
+            best = (cost, k, ra[1], rb[1])
     if best is None:
         return [p]
-    cost, k, ua, ub = best
-    # A real corner: the two runs' edges turn by more than the least angle (a straight strip cut
-    # anywhere keeps its edges' direction exactly), and they fit better apart.
-    ea, eb = _run_line(p[:k], ua)[1], _run_line(p[k:], ub)[1]
-    if _angle_between(ea, eb) < min_angle or cost >= whole:
+    cost, k, ea, eb = best
+    if _angle_between(ea, eb) < min_angle or cost >= SPLIT_GAIN * whole[0]:
         return [p]
     return _split(p[:k], t[:k], min_angle, depth - 1) + _split(p[k:], t[k:], min_angle, depth - 1)
 
@@ -218,7 +238,7 @@ def _run_line(r: np.ndarray, hint: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """A run's line: along its edges (else its fitted line), pointing the way ``hint`` does, through
     the middle of its width."""
     c, u, _ = _line(r)
-    u = _edge_direction(r, u)
+    u = _edge_direction(r, u, hint)
     if float(u @ hint) < 0:
         u = -u
     w = np.array([-u[1], u[0]])
@@ -267,6 +287,15 @@ def _bends(line: np.ndarray, keep: list[int], c: np.ndarray, u: np.ndarray) -> l
     return [float(line[k, 0]) for k in keep[1:-1]]
 
 
+def _way(r: np.ndarray, hint: np.ndarray) -> np.ndarray:
+    """The way a run of points ordered along the strip goes, from its first quarter to its last
+    (``hint`` if they meet): a truer guide for a run joined from short ones than their own lines."""
+    k = max(1, len(r) // 4)
+    d = r[-k:].mean(axis=0) - r[:k].mean(axis=0)
+    n = float(np.hypot(*d))
+    return d / n if n > 1e-9 else hint
+
+
 def _merge(
     runs: list[np.ndarray], fixed: list[tuple[np.ndarray, np.ndarray]], min_angle: float
 ) -> tuple[list[np.ndarray], list[tuple[np.ndarray, np.ndarray]]]:
@@ -284,7 +313,7 @@ def _merge(
         else:
             break
         runs[j : j + 2] = [np.concatenate(runs[j : j + 2])]
-        fixed[j : j + 2] = [_run_line(runs[j], fixed[j][1])]
+        fixed[j : j + 2] = [_run_line(runs[j], _way(runs[j], fixed[j][1]))]
     return runs, fixed
 
 
@@ -332,6 +361,17 @@ def fit_alignment(points: np.ndarray, min_angle: float = MIN_ANGLE) -> list[list
         if [len(r) for r in runs] == before:
             break
     runs, fixed = _merge(runs, fixed, min_angle)
+    if len(runs) == 1:
+        # No corner in the centre line: a corner can still hide in its wander (a short, wide beam).
+        cut = _split(p, t, min_angle, MAX_PARTS - 1)
+        if len(cut) > 1:
+            runs, fixed = cut, [_run_line(r, u) for r in cut]
+            for _ in range(3 * MAX_PARTS):
+                before = [len(r) for r in runs]
+                runs, fixed = _refine(p, runs, fixed)
+                runs, fixed = _merge(runs, fixed, min_angle)
+                if [len(r) for r in runs] == before:
+                    break
     first_c, first_u = fixed[0]
     last_c, last_u = fixed[-1]
     start = first_c + ((runs[0] - first_c) @ first_u).min() * first_u
@@ -746,14 +786,37 @@ def stations(
     return out
 
 
+def _end_frame(
+    points: list[list[float]] | None, along: str, x: np.ndarray, y: np.ndarray, first: bool
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Each point's distance along the berth and across it, measured straight along the berth's
+    first (``first``) or last run, and which points lie in that run's part (split at each corner by
+    the line halving it). Near a corner, the distance round the line jumps from one run to the next
+    far inland (a rear beam 30 m behind the front beam), so an end's skewed cut is measured in its
+    own run's frame only."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    if not points or len(points) < 3:
+        return stations(points, along, x, y), stations(points, along, x, y, True), np.ones(len(x), bool)
+    p = np.asarray(points, float)
+    i = 0 if first else len(p) - 2
+    a, seg = p[i], p[i + 1] - p[i]
+    u = seg / max(float(np.hypot(*seg)), 1e-9)
+    before = float(sum(np.hypot(*(p[k + 1] - p[k])) for k in range(i)))
+    q = np.column_stack([x, y]) - a
+    parts = [Part(k, "", tuple(p[k]), tuple(p[k + 1]), 0.0, tuple(p[k])) for k in range(len(p) - 1)]
+    return before + q @ u, q @ np.array([-u[1], u[0]]), part_of(parts, x, y) == i
+
+
 def _end_slope(frames: list[pd.DataFrame], points, along: str, first: bool) -> float:
     """The slope ds/dv of the model's end edge (the pile rows' direction there), from the deck: its end
     node in each metre across the quay, fitted with a straight line; 0 (square to the berth) without one."""
     if not frames:
         return 0.0
     f = pd.concat(frames)
-    st = stations(points, along, f["X"].to_numpy(), f["Y"].to_numpy())
-    v = stations(points, along, f["X"].to_numpy(), f["Y"].to_numpy(), across=True)
+    st, v, own = _end_frame(points, along, f["X"].to_numpy(), f["Y"].to_numpy(), first)
+    st, v = st[own], v[own]
+    if not len(st):
+        return 0.0
     d = pd.DataFrame({"s": st, "v": v, "band": np.floor(v + 1e-6)})
     counts = d.groupby("band")["s"].size()
     full = counts[counts >= 0.5 * counts.median()].index  # a band with few nodes is a ragged edge
@@ -836,8 +899,17 @@ def trim_ends(
         ]
         b0, b1 = _end_slope(deck, points, along, True), _end_slope(deck, points, along, False)
 
+        ends = {
+            (n, c, first): _end_frame(points, along, f["X"].to_numpy(), f["Y"].to_numpy(), first)
+            for n, fs in frames.items()
+            for c, f in fs.items()
+            for first in (True, False)
+        }
+
         def reach(n: str, b: float, first: bool) -> float:
-            vals = [s_of[n][c] - b * v_of[n][c] for c in frames[n]]
+            vals = [e[0][e[2]] - b * e[1][e[2]] for c in frames[n] if (e := ends[n, c, first])[2].any()]
+            if not vals:  # none of it in the end's part: it starts (stops) past the corner
+                vals = [s_of[n][c] for c in frames[n]]
             return min(float(x.min()) for x in vals) if first else max(float(x.max()) for x in vals)
 
         start = max(reach(n, b0, True) for n in runs)
@@ -845,8 +917,11 @@ def trim_ends(
         if end - start > 2 * trim:
             for n in frames:
                 for c in frames[n]:
-                    s, v = s_of[n][c], v_of[n][c]
-                    keep_rows[n][c] &= (s - b0 * v >= start + trim - 1e-6) & (s - b1 * v <= end - trim + 1e-6)
+                    s0, v0, in0 = ends[n, c, True]
+                    s1, v1, in1 = ends[n, c, False]
+                    keep_rows[n][c] &= (~in0 | (s0 - b0 * v0 >= start + trim - 1e-6)) & (
+                        ~in1 | (s1 - b1 * v1 <= end - trim + 1e-6)
+                    )
             info |= {
                 "trim_m": trim,
                 "cut_m": [round(start + trim, 2), round(end - trim, 2)],
