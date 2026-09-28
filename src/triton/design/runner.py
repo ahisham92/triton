@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import Any
 
 from ..alignment import corner_zones, element_in_part, part_elements, section_parts, tag_part, trim_ends
-from ..axes import infer_axes
+from ..axes import infer_axes, set_signs
 from ..elements import ElementType
 from ..forces import scale_forces
 from ..geometry import elements_geometry, section_geometry
@@ -415,7 +415,7 @@ def _design(
     ):
         found = infer_axes(workbook.elements())[0]  # read before Triton read the sign
     axes = {a["element"]: a.get("local") for a in found}
-    signs = {a["element"]: a for a in found if a["kind"] == "plate"}
+    signs = set_signs({a["element"]: a for a in found if a["kind"] == "plate"}, section.elements, settings)
     parts, alignment = line if plates else ([], {"parts": [], "points": []})
     joints = (
         section_joints(settings, section, raw, parts, along_axis(section), furniture_at) if plates else None

@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .axes import sag_factor, sign_setting
+from .axes import sag_factor, set_signs, sign_setting
 from .design import deflection as D
 from .design.runner import factored_elements
 from .project import (
@@ -106,7 +106,9 @@ def shapes(
         [float(np.mean([h[1] for h in heads])), float(np.mean([h[2] for h in heads]))] if heads else [0, 0]
     )
     sheets = _sheets(section, workbook, phases, ds.baseline)
-    axes = {a["element"]: a for a in getattr(workbook, "axes", None) or []}
+    axes = set_signs(
+        {a["element"]: a for a in getattr(workbook, "axes", None) or []}, section.elements, settings
+    )
     supports = D._supports(sheets, section)
     plates = []
     for name, el in section.elements.items():
