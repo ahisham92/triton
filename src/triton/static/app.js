@@ -5163,6 +5163,17 @@ function layerLines(bl, withMesh = true) {
     .filter(Boolean);
 }
 
+// The Plaxis values Remove spikes replaced on a beam, largest change first.
+function spikesBlock(rows) {
+  if (!rows) return "";
+  if (!rows.length) return `<h3 style="margin-top:18px">Spikes removed</h3><p class="status">None found in the Plaxis results.</p>`;
+  return `<h3 style="margin-top:18px">Spikes removed</h3>
+    <p class="status">The Plaxis values replaced before design, the largest change at each place along the beam (${rows.length} shown). Lone node: more than the spike ratio times every node within 1 m, replaced by their mean. Width peak: a node more than the ratio times the average across the width at its station, replaced by that average.</p>
+    <div class="scroll"><table><tr><th>At (m)</th><th>Action</th><th>Combination</th><th>Rule</th><th>Plaxis</th><th>Used</th></tr>
+      ${rows.map((q) => `<tr><td>${fmt(q.s, 2)}</td><td>${q.what === "Mv" ? "M vertical, kNm" : "V vertical, kN"}</td><td>${esc(q.combination)}</td><td>${esc(q.rule)}</td><td>${fmt(q.raw)}</td><td>${fmt(q.used)}</td></tr>`).join("")}
+    </table></div>`;
+}
+
 // Warnings for sections short of ductility or over-reinforced (x/d, bars not yielding, over 4%).
 function overWarn(items) {
   if (!items?.length) return "";
@@ -5734,7 +5745,8 @@ function beamCard(b) {
         <td class="cell ${c.utilisation <= 1 ? "ok" : "error"}">${fmt(c.utilisation, 2)}</td></tr>`).join("")}</table></div>
     <p class="status">${esc(b.truss.method)}</p>` : b.truss?.note ? `<p class="status">${esc(b.truss.note)}</p>` : ""}
     ${b.rooms?.length ? `<p class="status">${b.rooms.length === 1 ? "A room is" : `${b.rooms.length} rooms are`} cut into this beam: see the Openings tab (${b.rooms.every((r) => r.passed) ? "all pass" : "some fail"}).</p>` : ""}
-    ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}`;
+    ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}
+    ${spikesBlock(b.spikes)}`;
   mountCrackPictures(card, beamCrackItems(b));
   wireBeamCage(card, b);
   if (c?.bars) beamSection(card.querySelector('[data-kind="section"]'), b);

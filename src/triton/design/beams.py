@@ -91,6 +91,12 @@ MIN_BAR = 12
 MIN_LINK_SPACING = 75.0
 BAND = 0.5  # m, heat-map bands along the beam
 PEAK = 0.4  # m, half-length along the beam over which the peak nodal values are taken
+# Removing spikes (BeamInput.spikes "remove"): a node more than the ratio (BeamInput.spike_ratio) times
+# every node within SPIKE_R of it, and at least SPIKE_SIGNIFICANT of the run's largest, is replaced by
+# their mean; a node more than the ratio times the width average (same sign) at its station by that average.
+SPIKE_R = 1.0  # m
+SPIKE_SIGNIFICANT = 0.2
+SPIKE_ROWS = 50  # the largest replaced values kept with the results
 
 
 # --- Section forces ------------------------------------------------------------------------------
@@ -262,12 +268,68 @@ def _columns(lay: Layout) -> dict[str, str]:
     return {"N": "N_2", "M": "M_22", "V": "Q_23", "Nt": "N_1", "Mt": "M_11", "Vt": "Q_13"}
 
 
+class SpikeLog(list):
+    """The values Remove spikes replaced (dicts), and the ratio that judges a spike."""
+
+    def __init__(self, ratio: float) -> None:
+        super().__init__()
+        self.ratio = ratio
+
+
+def lone_spikes(s: np.ndarray, t: np.ndarray, v: np.ndarray, ratio: float) -> tuple[np.ndarray, np.ndarray]:
+    """``v`` with each lone node spike replaced by the mean of the nodes within SPIKE_R of it, and
+    the indices replaced. A node is a spike when it is more than ``ratio`` times every one of them
+    (at least two) and at least SPIKE_SIGNIFICANT of the largest value."""
+    v = np.asarray(v, float)
+    out = v.copy()
+    a = np.abs(v)
+    if len(v) < 3 or a.max() <= 0:
+        return out, np.array([], int)
+    xy = np.column_stack([s, t])
+    hit = []
+    for lo in range(0, len(v), 512):
+        d = np.hypot(*(xy[lo : lo + 512, None, :] - xy[None, :, :]).transpose(2, 0, 1))
+        near = (d <= SPIKE_R + 1e-9) & (d > 1e-9)
+        for k, row in enumerate(near):
+            i = lo + k
+            if row.sum() < 2 or a[i] < SPIKE_SIGNIFICANT * a.max():
+                continue
+            if a[i] > ratio * a[row].max():
+                out[i] = float(v[row].mean())
+                hit.append(i)
+    return out, np.array(hit, int)
+
+
+def width_spikes(s: np.ndarray, v: np.ndarray, ratio: float) -> tuple[np.ndarray, np.ndarray]:
+    """``v`` with each node more than ``ratio`` times the average across the width at its station
+    replaced by that average, and the indices replaced. The width average: the other nodes of the
+    same sign within ±PEAK of it along the beam, across the whole width (at least two)."""
+    v = np.asarray(v, float)
+    out = v.copy()
+    hit = []
+    order = np.argsort(s)
+    ss, vs = s[order], v[order]
+    lo_i = np.searchsorted(ss, ss - PEAK - 1e-9, "left")
+    hi_i = np.searchsorted(ss, ss + PEAK + 1e-9, "right")
+    for k in range(len(ss)):
+        w = np.r_[vs[lo_i[k] : k], vs[k + 1 : hi_i[k]]]
+        w = w[w * vs[k] > 0]
+        if len(w) < 2:
+            continue
+        avg = float(w.mean())
+        if abs(vs[k]) > ratio * abs(avg):
+            out[order[k]] = avg
+            hit.append(order[k])
+    return out, np.array(hit, int)
+
+
 def station_forces(
     frame: pd.DataFrame,
     lay: Layout,
     sag: float,
     stations: np.ndarray | None = None,
     peak_width: float | None = None,
+    spikes: SpikeLog | None = None,
 ) -> pd.DataFrame:
     """Beam section forces at stations along the beam (kN, kNm; N compression +, Mv sagging +).
 
@@ -276,6 +338,8 @@ def station_forces(
     moment and one with the largest hogging moment, each with its node's own N per metre times that
     width, as the office sheets. Mh, Vh and T stay integrated. A beam that
     turns: each part is fitted on its own, over its own width, from its results turned into its axes.
+    ``spikes`` (peak mode only): spikes are removed from the nodal M and Q (lone nodes, then nodes far
+    above the width average at their station) before the peaks are taken; each is appended to it.
     """
     cols = _columns(lay)
     f = frame.drop_duplicates(["X", "Y", "Z"])
@@ -288,6 +352,25 @@ def station_forces(
         values |= {"Q12": f.loc[m, "Q_12"].to_numpy(float), "M12": f.loc[m, "M_12"].to_numpy(float)}
         s, t = s_all[m], t_all[m]
         at = np.unique(np.round(s / 0.05) * 0.05) if stations is None else stations
+        if spikes is not None and peak_width is not None:
+            for k, what in (("M", "Mv"), ("V", "V")):
+                raw = values[k]
+                one = sag if k == "M" else 1.0
+                lone, hit_lone = lone_spikes(s, t, raw, spikes.ratio)
+                values[k], hit_width = width_spikes(s, lone, spikes.ratio)
+                rule = dict.fromkeys(hit_width.tolist(), "width peak") | dict.fromkeys(
+                    hit_lone.tolist(), "lone node"
+                )
+                for i, why in rule.items():
+                    spikes.append(
+                        {
+                            "s": round(float(s[i]), 2),
+                            "what": what,
+                            "rule": why,
+                            "raw": one * float(raw[i]) * peak_width,
+                            "used": one * float(values[k][i]) * peak_width,
+                        }
+                    )
         rows += _fits(s, t, values, B, at, sag, peak_width)
     return pd.DataFrame(rows, columns=["s", "N", "Mv", "Mh", "V", "Vh", "T"])
 
@@ -341,6 +424,40 @@ def _fits(
     return rows
 
 
+def spike_note(spikes: SpikeLog | None) -> str:
+    """The design note on spikes removed (``None``: asked for, but the actions are not peak-width)."""
+    if spikes is None:
+        return (
+            "Spikes: kept. Removing them applies to peak-width actions only; these are integrated over "
+            "the width (Design settings)."
+        )
+    rule = (
+        f"a lone node more than {spikes.ratio:g} times every node within {SPIKE_R:g} m is replaced by "
+        f"their mean; a node more than {spikes.ratio:g} times the average across the width at its "
+        "station by that average"
+    )
+    if not spikes:
+        return f"Spikes removed ({rule}): none found in the Plaxis results."
+    big = max(spikes, key=lambda q: abs(q["raw"] - q["used"]))
+    unit = "kNm" if big["what"] == "Mv" else "kN"
+    places = len(_places(spikes))
+    return (
+        f"Spikes removed ({rule}): at {places} place{'s' if places != 1 else ''} along the beam. Largest: "
+        f"{big['what']} {big['raw']:,.0f} to {big['used']:,.0f} {unit} at {big['s']:g} m "
+        f"({big['combination']}, {big['rule']}). Each place is listed with the beam's results."
+    )
+
+
+def _places(spikes: list) -> list[dict]:
+    """The largest change for each action at each half metre along the beam, largest first."""
+    best: dict = {}
+    for q in spikes:
+        key = (q["what"], round(q["s"] * 2) / 2)
+        if key not in best or abs(q["raw"] - q["used"]) > abs(best[key]["raw"] - best[key]["used"]):
+            best[key] = q
+    return sorted(best.values(), key=lambda q: -abs(q["raw"] - q["used"]))
+
+
 def beam_loads(
     sheets: dict[str, SheetData],
     lay: Layout,
@@ -348,6 +465,7 @@ def beam_loads(
     qp: bool,
     supports: list[Support] = (),
     peak_width: float | None = None,
+    spikes: SpikeLog | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(station forces, transverse node forces) of the ULS (or QP) combinations.
 
@@ -367,7 +485,10 @@ def beam_loads(
         f, s, t = f[outside], s[outside], t[outside]
         if f.empty:
             continue
-        st = station_forces(f, lay, sag, peak_width=peak_width)
+        found = SpikeLog(spikes.ratio) if spikes is not None else None
+        st = station_forces(f, lay, sag, peak_width=peak_width, spikes=found)
+        if spikes is not None:
+            spikes += [{**q, "combination": combo} for q in found]
         parts.append(st.assign(combination=combo, category=ctype.value))
         f = lay.turned(f, owner[outside])
         nodes.append(
@@ -1210,8 +1331,9 @@ def design_beam(
     # The supports whose results are left out (Design settings); all of them still set the truss spans.
     cut = supports if settings.beam_support_results == "faces" else []
     peak = g.b / 1000 if settings.beam_actions == "peak_width" else None
-    uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=cut, peak_width=peak)
-    qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=cut, peak_width=peak)
+    spikes = SpikeLog(beam.spike_ratio) if beam.spikes == "remove" and peak is not None else None
+    uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=cut, peak_width=peak, spikes=spikes)
+    qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=cut, peak_width=peak, spikes=spikes)
     added = None
     if ledge is not None:
         from .approach import rear_beam_additions
@@ -1240,6 +1362,8 @@ def design_beam(
         ),
         sign_note,
     ]
+    if beam.spikes == "remove":
+        notes.append(spike_note(spikes))
     if added is not None:
         notes.append(
             f"Approach slab ledge added at every station: ΔV {added['V_uls']:.0f} kN, "
@@ -1818,7 +1942,17 @@ def design_beam(
         "governing_sets": sets,
         "ductility": duct,
         "rooms": rooms,
+        "spikes": _spike_rows(spikes),
     }
+
+
+def _spike_rows(spikes: SpikeLog | None) -> list[dict] | None:
+    """The places spikes were removed, largest change first (None: spikes kept)."""
+    if spikes is None:
+        return None
+    return [
+        {**q, "raw": round(q["raw"], 1), "used": round(q["used"], 1)} for q in _places(spikes)[:SPIKE_ROWS]
+    ]
 
 
 def _profile(mom: pd.DataFrame, u: np.ndarray) -> list[dict]:

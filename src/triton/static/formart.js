@@ -258,6 +258,7 @@ const dwallArt = (e) => svg(620, 130, defs + `<rect x="40" y="14" width="46" hei
 
 const BEAM_PAGES = [
   { title: "Size and cover", keys: ["width", "depth", "cover", "link_diameter", "concrete"], intro: "The beam's cross-section, its concrete and cover. Empty values use the project's.", art: beamArt },
+  { title: "Plaxis results", keys: ["positive_moment", "spikes", "spike_ratio"], intro: "How the Plaxis plate results are read: the moment sign, and whether spikes are kept or removed." },
   { title: "Cracking", keys: ["crack_width_limit", "crack_width_limit_bottom", "joint_spacing", "restraint_factor"], intro: "Crack width limits on each face and the restraint check along the beam." },
 ];
 export const ELEMENT_PAGES = {

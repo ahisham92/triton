@@ -1631,6 +1631,22 @@ class BeamInput(_ConcreteSection):
         "AdSec deck strips take the Plaxis moment x -1, its beams as they are).",
     )
     link_diameter: float = _mm("Link diameter", 16.0, gt=0)
+    spikes: Literal["keep", "remove"] = Field(
+        "keep",
+        title="Spikes in the Plaxis results",
+        description="Keep: every node's value is designed for, as it is. Remove: a lone node more than "
+        "the spike ratio times every node within 1 m of it is replaced by their mean, and a node more than "
+        "the ratio times the average across the width at its station by that average; each place is listed. "
+        "Peak-width actions only (Design settings).",
+    )
+    spike_ratio: float = Field(
+        1.5,
+        title="Spike ratio",
+        ge=1.1,
+        le=5.0,
+        description="Remove spikes: how many times its neighbours (or the width average) a value must be "
+        "to count as a spike.",
+    )
     joint_spacing: float = _m(
         "Length between movement joints",
         58.0,
