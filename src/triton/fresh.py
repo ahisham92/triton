@@ -149,6 +149,9 @@ def fingerprint(project: Project, section: Section, workbook: dict[str, Any] | N
                 z.pop("land", None)  # no land side: walls stored before it keep their hash
         if own.get("positive_moment") == "project":
             own.pop("positive_moment")
+        if own.get("corner_zone") == "strips":
+            own.pop("corner_zone")  # the default: slabs designed before it keep their hash
+            own.pop("corner_zone_length", None)  # read only when the corner zone is on its own
         if own.get("spikes") == "keep":
             own.pop("spikes")  # the default: beams designed before it keep their hash
             own.pop("spike_ratio", None)  # read only when spikes are removed

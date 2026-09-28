@@ -577,6 +577,9 @@ def test_the_beam_bar_rule_puts_only_beams_out_of_date():
         if o.get("spikes") == "keep":
             o.pop("spikes")
             o.pop("spike_ratio")
+        if o.get("corner_zone") == "strips":
+            o.pop("corner_zone")
+            o.pop("corner_zone_length")
     assert now["Front Beam"] == fresh._hash([[own["Front Beam"], fresh.BEAM_BARS_RULE], fresh.BEAM_N_RULE])
     assert now["Pile(1)"] == fresh._hash([own["Pile(1)"], fresh.PILE_LINKS_RULE])
     assert now["Deck"] == fresh._hash([[own["Deck"], fresh.SLAB_BARS_RULE], fresh.SLAB_ADSEC_RULE])

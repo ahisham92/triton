@@ -523,14 +523,38 @@ def turn_frame(f: pd.DataFrame, part: Part, kind: ResultKind | None, local_one: 
     return f.drop(columns=[c for c in f.columns if c.endswith(("_min", "_max"))])
 
 
+def corner_zones(parts: list[Part], x: np.ndarray, y: np.ndarray, length: float) -> np.ndarray:
+    """For each plan point, the corner whose zone it is in (0 for the corner after the first part),
+    else -1. A corner's zone reaches ``length`` m either side of it along each part, measured square
+    to the part from its line (the front beam), so inland it takes the same wedge of the deck."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    zone = np.full(len(x), -1)
+    if len(parts) < 2:
+        return zone
+    owner = part_of(parts, x, y)
+    for i, p in enumerate(parts):
+        m = owner == i
+        a = np.array(p.start)
+        u = (np.array(p.end) - a) / max(p.length, 1e-9)
+        s = (np.column_stack([x[m], y[m]]) - a) @ u
+        before = (s <= length) if i > 0 else np.zeros(len(s), bool)
+        after = (s >= p.length - length) if i < len(parts) - 1 else np.zeros(len(s), bool)
+        z = np.full(len(s), -1)
+        z[after] = i
+        z[before & (~after | (s < p.length - s))] = i - 1  # a short part: the nearer corner
+        zone[m] = z
+    return zone
+
+
 def part_elements(
     elements: dict[str, dict[str, SheetData]],
     parts: list[Part],
     part: Part,
     axes: dict[str, dict[str, str] | None],
+    where: Any = None,
 ) -> dict[str, dict[str, SheetData]]:
     """Every element's results inside ``part``, turned with it. Beam elements (piles) are kept whole
-    when their plan position is in the part."""
+    when their plan position is in the part. ``where(x, y)``: only the plan points it keeps."""
     out: dict[str, dict[str, SheetData]] = {}
     for name, combos in elements.items():
         local_one = ((axes.get(name) or {}).get("1")) or "X"
@@ -539,6 +563,8 @@ def part_elements(
             f = sheet.frame
             if {"X", "Y"} <= set(f.columns) and len(parts) > 1:
                 f = f[part_of(parts, f["X"].to_numpy(float), f["Y"].to_numpy(float)) == part.index]
+            if where is not None and {"X", "Y"} <= set(f.columns) and not f.empty:
+                f = f[where(f["X"].to_numpy(float), f["Y"].to_numpy(float))]
             if f.empty:
                 continue
             kind = sheet.parsed.spec.kind if sheet.parsed else None

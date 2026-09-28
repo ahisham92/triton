@@ -389,6 +389,50 @@ def test_a_trimmed_corner_keeps_its_parts_and_designs_without_the_ends():
         assert any("2 m at each end along the berth" in n for n in b["notes"])
 
 
+def test_corner_zones_reach_the_length_either_side_square_to_each_part():
+    from triton.alignment import corner_zones
+
+    end = turned(np.array([[0.0, 10.0]]), -30.0)[0].tolist()
+    parts = make_parts([[0.0, -10.0], [0.0, 0.0], end], land=(-10.0, -5.0))
+    u2 = np.subtract(end, [0.0, 0.0]) / 10.0
+    n2 = np.array([-u2[1], u2[0]])
+    pts = np.array(
+        [
+            [0.0, -6.0],  # 6 m before the corner: its part's strips
+            [0.0, -4.0],  # 4 m before: the corner's zone
+            [-20.0, -4.5],  # far inland, 4.5 m before, square to part 1: the zone too
+            [*(4.0 * u2 + 20.0 * n2)],  # 4 m after, 20 m inland: the zone
+            [*(6.0 * u2)],  # 6 m after: part 2's strips
+        ]
+    )
+    assert list(corner_zones(parts, pts[:, 0], pts[:, 1], 5.0)) == [-1, 0, 0, 0, -1]
+    assert list(corner_zones(parts[:1], pts[:, 0], pts[:, 1], 5.0)) == [-1] * 5
+
+
+def test_a_corner_zone_is_designed_on_its_own_per_cell():
+    corner = turn_workbook(berth(), -25.0, where=lambda x, y: y >= 0)
+    deck = section().elements["Deck"].model_copy(update={"corner_zone": "own", "corner_zone_length": 3.0})
+    sec = section()
+    sec = sec.model_copy(update={"elements": {**sec.elements, "Deck": deck}})
+    out = run_section(DesignSettings(), sec, corner, only=["Deck"])
+    slabs = {d["key"]: d for d in out["slabs"]}
+    assert set(slabs) == {
+        "Deck · Part 1",
+        "Deck · Part 2",
+        "Deck · Corner, Part 1 side",
+        "Deck · Corner, Part 2 side",
+    }
+    for key, d in slabs.items():
+        zone = "Corner" in key
+        assert d["strips"] == ("uniform" if zone else "column_and_field")
+        assert ("corner_zone" in d) == zone and d["part"]["name"] == key.split(" · ")[1]
+        assert "Corner zone" in d["notes"][0]
+    # Every deck node is designed once: in its part's strips or in the corner zone.
+    both = run_section(DesignSettings(), section(), corner, only=["Deck"])
+    area = sum(d["steel"]["area_m2"] for d in out["slabs"])
+    assert area == pytest.approx(sum(d["steel"]["area_m2"] for d in both["slabs"]), rel=0.15)
+
+
 def test_every_section_leaves_out_2_m_along_the_berth_and_nothing_across():
     from fastapi.testclient import TestClient
 
