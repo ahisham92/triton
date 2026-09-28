@@ -495,6 +495,10 @@ def test_lock_blocks_changes_until_unlocked(client):
     assert client.post(f"{url}/elements", json={"names": ["Pile(2)"]}).status_code == 409
     assert client.delete(f"{url}/workbook").status_code == 409
     assert client.post(f"{url}/design").status_code == 200  # designing again is fine
+    # The page as it is after that design: one loaded before it may not unlock (_refuse_stale),
+    # which the test met whenever the design ran into the next second.
+    project = client.get(f"/api/projects/{pid}").json()
+    project["sections"][0]["elements"]["Pile(1)"]["diameter"] = 1500
     project["locked"] = False  # unlocking and editing in one save
     assert client.put(f"/api/projects/{pid}", json=project).status_code == 200
 
