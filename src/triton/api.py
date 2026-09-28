@@ -263,24 +263,31 @@ def get_project(project_id: str) -> Project:
 
 @app.get("/api/projects/{project_id}/project.trt")
 def download_project(
-    project_id: str, section: str | None = None, parts: str | None = None
+    project_id: str, section: str | None = None, parts: str | None = None, only: str | None = None
 ) -> StreamingResponse:
     """The whole project as one file (.trt) to send to someone: settings, sections, workbooks, results
     and trials. ``section`` (an id) keeps one section; ``parts`` (comma separated: workbook, rows,
-    results) what of it goes in (Storage tab links)."""
+    results) what of it goes in (Storage tab links); ``only`` (comma separated: deck, beams, piles,
+    walls) the workbook's sheets of those elements alone, a lighter file to send for checking."""
     project = _get(project_id)
     chosen = package.PARTS
     if parts:
         chosen = tuple(p for p in package.PARTS if p in {x.strip() for x in parts.split(",")})
         if not chosen:
             raise HTTPException(400, f"Parts are {', '.join(package.PARTS)}.")
+    groups = None
+    if only:
+        groups = tuple(g for g in package.GROUPS if g in {x.strip() for x in only.split(",")})
+        if not groups:
+            raise HTTPException(400, f"Element groups are {', '.join(package.GROUPS)}.")
     name = ""
     if section is not None:
         found = next((s for s in project.sections if s.id == section), None)
         if found is None:
             raise HTTPException(404, "Section not found.")
         name = found.name
-    f, size = package.spool(store(), project, [section] if section else None, chosen)
+    f, size = package.spool(store(), project, [section] if section else None, chosen, groups)
+    file = package.file_name(project, name, chosen, groups)
 
     def chunks():
         with f:
@@ -291,7 +298,7 @@ def download_project(
         chunks(),
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{package.file_name(project, name, chosen)}"',
+            "Content-Disposition": f'attachment; filename="{file}"',
             "Content-Length": str(size),
         },
     )

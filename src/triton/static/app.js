@@ -669,7 +669,10 @@ async function storagePanel(box, id) {
         <td class="num">${link(x.rows, x.id, "rows", `${x.name}'s rows kept for editing`)}</td>
         <td class="num">${link(x.results, x.id, "results", `${x.name}'s design results`)}</td>
         <td class="num"><strong>${link(x.total, x.id, "", `the whole of ${x.name}`)}</strong></td></tr>`).join("")}
-    </tbody></table></div>`;
+    </tbody></table></div>
+    <p class="status">Too big to send? A section's workbook with some elements only (their results alone, for checking):
+      ${d.sections.filter((x) => x.workbook).map((x) => `${esc(x.name)}: <a href="${trt(`?section=${encodeURIComponent(x.id)}&parts=workbook&only=deck,beams,piles`)}" download>deck, beams and piles</a>
+        or <a href="${trt(`?section=${encodeURIComponent(x.id)}&parts=workbook&only=deck,beams`)}" download>deck and beams</a>`).join("; ") || "no workbook yet"}.</p>`;
 }
 
 // ---------------------------------------------------------------- lock
