@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 from . import (
+    actions3d,
     adsec,
     atomic,
     checker,
@@ -2780,6 +2781,33 @@ def _furniture(project_id: str, section_id: str) -> tuple[Project, Section, dict
         raise HTTPException(409, str(e)) from None
     store()._write_json(store()._dir(project_id, section_id) / "furniture.json", res)
     return project, section, res
+
+
+@app.get(SECTION + "/actions")
+def element_actions(
+    project_id: str, section_id: str, element: str, case: str = "env_abs", action: str = ""
+) -> dict:
+    """One element's straining actions for its 3D view on the Design tab (triton/actions3d.py): a
+    combination's or an envelope's value of one action at every point. Display only: never a design
+    input, so it can never make a design stale."""
+    project = _get(project_id)
+    section = _section(project, section_id)
+    d = store()._dir(project_id, section_id)
+    key = views.key(_view_parts(project, section), element)
+    data = views.get(d, f"actions-{element}", key)
+    if data is None:
+        wb = _workbook(project_id, section)
+        if wb is None:
+            raise HTTPException(409, "Upload this section's workbook on the Workbook tab first.")
+        sheets = factored_elements(section, wb).get(element)
+        data = actions3d.element_actions(sheets) if sheets else None
+        if data:
+            views.put(d, f"actions-{element}", key, data)
+    if not data:
+        raise HTTPException(404, f"No Plaxis results for {element} in this section's workbook.")
+    shown = ("kind", "type", "flat", "size", "points", "combinations", "design", "actions")
+    meta = {k: data[k] for k in shown}
+    return {"element": element, **meta, **actions3d.pick(data, case, action)}
 
 
 @app.get(SECTION + "/site")

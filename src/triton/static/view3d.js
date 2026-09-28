@@ -130,6 +130,39 @@ function rampLegendHtml(title, [lo, hi], unit, note) {
 
 const fmt1 = (v) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(1));
 
+// Straining actions: the analysis programs' contour colours, least value blue to largest red.
+const ACTION_RAMP = [
+  [0, [43, 87, 178]],
+  [0.25, [52, 176, 214]],
+  [0.5, [74, 176, 92]],
+  [0.75, [240, 196, 48]],
+  [1, [214, 48, 39]],
+];
+const fmtAct = (v) =>
+  v == null ? "–" : v.toLocaleString("en-GB", { maximumFractionDigits: Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2 });
+
+function actionsLegendHtml(a, range) {
+  if (!a) return `<div class="heat-legend"><span>Straining actions</span><p>Loading the Plaxis results…</p></div>`;
+  if (a.error) return `<div class="heat-legend"><span>Straining actions</span><p>${esc(a.error)}</p></div>`;
+  const act = a.actions.find((x) => x.key === a.action) || { label: a.action, unit: "", what: "" };
+  const env = { env_abs: "envelope max & min (the larger in size, with its sign)", env_max: "envelope max", env_min: "envelope min" }[a.case];
+  const title = `${act.label}, ${act.what} (${act.unit}): ${env || a.case}`;
+  if (!range) return `<div class="heat-legend"><span>${esc(title)}</span><p>No results for this element in this case.</p></div>`;
+  const [lo, hi] = range;
+  if (hi - lo < 1e-9) return `<div class="heat-legend act-legend"><span>${esc(title)}</span><p>The same all over: ${fmtAct(lo)} ${esc(act.unit)}.</p></div>`;
+  const stops = ACTION_RAMP.map(([t, c]) => `rgb(${c}) ${t * 100}%`).join(", ");
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => `<span style="left:${t * 100}%">${fmtAct(lo + t * (hi - lo))}</span>`).join("");
+  const z = lo < 0 && hi > 0 ? (-lo / (hi - lo)) * 100 : null;
+  const cell = a.kind === "frame" ? `${a.size} m steps down each member` : `${a.size} m squares on the plate`;
+  return `<div class="heat-legend act-legend"><span>${esc(title)}</span>
+    <div class="bar" style="background:linear-gradient(90deg, ${stops})">${z == null ? "" : `<i class="zero" style="left:${z}%" title="zero"></i>`}</div>
+    <div class="ticks">${ticks}</div>
+    <div class="grey">Least ${fmtAct(lo)} ${esc(act.unit)}, largest ${fmtAct(hi)} ${esc(act.unit)}${z == null ? "" : "; the white mark on the scale is zero"}.</div>
+    <p>Plaxis values and signs (N as Plaxis gives it, not turned for concrete), with this section's load multipliers and working zone.
+    Shown in ${cell}: each shows its node value of largest size, with its sign. ${a.combinations.length > a.design.length ? "Envelopes leave out the QP combinations; pick QP as a load case to see it." : ""}
+    Hover, or tap on a phone, to read a value.</p></div>`;
+}
+
 // A box as six shaded faces, drawn among the lines (fenders, bollards, blocks).
 function solid(items, box, color, tip) {
   const [x0, x1] = box.X;
@@ -229,8 +262,12 @@ export const GAP_WHY = {
 };
 
 export class View3D {
-  constructor(host, { height = 460, compact = false, legend = true, onSite = null, deformed = null, modes = null } = {}) {
+  constructor(host, { height = 460, compact = false, legend = true, onSite = null, deformed = null, modes = null, actions = null } = {}) {
     this.host = host;
+    // async ({element, case, action}) => the element's straining actions (the Design tab's views only)
+    this.loadActions = actions;
+    this.actCase = "env_abs";
+    this.actAction = "";
     this.modes = modes; // the colour choices this view offers (default: all)
     this.legend = legend;
     this.onSite = onSite; // (changes) => saved to the section's site settings
@@ -245,7 +282,10 @@ export class View3D {
       <label class="toggle"><input type="checkbox" data-labels ${this.labels ? "checked" : ""}> Labels</label>
       <span class="v3d-mode"><select data-mode aria-label="Colour by"><option value="util">Utilisation</option>
       <option value="tension">Tension zones</option><option value="crack">Crack width (QP)</option>
-      <option value="cost">Cost</option><option value="rebar">Reinforcement ratio</option></select>
+      <option value="cost">Cost</option><option value="rebar">Reinforcement ratio</option>
+      <option value="actions">Straining actions</option></select>
+      <select data-case aria-label="Load case or envelope" hidden></select>
+      <select data-action aria-label="Straining action" hidden></select>
       <select data-combo aria-label="Combination" hidden></select>
       <select data-dir aria-label="Slab bar direction" hidden><option value="x">Slabs: bars along X (M11)</option>
       <option value="y">Slabs: bars along Y (M22)</option></select></span></div>
@@ -278,12 +318,22 @@ export class View3D {
     const prefs = View3D.prefs;
     for (const key of ["mode", "combo", "dir"]) {
       host.querySelector(`[data-${key}]`).onchange = (e) => {
-        prefs[key] = e.target.value;
+        // Straining actions stay on this view only: each one fetches its element's results.
+        if (key === "mode") this.ownMode = e.target.value === "actions" ? "actions" : null;
+        if (key !== "mode" || e.target.value !== "actions") prefs[key] = e.target.value;
         this._controls();
         this._build();
         this.draw();
       };
     }
+    host.querySelector("[data-case]").onchange = (e) => {
+      this.actCase = e.target.value;
+      this._loadActions();
+    };
+    host.querySelector("[data-action]").onchange = (e) => {
+      this.actAction = e.target.value;
+      this._loadActions();
+    };
     host.querySelector("[data-soil]").onchange = (e) => this._site({ soil: e.target.value });
     host.querySelector("[data-existing]").onchange = (e) => this._site({ existing: e.target.value });
     host.querySelectorAll("[data-show]").forEach((b) => (b.onchange = () => this._site({ [b.dataset.show]: b.checked })));
@@ -444,8 +494,8 @@ export class View3D {
     if (prefs.combo && !combos.includes(prefs.combo)) prefs.combo = "";
     const ck = Object.values(this.scene?.crack || {}).filter((b) => b?.length);
     const rb = Object.values(this.scene?.rebar || {}).filter((b) => b?.length);
-    const has = { util: true, tension: tz.length > 0, crack: ck.length > 0, cost: !!this.scene?.cost, rebar: rb.length > 0 };
-    const modes = this.modes || Object.keys(has);
+    const has = { util: true, tension: tz.length > 0, crack: ck.length > 0, cost: !!this.scene?.cost, rebar: rb.length > 0, actions: !!this.loadActions };
+    const modes = this.modes || Object.keys(has).filter((k) => k !== "actions" || has.actions);
     const mode = this.host.querySelector("[data-mode]");
     for (const o of mode.options) {
       o.hidden = !modes.includes(o.value);
@@ -453,7 +503,9 @@ export class View3D {
     }
     mode.disabled = [...mode.options].filter((o) => !o.disabled).length < 2;
     mode.title = mode.disabled ? "Run the design to see the other colours" : "";
-    this.view = modes.includes(prefs.mode) && has[prefs.mode] ? prefs.mode : modes.find((m) => has[m]) || modes[0];
+    this.view = this.ownMode === "actions" && has.actions
+      ? "actions"
+      : modes.includes(prefs.mode) && has[prefs.mode] && prefs.mode !== "actions" ? prefs.mode : modes.find((m) => has[m]) || modes[0];
     this.range = this.view === "cost"
       ? span(Object.values(this.scene.cost?.values || {}).map((v) => v.value))
       : this.view === "rebar"
@@ -470,7 +522,25 @@ export class View3D {
     const dir = this.host.querySelector("[data-dir]");
     dir.value = prefs.dir;
     dir.hidden = !on || !tz.some((t) => t.kind === "slab");
-    this.host.querySelector(".v3d-legend").innerHTML = this.def
+    const acting = this.view === "actions";
+    const cs = this.host.querySelector("[data-case]");
+    const as = this.host.querySelector("[data-action]");
+    cs.hidden = as.hidden = !acting;
+    this.host.classList.toggle("acting", acting); // the site switches have nothing to show then
+    if (acting) {
+      const a = this.act?.actions ? this.act : null;
+      const opt = (v, t, title = "") => `<option value="${esc(v)}"${title ? ` title="${esc(title)}"` : ""}>${esc(t)}</option>`;
+      cs.innerHTML = opt("env_abs", "Envelope max & min") + opt("env_max", "Envelope max") + opt("env_min", "Envelope min") +
+        (a ? `<optgroup label="Load case">${a.combinations.map((c) => opt(c, c)).join("")}</optgroup>` : "");
+      cs.value = this.actCase;
+      as.innerHTML = a ? a.actions.map((x) => opt(x.key, `${x.label} (${x.unit})`, x.what)).join("") : opt("", "Loading…");
+      as.value = a ? a.action : "";
+      as.disabled = !a;
+      this._loadActions();
+    }
+    this.host.querySelector(".v3d-legend").innerHTML = acting
+      ? actionsLegendHtml(this.act, this.actRange)
+      : this.def
       ? deformedLegendHtml(this.def)
       : on
       ? tensionLegendHtml()
@@ -536,7 +606,9 @@ export class View3D {
     const { selected } = this.scene;
     const stage = this.scene.stage;
     // A construction stage: only what is built so far.
-    const elements = stage ? this.scene.elements.filter((e) => stage.elements[e.element]) : this.scene.elements;
+    // Straining actions: the element on its own, nothing else drawn.
+    const acting = this.view === "actions";
+    const elements = acting ? [] : stage ? this.scene.elements.filter((e) => stage.elements[e.element]) : this.scene.elements;
     const sizes = this.siteView?.extrude !== false ? this.scene.site?.sizes || null : null;
     this.tops = {};
     let items = [];
@@ -667,18 +739,19 @@ export class View3D {
         if (e.turn) turnBack(items.slice(first), e.turn);
       }
     }
+    if (acting) this._actionItems(items);
     for (const a of this.scene.arrows || []) items.push({ kind: "arrow", ...a });
     // Extra lines a tab adds (a pile cast above its cut-off, its head broken down) and pins (clashes).
     for (const x of this.scene.extras || []) items.push({ kind: "line", width: 4, cap: "butt", ...x });
     for (const p of this.scene.pins || []) items.push({ kind: "pin", ...p });
     // Solids a tab adds (the construction sequence's equipment and workers).
     for (const b of this.scene.solids || []) solid(items, b.box, b.color, b.tip);
-    if (this.def) {
+    if (this.def && !acting) {
       // The structure as it stands stays faint behind its deformed shape.
       for (const it of items) if (it.element && it.kind !== "label") it.ghost = true;
       this._deformedItems(items);
     }
-    if (this.scene.site?.soil) {
+    if (this.scene.site?.soil && !acting) {
       this._siteItems(items);
       if (this.siteView.soil === "full") items = this._bury(items);
     }
@@ -696,6 +769,99 @@ export class View3D {
     this.center = lo.map((l, k) => (l + hi[k]) / 2);
     this.bounds = { lo, hi };
     this.size = Math.max(...hi.map((h, k) => h - lo[k]), 1);
+  }
+
+  // The picked case (or envelope) and action of this view's element, from the server.
+  async _loadActions() {
+    if (!this.loadActions || !this.scene?.selected) return;
+    const q = { element: this.scene.selected, case: this.actCase, action: this.actAction };
+    const k = JSON.stringify(q);
+    if (this.actKey === k) return;
+    this.actKey = k;
+    const first = !this.act?.values;
+    let got;
+    try {
+      got = await this.loadActions(q);
+    } catch (err) {
+      got = { error: err?.message || String(err) };
+    }
+    if (this.actKey !== k) return; // another pick meanwhile
+    this.act = got;
+    this.actRange = got.values ? span(got.values) : null;
+    if (got.values) {
+      this.actCase = got.case;
+      this.actAction = got.action;
+      this.actKey = JSON.stringify({ ...q, case: got.case, action: got.action });
+    }
+    if (this.view !== "actions") return;
+    this._controls();
+    this._build();
+    if (first) this.fit();
+    else this.draw();
+  }
+
+  // The element coloured by one straining action: frames 0.5 m steps down each member, plates square
+  // cells on the plate. Each piece's readout gives its value, and the case it comes from.
+  _actionItems(items) {
+    const a = this.act;
+    const name = this.scene.selected;
+    if (!a?.values) return;
+    const r = this.actRange;
+    const col = (v) => (v == null || !r ? `rgb(${GREY})` : ramp(ACTION_RAMP, r[1] > r[0] ? (v - r[0]) / (r[1] - r[0]) : 0.5));
+    const act = a.actions.find((x) => x.key === a.action) || { label: a.action, unit: "" };
+    const env = !a.combinations.includes(a.case);
+    const f = (v) => `${fmtAct(v)} ${act.unit}`;
+    const words = (i) => {
+      const v = a.values[i];
+      if (v == null) return `no ${act.label} result here`;
+      if (env) return `${act.label} ${f(v)}, from ${a.source?.[i] || "?"} (envelope max ${fmtAct(a.hi[i])}, min ${fmtAct(a.lo[i])})`;
+      const spread = a.lo[i] !== a.hi[i] ? ` (from ${fmtAct(a.lo[i])} to ${fmtAct(a.hi[i])} here)` : "";
+      return `${act.label} ${f(v)} in ${a.case}${spread}`;
+    };
+    const n = (v) => +v.toFixed(2);
+    if (a.kind === "frame") {
+      const by = new Map();
+      a.points.forEach((p, i) => {
+        const k = `${p[0]},${p[1]}`;
+        if (!by.has(k)) by.set(k, []);
+        by.get(k).push(i);
+      });
+      let labelled = false;
+      for (const idx of by.values()) {
+        idx.sort((i, j) => a.points[j][2] - a.points[i][2]);
+        idx.forEach((i, k) => {
+          const [x, y, z] = a.points[i];
+          const up = k ? (z + a.points[idx[k - 1]][2]) / 2 + 0.03 : z + a.size / 2;
+          const down = k < idx.length - 1 ? (z + a.points[idx[k + 1]][2]) / 2 - 0.03 : z - a.size / 2;
+          items.push({ kind: "line", a: [x, y, up], b: [x, y, down], color: col(a.values[i]), width: 7, cap: "butt", element: name,
+            tip: `${name} at X ${n(x)}, Y ${n(y)}, z ${z.toFixed(2)} m: ${words(i)}` });
+        });
+        if (!labelled) {
+          const [x, y, z] = a.points[idx[0]];
+          items.push({ kind: "label", at: [x, y, z + a.size / 2], text: name, element: name });
+          labelled = true;
+        }
+      }
+      return;
+    }
+    const h = a.size / 2;
+    const flat = a.flat || "Z";
+    const [u, v] = ["X", "Y", "Z"].filter((k) => k !== flat);
+    const ax = { X: 0, Y: 1, Z: 2 };
+    let top = null;
+    a.points.forEach((p, i) => {
+      if (a.values[i] == null) return;
+      const at = (du, dv) => {
+        const q = [...p];
+        q[ax[u]] += du;
+        q[ax[v]] += dv;
+        return q;
+      };
+      items.push({ kind: "quad", pts: [at(-h, -h), at(h, -h), at(h, h), at(-h, h)], fill: col(a.values[i]), stroke: false, element: name,
+        tip: `${name} at X ${n(p[0])}, Y ${n(p[1])}, Z ${n(p[2])}: ${words(i)}` });
+      if (!top || p[2] > top[2]) top = p;
+    });
+    if (top) items.push({ kind: "label", at: top, text: name, element: name });
   }
 
   // A plate element drawn with its real thickness (site3d.sizes): its colour bands move onto the
@@ -1319,8 +1485,15 @@ export class View3D {
       }
       this._hover(e);
     });
-    c.addEventListener("pointerup", () => (drag = null));
-    c.addEventListener("pointerleave", () => (this.tip.hidden = true));
+    c.addEventListener("pointerup", (e) => {
+      // A tap (no drag): read the value under the finger, as a mouse does on hover.
+      const tap = drag && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 6;
+      drag = null;
+      if (tap) this._hover(e);
+    });
+    c.addEventListener("pointerleave", (e) => {
+      if (e.pointerType === "mouse") this.tip.hidden = true;
+    });
     c.addEventListener("contextmenu", (e) => e.preventDefault());
     c.addEventListener("wheel", (e) => {
       e.preventDefault();
