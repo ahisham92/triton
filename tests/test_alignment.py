@@ -78,6 +78,37 @@ def test_two_corners_and_short_runs():
     assert rot == pytest.approx([0.0, 15.0, 35.0], abs=1e-6)
 
 
+def coarse_strip(s0, s1, width, step, rng):
+    """A beam's nodes on a coarse, irregular mesh: straight edges, scattered inside."""
+    pts = strip(s0, s1, 0.0, width, step)
+    inside = (pts[:, 1] > 1e-9) & (pts[:, 1] < width - 1e-9)
+    pts[inside] += rng.uniform(-0.4, 0.4, (int(inside.sum()), 2))
+    return pts
+
+
+def test_corner_of_a_short_wide_beam_on_a_coarse_mesh():
+    """The Tincan corner: a 4.5 m wide front beam, 15 m straight along X and 15 m turned 32.8°, on
+    a coarse mesh, cut square to X at the model's end. Its centre line wanders more than a straight
+    run's may, so the corner is found by fitting two tight rectangles; the rear beam's few metres
+    past its own corner (4 m wide, 7 m long) lie straight in their part."""
+    rng = np.random.default_rng(7)
+    straight = coarse_strip(0.0, 15.0, 4.5, 1.1, rng)
+    slope = turned(coarse_strip(-22.0, 0.0, 4.5, 1.1, rng) - [0.0, 2.25], 32.8) + [0.0, 2.25]
+    mid = np.array([math.cos(math.radians(16.4)), math.sin(math.radians(16.4))])
+    slope = slope[((slope - [0.0, 2.25]) @ mid < 0) & (slope[:, 0] >= -15.0)]
+    straight = straight[(straight - [0.0, 2.25]) @ mid >= 0]
+    points = fit_alignment(np.vstack([straight, slope]))
+    assert len(points) == 3
+    pairs = zip(points, points[1:], strict=False)
+    turns = [math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) for a, b in pairs]
+    assert turns == pytest.approx([32.8, 0.0], abs=0.5)
+    assert points[1] == pytest.approx([0.0, 2.25], abs=0.3)
+    rear = turned(coarse_strip(-7.0, 0.0, 4.0, 1.0, rng), 90.0)  # along Y, as turned into its part
+    rear = rear[rear[:, 1] >= -7.0 + (rear[:, 0] + 4.0) * 0.6]  # its end cut on the slant
+    line = fit_alignment(rear)
+    assert line[0][0] == pytest.approx(line[-1][0], abs=0.05)
+
+
 def test_land_side_decides_which_way_a_part_turns():
     # A quay running along X with the land at −Y: turned −90° it runs along Y with the land at −X.
     (p,) = make_parts([[-10.0, 0.0], [10.0, 0.0]], land=(0.0, -8.0))
@@ -309,6 +340,42 @@ def test_trim_leaves_out_each_elements_ends_but_not_the_corner_or_piles():
             assert (np.abs(all_st - 8.0) < 1.0).sum() == (np.abs(st - 8.0) < 1.0).sum() > 0
     assert out["Pile(1)"] == elements["Pile(1)"]
     assert trim_ends(elements, pts, "Y", 0.0) == (elements, None)
+
+
+def test_trim_near_a_corner_keeps_a_rear_beam_far_inland():
+    """The Tincan corner: the model's end is cut square to the straight run, so it is skewed to the
+    turned run; the rear beam lies 30 m inland. Round the line, its stations jump from one run to the
+    next, so each end's skewed cut is measured in its own run's frame: the rear beam loses only its
+    own 2 m at the model's end, never its length round the corner."""
+    beam = dict(x_range=(-1.0, 1.0), y_range=(-24.0, 16.0), step=0.5)
+    deck = dict(x_range=(-29.0, -1.0), y_range=(-24.0, 16.0), step=1.0)
+    rear = dict(x_range=(-33.0, -29.0), y_range=(-24.0, 16.0), step=0.5)
+    wb = import_sheets(
+        {
+            "Deck-PT-B-Apron": deck_rows(plate, **deck),
+            "Front Beam-PT-B-Apron": deck_rows(plate, **beam),
+            "Rear Beam-PT-B-Apron": deck_rows(plate, **rear),
+        }
+    )
+    wb = turn_workbook(wb, 33.0, where=lambda x, y: y < 0)
+    for sh in wb.sheets:  # the model's end: square to the straight run
+        if sh.parsed is not None:
+            sh.frame = sh.frame[sh.frame["Y"] >= -18.0]
+    elements = wb.elements()
+    pts = [turned(np.array([[0.0, -24.0]]), 33.0)[0].tolist(), [0.0, 0.0], [0.0, 16.0]]
+    out, info = trim_ends(elements, pts, "Y", 2.0)
+    assert info["corner"] and info["skew_deg"][0] == pytest.approx(33.0, abs=1.0)
+    for name in ("Deck", "Front Beam", "Rear Beam"):
+        before = next(iter(elements[name].values())).frame
+        after = next(iter(out[name].values())).frame
+        # Every node on the straight run is kept but the last 2 m at its far end.
+        straight = before[(before["Y"] >= 0) & (before["Y"] <= 14.0 - 1e-6)]
+        assert len(straight.merge(after, on=["X", "Y"])) == len(straight)
+        # At the model's end the cut is one line 2 m inside the element that stops first.
+        lost = before[~before.set_index(["X", "Y"]).index.isin(after.set_index(["X", "Y"]).index)]
+        assert (lost["Y"] < 0).sum() > 0 and lost.loc[lost["Y"] < 0, "Y"].max() < -18.0 + 2.5 / math.cos(
+            math.radians(33.0)
+        )
 
 
 def test_a_trimmed_corner_keeps_its_parts_and_designs_without_the_ends():
