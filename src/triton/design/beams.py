@@ -117,6 +117,9 @@ class Run:
     end: float
 
 
+SQUAT = 2.0  # a beam piece shorter than this many widths is laid out straight, not searched for turns
+
+
 @dataclass(frozen=True)
 class Layout:
     along: str  # global axis along the beam
@@ -199,7 +202,20 @@ def layout(sheets: dict[str, SheetData], axes: dict[str, str] | None) -> Layout:
         float(f[along].max()),
         "1" if one == along else "2",
     )
+    if max(ext.values()) < SQUAT * min(ext.values()) and _filled(f) >= 0.6:
+        # A short, wide piece (the end of a corner leg after the end cut) shows no direction of its own:
+        # laid out along its longer side, as the part it belongs to was turned to run.
+        return straight
     return _turning(straight, f, one) or straight
+
+
+def _filled(f: pd.DataFrame) -> float:
+    """How much of its plan box a piece fills, on a 5 x 5 grid: about 1 for a solid block, far less for
+    an L-shaped beam round a corner."""
+    xy = f[["X", "Y"]].to_numpy(float)
+    lo, span = xy.min(axis=0), np.maximum(np.ptp(xy, axis=0), 1e-9)
+    cells = np.minimum((5 * (xy - lo) / span).astype(int), 4)
+    return len(np.unique(cells, axis=0)) / 25
 
 
 def _turning(straight: Layout, f: pd.DataFrame, one: str) -> Layout | None:
