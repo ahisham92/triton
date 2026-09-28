@@ -4204,6 +4204,9 @@ function resultBands(res) {
 async function mountElementViews(res) {
   const slots = [...document.querySelectorAll(".v3d-slot")];
   if (!slots.length) return;
+  // Something to see while the elements load: after an update they are worked out again (a minute
+  // or more on a big workbook), and an empty box reads as the view gone.
+  for (const s of slots) if (!s.firstChild) s.innerHTML = '<p class="status">Loading the 3D view…</p>';
   const geo = await sectionGeometry();
   if (!geo) {
     slots.forEach((s) => document.body.contains(s) && (s.innerHTML = '<p class="status">Upload the workbook to see the 3D view.</p>'));
@@ -4212,17 +4215,23 @@ async function mountElementViews(res) {
   const bands = resultBands(res);
   const tension = resultTension(res);
   const crack = resultCracks(res);
-  const site = await sectionSite();
+  // The element first; the seabed, water and furniture join it when they have loaded (they are
+  // worked out again after an update too, and the view must not wait for them).
+  const views = [];
   for (const slot of slots) {
     if (!document.body.contains(slot)) continue; // redrawn meanwhile (a design run's new results)
+    slot.innerHTML = "";
     const name = slot.dataset.element;
     const el = geo.elements.find((e) => e.element === name);
     const view = new View3D(slot, { height: 380, compact: true, onSite: saveSite,
       actions: (q) => api(`${secUrl()}/actions?${new URLSearchParams(q)}`),
       governing: (q) => api(`${secUrl()}/governing?${new URLSearchParams(q)}`) });
-    view.setScene({ elements: geo.elements, bands, tension, crack, selected: name, focus: name, site,
+    view.setScene({ elements: geo.elements, bands, tension, crack, selected: name, focus: name, site: null,
       arrows: directionArrows(el, geo.axes.find((a) => a.element === name)) });
+    views.push(view);
   }
+  const site = await sectionSite();
+  if (site) for (const v of views) if (v.host.isConnected) v.setSite(site);
 }
 
 // A combi wall is designed as one element but shown as two, its concrete infill and its steel, so a
