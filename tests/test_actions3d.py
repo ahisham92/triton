@@ -111,3 +111,34 @@ def test_each_square_is_named_by_its_design_part_and_corner_zone():
     assert regions(pts, parts, None) == ["Part 1", "Part 1", "Part 2"]
     assert regions(pts, parts, 5.0) == ["Part 1", "Corner zone", "Part 2"]
     assert regions(pts, parts[:1], 5.0) is None  # a straight berth: nothing to outline
+
+
+def test_the_deck_bars_are_pinned_where_they_are_most_used():
+    from triton.governing3d import element_points
+
+    lay = {"utilisation": 0.9, "governing_cell": {"x": 3.5, "y": 1.5, "utilisation": 0.9}}
+    deck = {
+        "element": "Deck",
+        "level_m": 3.0,
+        # the largest sagging M11 is at square (0, 0); the bars are most used at (3, 1)
+        "moment_cells": {
+            "size": 1.0,
+            "x0": 0.0,
+            "y0": 0.0,
+            "cells": [[0, 0, 500, -10, 5, -5], [3, 1, 300, -20, 4, -4]],
+        },
+        "layers": {"bottom_x": lay, "top_x": {"utilisation": 0.4}},
+    }
+    pins = element_points({"slabs": [deck]}, "Deck", {})
+    bars = next(p for p in pins if p["lines"][0]["title"].startswith("Bottom bars along X"))
+    assert bars["at"] == [3.5, 1.5, 3.0] and bars["utilisation"] == 0.9 and bars["n"] == 1
+    assert "ULS M11 -20 to 300 kNm/m here" in bars["lines"][0]["text"]
+    # No square kept (a design from before): the largest moment, not counted as governing.
+    top = [ln for p in pins for ln in p["lines"] if ln["title"].startswith("Top bars along X")]
+    assert top == [
+        {
+            "title": "Top bars along X: largest M11",
+            "text": "M11 -20 kNm/m (the bars' utilisation 0.40 is where they are most used, which may be "
+            "elsewhere: design again to pin it)",
+        }
+    ]
