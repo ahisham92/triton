@@ -152,4 +152,16 @@ def test_one_section_and_part_from_the_storage_tab(tmp_path, monkeypatch):
     z, names = members(client.get(base + "&parts=results"))
     assert f"sections/{sid}/results.json" in names and not any("/sheets/" in n for n in names)
     assert client.get(base + "&parts=nothing").status_code == 400
+    # Too big to send: the workbook's sheets of some elements only, e.g. no piles here, opens all the same.
+    r = client.get(base + "&parts=workbook&only=deck,beams")
+    assert r.status_code == 200 and "deck and beams" in r.headers["content-disposition"]
+    z, names = members(r)
+    assert not any("/sheets/" in n for n in names)
+    assert json.loads(z.read("triton.json"))["only"] == ["deck", "beams"]
+    z, names = members(client.get(base + "&parts=workbook&only=piles"))
+    assert json.loads(z.read("triton.json"))["sections"][sid]["sheets"] == [
+        "Pile(1)-PT-B-Apron",
+        "Pile(1)-QP",
+    ]
+    assert client.get(base + "&only=roofs").status_code == 400
     assert client.get(f"/api/projects/{p['id']}/project.trt?section=nope").status_code == 404

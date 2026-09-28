@@ -133,10 +133,33 @@ def _sheet_in(name: str, d: dict[str, Any]) -> SheetData:
     )
 
 
-def file_name(project: Project, section: str = "", parts: tuple[str, ...] = PARTS) -> str:
+# Element groups a .trt's workbook can be cut down to (a lighter file to send for checking).
+GROUPS = {
+    "deck": ("slab",),
+    "beams": ("front_beam", "rear_beam", "transverse_beam"),
+    "piles": ("pile",),
+    "walls": ("sheet_pile_wall", "combi_wall", "diaphragm_wall", "portal_frame"),
+}
+
+
+def _in_groups(sheet: Any, only: tuple[str, ...] | None) -> bool:
+    """Whether a workbook sheet goes in a .trt cut down to the element groups ``only`` (all: None)."""
+    if only is None:
+        return True
+    if sheet.parsed is None:
+        return False
+    kind = str(sheet.parsed.spec.type)
+    return any(kind in GROUPS[g] for g in only)
+
+
+def file_name(
+    project: Project, section: str = "", parts: tuple[str, ...] = PARTS, only: tuple[str, ...] | None = None
+) -> str:
     stem = " - ".join(x for x in (project.info.name, section) if x)
     if tuple(parts) != PARTS:
         stem += " - " + " + ".join(parts)
+    if only is not None:
+        stem += " - " + " and ".join(only)
     return (re.sub(r"[^A-Za-z0-9._ -]+", "_", stem).strip(" ._") or "project") + SUFFIX
 
 
@@ -146,10 +169,12 @@ def write(
     out: IO[bytes],
     sections: list[str] | None = None,
     parts: tuple[str, ...] = PARTS,
+    only: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """Write ``project`` to ``out`` as a .trt: every section, or only those with their id in ``sections``,
     each with what ``parts`` names (all of it by default: the rows as read, results and trials). It opens
-    as a project like any other, with those sections only."""
+    as a project like any other, with those sections only. ``only``: the workbook's sheets of these
+    element groups (GROUPS) alone, a lighter file whose other elements have no results to design from."""
     if sections is not None:
         project = project.model_copy(
             update={"sections": [s for s in project.sections if s.id in set(sections)]}
@@ -161,6 +186,8 @@ def write(
         "sections": {},
         "parts": list(parts),
     }
+    if only is not None:
+        manifest["only"] = list(only)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         z.writestr("project.json", project.model_dump_json(indent=1))
         for section in project.sections:
@@ -176,6 +203,8 @@ def write(
                 # One member per sheet, so neither end holds the whole workbook's rows at once.
                 order = []
                 for sheet in wb.sheets:
+                    if not _in_groups(sheet, only):
+                        continue
                     rows = store.load_raw(project.id, section.id, sheet.name) if "rows" in parts else None
                     # Rows as read; a workbook uploaded before they were kept carries its cleaned sheets.
                     body = {"rows": rows} if rows is not None else {"cleaned": _sheet_out(sheet)}
@@ -336,11 +365,15 @@ def unique_name(store: ProjectStore, name: str) -> str:
 
 
 def spool(
-    store: ProjectStore, project: Project, sections: list[str] | None = None, parts: tuple[str, ...] = PARTS
+    store: ProjectStore,
+    project: Project,
+    sections: list[str] | None = None,
+    parts: tuple[str, ...] = PARTS,
+    only: tuple[str, ...] | None = None,
 ) -> tuple[IO[bytes], int]:
     """The .trt in a temporary file (on disk past 32 MB), rewound, and its size."""
     f = tempfile.SpooledTemporaryFile(max_size=32 * 1024**2)
-    write(store, project, f, sections, parts)
+    write(store, project, f, sections, parts, only)
     size = f.tell()
     f.seek(0)
     return f, size
