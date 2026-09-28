@@ -838,7 +838,7 @@ def for_beam(
     design: dict,
     top_level: float,
 ) -> list:
-    from .beams import beam_loads, find_supports, layout
+    from .beams import SpikeLog, beam_loads, find_supports, layout
 
     if not beam.construction_joints:
         return []
@@ -846,7 +846,8 @@ def for_beam(
     sag, _ = sag_factor(sign_setting(settings, beam), sign)
     cut = find_supports(lay, geometry, elements) if settings.beam_support_results == "faces" else []
     peak = float(design.get("width_mm") or 0) / 1000 if settings.beam_actions == "peak_width" else None
-    uls, _ = beam_loads(own, lay, sag, qp=False, supports=cut, peak_width=peak or None)
+    spikes = SpikeLog(beam.spike_ratio) if beam.spikes == "remove" else None
+    uls, _ = beam_loads(own, lay, sag, qp=False, supports=cut, peak_width=peak or None, spikes=spikes)
     return beam_joints(name, beam, settings, design, uls, top_level)
 
 

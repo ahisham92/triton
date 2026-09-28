@@ -1986,6 +1986,22 @@ def _beam(r: Report, b: dict) -> None:
             ),
         ]
     )
+    if b.get("spikes"):
+        r.h(3, "Spikes removed from the Plaxis results")
+        r.table(
+            ["At (m)", "Action", "Combination", "Rule", "Plaxis", "Used"],
+            [
+                [
+                    q["s"],
+                    "Mv (kNm)" if q["what"] == "Mv" else "V (kN)",
+                    q["combination"],
+                    q["rule"],
+                    _fmt(q["raw"]),
+                    _fmt(q["used"]),
+                ]
+                for q in b["spikes"]
+            ],
+        )
     bend = b.get("bending") or {}
     g = bend.get("governing") or {}
     if g:

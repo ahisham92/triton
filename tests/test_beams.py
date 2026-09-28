@@ -4,7 +4,16 @@ import numpy as np
 import pytest
 from conftest import PLATE_HEADER, pile_sheet
 
-from triton.design.beams import Support, design_beam, layout, shear_stations, station_forces
+from triton.design.beams import (
+    SpikeLog,
+    Support,
+    design_beam,
+    layout,
+    lone_spikes,
+    shear_stations,
+    station_forces,
+    width_spikes,
+)
 from triton.design.circular import ConcreteLaw, SteelLaw
 from triton.design.crack import crack_width, restraint_factor
 from triton.design.governing import workbook
@@ -307,6 +316,67 @@ def test_peak_times_width_takes_the_largest_nodal_values():
     assert np.allclose(f["N"], 50 * 4.5)  # the peak node's own N per metre x the width, as the office
 
 
+def test_a_lone_node_spike_is_replaced_by_its_neighbours_mean():
+    s, t = np.meshgrid(np.arange(0.0, 6.01, 0.5), np.linspace(-1.0, 1.0, 5))
+    s, t = s.ravel(), t.ravel()
+    v = 100.0 + 10 * s
+    k = int(np.flatnonzero((s == 3.0) & (t == 0.0))[0])
+    v[k] = 900.0
+    out, hit = lone_spikes(s, t, v, 1.5)
+    assert list(hit) == [k]
+    near = (np.hypot(s - 3.0, t) <= 1.0) & (np.arange(len(s)) != k)
+    assert out[k] == pytest.approx(v[near].mean())
+    assert np.array_equal(np.delete(out, k), np.delete(v, k))  # a smooth rise is no spike
+    assert len(lone_spikes(s, t, 100.0 + 10 * s, 1.5)[1]) == 0
+
+
+def test_a_node_far_above_the_width_average_takes_that_average():
+    s = np.repeat(np.arange(0.0, 4.01, 0.25), 5)
+    v = np.full(len(s), 50.0)
+    edge = np.flatnonzero(s == 2.0)[0]
+    v[edge] = 200.0  # the inner edge at a corner
+    out, hit = width_spikes(s, v, 1.5)
+    assert list(hit) == [edge]
+    assert out[edge] == pytest.approx(50.0)
+    assert len(width_spikes(s, v, 5.0)[1]) == 0  # within the ratio: kept
+
+
+def test_remove_spikes_lowers_only_the_spike_and_lists_it():
+    def fn(x, y):
+        m = 100.0 + (2000.0 if abs(y - 6.0) < 1e-9 and x == 1.0 else 0.0)
+        return [0.0, -50.0, 0.0, 30.0, 0.0, 0.0, m, 0.0]
+
+    sheets = import_sheets({"Front Beam-PT-B-Apron": beam_rows(fn)}).elements()["Front Beam"]
+    lay = layout(sheets, {"1": "X", "2": "Y"})
+    frame = sheets["PT-B-Apron"].frame
+    at = np.array([3.0, 6.0])
+    keep = station_forces(frame, lay, 1.0, at, peak_width=2.0)
+    log = SpikeLog(1.5)
+    gone = station_forces(frame, lay, 1.0, at, peak_width=2.0, spikes=log)
+    assert keep.loc[keep.s == 6.0, "Mv"].max() == pytest.approx(2100 * 2.0)
+    assert gone["Mv"].max() == pytest.approx(100 * 2.0)
+    assert keep.loc[keep.s == 3.0, "Mv"].tolist() == gone.loc[gone.s == 3.0, "Mv"].tolist()
+    (q,) = [q for q in log if q["what"] == "Mv"]
+    assert (q["s"], q["raw"], q["used"]) == (6.0, 2100 * 2.0, pytest.approx(100 * 2.0))
+
+
+def test_spikes_kept_by_default_and_listed_when_removed():
+    settings = DesignSettings()
+    raw = {
+        "Front Beam-PT-B-Apron": beam_rows(uniform(m22=100.0, q23=30.0)),
+        "Front Beam-QP": beam_rows(uniform(m22=60.0)),
+    }
+    sheets = import_sheets(raw).elements()["Front Beam"]
+    beam = BeamInput(kind="front_beam", width=2000, depth=1600)
+    kept = design_beam("Front Beam", beam, settings, sheets, [], {}, None)
+    assert kept["spikes"] is None and not any(n.startswith("Spikes") for n in kept["notes"])
+    gone = design_beam(
+        "Front Beam", beam.model_copy(update={"spikes": "remove"}), settings, sheets, [], {}, None
+    )
+    assert gone["spikes"] == [] and any("none found" in n for n in gone["notes"])
+    assert gone["cage"]["label"] == kept["cage"]["label"]
+
+
 def test_beam_reports_what_sets_each_face():
     settings = DesignSettings()
     raw = {
@@ -504,6 +574,9 @@ def test_the_beam_bar_rule_puts_only_beams_out_of_date():
             o.pop("punching_fix")
         if o.get("punching_per") == "type":
             o.pop("punching_per")
+        if o.get("spikes") == "keep":
+            o.pop("spikes")
+            o.pop("spike_ratio")
     assert now["Front Beam"] == fresh._hash([[own["Front Beam"], fresh.BEAM_BARS_RULE], fresh.BEAM_N_RULE])
     assert now["Pile(1)"] == fresh._hash([own["Pile(1)"], fresh.PILE_LINKS_RULE])
     assert now["Deck"] == fresh._hash([[own["Deck"], fresh.SLAB_BARS_RULE], fresh.SLAB_ADSEC_RULE])
