@@ -38,6 +38,7 @@ Sign: Plaxis N, compression negative.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -252,14 +253,15 @@ def plastic_utilisation(
 
 def tube_loads(
     sheets: dict[str, SheetData],
-    steel_share: float,
+    steel_share: float | Callable[[np.ndarray], np.ndarray],
     filled_from: float,
     top: float | None,
     above: float = 0.0,
 ):
     """ULS points with the tube's share of the actions (Plaxis sign, kN and kNm).
 
-    Results up to ``above`` (m) over the top level are kept at their own level.
+    ``steel_share`` is one share for the whole filled length, or the share at each level (per corrosion
+    zone). Results up to ``above`` (m) over the top level are kept at their own level.
     """
     parts = []
     for combo, sheet in sheets.items():
@@ -272,7 +274,8 @@ def tube_loads(
         if top is not None:
             f = f[f["Z"] <= top + above + 1e-9]
         filled = f["Z"] >= filled_from - 1e-9
-        share = np.where(filled, steel_share, 1.0)
+        own = steel_share(f["Z"].to_numpy()) if callable(steel_share) else steel_share
+        share = np.where(filled, own, 1.0)
         f = f.assign(
             combination=combo,
             filled=filled,

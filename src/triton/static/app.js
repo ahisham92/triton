@@ -6157,7 +6157,9 @@ function combiCard(w) {
       <span class="sev ${w.passed ? "ok" : "error"}">${w.passed ? "passes" : "fails"}</span></div>
     <div class="counts" style="margin-top:0">
       <div class="count"><b>${fmt(w.utilisation, 2)}</b>max utilisation</div>
-      <div class="count"><b>${fmt((1 - w.steel_share) * 100)}% / ${fmt(w.steel_share * 100)}%</b>infill / tube share where filled (E·I)</div>
+      ${(w.steel_shares || []).length > 1
+        ? `<div class="count"><b>${w.steel_shares.map((z) => fmt((1 - z.share) * 100) + "%").join(" / ")}</b>infill share by zone, top down (E·I)</div>`
+        : `<div class="count"><b>${fmt((1 - w.steel_share) * 100)}% / ${fmt(w.steel_share * 100)}%</b>infill / tube share where filled (E·I)</div>`}
       ${combiParts(w).map((p) => `<div class="count"><b class="${p.passed ? "" : "bad"}">${fmt(p.utilisation, 2)}</b>${esc(p.part === "infill" ? "concrete infill (N–M)" : "steel")}: ${p.passed ? "passes" : "fails"}</div>`).join("")}
     </div>
     ${w.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}
