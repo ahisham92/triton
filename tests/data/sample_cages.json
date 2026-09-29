@@ -1,0 +1,1105 @@
+{
+ "format": "triton.pile-cages/1",
+ "project": "P",
+ "section": "S",
+ "run_at": "2026-09-24T23:26:59+03:00",
+ "piles": [
+  {
+   "element": "Pile(1)",
+   "part": "pile",
+   "count": 8,
+   "diameter_mm": 1200.0,
+   "cover_mm": 75.0,
+   "link_diameter_mm": 10.0,
+   "head_level_m": 2.7,
+   "toe_level_m": -20.0,
+   "positions": [
+    {
+     "x": -7.5,
+     "y": -14.0
+    },
+    {
+     "x": -7.5,
+     "y": -9.8
+    }
+   ],
+   "splice": "lap",
+   "user_set": false,
+   "runs": [
+    {
+     "top_m": 2.7,
+     "bottom_m": -4.05,
+     "label": "22Ø32 + 22Ø32 + 11Ø32",
+     "inner_link_hoops_mm": [
+      912.0,
+      784.0
+     ],
+     "rows": [
+      {
+       "count": 22,
+       "diameter_mm": 32,
+       "radius_mm": 499.0,
+       "first_bar_angle_deg": 0.0,
+       "bar_top_m": 4.15,
+       "bar_bottom_m": -5.5,
+       "bar_length_m": 9.65
+      },
+      {
+       "count": 22,
+       "diameter_mm": 32,
+       "radius_mm": 435.0,
+       "first_bar_angle_deg": 0.0,
+       "bar_top_m": 4.15,
+       "bar_bottom_m": -5.5,
+       "bar_length_m": 9.65
+      },
+      {
+       "count": 11,
+       "diameter_mm": 32,
+       "radius_mm": 371.0,
+       "first_bar_angle_deg": 0.0,
+       "bar_top_m": 4.15,
+       "bar_bottom_m": -5.5,
+       "bar_length_m": 9.65
+      }
+     ]
+    },
+    {
+     "top_m": -4.05,
+     "bottom_m": -7.8,
+     "label": "22Ø32 + 22Ø16",
+     "inner_link_hoops_mm": [
+      912.0
+     ],
+     "rows": [
+      {
+       "count": 22,
+       "diameter_mm": 32,
+       "radius_mm": 499.0,
+       "first_bar_angle_deg": 0.0,
+       "bar_top_m": -4.05,
+       "bar_bottom_m": -9.25,
+       "bar_length_m": 5.2
+      },
+      {
+       "count": 22,
+       "diameter_mm": 16,
+       "radius_mm": 443.0,
+       "first_bar_angle_deg": 0.0,
+       "bar_top_m": -4.05,
+       "bar_bottom_m": -8.55,
+       "bar_length_m": 4.5
+      }
+     ]
+    },
+    {
+     "top_m": -7.8,
+     "bottom_m": -11.55,
+     "label": "22Ø20",
+     "inner_link_hoops_mm": [],
+     "rows": [
+      {
+       "count": 22,
+       "diameter_mm": 20,
+       "radius_mm": 505.0,
+       "first_bar_angle_deg": 0.0,
+       "bar_top_m": -7.8,
+       "bar_bottom_m": -12.45,
+       "bar_length_m": 4.65
+      }
+     ]
+    },
+    {
+     "top_m": -11.55,
+     "bottom_m": -20.0,
+     "label": "22Ø16",
+     "inner_link_hoops_mm": [],
+     "rows": [
+      {
+       "count": 22,
+       "diameter_mm": 16,
+       "radius_mm": 507.0,
+       "first_bar_angle_deg": 0.0,
+       "bar_top_m": -11.55,
+       "bar_bottom_m": -20.0,
+       "bar_length_m": 8.45
+      }
+     ]
+    }
+   ],
+   "link_zones": [
+    {
+     "top_m": 2.7,
+     "bottom_m": -4.0,
+     "spacing_mm": 100.0,
+     "label": "Ø10 @ 100"
+    },
+    {
+     "top_m": -4.0,
+     "bottom_m": -20.0,
+     "spacing_mm": 200.0,
+     "label": "Ø10 @ 200"
+    }
+   ]
+  }
+ ],
+ "beams": [
+  {
+   "element": "Front Beam",
+   "kind": "front_beam",
+   "along": "Y",
+   "start_m": -16.8,
+   "end_m": 16.8,
+   "centre_m": 0.0,
+   "level_m": 2.7,
+   "width_mm": 2000.0,
+   "depth_mm": 1600.0,
+   "cover_mm": 50.0,
+   "user_set": false,
+   "label": "Top 19Ø25 · Bottom 48Ø25 (2 layers) · Sides 2 × 11Ø32",
+   "bars": [
+    {
+     "y_mm": -921.5,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -819.1,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -716.7,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -614.3,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -511.9,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -409.6,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -307.2,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -204.8,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -102.4,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 0.0,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 102.4,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 204.8,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 307.2,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 409.6,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 511.9,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 614.3,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 716.7,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 819.1,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 921.5,
+     "z_mm": 721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -921.5,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -841.4,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -761.2,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -681.1,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -601.0,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -520.8,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -440.7,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -360.6,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -280.5,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -200.3,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -120.2,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -40.1,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 40.1,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 120.2,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 200.3,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 280.5,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 360.6,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 440.7,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 520.8,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 601.0,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 681.1,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 761.2,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 841.4,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 921.5,
+     "z_mm": -721.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -921.5,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -841.4,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -761.2,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -681.1,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -601.0,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -520.8,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -440.7,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -360.6,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -280.5,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -200.3,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -120.2,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": -40.1,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 40.1,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 120.2,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 200.3,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 280.5,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 360.6,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 440.7,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 520.8,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 601.0,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 681.1,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 761.2,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 841.4,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 921.5,
+     "z_mm": -671.5,
+     "diameter_mm": 25
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": -601.2,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": -481.0,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": -360.8,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": -240.5,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": -120.2,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": 0.0,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": 120.2,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": 240.5,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": 360.8,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": 481.0,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": 918.0,
+     "z_mm": 601.2,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": -601.2,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": -481.0,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": -360.8,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": -240.5,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": -120.2,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": 0.0,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": 120.2,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": 240.5,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": 360.8,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": 481.0,
+     "diameter_mm": 32
+    },
+    {
+     "y_mm": -918.0,
+     "z_mm": 601.2,
+     "diameter_mm": 32
+    }
+   ],
+   "links": {
+    "diameter_mm": 16.0,
+    "legs": 5,
+    "spacing_mm": 175.0
+   },
+   "transverse": {
+    "top": {
+     "diameter_mm": 25,
+     "spacing_mm": 100.0,
+     "layers": 2
+    },
+    "bottom": {
+     "diameter_mm": 25,
+     "spacing_mm": 175.0,
+     "layers": 1
+    }
+   }
+  }
+ ],
+ "slabs": [
+  {
+   "element": "Deck",
+   "thickness_mm": 700.0,
+   "level_m": 2.7,
+   "box_m": {
+    "X": [
+     -23.2,
+     -1.0
+    ],
+    "Y": [
+     -16.8,
+     16.8
+    ]
+   },
+   "voids": null,
+   "faces": [
+    {
+     "face": "bottom",
+     "bars_along": "X",
+     "cover_mm": 50.0,
+     "mesh": {
+      "diameter_mm": 25,
+      "spacing_mm": 150.0,
+      "layers": [
+       {
+        "layer": 1,
+        "text": "Ø25 @ 150",
+        "from_face_mm": 62,
+        "as_mm2_per_m": 3272,
+        "bars": [
+         {
+          "diameter_mm": 25,
+          "spacing_mm": 150.0,
+          "kind": "mesh"
+         }
+        ],
+        "above_soffit_mm": 62
+       }
+      ]
+     },
+     "zones": [
+      {
+       "x_m": [
+        -20.2,
+        -18.2
+       ],
+       "y_m": [
+        -1.8,
+        -0.8
+       ],
+       "label": "Ø20 @ 300",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø25 @ 150 + Ø20 @ 300 (between the mesh bars)",
+         "from_face_mm": 62,
+         "as_mm2_per_m": 4320,
+         "bars": [
+          {
+           "diameter_mm": 25,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          },
+          {
+           "diameter_mm": 20,
+           "spacing_mm": 300.0,
+           "kind": "between the mesh bars"
+          }
+         ],
+         "above_soffit_mm": 62
+        }
+       ]
+      },
+      {
+       "x_m": [
+        -20.2,
+        -18.2
+       ],
+       "y_m": [
+        6.2,
+        7.2
+       ],
+       "label": "Ø20 @ 300",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø25 @ 150 + Ø20 @ 300 (between the mesh bars)",
+         "from_face_mm": 62,
+         "as_mm2_per_m": 4320,
+         "bars": [
+          {
+           "diameter_mm": 25,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          },
+          {
+           "diameter_mm": 20,
+           "spacing_mm": 300.0,
+           "kind": "between the mesh bars"
+          }
+         ],
+         "above_soffit_mm": 62
+        }
+       ]
+      },
+      {
+       "x_m": [
+        -20.2,
+        -16.2
+       ],
+       "y_m": [
+        -16.8,
+        -14.8
+       ],
+       "label": "Ø10 @ 150",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø25 @ 150 + Ø10 @ 150 (between the mesh bars)",
+         "from_face_mm": 62,
+         "as_mm2_per_m": 3796,
+         "bars": [
+          {
+           "diameter_mm": 25,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          },
+          {
+           "diameter_mm": 10,
+           "spacing_mm": 150.0,
+           "kind": "between the mesh bars"
+          }
+         ],
+         "above_soffit_mm": 62
+        }
+       ]
+      },
+      {
+       "x_m": [
+        -16.2,
+        -8.2
+       ],
+       "y_m": [
+        -6.8,
+        -4.8
+       ],
+       "label": "Ø25 @ 150 in 2 layers + Ø25 behind the mesh bars",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø25 @ 150 + Ø25 @ 150 (between the mesh bars)",
+         "from_face_mm": 62,
+         "as_mm2_per_m": 6545,
+         "bars": [
+          {
+           "diameter_mm": 25,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          },
+          {
+           "diameter_mm": 25,
+           "spacing_mm": 150.0,
+           "kind": "between the mesh bars"
+          }
+         ],
+         "above_soffit_mm": 62
+        },
+        {
+         "layer": 2,
+         "text": "Ø25 @ 75 (added)",
+         "from_face_mm": 112,
+         "as_mm2_per_m": 6545,
+         "bars": [
+          {
+           "diameter_mm": 25,
+           "spacing_mm": 75.0,
+           "kind": "added"
+          }
+         ],
+         "above_soffit_mm": 112
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "face": "bottom",
+     "bars_along": "Y",
+     "cover_mm": 50.0,
+     "mesh": {
+      "diameter_mm": 16,
+      "spacing_mm": 150.0,
+      "layers": [
+       {
+        "layer": 1,
+        "text": "Ø16 @ 150",
+        "from_face_mm": 74,
+        "as_mm2_per_m": 1340,
+        "bars": [
+         {
+          "diameter_mm": 16,
+          "spacing_mm": 150.0,
+          "kind": "mesh"
+         }
+        ],
+        "above_soffit_mm": 74
+       }
+      ]
+     },
+     "zones": [
+      {
+       "x_m": [
+        -14.2,
+        -4.2
+       ],
+       "y_m": [
+        -16.8,
+        16.8
+       ],
+       "label": "Ø16 @ 150",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø16 @ 150",
+         "from_face_mm": 74,
+         "as_mm2_per_m": 1340,
+         "bars": [
+          {
+           "diameter_mm": 16,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          }
+         ],
+         "above_soffit_mm": 74
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "face": "top",
+     "bars_along": "X",
+     "cover_mm": 50.0,
+     "mesh": {
+      "diameter_mm": 16,
+      "spacing_mm": 150.0,
+      "layers": [
+       {
+        "layer": 1,
+        "text": "Ø16 @ 150",
+        "from_face_mm": 58,
+        "as_mm2_per_m": 1340,
+        "bars": [
+         {
+          "diameter_mm": 16,
+          "spacing_mm": 150.0,
+          "kind": "mesh"
+         }
+        ],
+        "above_soffit_mm": 642
+       }
+      ]
+     },
+     "zones": [
+      {
+       "x_m": [
+        -10.2,
+        -8.2
+       ],
+       "y_m": [
+        -6.8,
+        -4.8
+       ],
+       "label": "Ø10 @ 300",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø16 @ 150 + Ø10 @ 300 (between the mesh bars)",
+         "from_face_mm": 58,
+         "as_mm2_per_m": 1602,
+         "bars": [
+          {
+           "diameter_mm": 16,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          },
+          {
+           "diameter_mm": 10,
+           "spacing_mm": 300.0,
+           "kind": "between the mesh bars"
+          }
+         ],
+         "above_soffit_mm": 642
+        }
+       ]
+      },
+      {
+       "x_m": [
+        -10.2,
+        -8.2
+       ],
+       "y_m": [
+        -1.8,
+        -0.8
+       ],
+       "label": "Ø10 @ 300",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø16 @ 150 + Ø10 @ 300 (between the mesh bars)",
+         "from_face_mm": 58,
+         "as_mm2_per_m": 1602,
+         "bars": [
+          {
+           "diameter_mm": 16,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          },
+          {
+           "diameter_mm": 10,
+           "spacing_mm": 300.0,
+           "kind": "between the mesh bars"
+          }
+         ],
+         "above_soffit_mm": 642
+        }
+       ]
+      },
+      {
+       "x_m": [
+        -10.2,
+        -8.2
+       ],
+       "y_m": [
+        2.2,
+        3.2
+       ],
+       "label": "Ø10 @ 300",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø16 @ 150 + Ø10 @ 300 (between the mesh bars)",
+         "from_face_mm": 58,
+         "as_mm2_per_m": 1602,
+         "bars": [
+          {
+           "diameter_mm": 16,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          },
+          {
+           "diameter_mm": 10,
+           "spacing_mm": 300.0,
+           "kind": "between the mesh bars"
+          }
+         ],
+         "above_soffit_mm": 642
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "face": "top",
+     "bars_along": "Y",
+     "cover_mm": 50.0,
+     "mesh": {
+      "diameter_mm": 16,
+      "spacing_mm": 150.0,
+      "layers": [
+       {
+        "layer": 1,
+        "text": "Ø16 @ 150",
+        "from_face_mm": 74,
+        "as_mm2_per_m": 1340,
+        "bars": [
+         {
+          "diameter_mm": 16,
+          "spacing_mm": 150.0,
+          "kind": "mesh"
+         }
+        ],
+        "above_soffit_mm": 626
+       }
+      ]
+     },
+     "zones": [
+      {
+       "x_m": [
+        -5.2,
+        -1.0
+       ],
+       "y_m": [
+        -16.8,
+        16.8
+       ],
+       "label": "Ø20 @ 300",
+       "layers": [
+        {
+         "layer": 1,
+         "text": "Ø16 @ 150 + Ø20 @ 300 (between the mesh bars)",
+         "from_face_mm": 76,
+         "as_mm2_per_m": 2388,
+         "bars": [
+          {
+           "diameter_mm": 16,
+           "spacing_mm": 150.0,
+           "kind": "mesh"
+          },
+          {
+           "diameter_mm": 20,
+           "spacing_mm": 300.0,
+           "kind": "between the mesh bars"
+          }
+         ],
+         "above_soffit_mm": 624
+        }
+       ]
+      }
+     ]
+    }
+   ],
+   "links": [
+    {
+     "x_m": [
+      -23.2,
+      -20.2
+     ],
+     "y_m": [
+      -16.8,
+      16.8
+     ],
+     "diameter_mm": 12,
+     "sx_mm": 300.0,
+     "sy_mm": 300.0
+    },
+    {
+     "x_m": [
+      -20.2,
+      -15.2
+     ],
+     "y_m": [
+      -16.8,
+      16.8
+     ],
+     "diameter_mm": 20,
+     "sx_mm": 150.0,
+     "sy_mm": 150.0
+    },
+    {
+     "x_m": [
+      -15.2,
+      -7.2
+     ],
+     "y_m": [
+      -16.8,
+      16.8
+     ],
+     "diameter_mm": 10,
+     "sx_mm": 150.0,
+     "sy_mm": 150.0
+    },
+    {
+     "x_m": [
+      -7.2,
+      -1.0
+     ],
+     "y_m": [
+      -16.8,
+      16.8
+     ],
+     "diameter_mm": 20,
+     "sx_mm": 150.0,
+     "sy_mm": 300.0
+    }
+   ]
+  }
+ ]
+}

@@ -15,8 +15,13 @@ from .validation import ImportResult
 
 
 def section_geometry(workbook: ImportResult) -> list[dict[str, Any]]:
+    return elements_geometry(workbook.elements())
+
+
+def elements_geometry(elements: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """As ``section_geometry``, from element -> combination -> sheet."""
     out = []
-    for name, combos in workbook.elements().items():
+    for name, combos in elements.items():
         spec = next((s.parsed.spec for s in combos.values() if s.parsed), None)
         frames = [
             s.frame[["X", "Y", "Z"]] for s in combos.values() if {"X", "Y", "Z"} <= set(s.frame.columns)

@@ -162,3 +162,194 @@ def test_infill_has_no_crack_check_inside_the_tube():
     w = design_combi_wall("Combi Wall", wall, DesignSettings(), combi_sheets().elements()["Combi Wall"])
     cracks = w["infill"]["cracks"]
     assert cracks["wk_mm"] is None and cracks["passed"] and "permanent casing" in cracks["casing"]
+
+
+def test_the_office_king_pile_sheet_section_1():
+    """Ahmed's SECTION #1 sheet: 1590 infill, 18 mm tube, fy 355, five corrosion zones, L 36.6 m, SAP EI."""
+    from triton.design.tube import Segment, office_sheet, sheet_table
+
+    def tube(c, inside=0.0):
+        return Tube(1626, 18, c, "S355", inside=inside, fy_set=355)
+
+    segs = [
+        Segment("Splash", 3.5, -0.5, tube(4.5), True, 0),
+        Segment("Submerged", -0.5, -14.5, tube(2.5), True, 1),
+        Segment("Submerged & soil", -14.5, -16.12, tube(2.5), True, 2),
+        Segment("Soil", -16.12, -25, tube(1.75), True, 3),
+        Segment("Soil (steel only)", -25, -35, tube(1.75, 1.75), False, 4),
+    ]
+    forces = [
+        {"N": n, "V": v, "M": m, "N_total": nt}
+        for n, v, m, nt in (
+            (914, 223, 1201, 2742),
+            (1472, 197, 4558.9, 4416),
+            (1487, 169, 4078.2, 4461),
+            (3133, 366, 3894, 9399),
+            (9433, 1473, 3579, 9433),
+        )
+    ]
+    sh = office_sheet(
+        segs,
+        forces,
+        length=36.6,
+        factor=0.7,
+        infill_diameter=1590,
+        fck=40,
+        ecm=35000,
+        curve="c",
+        column_ei=7.14e15,
+        gamma_m0=1.1,
+        gamma_m1=1.1,
+    )
+    cols = sh["columns"]
+    assert sh["Npl_w"] / 1e3 == pytest.approx(70371, rel=1e-3)
+    assert sh["N_cr"] / 1e3 == pytest.approx(107341.5, rel=1e-3)
+    # NEd/NRd, MEd/MRd, σ/fy and the buckling interaction, % as the sheet (it takes π as 3.142).
+    sheet = [
+        (5.90, 14.68, 16.30, 7.05, 20.43),
+        (7.73, 46.84, 46.62, 11.60, 54.65),
+        (7.81, 41.90, 42.32, 11.72, 50.23),
+        (15.32, 37.71, 44.41, 24.89, 60.37),
+    ]
+    for c, (un, um, us, unb, unm) in zip(cols, sheet, strict=False):
+        assert c["cls"] == 4
+        assert 100 * c["u_N"] == pytest.approx(un, abs=0.03)
+        assert 100 * c["u_M"] == pytest.approx(um, abs=0.03)
+        assert 100 * c["u_sigma"] == pytest.approx(us, abs=0.03)
+        assert 100 * c["u_Nb"] == pytest.approx(unb, abs=0.03)
+        assert 100 * c["u_NM"] == pytest.approx(unm, abs=0.03)
+    steel = cols[4]  # below the infill: steel only, both faces corroded
+    assert steel["Npl_Rk"] / 1e3 == pytest.approx(18997, rel=2e-3)
+    assert 100 * steel["u_Nb"] == pytest.approx(16.64, abs=0.03)
+    assert steel["chi"] == pytest.approx(0.886, abs=2e-3)  # α 0.49, as the sheet's Nb,Rd
+    # The sheet's I there takes the inner diameter as 1590 + 1.75 (not 1593.5): I 2.51E+10 against 2.37E+10.
+    assert steel["I"] == pytest.approx(2.368e10, rel=2e-3)
+    # With effective properties and γM0 (EN 1993-1-1 6.2.1(7)) the steel-only zone is at 94.5%.
+    assert steel["check"].startswith("N/Aeff + M/Weff") and steel["u"] == pytest.approx(0.945, abs=2e-3)
+    table = sheet_table(sh, 35000, 40)
+    assert table["columns"][0] == "Splash" and table["groups"][0]["title"] == "Pile parameters"
+
+
+def test_the_wall_shows_as_its_concrete_infill_and_its_steel():
+    from triton.design.combi import failing_parts, parts
+    from triton.design.standard import combi_parts
+    from triton.runner import _outcome
+
+    w = design_combi_wall(
+        "Combi Wall",
+        CombiWallInput(top_level_to_ignore=0.0),
+        DesignSettings(),
+        combi_sheets().elements()["Combi Wall"],
+    )
+    infill, steel = parts(w)
+    assert infill["element"] == "Combi Wall – concrete infill" and steel["element"] == "Combi Wall – steel"
+    assert (
+        infill["utilisation"] == w["infill"]["utilisation"]
+        and steel["utilisation"] == w["tube"]["utilisation"]
+    )
+    # Results stored before the split: only the tube fails, and it is the one named.
+    w["tube"]["passed"], w["passed"] = False, False
+    assert failing_parts(w) == ["Combi Wall – steel"]
+    overview = combi_parts(w)
+    assert [o["workable"] for o in overview] == [w["infill"]["passed"], False]
+    assert overview[1]["why"] == ["Steel tube (EN 1993) fails."]
+    w["infill"]["passed"] = False
+    assert _outcome({"designed": ["Combi Wall"], "combi_walls": [w]}) == ("done", "2 unsafe")
+
+
+def _corroded(loss, **kw):
+    s = DesignSettings()
+    s.durability.corrosion.combi_tube = loss
+    wall = CombiWallInput(top_level_to_ignore=0.0, tube_thickness=8.0, **kw)
+    return design_combi_wall("Combi Wall", wall, s, combi_sheets().elements()["Combi Wall"])
+
+
+def test_corrosion_through_the_tube_leaves_the_infill_alone():
+    # The project's 9 mm loss eats the 8 mm tube: the tube is not counted, the infill takes every
+    # action with its crack width checked, and the element says so.
+    from triton.design.sheet_piles import UF_CAP
+
+    w = _corroded(9.0)
+    assert w["steel_share"] == 0 and w["tube_gone"]
+    gone = "Corrosion 9 mm over the design life is more than the 8 mm tube wall"
+    assert any(n.startswith(gone) and "crack width checked" in n for n in w["notes"])
+    g = w["infill"]["governing"]
+    src = next(x for x in LOADS if abs(x[1] - g["z"]) < 1e-6)
+    assert g["M_kNm"] == pytest.approx(src[3], rel=1e-3)  # all of it
+    assert w["infill"]["cracks"]["wk_mm"] is not None and "casing" not in w["infill"]["cracks"]
+    # Below the infill only the tube carried the actions: nothing is left there.
+    assert w["tube"]["utilisation"] == UF_CAP and not w["tube"]["passed"] and not w["passed"]
+    assert w["utilisation"] == UF_CAP
+
+    # Infill down to the toe: the infill alone is the design.
+    full = _corroded(8.0, concrete_bottom_level=-40.0)
+    assert full["tube"]["utilisation"] is None and full["tube"]["passed"]
+    assert full["utilisation"] == full["infill"]["utilisation"]
+    assert any("8 mm over the design life is as much as the 8 mm tube wall" in n for n in full["notes"])
+
+
+def test_sea_and_land_sides_as_the_office_pipe_sheet():
+    # SPWPIPE (N25185, Tincan B5&6): Ø1626 × 18, S355, γM0 1.1. The diameter takes the average of the
+    # sea and land sides, the thickness the larger loss; below the infill 1.75 inside as well.
+    from triton.design.combi import combi_section, tube_zones
+    from triton.project import CorrosionZone
+
+    zones = [(4.5, 0, 0), (2.5, 0, 0), (2.5, 1.75, 0), (1.75, 1.75, 0)]
+    a_eff = [48103.74, 59107.05, 59042.72, 63350.21]
+    m_rd = [9561.20, 10525.90, 9970.39, 10327.31]
+    for (sea, land, inside), a, m in zip(zones, a_eff, m_rd, strict=True):
+        t = Tube(1626, 18, max(sea, land), "S355", inside=inside, fy_set=355, mean_outside=(sea + land) / 2)
+        assert t.a_eff == pytest.approx(a, rel=0.001)
+        assert t.resistances(1.1)["M_eff_kNm"] == pytest.approx(m, rel=0.001)
+
+    wall = CombiWallInput(tube_diameter=1626, tube_thickness=18, concrete="C40/50")
+    assert [z.land for z in wall.corrosion_zones] == [0, 0, 1.75, 1.75, 1.75]
+    # Splash 4.5 / 0 gives 2.25 off the diameter: the infill takes 67% of E·I, as the office.
+    assert 1 - combi_section(wall).steel_share == pytest.approx(0.673, abs=0.002)
+    assert tube_zones(wall)[0][2].t == pytest.approx(13.5)
+    # Walls stored before the land side keep the single loss for the split and one loss all round.
+    old = CombiWallInput(
+        tube_diameter=1626,
+        tube_thickness=18,
+        concrete="C40/50",
+        corrosion_loss=4.5,
+        corrosion_zones=[CorrosionZone(bottom_level=-0.5, outside=4.5)],
+    )
+    assert 1 - combi_section(old).steel_share == pytest.approx(0.706, abs=0.002)
+
+
+def test_the_ei_share_is_worked_out_zone_by_zone():
+    # Office zones: splash 4.5 / 0 to -0.5, 2.5 / 0 to -14.5, 2.5 / 1.75 to -16.12, 1.75 / 1.75 to -25,
+    # then steel only (bottom typed as -50: the last zone runs on to the toe either way).
+    from triton.design.combi import share_zones, zone_share
+    from triton.design.tube import tube_loads
+    from triton.forces import CombiSection
+    from triton.materials import concrete
+
+    wall = CombiWallInput(top_level_to_ignore=1.0, tube_diameter=1626, tube_thickness=18, concrete="C40/50")
+    wall.corrosion_zones[-1].bottom_level = -50.0
+    ecm = concrete("C40/50").ecm * 1e3
+
+    def steel(loss):
+        return CombiSection(1.626, 0.018, loss / 1e3, e_concrete=ecm).steel_share
+
+    zones = share_zones(wall)
+    filled = [round(s[2].steel_share, 4) for s in zones if s[3] is not None]
+    assert filled == [round(steel(x), 4) for x in (2.25, 1.25, 2.125, 1.75)]
+    sheets = combi_sheets().elements()["Combi Wall"]
+    w = design_combi_wall("Combi Wall", wall, DesignSettings(), sheets)
+    assert w["steel_share"] == pytest.approx(steel(2.25), abs=1e-3)  # the splash zone, the least steel
+    assert [s["share"] for s in w["steel_shares"]] == pytest.approx(filled, abs=1e-3)
+    assert zone_share(w, -5.0) == pytest.approx(steel(1.25), abs=1e-3)
+    assert zone_share(w, -40.0) == w["steel_shares"][-1]["share"]
+    assert "zone by zone" in w["notes"][0]
+    # Each filled level goes to the tube at its own zone's share; below the infill, all of it.
+    loads = tube_loads(sheets, lambda z: np.array([zone_share(w, x) for x in z]), -25.0, 1.0)
+    for z, loss in ((0.0, 2.25), (-5.0, 1.25), (-16.0, 2.125), (-20.0, 1.75), (-30.0, None)):
+        row = loads[(loads["Z"] == z) & (loads["combination"] == loads["combination"].iloc[0])].iloc[0]
+        expect = 1.0 if loss is None else steel(loss)
+        assert row["N"] == pytest.approx(row["N_total"] * expect, rel=3e-3)  # shares kept to 3 places
+    # The infill is designed for its zone's share at the governing level.
+    g = w["infill"]["governing"]
+    src = next(x for x in LOADS if abs(x[1] - g["z"]) < 1e-6)
+    assert g["M_kNm"] == pytest.approx(src[3] * (1 - zone_share(w, g["z"])), rel=1e-3)

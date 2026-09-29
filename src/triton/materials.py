@@ -32,6 +32,7 @@ SHEET_PILE_GRADES = {
     "S355GP": 355.0,
     "S390GP": 390.0,
     "S430GP": 430.0,
+    "S460AP": 460.0,
 }
 BAR_DIAMETERS = [8, 10, 12, 14, 16, 20, 25, 28, 32, 40]
 STEEL_DENSITY = 7850.0  # kg/m3

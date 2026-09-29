@@ -16,6 +16,20 @@ could not tell). Across the beam, the per-metre moment, in-plane force and
 shear of the other local direction are used node by node for the transverse
 bars.
 
+A beam that turns (the front or rear beam round a corner berth, when the berth is
+designed in one piece) is not one straight run: it is cut into its straight runs
+(parts) where its centre line turns, as the berth's line is found (``alignment``),
+and each part is laid out along its own direction. The plate results are turned
+into the part's axes first, with θ the part's direction from local 1 towards
+local 2, c = cos θ, s = sin θ:
+
+    M_along = M11·c² + M22·s² + 2·M12·s·c,  M_across = M11·s² + M22·c² − 2·M12·s·c
+    M_twist = (M22 − M11)·s·c + M12·(c² − s²)
+
+and likewise N1, N2 and Q12; Q13 and Q23 turn as a vector. The width is the plate's
+extent across the part, and stations are the distance along the beam's line round
+the corner. The beam keeps one cage, from the envelope of every part's stations.
+
 Connections. Piles and king piles that reach the beam are supports. Results
 inside them are FE peaks: bending is taken at their face, shear at d (or 2d,
 Design settings) from it, and where supports are so close that no station is
@@ -46,15 +60,29 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from ..alignment import (
+    MIN_ANGLE,
+    TENSORS,
+    VECTORS,
+    fit_alignment,
+    make_parts,
+    part_of,
+    rotate_tensor,
+    rotate_vector,
+)
+from ..axes import sag_factor, sign_setting
 from ..elements import CombinationType, ElementType, combination_type
 from ..importer import SheetData
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
-from ..project import BeamInput, CombiWallInput, DesignSettings, PileInput, with_project_grades
+from ..project import BeamCage, BeamInput, CombiWallInput, DesignSettings, PileInput, with_project_grades
+from . import ductility
 from .bollard import check_bollard
 from .circular import ConcreteLaw, SteelLaw
 from .crack import autogenous_shrinkage, crack_width, restraint_crack, restraint_factor
-from .governing import pick_sets
+from .governing import crack_terms, pick_sets
 from .rect import Bars, RectSection
+from .rooms import design_rooms
+from .tension import beam_tension
 from .truss import check_truss, spacing_from_supports
 
 BEAM_TYPES = (ElementType.FRONT_BEAM, ElementType.REAR_BEAM, ElementType.TRANSVERSE_BEAM)
@@ -62,9 +90,34 @@ WINDOW = 0.8  # m, half-length of the fit along the beam (shorter fits pick up t
 MIN_BAR = 12
 MIN_LINK_SPACING = 75.0
 BAND = 0.5  # m, heat-map bands along the beam
+PEAK = 0.4  # m, half-length along the beam over which the peak nodal values are taken
+# Removing spikes (BeamInput.spikes "remove"): a node more than the ratio (BeamInput.spike_ratio) times
+# every node within SPIKE_R of it, and at least SPIKE_SIGNIFICANT of the run's largest, is replaced by
+# their mean; a node more than the ratio times the width average (same sign) at its station by that average.
+SPIKE_R = 1.0  # m
+SPIKE_SIGNIFICANT = 0.2
+SPIKE_ROWS = 50  # the largest replaced values kept with the results
 
 
 # --- Section forces ------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Run:
+    """A straight part of a beam that turns, in its own axes."""
+
+    a: tuple[float, float]  # plan point on the beam's line where the part starts
+    u: tuple[float, float]  # unit vector along the part
+    n: tuple[float, float]  # unit vector across it: local 2 once the results are turned
+    theta: float  # degrees from local 1 to ``u``, towards local 2
+    s0: float  # m, distance along the beam's line at ``a``
+    centre: float  # m, the part's centre line off the beam's line (across)
+    width: float  # m, width in the model across the part
+    start: float  # m, along coordinate range of the part's nodes
+    end: float
+
+
+SQUAT = 2.0  # a beam piece shorter than this many widths is laid out straight, not searched for turns
 
 
 @dataclass(frozen=True)
@@ -77,6 +130,59 @@ class Layout:
     start: float  # m, along coordinate range
     end: float
     span_local: str  # "1" or "2": the local axis along the beam
+    # A beam that turns: its straight parts, each in its own axes (none: one run along X or Y).
+    runs: tuple[Run, ...] = ()
+    line: tuple[tuple[float, float], ...] = ()  # the beam's line in plan: start, corners, end
+
+    def place(self, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(along, across from the centre line, part) of plan points: the along coordinate is the
+        distance along the beam's line round its corners, each part's across its own."""
+        x, y = np.asarray(x, float), np.asarray(y, float)
+        if not self.runs:
+            p = {"X": x, "Y": y}
+            return p[self.along], p[self.across] - self.centre, np.zeros(len(x), int)
+        owner = part_of(_line_parts(self.line), x, y)
+        s, t = np.zeros(len(x)), np.zeros(len(x))
+        for i, r in enumerate(self.runs):
+            m = owner == i
+            dx, dy = x[m] - r.a[0], y[m] - r.a[1]
+            s[m] = r.s0 + dx * r.u[0] + dy * r.u[1]
+            t[m] = dx * r.n[0] + dy * r.n[1] - r.centre
+        return s, t, owner
+
+    def plan(self, s: float) -> tuple[float, float]:
+        """The plan point of the centre line at ``s`` along the beam."""
+        if not self.runs:
+            return (self.centre, s) if self.along == "Y" else (s, self.centre)
+        i = max([k for k, r in enumerate(self.runs) if r.s0 <= s + 1e-9] or [0])
+        r = self.runs[i]
+        d = s - r.s0
+        return r.a[0] + d * r.u[0] + r.centre * r.n[0], r.a[1] + d * r.u[1] + r.centre * r.n[1]
+
+    def turned(self, f: pd.DataFrame, owner: np.ndarray) -> pd.DataFrame:
+        """The plate results of a beam that turns in each part's axes (local 1 along it); as they are
+        for a straight one. ``owner``: each row's part."""
+        if not self.runs:
+            return f
+        f = f.copy()
+        for i, r in enumerate(self.runs):
+            m = owner == i
+            for c11, c22, c12 in TENSORS:
+                if {c11, c22, c12} <= set(f.columns):
+                    new = rotate_tensor(*(f.loc[m, c].to_numpy(float) for c in (c11, c22, c12)), -r.theta)
+                    for c, v in zip((c11, c22, c12), new, strict=True):
+                        f.loc[m, c] = v
+            for c1, c2 in VECTORS:
+                if {c1, c2} <= set(f.columns):
+                    new = rotate_vector(f.loc[m, c1].to_numpy(float), f.loc[m, c2].to_numpy(float), -r.theta)
+                    for c, v in zip((c1, c2), new, strict=True):
+                        f.loc[m, c] = v
+        # The min/max envelopes cannot be turned: they are dropped so nothing reads them unturned.
+        return f.drop(columns=[c for c in f.columns if c.endswith(("_min", "_max"))])
+
+
+def _line_parts(line: tuple[tuple[float, float], ...]) -> list:
+    return make_parts([list(q) for q in line])
 
 
 def layout(sheets: dict[str, SheetData], axes: dict[str, str] | None) -> Layout:
@@ -86,7 +192,7 @@ def layout(sheets: dict[str, SheetData], axes: dict[str, str] | None) -> Layout:
     across = "X" if along == "Y" else "Y"
     lo, hi = float(f[across].min()), float(f[across].max())
     one = (axes or {}).get("1", "X")
-    return Layout(
+    straight = Layout(
         along,
         across,
         (lo + hi) / 2,
@@ -95,6 +201,79 @@ def layout(sheets: dict[str, SheetData], axes: dict[str, str] | None) -> Layout:
         float(f[along].min()),
         float(f[along].max()),
         "1" if one == along else "2",
+    )
+    if max(ext.values()) < SQUAT * min(ext.values()) and _filled(f) >= 0.6:
+        # A short, wide piece (the end of a corner leg after the end cut) shows no direction of its own:
+        # laid out along its longer side, as the part it belongs to was turned to run.
+        return straight
+    return _turning(straight, f, one) or straight
+
+
+def _filled(f: pd.DataFrame) -> float:
+    """How much of its plan box a piece fills, on a 5 x 5 grid: about 1 for a solid block, far less for
+    an L-shaped beam round a corner."""
+    xy = f[["X", "Y"]].to_numpy(float)
+    lo, span = xy.min(axis=0), np.maximum(np.ptp(xy, axis=0), 1e-9)
+    cells = np.minimum((5 * (xy - lo) / span).astype(int), 4)
+    return len(np.unique(cells, axis=0)) / 25
+
+
+def _turning(straight: Layout, f: pd.DataFrame, one: str) -> Layout | None:
+    """The layout of a beam that is not one straight run along X or Y: its parts, each along its own
+    direction; None for a straight one."""
+    pts = np.unique(f[["X", "Y"]].to_numpy(float), axis=0)
+    try:
+        line = fit_alignment(pts)
+    except (ValueError, IndexError, np.linalg.LinAlgError):
+        return None
+    if len(line) < 2:
+        return None
+    if len(line) == 2:
+        d = np.subtract(line[1], line[0])
+        off = math.degrees(math.atan2(abs(d[1]), abs(d[0])))  # 0: along X, 90: along Y
+        if min(off, 90.0 - off) < MIN_ANGLE:
+            return None  # one straight run along X or Y: laid out as it is
+    e1 = np.array([1.0, 0.0]) if one != "Y" else np.array([0.0, 1.0])
+    e2 = np.array([0.0, 1.0]) if one != "Y" else np.array([1.0, 0.0])
+    x, y = f["X"].to_numpy(float), f["Y"].to_numpy(float)
+    owner = part_of(_line_parts(tuple(map(tuple, line))), x, y)
+    runs, s0 = [], 0.0
+    for i, (a, b) in enumerate(zip(line, line[1:], strict=False)):
+        a, d = np.array(a), np.subtract(b, a)
+        length = float(np.hypot(*d))
+        u = d / length
+        theta = math.atan2(float(u @ e2), float(u @ e1))
+        n = -math.sin(theta) * e1 + math.cos(theta) * e2
+        m = owner == i
+        if not m.any():
+            return None
+        q = np.column_stack([x[m], y[m]]) - a
+        s, t = s0 + q @ u, q @ n
+        runs.append(
+            Run(
+                (float(a[0]), float(a[1])),
+                (float(u[0]), float(u[1])),
+                (float(n[0]), float(n[1])),
+                math.degrees(theta),
+                s0,
+                float(t.min() + t.max()) / 2,
+                float(np.ptp(t)),
+                float(s.min()),
+                float(s.max()),
+            )
+        )
+        s0 += length
+    return Layout(
+        straight.along,
+        straight.across,
+        straight.centre,
+        max(r.width for r in runs),
+        straight.level,
+        min(r.start for r in runs),
+        max(r.end for r in runs),
+        "1",
+        tuple(runs),
+        tuple((float(q[0]), float(q[1])) for q in line),
     )
 
 
@@ -105,19 +284,123 @@ def _columns(lay: Layout) -> dict[str, str]:
     return {"N": "N_2", "M": "M_22", "V": "Q_23", "Nt": "N_1", "Mt": "M_11", "Vt": "Q_13"}
 
 
+class SpikeLog(list):
+    """The values Remove spikes replaced (dicts), and the ratio that judges a spike."""
+
+    def __init__(self, ratio: float) -> None:
+        super().__init__()
+        self.ratio = ratio
+
+
+def lone_spikes(s: np.ndarray, t: np.ndarray, v: np.ndarray, ratio: float) -> tuple[np.ndarray, np.ndarray]:
+    """``v`` with each lone node spike replaced by the mean of the nodes within SPIKE_R of it, and
+    the indices replaced. A node is a spike when it is more than ``ratio`` times every one of them
+    (at least two) and at least SPIKE_SIGNIFICANT of the largest value."""
+    v = np.asarray(v, float)
+    out = v.copy()
+    a = np.abs(v)
+    if len(v) < 3 or a.max() <= 0:
+        return out, np.array([], int)
+    xy = np.column_stack([s, t])
+    hit = []
+    for lo in range(0, len(v), 512):
+        d = np.hypot(*(xy[lo : lo + 512, None, :] - xy[None, :, :]).transpose(2, 0, 1))
+        near = (d <= SPIKE_R + 1e-9) & (d > 1e-9)
+        for k, row in enumerate(near):
+            i = lo + k
+            if row.sum() < 2 or a[i] < SPIKE_SIGNIFICANT * a.max():
+                continue
+            if a[i] > ratio * a[row].max():
+                out[i] = float(v[row].mean())
+                hit.append(i)
+    return out, np.array(hit, int)
+
+
+def width_spikes(s: np.ndarray, v: np.ndarray, ratio: float) -> tuple[np.ndarray, np.ndarray]:
+    """``v`` with each node more than ``ratio`` times the average across the width at its station
+    replaced by that average, and the indices replaced. The width average: the other nodes of the
+    same sign within ±PEAK of it along the beam, across the whole width (at least two)."""
+    v = np.asarray(v, float)
+    out = v.copy()
+    hit = []
+    order = np.argsort(s)
+    ss, vs = s[order], v[order]
+    lo_i = np.searchsorted(ss, ss - PEAK - 1e-9, "left")
+    hi_i = np.searchsorted(ss, ss + PEAK + 1e-9, "right")
+    for k in range(len(ss)):
+        w = np.r_[vs[lo_i[k] : k], vs[k + 1 : hi_i[k]]]
+        w = w[w * vs[k] > 0]
+        if len(w) < 2:
+            continue
+        avg = float(w.mean())
+        if abs(vs[k]) > ratio * abs(avg):
+            out[order[k]] = avg
+            hit.append(order[k])
+    return out, np.array(hit, int)
+
+
 def station_forces(
-    frame: pd.DataFrame, lay: Layout, sag: float, stations: np.ndarray | None = None
+    frame: pd.DataFrame,
+    lay: Layout,
+    sag: float,
+    stations: np.ndarray | None = None,
+    peak_width: float | None = None,
+    spikes: SpikeLog | None = None,
 ) -> pd.DataFrame:
-    """Beam section forces at stations along the beam (kN, kNm; N compression +, Mv sagging +)."""
+    """Beam section forces at stations along the beam (kN, kNm; N compression +, Mv sagging +).
+
+    With ``peak_width`` (m), Mv and V are the peak nodal values per metre within ±PEAK of the
+    station times that width, as hand calculations take them: one row with the largest sagging
+    moment and one with the largest hogging moment, each with its node's own N per metre times that
+    width, as the office sheets. Mh, Vh and T stay integrated. A beam that
+    turns: each part is fitted on its own, over its own width, from its results turned into its axes.
+    ``spikes`` (peak mode only): spikes are removed from the nodal M and Q (lone nodes, then nodes far
+    above the width average at their station) before the peaks are taken; each is appended to it.
+    """
     cols = _columns(lay)
     f = frame.drop_duplicates(["X", "Y", "Z"])
-    s = f[lay.along].to_numpy(float)
-    t = f[lay.across].to_numpy(float) - lay.centre
-    B = lay.width
-    if stations is None:
-        stations = np.unique(np.round(s / 0.05) * 0.05)
-    values = {k: f[c].to_numpy(float) for k, c in (("N", cols["N"]), ("M", cols["M"]), ("V", cols["V"]))}
-    values |= {"Q12": f["Q_12"].to_numpy(float), "M12": f["M_12"].to_numpy(float)}
+    s_all, t_all, owner = lay.place(f["X"].to_numpy(float), f["Y"].to_numpy(float))
+    f = lay.turned(f, owner)
+    rows = []
+    for i, B in enumerate([r.width for r in lay.runs] or [lay.width]):
+        m = owner == i
+        values = {k: f.loc[m, cols[k]].to_numpy(float) for k in ("N", "M", "V")}
+        values |= {"Q12": f.loc[m, "Q_12"].to_numpy(float), "M12": f.loc[m, "M_12"].to_numpy(float)}
+        s, t = s_all[m], t_all[m]
+        at = np.unique(np.round(s / 0.05) * 0.05) if stations is None else stations
+        if spikes is not None and peak_width is not None:
+            for k, what in (("M", "Mv"), ("V", "V")):
+                raw = values[k]
+                one = sag if k == "M" else 1.0
+                lone, hit_lone = lone_spikes(s, t, raw, spikes.ratio)
+                values[k], hit_width = width_spikes(s, lone, spikes.ratio)
+                rule = dict.fromkeys(hit_width.tolist(), "width peak") | dict.fromkeys(
+                    hit_lone.tolist(), "lone node"
+                )
+                for i, why in rule.items():
+                    spikes.append(
+                        {
+                            "s": round(float(s[i]), 2),
+                            "what": what,
+                            "rule": why,
+                            "raw": one * float(raw[i]) * peak_width,
+                            "used": one * float(values[k][i]) * peak_width,
+                        }
+                    )
+        rows += _fits(s, t, values, B, at, sag, peak_width)
+    return pd.DataFrame(rows, columns=["s", "N", "Mv", "Mh", "V", "Vh", "T"])
+
+
+def _fits(
+    s: np.ndarray,
+    t: np.ndarray,
+    values: dict[str, np.ndarray],
+    B: float,
+    stations: np.ndarray,
+    sag: float,
+    peak_width: float | None,
+) -> list[dict]:
+    """station_forces' rows of one straight run of width B (s along it, t across from its centre)."""
     rows = []
     for s0 in stations:
         for w in (WINDOW, 1.2, 1.6):
@@ -129,22 +412,76 @@ def station_forces(
         A = np.column_stack([np.ones(m.sum()), t[m]])  # no slope along: no extrapolation at faces
         pinv = np.linalg.pinv(A)
         fit = {k: pinv @ v[m] for k, v in values.items()}
-        rows.append(
-            {
-                "s": round(float(s0), 3),
-                "N": -fit["N"][0] * B,  # concrete sign
-                "Mv": sag * fit["M"][0] * B,
-                "Mh": -fit["N"][1] * B**3 / 12,
-                "V": fit["V"][0] * B,
-                "Vh": fit["Q12"][0] * B,
-                "T": fit["M12"][0] * B - fit["V"][1] * B**3 / 12,
-            }
+        row = {
+            "s": round(float(s0), 3),
+            "N": -fit["N"][0] * B,  # concrete sign
+            "Mv": sag * fit["M"][0] * B,
+            "Mh": -fit["N"][1] * B**3 / 12,
+            "V": fit["V"][0] * B,
+            "Vh": fit["Q12"][0] * B,
+            "T": fit["M12"][0] * B - fit["V"][1] * B**3 / 12,
+        }
+        if peak_width is None:
+            rows.append(row)
+            continue
+        near = np.abs(s - s0) <= PEAK + 1e-9
+        if not near.any():
+            near = m
+        mv = sag * values["M"][near]
+        vv = values["V"][near]
+        nn = -values["N"][near]  # concrete sign
+        row["V"] = float(vv[np.argmax(np.abs(vv))]) * peak_width
+        # N is the node's own with its peak moment, as the office sheets (Ahmed, 2026-09-27), not the
+        # integrated value.
+        hi, lo = int(np.argmax(mv)), int(np.argmin(mv))
+        rows.append({**row, "Mv": float(mv[hi]) * peak_width, "N": float(nn[hi]) * peak_width})
+        if mv.min() < mv.max():
+            rows.append({**row, "Mv": float(mv[lo]) * peak_width, "N": float(nn[lo]) * peak_width})
+    return rows
+
+
+def spike_note(spikes: SpikeLog | None) -> str:
+    """The design note on spikes removed (``None``: asked for, but the actions are not peak-width)."""
+    if spikes is None:
+        return (
+            "Spikes: kept. Removing them applies to peak-width actions only; these are integrated over "
+            "the width (Design settings)."
         )
-    return pd.DataFrame(rows, columns=["s", "N", "Mv", "Mh", "V", "Vh", "T"])
+    rule = (
+        f"a lone node more than {spikes.ratio:g} times every node within {SPIKE_R:g} m is replaced by "
+        f"their mean; a node more than {spikes.ratio:g} times the average across the width at its "
+        "station by that average"
+    )
+    if not spikes:
+        return f"Spikes removed ({rule}): none found in the Plaxis results."
+    big = max(spikes, key=lambda q: abs(q["raw"] - q["used"]))
+    unit = "kNm" if big["what"] == "Mv" else "kN"
+    places = len(_places(spikes))
+    return (
+        f"Spikes removed ({rule}): at {places} place{'s' if places != 1 else ''} along the beam. Largest: "
+        f"{big['what']} {big['raw']:,.0f} to {big['used']:,.0f} {unit} at {big['s']:g} m "
+        f"({big['combination']}, {big['rule']}). Each place is listed with the beam's results."
+    )
+
+
+def _places(spikes: list) -> list[dict]:
+    """The largest change for each action at each half metre along the beam, largest first."""
+    best: dict = {}
+    for q in spikes:
+        key = (q["what"], round(q["s"] * 2) / 2)
+        if key not in best or abs(q["raw"] - q["used"]) > abs(best[key]["raw"] - best[key]["used"]):
+            best[key] = q
+    return sorted(best.values(), key=lambda q: -abs(q["raw"] - q["used"]))
 
 
 def beam_loads(
-    sheets: dict[str, SheetData], lay: Layout, sag: float, qp: bool, supports: list[Support] = ()
+    sheets: dict[str, SheetData],
+    lay: Layout,
+    sag: float,
+    qp: bool,
+    supports: list[Support] = (),
+    peak_width: float | None = None,
+    spikes: SpikeLog | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(station forces, transverse node forces) of the ULS (or QP) combinations.
 
@@ -157,23 +494,27 @@ def beam_loads(
         if (ctype is CombinationType.SLS_QP) != qp or sheet.frame.empty:
             continue
         f = sheet.frame.drop_duplicates(["X", "Y", "Z"])
-        s, t = f[lay.along].to_numpy(float), f[lay.across].to_numpy(float) - lay.centre
+        s, t, owner = lay.place(f["X"].to_numpy(float), f["Y"].to_numpy(float))
         outside = np.ones(len(f), bool)
         for q in supports:
             outside &= np.hypot(s - q.s, t - q.t) >= q.r - 1e-6
-        f = f[outside]
+        f, s, t = f[outside], s[outside], t[outside]
         if f.empty:
             continue
-        st = station_forces(f, lay, sag)
+        found = SpikeLog(spikes.ratio) if spikes is not None else None
+        st = station_forces(f, lay, sag, peak_width=peak_width, spikes=found)
+        if spikes is not None:
+            spikes += [{**q, "combination": combo} for q in found]
         parts.append(st.assign(combination=combo, category=ctype.value))
+        f = lay.turned(f, owner[outside])
         nodes.append(
             pd.DataFrame(
                 {
                     "combination": combo,
                     "category": ctype.value,
                     "Node": f["Node"].to_numpy() if "Node" in f else None,
-                    "s": f[lay.along].to_numpy(float),
-                    "t": f[lay.across].to_numpy(float) - lay.centre,
+                    "s": s,
+                    "t": t,
                     "N": -f[cols["Nt"]].to_numpy(float),
                     "M": sag * f[cols["Mt"]].to_numpy(float),
                     "V": f[cols["Vt"]].to_numpy(float),
@@ -186,6 +527,17 @@ def beam_loads(
         pd.concat(parts, ignore_index=True) if parts else empty_st,
         pd.concat(nodes, ignore_index=True) if nodes else empty_nd,
     )
+
+
+def add_ledge(frame: pd.DataFrame, added: dict[str, float], combo: str) -> pd.DataFrame:
+    """The station forces with the ledge's ΔV, ΔT and ΔM added to the size of each Plaxis value."""
+    if frame.empty:
+        return frame
+    f = frame.copy()
+    for col, key in (("V", "V"), ("T", "T"), ("Mv", "M")):
+        v = f[col].to_numpy(float)
+        f[col] = v + np.where(v >= 0, 1.0, -1.0) * added[f"{key}_{combo}"]
+    return f
 
 
 # --- Supports -------------------------------------------------------------------------------------
@@ -213,9 +565,14 @@ def find_supports(lay: Layout, geometry: list[dict], elements: dict[str, Any]) -
         else:
             r = 0.6
         for x, y, ztop, _ in g.get("lines") or []:
-            p = {"X": x, "Y": y}
-            s, t = p[lay.along], p[lay.across] - lay.centre
-            inside = abs(t) <= lay.width / 2 + 1e-6 and lay.start - r <= s <= lay.end + r
+            if lay.runs:  # the part the head is in: its own width and length
+                sa, ta, i = lay.place(np.array([x]), np.array([y]))
+                s, t, run = float(sa[0]), float(ta[0]), lay.runs[int(i[0])]
+                inside = abs(t) <= run.width / 2 + 1e-6 and run.start - r <= s <= run.end + r
+            else:
+                p = {"X": x, "Y": y}
+                s, t = p[lay.along], p[lay.across] - lay.centre
+                inside = abs(t) <= lay.width / 2 + 1e-6 and lay.start - r <= s <= lay.end + r
             if inside and ztop >= lay.level - 1.0:
                 out.append(Support(g["element"], round(s, 3), round(t, 3), r))
     return sorted(out, key=lambda q: q.s)
@@ -262,19 +619,69 @@ def transverse_nodes(nodes: pd.DataFrame, supports: list[Support], extra: float)
 # --- Reinforcement --------------------------------------------------------------------------------
 
 
+# Top and bottom bars of a beam Triton designs (Ahmed, 2026-09-27: "the number of bars for top should
+# be the same as bottom so that stirrups can be constructible"). The first (outer) layer of the top and
+# the first layer of the bottom have the SAME number of bars, so each top bar sits over a bottom bar
+# and each link leg ties a matching pair; the diameters may differ. A face that needs more takes
+# layers of the same diameter behind the first, each over first-layer bars; Ahmed, 11:30: "the second
+# layer should depend on the first layer it is either same count or half of it or 2 bars". So every
+# layer behind is a full layer (the same count), or, as the last one, half the count or 2 bars.
+# Bars the user types (BeamCage) are checked as typed; a note says when their counts differ.
+
+
+def layer_behind(n: int) -> tuple[int, ...]:
+    """The bar counts a part-layer behind a first layer of ``n`` bars may take: half of it or 2
+    (a layer of all ``n`` is a full layer)."""
+    return tuple(sorted({k for k in (n // 2, 2) if 1 <= k < n}))
+
+
+def spread(n: int, m: int) -> list[int]:
+    """``m`` of the ``n`` positions of a layer (0 … n−1), evenly spread and symmetric, both ends kept."""
+    if m >= n:
+        return list(range(n))
+    if m == 1:
+        return [(n - 1) // 2]
+    return [int(math.floor(x + 0.5)) for x in np.linspace(0, n - 1, m)]
+
+
+def extra_layers(extra: int, count: int) -> tuple[int, ...]:
+    """``extra`` additional bars (typed by the user) in layers of at most ``count`` each."""
+    out = []
+    while extra > 0 and count > 0:
+        out.append(min(extra, count))
+        extra -= out[-1]
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Face:
-    count: int  # bars per layer
+    count: int  # bars per layer: the first layer's
     phi: int
-    layers: int = 1
+    layers: int = 1  # full layers of ``count`` bars
+    extra: tuple[int, ...] = ()  # additional bars in each layer behind the full ones
+
+    @property
+    def total(self) -> int:
+        return self.count * self.layers + sum(self.extra)
 
     @property
     def area(self) -> float:
-        return self.count * self.layers * math.pi * self.phi**2 / 4
+        return self.total * math.pi * self.phi**2 / 4
+
+    @property
+    def rows(self) -> list[list[int]]:
+        """Each layer's bars, from the face inwards, as positions (0 … count−1) of the first layer's:
+        additional bars sit over first-layer bars, evenly spread."""
+        full = [list(range(self.count)) for _ in range(self.layers)]
+        return full + [spread(self.count, k) for k in self.extra if self.count > 0]
 
     @property
     def label(self) -> str:
-        n = self.count * self.layers
+        n = self.total
+        if self.extra:
+            first = f"{self.count}" if self.layers == 1 else f"{self.layers} × {self.count}"
+            more = " + ".join(str(k) for k in self.extra)
+            return f"{n}Ø{self.phi} ({first} + {more} in {len(self.rows)} layers)"
         return f"{n}Ø{self.phi}" + (f" ({self.layers} layers)" if self.layers > 1 else "")
 
 
@@ -295,21 +702,27 @@ class Cage:
     def to_dict(self, b: float, h: float) -> dict:
         return {
             "label": self.label,
-            "top": {
-                "count": self.top.count * self.top.layers,
-                "phi": self.top.phi,
-                "layers": self.top.layers,
-            },
-            "bottom": {
-                "count": self.bottom.count * self.bottom.layers,
-                "phi": self.bottom.phi,
-                "layers": self.bottom.layers,
-            },
+            "top": _face_dict(self.top),
+            "bottom": _face_dict(self.bottom),
             "side": {"count": self.side.count, "phi": self.side.phi},
             "area_mm2": round(self.area),
             "ratio_pct": round(100 * self.area / (b * h), 2),
             "kg_per_m": round(self.area / 1e6 * STEEL_DENSITY, 1),
         }
+
+
+def _face_dict(face: Face) -> dict:
+    """count: every bar of the face; layers: the rows they take; per_layer, full_layers and extra: as
+    typed on a BeamCage (per_layer bars in full_layers rows, and extra additional bars)."""
+    return {
+        "count": face.total,
+        "phi": face.phi,
+        "layers": len(face.rows),
+        "per_layer": face.count,
+        "full_layers": face.layers,
+        "extra": sum(face.extra),
+        "extra_layers": list(face.extra),
+    }
 
 
 @dataclass(frozen=True)
@@ -326,9 +739,27 @@ class Geometry:
     def layer_gap(self, phi: float, dg: float) -> float:
         return phi + max(phi, dg + 5, 20)
 
+    def centroid(self, face: Face, dg: float) -> float:
+        """Distance from the face to the centroid of its bars."""
+        rows = face.rows
+        n = sum(len(r) for r in rows) or 1
+        return (
+            self.inner(face.phi)
+            + sum(k * len(r) for k, r in enumerate(rows)) * self.layer_gap(face.phi, dg) / n
+        )
+
+    def row_u(self, face: Face, row: list[int]) -> np.ndarray:
+        """Across positions of a layer's bars (``row``: positions of the first layer's)."""
+        half_w = self.b / 2 - self.inner(face.phi)
+        u = np.linspace(-half_w, half_w, face.count) if face.count > 1 else np.zeros(face.count)
+        return u[row]
+
 
 def face_candidates(g: Geometry, settings: DesignSettings, width: float) -> list[Face]:
-    """Bars along one face of clear width ``width`` (mm), cheapest first, by area."""
+    """Bars along one face of clear width ``width`` (mm), cheapest first, by area: a first layer
+    within the spacing limits and, where the face needs more, layers of the same size behind it, each
+    the first layer's count, or (the last one) half of it or 2 bars (``layer_behind``), in no more than
+    the maximum layers. With even bar counts set, the first layer takes only even counts."""
     r = settings.reinforcement
     dg = settings.piles.aggregate_size
     out = []
@@ -340,9 +771,14 @@ def face_candidates(g: Geometry, settings: DesignSettings, width: float) -> list
         n_min = max(2, math.ceil(span / r.max_spacing) + 1)
         n_max = int(span // (clear_min + phi)) + 1
         for n in range(n_min, n_max + 1):
-            for layers in range(1, r.max_layers + 1):
-                out.append(Face(n, phi, layers))
-    return sorted(out, key=lambda f: (f.area, f.layers, -f.phi))
+            if n % 2 and settings.piles.even_bar_count:
+                continue  # even bar counts only (the setting), so top and bottom pair up
+            # Full layers of n, the last layer behind them either full or half of n or 2 bars.
+            for full in range(1, r.max_layers + 1):
+                out.append(Face(n, phi, full))
+                if full < r.max_layers:
+                    out.extend(Face(n, phi, full, (k,)) for k in layer_behind(n))
+    return sorted(out, key=lambda f: (f.area, len(f.rows), -f.phi, f.count))
 
 
 def side_candidates(g: Geometry, settings: DesignSettings, top: Face, bottom: Face) -> list[Face]:
@@ -375,11 +811,11 @@ def cage_bars(g: Geometry, cage: Cage, dg: float, torsion: float = 0.0) -> Bars:
 
     groups = []
     for face, up, name in ((cage.top, 1, "top"), (cage.bottom, -1, "bottom")):
-        half_w = g.b / 2 - g.inner(face.phi)
-        for k in range(face.layers):
+        a = math.pi * face.phi**2 / 4 * left(face, name)
+        for k, row in enumerate(face.rows):
             v = up * (g.h / 2 - g.inner(face.phi) - k * g.layer_gap(face.phi, dg))
-            row = Bars.row(face.count, face.phi, v, half_w)
-            groups.append(Bars(row.u, row.v, row.area * left(face, name)))
+            u = g.row_u(face, row)
+            groups.append(Bars(u, np.full(len(u), v), np.full(len(u), a)))
     if cage.side.count:
         v_top = g.h / 2 - g.inner(cage.top.phi)
         v_bot = -(g.h / 2 - g.inner(cage.bottom.phi))
@@ -392,10 +828,37 @@ def cage_bars(g: Geometry, cage: Cage, dg: float, torsion: float = 0.0) -> Bars:
     return Bars.join(*groups)
 
 
+def adsec_lines(g: Geometry, cage: Cage, dg: float) -> list[dict]:
+    """The cage as bar lines for AdSec: {phi, count, a: [u, v], b: [u, v]} in mm, u across, v up."""
+    out = []
+    for face, up in ((cage.top, 1), (cage.bottom, -1)):
+        for k, row in enumerate(face.rows):
+            v = up * (g.h / 2 - g.inner(face.phi) - k * g.layer_gap(face.phi, dg))
+            u = g.row_u(face, row)
+            gaps = np.diff(u)
+            if len(u) < 2 or np.allclose(gaps, gaps[0]):
+                ends = (float(u[0]), float(u[-1])) if len(u) > 1 else (0.0, 0.0)
+                out.append({"phi": face.phi, "count": len(u), "a": [ends[0], v], "b": [ends[1], v]})
+            else:  # additional bars over first-layer bars, not evenly spread: one line per bar
+                out += [{"phi": face.phi, "count": 1, "a": [float(x), v], "b": [float(x), v]} for x in u]
+    if cage.side.count:
+        col = Bars.column(cage.side.count, cage.side.phi, 0.0, 1.0)
+        v_top = g.h / 2 - g.inner(cage.top.phi)
+        v_bot = -(g.h / 2 - g.inner(cage.bottom.phi))
+        half_h, mid = (v_top - v_bot) / 2, (v_top + v_bot) / 2
+        lo, hi = float(col.v.min()) * half_h + mid, float(col.v.max()) * half_h + mid
+        for side in (-1, 1):
+            u = side * (g.b / 2 - g.inner(cage.side.phi))
+            out.append({"phi": cage.side.phi, "count": cage.side.count, "a": [u, hi], "b": [u, lo]})
+    return [{**d, "a": [round(x, 1) for x in d["a"]], "b": [round(x, 1) for x in d["b"]]} for d in out]
+
+
 def _laws(beam: BeamInput, settings: DesignSettings) -> tuple[ConcreteLaw, SteelLaw]:
     pf = settings.partial_factors
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
-    return ConcreteLaw(concrete(beam.concrete).fck, pf.gamma_c, pf.alpha_cc), SteelLaw(fyk, pf.gamma_s)
+    return ConcreteLaw(concrete(beam.concrete).fck, pf.gamma_c, pf.alpha_cc), SteelLaw.of(
+        fyk, pf.gamma_s, pf.steel_curve
+    )
 
 
 def as_min_beam(fctm: float, fyk: float, b: float, d: float) -> float:
@@ -437,6 +900,28 @@ def face_crack(sec: RectSection, g: Geometry, face: Face, n: float, m: float, e_
     )
     out["x_mm"] = round(res["x"])
     return out
+
+
+def crack_candidates(qp: pd.DataFrame, z: float, k: int = 8) -> pd.DataFrame:
+    """The QP rows that can give the widest crack at each face: the largest moments, the largest
+    tensions and the largest steel force estimate |M|/z − N/2 (z in m), per face. The crack width
+    grows with each, so the worst row is among them."""
+    if len(qp) <= 4 * k:
+        return qp
+    keep = set()
+    for side in (qp["Mv"] >= 0, qp["Mv"] < 0):
+        f = qp[side]
+        if f.empty:
+            continue
+        m = f["Mv"].abs()
+        for score in (m, -f["N"], m / z - f["N"] / 2):
+            keep.update(score.nlargest(k).index)
+    return qp.loc[sorted(keep)]
+
+
+def transverse_crack_candidates(qp: pd.DataFrame, z: float, k: int = 8) -> pd.DataFrame:
+    """crack_candidates for the transverse moments per metre (columns N and M)."""
+    return crack_candidates(qp.rename(columns={"M": "Mv"}), z, k).rename(columns={"Mv": "M"})
 
 
 def crack_check(sec, g, cage: Cage, qp: pd.DataFrame, e_eff: float, conc) -> dict[str, dict]:
@@ -603,12 +1088,29 @@ def link_design(
     leg_gap_max = min(0.75 * d, 600.0)
     inner_w = b - 2 * (g.cover + g.link / 2)
     legs_min = max(2, math.ceil(inner_w / leg_gap_max) + 1)
+    # With as many top bars as bottom bars (first layers) each leg ties a top bar and the bottom bar
+    # under it: legs on first-layer bars, evenly spread (``spread``), the widest gap a whole number
+    # of bar pitches. The user's bars with other counts keep evenly spaced legs.
+    pairs = cage.top.count if cage.top.count == cage.bottom.count and cage.top.count >= 2 else None
+    if pairs:
+        pitch = (b - 2 * (g.cover + g.link) - max(cage.top.phi, cage.bottom.phi)) / (pairs - 1)
+
+        def leg_gap(legs: int) -> float:
+            return max(np.diff(spread(pairs, legs))) * pitch
+
+        choices = [n for n in range(2, pairs + 1) if leg_gap(n) <= leg_gap_max + 1e-6][:8] or [pairs]
+    else:
+
+        def leg_gap(legs: int) -> float:
+            return inner_w / (legs - 1)
+
+        choices = list(range(legs_min, legs_min + 8))
     step = settings.reinforcement.spacing_step
     phi = beam.link_diameter
     a_leg = math.pi * phi * phi / 4
     best = None
-    for legs in range(legs_min, legs_min + 8):
-        gap = inner_w / (legs - 1)
+    for legs in choices:
+        gap = leg_gap(legs)
         need_v = max(
             (asw_v.max() / legs + at_leg.max()) if len(asw_v) else 0.0,
             (ast_m2.max() * gap) if len(ast_m2) else 0.0,
@@ -628,6 +1130,12 @@ def link_design(
         notes.append(f"Ø{phi:g} links would be closer than {MIN_LINK_SPACING:g} mm: use larger links.")
         return {"passed": False, "utilisation": None, "notes": notes}
     legs, s = best["legs"], best["spacing_mm"]
+    if pairs:
+        at = [i + 1 for i in spread(pairs, legs)]
+        notes.append(
+            f"The {legs} legs tie top and bottom bars {', '.join(map(str, at))} of the {pairs} in each "
+            "first layer, each top bar over a bottom bar."
+        )
     vrds = legs * a_leg / s * z * fywd * cot / 1e3
     trds_leg = a_leg / s * 2 * ak * fywd * cot / 1e6  # torsion if one outer leg took it all
     util_v = np.where(concrete_only, V / np.maximum(vrdc, 1e-9) + T / trdc, V / vrds + T / trds_leg)
@@ -647,6 +1155,8 @@ def link_design(
             "spacing_mm": s,
             "label": f"Ø{phi:g} links, {legs} legs @ {s:g} mm",
             "kg_per_m": best["kg_per_m"],
+            "leg_gap_mm": round(best["leg_gap_mm"]),
+            **({"leg_bars": [i + 1 for i in spread(pairs, legs)]} if pairs else {}),
         },
         "utilisation": round(u, 3) if math.isfinite(u) else None,
         "passed": bool(math.isfinite(u) and u <= 1 + 1e-6) and not crushed.any(),
@@ -691,31 +1201,38 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
     for phi in [d for d in r.bar_diameters if d >= MIN_BAR]:
         s = r.max_spacing
         while s >= max(100.0, phi + r.min_clear_spacing) - 1e-9:
-            options.append((1000 * math.pi * phi * phi / 4 / s, phi, s))
+            # One layer, or two (the second under the first, a clear gap of max(25 mm, Ø) between).
+            for layers in range(1, r.max_layers + 1):
+                options.append((layers * 1000 * math.pi * phi * phi / 4 / s, phi, s, layers))
             s -= r.spacing_step
-    options.sort()
+    # Least steel first; a second layer is placed only where one layer is not enough.
+    options.sort(key=lambda o: (o[0] * (1 + 0.25 * (o[3] - 1)), o[3]))
 
-    def d_of(phi):
-        return h - (g.cover + g.link + long_phi + phi / 2)
+    def pitch(phi):
+        return phi + max(25.0, phi)
+
+    def d_of(phi, layers=1):
+        return h - (g.cover + g.link + long_phi + phi / 2) - (layers - 1) * pitch(phi) / 2
 
     def section(top, bot):
         bars = []
-        for (_, phi, s), up in ((top, 1), (bot, -1)):
+        for (_, phi, s, layers), up in ((top, 1), (bot, -1)):
             n = max(2, round(1000 / s))
-            v = up * (h / 2 - (g.cover + g.link + long_phi + phi / 2))
-            bars.append(
-                Bars(
-                    np.linspace(-500 + s / 2, 500 - s / 2, n),
-                    np.full(n, v),
-                    np.full(n, math.pi * phi**2 / 4 * 1000 / s / n),
+            for k in range(layers):
+                v = up * (h / 2 - (g.cover + g.link + long_phi + phi / 2) - k * pitch(phi))
+                bars.append(
+                    Bars(
+                        np.linspace(-500 + s / 2, 500 - s / 2, n),
+                        np.full(n, v),
+                        np.full(n, math.pi * phi**2 / 4 * 1000 / s / n),
+                    )
                 )
-            )
         return RectSection(
             1000.0, h, Bars.join(*bars), cl, sl, strips=120, deduct=settings.partial_factors.deduct_bar_area
         )
 
     as_min = as_min_beam(conc.fctm, fyk, 1000, d_of(16))
-    ti = bi = next(i for i, o in enumerate(options) if o[0] >= as_min)
+    ti = bi = next(i for i, o in enumerate(options) if o[0] >= as_min and o[3] == 1)
     limits = {"top": beam.crack_width_limit, "bottom": beam.crack_width_limit_bottom}
     status = "ok"
     for _ in range(200):
@@ -730,7 +1247,7 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
             c = crack_width(
                 sig,
                 h=h,
-                d=d_of(o[1]),
+                d=d_of(o[1], o[3]),
                 x=res["x"],
                 b=1000,
                 area=o[0],
@@ -767,7 +1284,8 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
     j = int(np.argmax(u)) if len(u) else None
 
     def lab(o):
-        return {"phi": o[1], "spacing_mm": o[2], "as_mm2_per_m": round(o[0]), "label": f"Ø{o[1]} @ {o[2]:g}"}
+        text = f"Ø{o[1]} @ {o[2]:g}" + (f" in {o[3]} layers" if o[3] > 1 else "")
+        return {"phi": o[1], "spacing_mm": o[2], "layers": o[3], "as_mm2_per_m": round(o[0]), "label": text}
 
     cracks = {f: {**w, "limit": limits[f], "passed": w["wk"] <= limits[f] + 1e-9} for f, w in worst.items()}
     out = {
@@ -776,7 +1294,7 @@ def transverse_design(beam, settings, g: Geometry, cage: Cage, uls: pd.DataFrame
         "utilisation": round(u_max, 3) if math.isfinite(u_max) else None,
         "cracks": cracks,
         "passed": status == "ok" and u_max <= 1 + 1e-6 and all(c["passed"] for c in cracks.values()),
-        "d_mm": round(d_of(options[min(ti, bi)][1])),
+        "d_mm": round(min(d_of(options[ti][1], options[ti][3]), d_of(options[bi][1], options[bi][3]))),
         "as_min_face": min(options[ti][0], options[bi][0]),
         "kg_per_m": round((options[ti][0] + options[bi][0]) / 1e6 * (g.b / 1000) * STEEL_DENSITY, 1),
     }
@@ -803,10 +1321,21 @@ def design_beam(
     geometry: list[dict],
     elements: dict[str, Any],
     axes: dict[str, str] | None,
+    user_cage: BeamCage | None = None,
+    sign: dict[str, Any] | None = None,
+    joint_lengths: list[float] | None = None,
+    ledge: dict[str, Any] | None = None,
+    standard: bool = False,
 ) -> dict[str, Any]:
+    """Choose the beam's longitudinal bars, or check the ones the user set (``user_cage``).
+    ``joint_lengths``: the lengths of the berth's segments between expansion joints the beam runs
+    through; the restraint crack width is also given for each of them. ``ledge``: the approach
+    slab's ledge on a rear beam, whose load and torque are added (``approach``). ``standard``: the
+    quick overview (Standard design): the transverse bars' crack widths from the QP nodes that can
+    give the widest crack only."""
     beam = with_project_grades(beam, settings.materials, settings.durability)
     lay = layout(sheets, axes)
-    sag = 1.0 if settings.plate_positive_moment == "sagging" else -1.0
+    sag, sign_note = sag_factor(sign_setting(settings, beam), sign)
     conc = concrete(beam.concrete)
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     b = beam.width if beam.width is not None else round(lay.width * 1000)
@@ -815,21 +1344,62 @@ def design_beam(
     cl, sl = _laws(beam, settings)
     e_eff = conc.ecm / (1 + settings.cracking.creep_coefficient)
     supports = find_supports(lay, geometry, elements)
-    uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=supports)
-    qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=supports)
+    # The supports whose results are left out (Design settings); all of them still set the truss spans.
+    cut = supports if settings.beam_support_results == "faces" else []
+    peak = g.b / 1000 if settings.beam_actions == "peak_width" else None
+    spikes = SpikeLog(beam.spike_ratio) if beam.spikes == "remove" and peak is not None else None
+    uls, t_uls = beam_loads(sheets, lay, sag, qp=False, supports=cut, peak_width=peak, spikes=spikes)
+    qp, t_qp = beam_loads(sheets, lay, sag, qp=True, supports=cut, peak_width=peak, spikes=spikes)
+    added = None
+    if ledge is not None:
+        from .approach import rear_beam_additions
+
+        spacing = spacing_from_supports([q.s for q in supports]) or max(lay.end - lay.start, 1.0)
+        added = rear_beam_additions(ledge, float(b), spacing)
+        uls, qp = add_ledge(uls, added, "uls"), add_ledge(qp, added, "qp")
     notes = [
         f"Spans along global {lay.along} ({lay.start:.2f} to {lay.end:.2f} m, {lay.end - lay.start:.1f} m); "
         f"local {lay.span_local} is along the beam"
         + (" (from the directions check)." if axes else " (assumed: the directions check had no answer)."),
         f"Width in the model {lay.width * 1000:.0f} mm"
-        + (f", designed as {b:.0f} mm." if beam.width is not None else ", used as the beam width."),
-        "Positive plate moments taken as " + settings.plate_positive_moment + " (Design settings).",
+        + (
+            f", designed as {b:.0f} mm."
+            if beam.width is not None
+            else ", used as the beam width because the element has no width. Set the real width on "
+            "the element: it sets the bars, the minimum steel and the capacity."
+        ),
+        (
+            f"Vertical bending and shear: peak nodal M and Q per metre within ±{PEAK:g} m of each station "
+            f"× the beam width {b / 1000:g} m, as the calc report takes them, each with its node's own N "
+            f"per metre × the same width. Horizontal bending and torsion are integrated over the model's "
+            f"{lay.width:g} m width (Design settings)."
+            if peak is not None
+            else "Section forces integrated over the model's width (Design settings)."
+        ),
+        sign_note,
     ]
-    if supports:
+    if beam.spikes == "remove":
+        notes.append(spike_note(spikes))
+    if added is not None:
+        notes.append(
+            f"Approach slab ledge added at every station: ΔV {added['V_uls']:.0f} kN, "
+            f"ΔT {added['T_uls']:.0f} kNm, "
+            f"ΔM {added['M_uls']:.0f} kNm (ULS; QP {added['V_qp']:.0f} kN, {added['T_qp']:.0f} kNm, "
+            f"{added['M_qp']:.0f} kNm), from the ledge's load at {added['e_m']:g} m off the centre line "
+            f"between supports {added['spacing_m']:g} m apart."
+        )
+    if supports and cut:
         names = sorted({q.element for q in supports})
         notes.append(
             f"{len(supports)} supports inside the beam ({', '.join(names)}): bending at their faces, "
-            f"shear at {settings.shear_check_distance} from them; results inside them are left out."
+            f"shear at {settings.shear_check_distance} from them; results inside them are left out "
+            "(Design settings)."
+        )
+    elif supports:
+        names = sorted({q.element for q in supports})
+        notes.append(
+            f"{len(supports)} supports inside the beam ({', '.join(names)}): every result along the beam is "
+            "designed, over them too (Design settings: leave them out to take bending at their faces)."
         )
     base = {
         "element": name,
@@ -844,23 +1414,54 @@ def design_beam(
         "start_m": lay.start,
         "end_m": lay.end,
         "supports": [{"element": q.element, "s": q.s, "t": q.t, "r": q.r} for q in supports],
+        "support_results": settings.beam_support_results,
         "notes": notes,
     }
+    if added is not None:
+        base["ledge_added"] = {k: round(v, 1) for k, v in added.items()}
+    if lay.runs:
+        base["line"] = [[round(v, 3) for v in q] for q in lay.line]
+        base["beam_parts"] = [
+            {
+                "start_m": round(r.start, 3),
+                "end_m": round(r.end, 3),
+                "direction_deg": round(math.degrees(math.atan2(r.u[1], r.u[0])), 2),
+                "width_m": round(r.width, 3),
+            }
+            for r in lay.runs
+        ]
+        notes[0] = (
+            f"Turns {len(lay.runs) - 1} corner{'s' if len(lay.runs) > 2 else ''}: laid out in "
+            f"{len(lay.runs)} straight parts along the beam's line ({lay.start:.2f} to {lay.end:.2f} m, "
+            f"{lay.end - lay.start:.1f} m), each along its own direction ("
+            + ", ".join(f"{d['direction_deg']:g}° from X" for d in base["beam_parts"])
+            + "). Each part's plate results are turned into its axes (M, N and Q along and across it) "
+            "before they are integrated over its own width; stations are the distance along the line."
+        )
+        notes[1] = notes[1].replace(
+            "Width in the model",
+            "Width in the model (parts: "
+            + ", ".join(f"{r.width * 1000:.0f}" for r in lay.runs)
+            + " mm), the widest",
+            1,
+        )
     if uls.empty:
         notes.append("No ULS results.")
         return {**base, "utilisation": None, "passed": False}
 
     s_all = uls["s"].to_numpy(float)
-    mom = uls[moment_stations(s_all, supports)]
+    mom = uls[moment_stations(s_all, cut)]
     d_est = (g.h - g.inner(25)) / 1000
     dv = d_est * (2 if settings.shear_check_distance == "2d" else 1)
-    mask, fallback = shear_stations(s_all, supports, dv)
+    mask, fallback = shear_stations(s_all, cut, dv)
     shr = uls[mask]
     if fallback:
         notes.append(
             "Supports are closer than 2 × (radius + d): shear is checked at the station midway between them."
         )
-    qp_m = qp[moment_stations(qp["s"].to_numpy(float), supports)] if len(qp) else qp
+    qp_m = qp[moment_stations(qp["s"].to_numpy(float), cut)] if len(qp) else qp
+    qp_all = qp_m
+    qp_m = crack_candidates(qp_m, 0.9 * d_est) if len(qp_m) else qp_m
 
     tops = face_candidates(g, settings, g.b)
     if not tops:
@@ -874,55 +1475,100 @@ def design_beam(
         """The office's truss between king piles, tied by this cage's bottom bars."""
         if beam.truss is None:
             return None
-        z = g.h - g.inner(cage.top.phi) - (cage.top.layers - 1) * g.layer_gap(cage.top.phi, dg) / 2
-        z -= g.inner(cage.bottom.phi) + (cage.bottom.layers - 1) * g.layer_gap(cage.bottom.phi, dg) / 2
+        z = g.h - g.centroid(cage.top, dg) - g.centroid(cage.bottom, dg)
         return check_truss(beam.truss, g.b, g.h, z, cage.bottom.area, king_spacing)
 
-    def grow_cage(asl: float):
+    # The candidates of each first-layer count, cheapest first: top and bottom always share one.
+    by_count: dict[int, list[int]] = {}
+    for i, f in enumerate(tops):
+        by_count.setdefault(f.count, []).append(i)
+
+    def step(ti: int, bi: int, face: str, need: float = 0.0) -> tuple[int, int] | None:
+        """The next top and bottom (indices into ``tops``) with ``face`` given more steel (at least
+        ``need`` mm²), the other face no less, both with the same first-layer count: the pair with
+        the least steel over both faces. None when ``face`` has nothing larger."""
+        grow, keep = (ti, bi) if face == "top" else (bi, ti)
+        floor = max(tops[grow].area + 1e-6, need)
+        best = None
+        for j in range(grow + 1, len(tops)):
+            if tops[j].area < floor:
+                continue
+            if best is not None and tops[j].area + tops[keep].area >= best[0]:
+                break  # sorted by area: nothing further is cheaper
+            k = next((k for k in by_count[tops[j].count] if tops[k].area >= tops[keep].area - 1e-6), None)
+            if k is None:
+                continue
+            total = tops[j].area + tops[k].area
+            if best is None or total < best[0] - 1e-6:
+                best = (total, j, k)
+        if best is None:
+            return None
+        return (best[1], best[2]) if face == "top" else (best[2], best[1])
+
+    def judge(cage: Cage, asl: float, use_truss: bool):
+        """The face to give more steel next (None: every check passes) and the minimum area it
+        needs (the truss tie's), with what the checks found."""
+        sec = RectSection(
+            g.b, g.h, cage_bars(g, cage, dg, asl), cl, sl, deduct=settings.partial_factors.deduct_bar_area
+        )
+        u = sec.utilisation(n, mv, mh)
+        full = sec
+        if asl:
+            full = RectSection(
+                g.b, g.h, cage_bars(g, cage, dg), cl, sl, deduct=settings.partial_factors.deduct_bar_area
+            )
+        restr = restraint_check(beam, settings, g, cage, conc)
+        cracks = None  # the slow check, left to last
+        grow = None
+        if u.max() > 1:
+            j = int(np.argmax(u))
+            rv = sec.m_rd("v", np.array([1 if mv[j] >= 0 else -1]), n[j : j + 1])[0]
+            rh = sec.m_rd("h", np.array([1 if mh[j] >= 0 else -1]), n[j : j + 1])[0]
+            tv = abs(mv[j]) / rv if rv > 0 else math.inf
+            th = abs(mh[j]) / rh if rh > 0 else math.inf
+            if th > tv:
+                grow = "side"
+            else:
+                grow = "bottom" if mv[j] >= 0 else "top"
+            if n[j] > 0 and abs(mv[j]) < 1e-6 and abs(mh[j]) < 1e-6:
+                grow = "top"
+        if grow is None:
+            for face in ("top", "bottom", "side"):
+                if restr["faces"][face]["wk"] > limits[face] + 1e-9:
+                    grow = face
+                    break
+        need = 0.0
+        if grow is None and use_truss:
+            tr = truss_for(cage) or {}
+            if (tr.get("utilisation") or 0.0) > 1:
+                grow = "bottom"
+                need = max(c["As_req_mm2"] for c in tr["cases"])
+        if grow is None:
+            # The likeliest QP rows first (fast), then every QP row, so no row is missed.
+            for rows in (qp_m, qp_all):
+                cracks = crack_check(full, g, cage, rows, e_eff, conc)
+                grow = next(
+                    (f for f in ("top", "bottom") if f in cracks and cracks[f]["wk"] > limits[f] + 1e-9),
+                    None,
+                )
+                if grow is not None or len(rows) == len(qp_all):
+                    break
+        return grow, need, (sec, u, full, restr, cracks)
+
+    def grow_cage(asl: float, use_truss: bool = True):
         """Step the faces up until bending (with ``asl`` of torsion steel taken out of the faces),
-        cracking and restraint pass."""
-        ti = bi = next((i for i, f in enumerate(tops) if f.area >= as_min), len(tops) - 1)
+        cracking, restraint and (with ``use_truss``) the truss tie pass. Top and bottom keep the same
+        first-layer count."""
+        ti = bi = next(
+            (i for i, f in enumerate(tops) if f.area >= as_min and f.layers == 1 and not f.extra),
+            next((i for i, f in enumerate(tops) if f.area >= as_min), len(tops) - 1),
+        )
         sides = side_candidates(g, settings, tops[ti], tops[bi])
         si = 0
         status = "ok"
         for _ in range(400):
             cage = Cage(tops[ti], tops[bi], sides[si])
-            sec = RectSection(
-                g.b, g.h, cage_bars(g, cage, dg, asl), cl, sl, deduct=settings.partial_factors.deduct_bar_area
-            )
-            u = sec.utilisation(n, mv, mh)
-            full = sec
-            if asl:
-                full = RectSection(
-                    g.b, g.h, cage_bars(g, cage, dg), cl, sl, deduct=settings.partial_factors.deduct_bar_area
-                )
-            cracks = crack_check(full, g, cage, qp_m, e_eff, conc)
-            restr = restraint_check(beam, settings, g, cage, conc)
-            grow = None
-            if u.max() > 1:
-                j = int(np.argmax(u))
-                rv = sec.m_rd("v", np.array([1 if mv[j] >= 0 else -1]), n[j : j + 1])[0]
-                rh = sec.m_rd("h", np.array([1 if mh[j] >= 0 else -1]), n[j : j + 1])[0]
-                tv = abs(mv[j]) / rv if rv > 0 else math.inf
-                th = abs(mh[j]) / rh if rh > 0 else math.inf
-                if th > tv:
-                    grow = "side"
-                else:
-                    grow = "bottom" if mv[j] >= 0 else "top"
-                if n[j] > 0 and abs(mv[j]) < 1e-6 and abs(mh[j]) < 1e-6:
-                    grow = "top"
-            if grow is None:
-                for face in ("top", "bottom"):
-                    if face in cracks and cracks[face]["wk"] > limits[face] + 1e-9:
-                        grow = face
-                        break
-            if grow is None:
-                for face in ("top", "bottom", "side"):
-                    if restr["faces"][face]["wk"] > limits[face] + 1e-9:
-                        grow = face
-                        break
-            if grow is None and ((truss_for(cage) or {}).get("utilisation") or 0.0) > 1:
-                grow = "bottom"
+            grow, need, found = judge(cage, asl, use_truss)
             if grow is None:
                 break
             if grow == "side":
@@ -930,41 +1576,167 @@ def design_beam(
                     status = "side bars exhausted"
                     break
                 si += 1
-            elif grow == "top":
-                if ti + 1 >= len(tops):
-                    status = "top bars exhausted"
-                    break
-                ti += 1
-                sides = side_candidates(g, settings, tops[ti], tops[bi])
-                si = min(si, len(sides) - 1)
             else:
-                if bi + 1 >= len(tops):
-                    status = "bottom bars exhausted"
+                nxt = step(ti, bi, grow, need) or (step(ti, bi, grow) if need else None)
+                if nxt is None:
+                    status = f"{grow} bars exhausted"
                     break
-                bi += 1
+                ti, bi = nxt
                 sides = side_candidates(g, settings, tops[ti], tops[bi])
                 si = min(si, len(sides) - 1)
+        if status == "ok":
+            # Stepping both faces to one count can leave a face heavier than it needs (it never gives
+            # steel back on the way): each face takes the least steel of that count that still passes.
+            for face in ("top", "bottom"):
+                now = getattr(cage, face)
+                for k in by_count[now.count]:
+                    if tops[k].area >= now.area - 1e-6 or tops[k].area < as_min:
+                        continue
+                    trial = Cage(**{"top": cage.top, "bottom": cage.bottom, "side": cage.side, face: tops[k]})
+                    grow, _, trial_found = judge(trial, asl, use_truss)
+                    if grow is None:
+                        cage, found = trial, trial_found
+                        break
+        sec, u, full, restr, cracks = found
+        if cracks is None or status != "ok":
+            cracks = crack_check(full, g, cage, qp_all, e_eff, conc)
         return cage, sec, u, cracks, restr, status
+
+    def fixed_cage(asl: float):
+        """The user's bars, checked as they are."""
+        uc = user_cage
+        cage = Cage(
+            Face(uc.top.count, uc.top.diameter, uc.top.layers, extra_layers(uc.top.extra, uc.top.count)),
+            Face(
+                uc.bottom.count,
+                uc.bottom.diameter,
+                uc.bottom.layers,
+                extra_layers(uc.bottom.extra, uc.bottom.count),
+            ),
+            Face(uc.side.count, uc.side.diameter),
+        )
+        sec = section(cage, asl)
+        u = sec.utilisation(n, mv, mh)
+        cracks = crack_check(section(cage), g, cage, qp_all, e_eff, conc)
+        restr = restraint_check(beam, settings, g, cage, conc)
+        return cage, sec, u, cracks, restr, "ok"
+
+    design_cage = grow_cage if user_cage is None else lambda asl, use_truss=True: fixed_cage(asl)
+
+    def section(cage: Cage, asl: float = 0.0) -> RectSection:
+        bars = cage_bars(g, cage, dg, asl)
+        return RectSection(g.b, g.h, bars, cl, sl, deduct=settings.partial_factors.deduct_bar_area)
+
+    def face_needs(cage: Cage, asl: float) -> dict[str, dict]:
+        """Steel each check needs on each face with the other faces as designed (mm², by bisection
+        over the candidates), and the check that sets the face."""
+        checks = {
+            "bending": lambda c, f: float(section(c, asl).utilisation(n, mv, mh).max()) <= 1 + 1e-9,
+            "crack": lambda c, f: (
+                crack_check(section(c), g, c, qp_all, e_eff, conc).get(f, {"wk": 0.0})["wk"]
+                <= limits[f] + 1e-9
+            ),
+            "restraint": lambda c, f: (
+                restraint_check(beam, settings, g, c, conc)["faces"][f]["wk"] <= limits[f] + 1e-9
+            ),
+            "truss": lambda c, f: ((truss_for(c) or {}).get("utilisation") or 0.0) <= 1 + 1e-9,
+        }
+        names = {
+            "minimum": "minimum steel",
+            "bending": "bending (Plaxis actions)",
+            "crack": "QP crack width (Plaxis actions)",
+            "restraint": "restraint cracking",
+            "truss": "truss tie",
+        }
+        out = {}
+        for f in ("top", "bottom", "side"):
+            if f == "side":
+                cands = side_candidates(g, settings, cage.top, cage.bottom)
+                lo, minimum = 0, cands[0].area
+            else:
+                cands = tops
+                lo = next((i for i, x in enumerate(tops) if x.area >= as_min), len(tops) - 1)
+                minimum = as_min
+            final = getattr(cage, f)
+            hi = cands.index(final) if final in cands else len(cands) - 1
+            hi = max(hi, lo)
+
+            def with_face(x, f=f):
+                return Cage(**{"top": cage.top, "bottom": cage.bottom, "side": cage.side, f: x})
+
+            needs = {"minimum": round(minimum)}
+            for name, ok in checks.items():
+                if (name == "truss" and (f != "bottom" or beam.truss is None)) or (
+                    name == "crack" and f == "side"
+                ):
+                    continue
+                if ok(with_face(cands[lo]), f):
+                    needs[name] = 0
+                    continue
+                if not ok(with_face(cands[hi]), f):
+                    needs[name] = None  # more than the bars given
+                    continue
+                a, b = lo, hi
+                while b - a > 1:
+                    m = (a + b) // 2
+                    a, b = (a, m) if ok(with_face(cands[m]), f) else (m, b)
+                needs[name] = round(cands[b].area)
+            real = {k: v for k, v in needs.items() if v}
+            most = max(real.values())
+            gov = [names[k] for k, v in real.items() if v >= most - 1]
+            if f == "side" and gov == ["minimum steel"]:
+                gov = ["maximum bar spacing"]
+            out[f] = {"needs_mm2": needs, "governed_by": " and ".join(gov)}
+        return out
 
     limits = {"top": beam.crack_width_limit, "bottom": beam.crack_width_limit_bottom}
     limits["side"] = min(limits.values())
     n = mom["N"].to_numpy(float)
     mv = mom["Mv"].to_numpy(float)
     mh = mom["Mh"].to_numpy(float)
-    cage, sec, u, cracks, restr, status = grow_cage(0.0)
+    cage, sec, u, cracks, restr, status = design_cage(0.0)
 
     # Torsion (6.3.2(3)): its longitudinal steel is shared round the perimeter and comes out of the
     # bars that bending uses, so the cage is grown again with it taken out of each face.
+    # The transverse bars (per metre across the beam) never take the nodes inside a support: there the
+    # plate moments are point peaks at the pile or king pile head, whatever the setting for the beam.
     t_keep = transverse_nodes(t_uls, supports, 0.0)
     t_qp_keep = t_qp[transverse_nodes(t_qp, supports, 0.0)] if len(t_qp) else t_qp
+    if standard:
+        t_qp_keep = transverse_crack_candidates(t_qp_keep, g.h * 0.8 / 1000)
     t_shear = t_uls[transverse_nodes(t_uls, supports, dv)]
     trans = transverse_design(beam, settings, g, cage, t_uls[t_keep], t_qp_keep)
     asl = float(
         link_design(beam, settings, g, cage, shr, t_shear, trans).get("torsion_long_steel_mm2") or 0.0
     )
     if asl > 0:
-        cage, sec, u, cracks, restr, status = grow_cage(asl)
-    if status != "ok":
+        cage, sec, u, cracks, restr, status = design_cage(asl)
+    # The same cage from the Plaxis actions alone, to show what the truss adds.
+    plaxis_cage = grow_cage(asl, use_truss=False)[0] if beam.truss is not None else cage
+    if user_cage is not None:
+        notes.append(f"Bars set by you: {cage.label}. Triton checks them; it does not choose them.")
+        if cage.top.count != cage.bottom.count:
+            notes.append(
+                f"Your top and bottom have {cage.top.count} and {cage.bottom.count} bars per layer: the link "
+                "legs cannot tie each top bar to the bottom bar under it. Triton designs both faces with the "
+                "same number (layers behind: the same count, half of it or 2 bars)."
+            )
+        for f in ("top", "bottom"):
+            face = getattr(cage, f)
+            span = g.b - 2 * (g.cover + g.link) - face.phi
+            clear = span / max(face.count - 1, 1) - face.phi
+            least = max(settings.reinforcement.min_clear_spacing, face.phi, dg + 5, 20)
+            if face.count < 2 or clear < least - 1e-9:
+                status = f"{f} bars: clear spacing {clear:.0f} mm is below the {least:.0f} mm minimum"
+            elif clear + face.phi > settings.reinforcement.max_spacing + 1e-9:
+                status = (
+                    f"{f} bars: spacing {clear + face.phi:.0f} mm is over the "
+                    f"{settings.reinforcement.max_spacing:g} mm maximum"
+                )
+    needs = face_needs(cage, asl)
+    if status != "ok" and user_cage is not None:
+        notes.append(f"Your bars break a spacing rule: {status}.")
+    elif status != "ok":
         notes.append(f"No cage within the bar sizes and spacing limits passes every check ({status}).")
     u_max = float(u.max())
     j = int(np.argmax(u))
@@ -997,6 +1769,20 @@ def design_beam(
     for f, c in restr["faces"].items():
         c["limit"] = limits[f]
         c["passed"] = c["wk"] <= limits[f] + 1e-9
+    if joint_lengths:
+        restr["segments"] = []
+        for length in joint_lengths:
+            r = restraint_check(beam.model_copy(update={"joint_spacing": length}), settings, g, cage, conc)
+            restr["segments"].append(
+                {
+                    "length_m": length,
+                    "R": r["R"],
+                    "faces": {
+                        f: {"wk": c["wk"], "limit": limits[f], "passed": c["wk"] <= limits[f] + 1e-9}
+                        for f, c in r["faces"].items()
+                    },
+                }
+            )
 
     # Transverse bars and links, on the final cage.
     trans = transverse_design(beam, settings, g, cage, t_uls[t_keep], t_qp_keep)
@@ -1008,6 +1794,41 @@ def design_beam(
             f"Torsion needs {asl:.0f} mm² of longitudinal steel (6.3.2(3)). It is taken out of the cage "
             f"by perimeter share before the bending check: {sh_t['top']:.0f} mm² from the top and from "
             "the bottom" + (f", {sh_t['side']:.0f} mm² from each side." if sh_t["side"] else ".")
+        )
+
+    # Rooms cut into the beam: the section left over each room's length, with its own extra bars.
+    rooms = design_rooms(
+        beam,
+        settings,
+        b=g.b,
+        h=g.h,
+        cover=g.cover,
+        link=g.link,
+        cage_bars=cage_bars(g, cage, dg),
+        top_phi=cage.top.phi,
+        bottom_phi=cage.bottom.phi,
+        bottom_layers=len(cage.bottom.rows),
+        side_phi=cage.side.phi,
+        laws=(cl, sl),
+        e_eff=e_eff,
+        limits=limits,
+        uls=mom,
+        qp=qp_all,
+        t_uls=t_uls[t_keep],
+        t_qp=t_qp_keep,
+        trans_bottom=float(trans["bottom"]["as_mm2_per_m"]),
+        supports=supports,
+        geometry=geometry,
+        centre=lay.centre,
+        across=lay.across,
+        start=lay.start,
+        end=lay.end,
+    )
+    for rm in rooms:
+        notes.append(
+            f"{rm['name']} ({rm['start_m']:g} to {rm['end_m']:g} m): "
+            + (f"passes, utilisation {rm['utilisation']:.2f}." if rm["passed"] else "fails. ")
+            + ("" if rm["passed"] else (rm.get("suggestion") or {}).get("text", ""))
         )
 
     # Steel and utilisation.
@@ -1022,19 +1843,32 @@ def design_beam(
         "transverse_kg_per_m": trans["kg_per_m"],
         "kg_per_m": round(kg_m, 1),
         "kg_per_m3": round(kg_m / vol),
+        "ratio_pct": round(100 * cage.to_dict(g.b, g.h)["kg_per_m"] / STEEL_DENSITY / vol, 2),
         "length_m": round(length, 2),
         "total_kg": round(kg_m * length),
         "element_total_t": round(kg_m * length / 1000, 2),
     }
     checks = [bending["utilisation"], links.get("utilisation"), trans.get("utilisation")]
     checks += [c["wk"] / c["limit"] for c in crack_out.values()]
+    checks += [c["wk"] / c["limit"] for c in (trans.get("cracks") or {}).values() if c.get("limit")]
     checks += [c["wk"] / c["limit"] for c in restr["faces"].values() if math.isfinite(c["wk"])]
-    bollard = check_bollard(beam.bollard, beam.concrete, settings) if beam.bollard is not None else None
+    bollard = (
+        check_bollard(
+            beam.bollard,
+            beam.concrete,
+            settings,
+            (g.b, g.h, g.cover, g.link),
+            beam.truss.pile_spacing if beam.truss is not None else None,
+        )
+        if beam.bollard is not None
+        else None
+    )
     if bollard is not None:
         checks.append(bollard["utilisation"])
     truss = truss_for(cage)
     if truss is not None:
         checks.append(truss["utilisation"])
+    checks += [rm["utilisation"] for rm in rooms]
     finite = [c for c in checks if c is not None]
     passed = (
         bending["passed"]
@@ -1045,20 +1879,66 @@ def design_beam(
         and status == "ok"
         and (bollard is None or bollard["passed"])
         and (truss is None or truss["passed"])
+        and all(rm["passed"] for rm in rooms)
     )
     # Links and restraint are one arrangement for the whole beam, so they colour every band.
     uniform = max([c for c in checks[1:] if c is not None and math.isfinite(c)], default=0.0)
-    bands = beam_bands(lay, mom.assign(u=np.maximum(u, uniform)))
-    sets = beam_sets(cage.label, mom, u, qp_m)
+    u_band = np.maximum(u, uniform)
+    for rm in rooms:  # a room's own checks colour the bands over it
+        inside = (mom["s"].to_numpy(float) >= rm["start_m"]) & (mom["s"].to_numpy(float) <= rm["end_m"])
+        u_band = np.where(inside, np.maximum(u_band, rm["utilisation"] or 9.99), u_band)
+    bands = beam_bands(lay, mom.assign(u=u_band))
+    sets = beam_sets(cage.label, mom, u, qp_all)
+    crack_sec = section(cage)  # all the bars: the crack check takes no torsion steel out
+    for st in sets:
+        for r in st["qp"]:
+            r["crack"] = beam_crack_terms(crack_sec, g, cage, r["N_kN"], r["M3_kNm"], e_eff, conc, limits)
+            r["utilisation"] = r["crack"]["util"]  # SLS: crack width over its limit
+    # Ductility of the whole cage at its capacity, under the largest compression along the beam.
+    n_c = max(float(mom["N"].max()), 0.0) if len(mom) else 0.0
+    duct_faces = {}
+    for f, sense in (("bottom", 1), ("top", -1)):
+        r = crack_sec.ductility("v", sense, n_c)
+        r["N_kN"] = round(n_c, 1)
+        r["warnings"] = ductility.warnings(r["x_d"], r["eps_s"], r["eps_yd"], None)
+        duct_faces[f] = r
+    ratio_all = 100 * float(crack_sec.bars.total) / (g.b * g.h)
+    duct = {
+        "faces": duct_faces,
+        "ratio_pct": round(ratio_all, 2),
+        "warnings": [
+            f"{'Bottom' if f == 'bottom' else 'Top'} bars in tension: {w}"
+            for f, r in duct_faces.items()
+            for w in r["warnings"]
+        ]
+        + ductility.warnings(None, None, 0.0, ratio_all),
+    }
+    notes.extend(f"Over-reinforced? {w}." for w in duct["warnings"])
+    faces = [
+        {
+            "face": f,
+            "final": getattr(cage, f).label,
+            "final_mm2": round(getattr(cage, f).area),
+            "plaxis": getattr(plaxis_cage, f).label,
+            "plaxis_mm2": round(getattr(plaxis_cage, f).area),
+            **needs[f],
+        }
+        for f in ("top", "bottom", "side")
+    ]
     return {
         **base,
+        "user_set": user_cage is not None,
+        "faces": faces,
         "cage": {
             **cage.to_dict(g.b, g.h),
+            # Every bar at its real size (the bending section takes the torsion steel out of the bar
+            # areas, which would draw them smaller than they are).
             "bars": [
                 [round(float(u), 1), round(float(v), 1), round(math.sqrt(4 * a / math.pi))]
-                for u, v, a in zip(sec.bars.u, sec.bars.v, sec.bars.area, strict=True)
+                for u, v, a in zip(crack_sec.bars.u, crack_sec.bars.v, crack_sec.bars.area, strict=True)
             ],
             "link_diameter_mm": g.link,
+            "lines": adsec_lines(g, cage, dg),
         },
         "utilisation": round(max(finite), 3) if finite else None,
         "passed": bool(passed),
@@ -1071,9 +1951,24 @@ def design_beam(
         "truss": truss,
         "steel": steel,
         "bands": bands,
+        "tension": beam_tension([mom, qp_all], lay.start, BAND, lambda i: _band_at(lay, i), g.b, g.h),
+        "crack_bands": beam_crack_bands(crack_sec, g, cage, qp_all, e_eff, conc, limits, lay),
         "profile": _profile(mom, u),
+        "profile_qp": _profile_qp(crack_sec, g, cage, qp_all, e_eff, conc, limits),
         "governing_sets": sets,
+        "ductility": duct,
+        "rooms": rooms,
+        "spikes": _spike_rows(spikes),
     }
+
+
+def _spike_rows(spikes: SpikeLog | None) -> list[dict] | None:
+    """The places spikes were removed, largest change first (None: spikes kept)."""
+    if spikes is None:
+        return None
+    return [
+        {**q, "raw": round(q["raw"], 1), "used": round(q["used"], 1)} for q in _places(spikes)[:SPIKE_ROWS]
+    ]
 
 
 def _profile(mom: pd.DataFrame, u: np.ndarray) -> list[dict]:
@@ -1089,14 +1984,65 @@ def _profile(mom: pd.DataFrame, u: np.ndarray) -> list[dict]:
     ]
 
 
+def _profile_qp(sec, g, cage, qp: pd.DataFrame, e_eff, conc, limits) -> list[dict]:
+    """As ``_profile`` for the QP results: the vertical bending envelope and, as the utilisation, the
+    crack width over its limit at the largest sagging and hogging moment of each position."""
+    if qp is None or qp.empty:
+        return []
+    out = []
+    for s, rows in qp.groupby("s"):
+        u = 0.0
+        for i in {rows["Mv"].idxmax(), rows["Mv"].idxmin()}:
+            r = rows.loc[i]
+            face = "bottom" if r["Mv"] >= 0 else "top"
+            c = face_crack(sec, g, getattr(cage, face), float(r["N"]), float(r["Mv"]), e_eff, conc)
+            u = max(u, c["wk"] / limits[face])
+        out.append(
+            {
+                "s": float(s),
+                "u": round(u, 3),
+                "Mv_max": round(float(rows["Mv"].max()), 1),
+                "Mv_min": round(float(rows["Mv"].min()), 1),
+            }
+        )
+    return out
+
+
+def beam_crack_terms(sec, g: Geometry, cage: Cage, n: float, mv: float, e_eff: float, conc, limits) -> dict:
+    """A QP set's crack width at its tension face (vertical bending, as the crack check)."""
+    face = "bottom" if mv >= 0 else "top"
+    c = face_crack(sec, g, getattr(cage, face), float(n), float(mv), e_eff, conc)
+    out = crack_terms(c["wk"], limits[face], c["sigma_s"], c["sr_max"], c["x_mm"], g.h)
+    return {**out, "face": face, "b_mm": g.b}
+
+
+def beam_crack_bands(sec, g, cage, qp: pd.DataFrame, e_eff, conc, limits, lay: Layout) -> list[list[float]]:
+    """[x, y, z, wk / limit] per 0.5 m band, the worst QP row of each band at its tension face."""
+    if qp is None or qp.empty:
+        return []
+    k = np.floor((qp["s"].to_numpy(float) - lay.start) / BAND).astype(int)
+    out = []
+    for i, rows in qp.assign(k=k).groupby("k"):
+        worst = 0.0
+        for _, r in rows.iterrows():
+            face = "bottom" if r["Mv"] >= 0 else "top"
+            c = face_crack(sec, g, getattr(cage, face), float(r["N"]), float(r["Mv"]), e_eff, conc)
+            worst = max(worst, c["wk"] / limits[face])
+        out.append([*_band_at(lay, int(i)), round(worst, 3)])
+    return out
+
+
+def _band_at(lay: Layout, i: int) -> list[float]:
+    x, y = lay.plan(lay.start + (i + 0.5) * BAND)
+    return [round(x, 3), round(y, 3), round(lay.level, 2)]
+
+
 def beam_bands(lay: Layout, frame: pd.DataFrame) -> list[list[float]]:
     """[x, y, z, utilisation] per 0.5 m band along the beam centre line."""
     k = np.floor((frame["s"].to_numpy(float) - lay.start) / BAND).astype(int)
     out = []
     for i, u in frame.assign(k=k).groupby("k")["u"].max().items():
-        s = lay.start + (i + 0.5) * BAND
-        x, y = (lay.centre, s) if lay.along == "Y" else (s, lay.centre)
-        out.append([round(x, 3), round(y, 3), round(lay.level, 2), round(float(u), 3)])
+        out.append([*_band_at(lay, int(i)), round(float(u), 3)])
     return out
 
 

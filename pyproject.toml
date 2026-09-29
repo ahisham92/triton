@@ -14,6 +14,7 @@ dependencies = [
     "pandas>=2.1",
     "pillow>=10.1",
     "python-docx>=1.1",
+    "python-calamine>=0.4",
     "python-multipart>=0.0.9",
     "pyxlsb>=1.0.10",
     "reportlab>=4.0",
@@ -30,7 +31,7 @@ triton = "triton.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-triton = ["static/*"]
+triton = ["static/*", "revit/*.py", "revit/*.txt", "revit/addin/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -45,3 +46,13 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # Report prose: sentences are kept whole in f-strings.
 "src/triton/report.py" = ["E501"]
+"src/triton/clashes.py" = ["E501"]
+"src/triton/clash_report.py" = ["E501"]
+"src/triton/furniture.py" = ["E501"]
+"src/triton/furniture_report.py" = ["E501"]
+"src/triton/design/furniture.py" = ["E501"]
+"src/triton/design/anchors.py" = ["E501"]
+"src/triton/design/bollard.py" = ["E501"]
+"src/triton/design/protrusion.py" = ["E501"]
+# The slab design's helpers are closures over one layer, called within that layer's loop.
+"src/triton/design/slabs.py" = ["B023"]
