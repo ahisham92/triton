@@ -4217,6 +4217,14 @@ async function mountElementViews(res) {
   const crack = resultCracks(res);
   // Decks designed in column and field strips: their strips and stations, for the 3D view's options.
   const strips = Object.fromEntries((res?.slabs || []).filter((d) => d.strip_design?.stations?.length).map((d) => [d.key || d.element, d.strip_design]));
+  // A corner zone designed on its own is drawn with its part: its squares, so the strips view marks them.
+  for (const d of res?.slabs || []) {
+    const k = d.corner_zone && `${d.element} · ${d.corner_zone.side}`;
+    if (!k || !strips[k]) continue;
+    const corner = strips[k].corner?.cells ? strips[k].corner : { length: d.corner_zone.length_m, cells: new Set() };
+    for (const r of d.bands || []) corner.cells.add(`${r[0]},${r[1]}`);
+    strips[k] = { ...strips[k], corner };
+  }
   // The element first; the seabed, water and furniture join it when they have loaded (they are
   // worked out again after an update too, and the view must not wait for them).
   const views = [];
@@ -5467,7 +5475,9 @@ function stripPlan(card, d) {
       title = `${b.length - 1} stations along ${sd.along}, measured from the ${esc(sd.from)}: each station takes the worst cut inside it, and every square of it gets that station's bars.`;
       legend = b.slice(0, -1).map((s, i) => `<span><i class="sw" style="background:rgba(${STATION_TINTS[i % STATION_TINTS.length]},${i % 2 ? 0.5 : 0.32})"></i>S${i + 1}: ${fmt(s, 2)} to ${fmt(b[i + 1], 2)} m (${fmt(b[i + 1] - s, 2)} m)</span>`).join("");
     }
-    el.innerHTML = `<div class="chart-title">${title} Sea side on the left.</div><div class="legend">${legend}</div>
+    const shared = sd.stations_from ? ` The stations are the same as ${esc(sd.stations_from)}'s, as on every part of the corner.` : "";
+    const corner = sd.corner_zone_m ? ` The deck within ${fmt(sd.corner_zone_m, 1)} m of the corner is not in these strips: it is designed on its own, per 1 m square (uniform).` : "";
+    el.innerHTML = `<div class="chart-title">${title}${shared}${corner} Sea side on the left.</div><div class="legend">${legend}</div>
       <svg viewBox="0 0 ${W + 16} ${H}" style="max-width:${Math.round(W + 16)}px" role="img" aria-label="Strips and stations"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${body}${heads}${stationLines}
       <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text>${planAxes(sd, W, H)}</svg>`;
   };

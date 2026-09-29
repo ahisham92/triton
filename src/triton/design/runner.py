@@ -25,6 +25,7 @@ from ..project import (
     Section,
     SheetPileInput,
     SlabInput,
+    SlabStrips,
     _now,
     with_project_grades,
 )
@@ -575,7 +576,29 @@ def _design(
             skipped.append(f"{name}: no usable results in the workbook{where}.")
             continue
         tick(name)
-        for part, own, geo, key, pile_sheets, zone in slab_runs(name, element):
+        pieces = slab_runs(name, element)
+        # A corner berth in strips: every part on the same stations (the stations are distances from the
+        # front wall line, the same across every part), unless the user set a part's own on the Design
+        # tab. They come from the slab's inputs, else the first part whose stations the user set, else
+        # the part that is not turned (or the longest) with its automatic stations, designed first.
+        whole = [i for i, q in enumerate(pieces) if q[0] is not None and q[5] is None]
+        ref, shared = None, None
+        if len(whole) > 1 and element.strips == "column_and_field" and not element.stations:
+            saved = [i for i in whole if (section.slab_strips.get(pieces[i][3]) or SlabStrips()).stations]
+            if saved:
+                ref = min(saved, key=lambda i: (pieces[i][0].turned, pieces[i][0].index))
+                shared = (list(section.slab_strips[pieces[ref][3]].stations or []), pieces[ref][0].name, True)
+            else:
+                ref = min(whole, key=lambda i: (pieces[i][0].turned, -pieces[i][0].length))
+        order = sorted(range(len(pieces)), key=lambda i: i != ref)
+        designed: dict[int, dict[str, Any]] = {}
+        for i in order:
+            part, own, geo, key, pile_sheets, zone = pieces[i]
+            choice = section.slab_strips.get(key)
+            follows = None
+            if shared is not None and i in whole and i != ref and not (choice and choice.stations):
+                choice = (choice or SlabStrips()).model_copy(update={"stations": shared[0]})
+                follows = shared
             around = views[part.index][1] if part else sheets
             placed, lengths = with_joints(element, part)
             if zone is not None:
@@ -589,11 +612,23 @@ def _design(
                 section.elements,
                 axes.get(name),
                 pile_sheets,
-                section.slab_strips.get(key),
+                choice,
                 signs.get(name),
                 standard,
             )
             d["notes"][:0] = [n for n in (_multiplier_note(section, own), _zone_note(section)) if n]
+            sd = d.get("strip_design") or {}
+            if i == ref and shared is None and sd.get("stations"):
+                shared = ([float(b) for b in sd["stations"][1:-1]], part.name, False)
+            if follows is not None and sd:
+                sd["stations_from"] = follows[1]
+                d["notes"].insert(
+                    0,
+                    f"Stations: the same as {follows[1]}'s ("
+                    + ("set on the Design tab" if follows[2] else "automatic, from its rows of piles")
+                    + "), so every part of the corner has the same stations. Set this part's own on the "
+                    "Design tab to change them here only.",
+                )
             if element.construction_joints and not standard:
                 lines = beam_lines(around, section.elements, axes)
                 d["construction_joints"] = add_weights(
@@ -619,7 +654,12 @@ def _design(
                     "side": part.name,
                     "length_m": element.corner_zone_length,
                 }
-            slabs.append(d)
+            elif part is not None and element.corner_zone == "own" and len(parts) > 1 and sd:
+                sd["corner_zone_m"] = (
+                    element.corner_zone_length
+                )  # left out of the strips, designed on its own
+            designed[i] = d
+        slabs.extend(designed[i] for i in range(len(pieces)))
     approach_slabs = found_so_far["approach_slabs"]
     if approach_design is not None and take(APPROACH):
         tick(APPROACH)

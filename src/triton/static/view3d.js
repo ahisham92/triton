@@ -142,7 +142,7 @@ const fmtAct = (v) =>
   v == null ? "–" : v.toLocaleString("en-GB", { maximumFractionDigits: Math.abs(v) >= 100 ? 0 : Math.abs(v) >= 10 ? 1 : 2 });
 
 const OWN_MODES = ["actions", "governing", "strips", "stations"];
-const STRIP_FILL = ["rgb(70,130,196)", "rgb(226,160,90)", "rgb(205,205,205)"];
+const STRIP_FILL = ["rgb(70,130,196)", "rgb(226,160,90)", "rgb(205,205,205)", "rgb(120,170,110)"];
 export const STATION_TINTS = ["46,125,196", "217,115,13", "22,150,120", "142,84,190", "200,60,90", "120,120,40"];
 
 // Where a square of a deck designed in strips lies (as triton/design/slabs.py locate()): its distance
@@ -166,11 +166,15 @@ export function stripCell(sd, x, y) {
   const b = sd.stations || [];
   let st = -1;
   for (let i = 0; i < b.length - 1; i++) if (s >= b[i] - 1e-9 && s < b[i + 1] + 1e-9) { st = i; break; }
+  // A corner zone designed on its own: out of the strips (its squares listed by the Design tab).
+  if (sd.corner?.cells?.has(`${x},${y}`)) strip = { kind: "corner" };
   return { s, t, strip, st };
 }
 
 function zoneWords(sd, c, strips) {
   const across = sd.along === "X" ? "Y" : "X";
+  if (strips && c.strip.kind === "corner")
+    return `corner zone, designed on its own: ${sd.corner.length} m each side of the corner, per 1 m square with no strips (uniform), in this part's bar directions`;
   if (strips)
     return c.strip.kind === "column"
       ? `column strip on the pile line at ${across} ${c.strip.at.toFixed(1)}, ${sd.column_width_m} m wide`
@@ -189,9 +193,12 @@ function zonesLegendHtml(view, list) {
   const sw = (c) => `<i style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${c};margin-right:4px;vertical-align:-1px"></i>`;
   if (view === "strips")
     return `<div class="heat-legend"><span>Column and field strips (reinforcement in ${esc(sd.along)} direction, M${sd.along === "X" ? "11" : "22"})</span>
-      <p>${sw(STRIP_FILL[0])}column strip (C) on each pile line, ${sd.column_width_m} m wide · ${sw(STRIP_FILL[1])}field strip (F) between them, ${sd.field_width_m} m wide · ${sw(STRIP_FILL[2])}between the strips</p>
+      <p>${sw(STRIP_FILL[0])}column strip (C) on each pile line, ${sd.column_width_m} m wide · ${sw(STRIP_FILL[1])}field strip (F) between them, ${sd.field_width_m} m wide · ${sw(STRIP_FILL[2])}between the strips${list.some((q) => q.sd.corner) ? ` · ${sw(STRIP_FILL[3])}corner zone, designed on its own (${list.find((q) => q.sd.corner).sd.corner.length} m each side of the corner, uniform, no strips)` : ""} · rings: piles</p>
       <p>At each station every column strip is designed together, and every field strip, from the ${sd.across === "peak" ? "peak" : "average"} moment across the strip's width. Tap a square for its strip.</p></div>`;
-  return `<div class="heat-legend"><span>Stations along ${esc(sd.along)}, from the ${esc(sd.from)}</span><p>${list
+  // Every part of a corner on the same stations: listed once.
+  const same = list.length > 1 && list.every((q) => JSON.stringify(q.sd.stations.slice(1, -1)) === JSON.stringify(sd.stations.slice(1, -1)));
+  const shown = same ? [{ key: "Every part (the same stations)", sd }] : list;
+  return `<div class="heat-legend"><span>Stations along ${esc(sd.along)}, from the ${esc(sd.from)}</span><p>${shown
     .map(({ key, sd: q }) => `${list.length > 1 ? `<b>${esc(key)}:</b> ` : ""}${q.stations.slice(0, -1)
       .map((b0, i) => `${sw(`rgb(${STATION_TINTS[i % STATION_TINTS.length]})`)}S${i + 1} ${b0} to ${q.stations[i + 1]} m`).join(" · ")}`).join("<br>")}</p>
     <p>Each station takes the worst cut inside it, and every square of it gets that station's bars. Tap a square for its station.</p></div>`;
@@ -718,7 +725,7 @@ export class View3D {
       const strips = this.view === "strips";
       const bands = (this.scene.bands?.[k] || []).map((r) => {
         const c = stripCell(sd, r[0], r[1]);
-        return [r[0], r[1], r[2], strips ? { column: 0, field: 1, between: 2 }[c.strip.kind] : c.st < 0 ? null : c.st, r[4], r[5], c];
+        return [r[0], r[1], r[2], strips ? { column: 0, field: 1, between: 2, corner: 3 }[c.strip.kind] : c.st < 0 ? null : c.st, r[4], r[5], c];
       });
       return {
         bands,
@@ -867,6 +874,13 @@ export class View3D {
       if (e.turn) turnBack(items.slice(first), e.turn);
     }
     if (this.view === "strips" || this.view === "stations") this._zoneLabels(items, elements);
+    // A deck's own view, whatever it shows: where the piles are under it, so the picture can be read.
+    const decks = this.scene.elements.filter((e) => e.element === selected && e.type === "slab" && e.box && this.scene.focus === selected);
+    if (decks.length) {
+      const z = Math.max(...decks.map((e) => e.box.Z[1])) + 0.02;
+      for (const p of this.scene.elements)
+        if (p.type === "pile" && p.lines) for (const [x, y] of p.lines) items.push({ kind: "ring", at: [x, y, z], element: p.element, tip: `${p.element} at X ${x}, Y ${y}` });
+    }
     if (this.view === "crack") {
       for (const e of elements) {
         const faded = selected && e.element !== selected;
@@ -966,10 +980,26 @@ export class View3D {
 
   // Each station's name (S1, S2, ...) at the deck's edge, or C / F on each strip at the rear end.
   _zoneLabels(items, elements) {
+    // In plan, the middle of each part: a corner's station names go on the side of a part away from
+    // the other parts, not piled up at the corner.
+    const toPlan = (e, p) => {
+      const it = { at: [...p] };
+      if (e.turn) turnBack([it], e.turn);
+      return it.at;
+    };
+    const mids = {};
+    for (const { key } of this._strips()) {
+      const e = elements.find((x) => (x.key || x.element) === key);
+      const cells = this.scene.bands?.[key] || [];
+      if (!e || !cells.length) continue;
+      const m = [0, 1].map((k) => cells.reduce((sum, r) => sum + r[k], 0) / cells.length);
+      mids[key] = toPlan(e, [m[0], m[1], 0]);
+    }
     for (const { key, sd } of this._strips()) {
       const e = elements.find((x) => (x.key || x.element) === key);
       const cells = this.scene.bands?.[key] || [];
       if (!e || !cells.length) continue;
+      const others = Object.entries(mids).filter(([k]) => k !== key).map(([, m]) => m);
       const ax = sd.along === "X" ? 0 : 1;
       const ts = cells.map((r) => r[1 - ax]);
       const ss = cells.map((r) => (r[ax] - sd.origin) * sd.sign);
@@ -980,7 +1010,16 @@ export class View3D {
         return ax === 0 ? [a, tv, z] : [tv, a, z];
       };
       if (this.view === "stations") {
-        const tTop = Math.max(...ts) + 0.8;
+        let tTop = Math.max(...ts) + 0.8;
+        if (others.length) {
+          const sMid = (sd.stations[0] + sd.stations[sd.stations.length - 1]) / 2;
+          const far = (tv) => {
+            const p = toPlan(e, at(sMid, tv));
+            return Math.min(...others.map((m) => Math.hypot(p[0] - m[0], p[1] - m[1])));
+          };
+          const tLow = Math.min(...ts) - 0.8;
+          if (far(tLow) > far(tTop)) tTop = tLow;
+        }
         sd.stations.slice(0, -1).forEach((b0, i) =>
           items.push({ kind: "label", at: at((b0 + sd.stations[i + 1]) / 2, tTop), text: `S${i + 1}`, force: true, element: e.element }));
       } else {
@@ -1601,6 +1640,21 @@ export class View3D {
         ctx.stroke();
         if (d.it.tip && !d.it.faded && !d.it.ghost) this.hits.push(d);
       }
+    }
+    // Piles under a deck: a ring at each pile head, over the colours.
+    for (const it of this.items) {
+      if (it.kind !== "ring") continue;
+      const [px, py] = this._project(it.at);
+      const r = Math.max(3.5, Math.min(9, 0.5 * this.cam.scale));
+      ctx.globalAlpha = 1;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, 2 * Math.PI);
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      ctx.fill();
+      ctx.strokeStyle = ink;
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+      this.hits.push({ it, a: [px, py], b: [px, py] });
     }
     // Pins on top: a clash or a warning at a point.
     for (const it of this.items) {
