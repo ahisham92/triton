@@ -25,7 +25,15 @@ from triton.alignment import (
 )
 from triton.design.runner import run_section
 from triton.elements import ResultKind
-from triton.project import Alignment, DesignSettings, PileInput, Section, SlabInput, default_element
+from triton.project import (
+    Alignment,
+    DesignSettings,
+    PileInput,
+    Section,
+    SlabInput,
+    SlabStrips,
+    default_element,
+)
 from triton.validation import import_sheets
 
 
@@ -533,3 +541,31 @@ def test_strips_along_the_berth_are_flagged():
     assert check(kept) and "should run along Y" in check(kept)[0]
     (plain,) = run_section(DesignSettings(), section(), berth(), only=ONLY)["slabs"]
     assert not check(plain)
+
+
+def test_every_part_of_a_corner_has_the_same_stations():
+    corner = turn_workbook(berth(), -25.0, where=lambda x, y: y >= 0)
+    stations = lambda out: [d["strip_design"]["stations"][1:-1] for d in out["slabs"]]  # noqa: E731
+    out = run_section(DesignSettings(), section(), corner, only=["Deck"])
+    a, b = out["slabs"]
+    assert stations(out)[0] == stations(out)[1]
+    # The straight part leads; the turned one follows it and says so.
+    assert "stations_from" not in a["strip_design"] and b["strip_design"]["stations_from"] == "Part 1"
+    assert b["notes"][0].startswith("Stations: the same as Part 1's")
+    # Stations set on one part's diagram: every part without its own takes them.
+    s = section(slab_strips={"Deck · Part 2": SlabStrips(stations=[3.0, 5.0])})
+    assert stations(run_section(DesignSettings(), s, corner, only=["Deck"])) == [[3.0, 5.0], [3.0, 5.0]]
+    # Each part's own, set by the user, stays its own.
+    s = section(
+        slab_strips={"Deck · Part 1": SlabStrips(stations=[4.0]), "Deck · Part 2": SlabStrips(stations=[3.0])}
+    )
+    assert stations(run_section(DesignSettings(), s, corner, only=["Deck"])) == [[4.0], [3.0]]
+    # A corner zone designed on its own: each part's strips say how far back from the corner they stop.
+    own = section()
+    own.elements["Deck"] = own.elements["Deck"].model_copy(
+        update={"corner_zone": "own", "corner_zone_length": 3.0}
+    )
+    parts = [
+        d for d in run_section(DesignSettings(), own, corner, only=["Deck"])["slabs"] if d.get("strip_design")
+    ]
+    assert [d["strip_design"]["corner_zone_m"] for d in parts] == [3.0, 3.0]
