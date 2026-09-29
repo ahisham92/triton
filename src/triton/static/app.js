@@ -5476,7 +5476,7 @@ function stripPlan(card, d) {
       legend = b.slice(0, -1).map((s, i) => `<span><i class="sw" style="background:rgba(${STATION_TINTS[i % STATION_TINTS.length]},${i % 2 ? 0.5 : 0.32})"></i>S${i + 1}: ${fmt(s, 2)} to ${fmt(b[i + 1], 2)} m (${fmt(b[i + 1] - s, 2)} m)</span>`).join("");
     }
     const shared = sd.stations_from ? ` The stations are the same as ${esc(sd.stations_from)}'s, as on every part of the corner.` : "";
-    const corner = sd.corner_zone_m ? ` The deck within ${fmt(sd.corner_zone_m, 1)} m of the corner is not in these strips: it is designed on its own, per 1 m square (uniform).` : "";
+    const corner = sd.corner_zone_m ? ` The strips stop square across the deck, ${fmt(sd.corner_zone_m, 1)} m short of the corner's wedge: the wedge and those metres are designed on their own, per 1 m square (uniform).` : "";
     el.innerHTML = `<div class="chart-title">${title}${shared}${corner} Sea side on the left.</div><div class="legend">${legend}</div>
       <svg viewBox="0 0 ${W + 16} ${H}" style="max-width:${Math.round(W + 16)}px" role="img" aria-label="Strips and stations"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${body}${heads}${stationLines}
       <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text>${planAxes(sd, W, H)}</svg>`;
