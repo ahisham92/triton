@@ -523,25 +523,75 @@ def turn_frame(f: pd.DataFrame, part: Part, kind: ResultKind | None, local_one: 
     return f.drop(columns=[c for c in f.columns if c.endswith(("_min", "_max"))])
 
 
-def corner_zones(parts: list[Part], x: np.ndarray, y: np.ndarray, length: float) -> np.ndarray:
+def corner_cuts(parts: list[Part], x: np.ndarray, y: np.ndarray, length: float) -> list[tuple[float, float]]:
+    """Where each part's straight run starts and ends (distances along it from its start): ``length``
+    back from the corner, and back from where the line halving the corner meets the deck's far side,
+    whichever is further. Its strips are then whole, cut square across the deck, and the corner zone
+    between takes the whole wedge. ``x``, ``y``: the deck's plan points (the far side is its deepest)."""
+    x, y = np.asarray(x, float), np.asarray(y, float)
+    owner = part_of(parts, x, y)
+    frames = []
+    for i, p in enumerate(parts):
+        a = np.array(p.start)
+        u = (np.array(p.end) - a) / max(p.length, 1e-9)
+        n = np.array([-u[1], u[0]])
+        m = owner == i
+        d = (np.column_stack([x[m], y[m]]) - a) @ n if m.any() else np.zeros(1)
+        if d.mean() < 0:  # the land side: where the deck is
+            n, d = -n, -d
+        frames.append((a, u, n, float(max(d.max(), 0.0))))
+    cuts = [(-math.inf, math.inf) for _ in parts]
+    for k in range(len(parts) - 1):
+        c = np.array(parts[k + 1].start)
+        (a0, u0, n0, d0), (a1, u1, n1, d1) = frames[k], frames[k + 1]
+        half = u0 + u1
+        run = np.array([-half[1], half[0]])  # along the line halving the corner
+        if np.linalg.norm(run) < 1e-9:
+            run = n0
+        if run @ n0 < 0:
+            run = -run
+        run = run / max(np.linalg.norm(run), 1e-9)
+
+        def reach(u, n, depth, a, run=run, c=c):
+            # Distance along the part of the point where the halving line is ``depth`` inland.
+            k_ = depth / max(run @ n, 1e-9)
+            return float((c + k_ * run - a) @ u)
+
+        end0 = min(parts[k].length, reach(u0, n0, d0, a0)) - length
+        start1 = max(0.0, reach(u1, n1, d1, a1)) + length
+        cuts[k] = (cuts[k][0], end0)
+        cuts[k + 1] = (start1, cuts[k + 1][1])
+    return cuts
+
+
+def corner_zones(
+    parts: list[Part],
+    x: np.ndarray,
+    y: np.ndarray,
+    length: float,
+    cuts: list[tuple[float, float]] | None = None,
+) -> np.ndarray:
     """For each plan point, the corner whose zone it is in (0 for the corner after the first part),
-    else -1. A corner's zone reaches ``length`` m either side of it along each part, measured square
-    to the part from its line (the front beam), so inland it takes the same wedge of the deck."""
+    else -1. A part's zone starts where its straight run stops (``corner_cuts``, from these points
+    unless given): cut square across the part, so its strips are whole and the zone takes the wedge
+    of the deck round the corner."""
     x, y = np.asarray(x, float), np.asarray(y, float)
     zone = np.full(len(x), -1)
     if len(parts) < 2:
         return zone
+    cuts = cuts or corner_cuts(parts, x, y, length)
     owner = part_of(parts, x, y)
     for i, p in enumerate(parts):
         m = owner == i
         a = np.array(p.start)
         u = (np.array(p.end) - a) / max(p.length, 1e-9)
         s = (np.column_stack([x[m], y[m]]) - a) @ u
-        before = (s <= length) if i > 0 else np.zeros(len(s), bool)
-        after = (s >= p.length - length) if i < len(parts) - 1 else np.zeros(len(s), bool)
+        lo, hi = cuts[i]
+        before = s <= lo
+        after = s >= hi
         z = np.full(len(s), -1)
         z[after] = i
-        z[before & (~after | (s < p.length - s))] = i - 1  # a short part: the nearer corner
+        z[before & (~after | (s - lo < hi - s))] = i - 1  # a short part: the nearer corner
         zone[m] = z
     return zone
 

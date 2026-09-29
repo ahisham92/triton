@@ -569,3 +569,41 @@ def test_every_part_of_a_corner_has_the_same_stations():
         d for d in run_section(DesignSettings(), own, corner, only=["Deck"])["slabs"] if d.get("strip_design")
     ]
     assert [d["strip_design"]["corner_zone_m"] for d in parts] == [3.0, 3.0]
+
+
+def test_corner_zone_takes_the_whole_wedge_and_strips_stop_square():
+    # Land on the inside of the bend: the line halving the corner runs far along each part at the back,
+    # so the parts' strips stop square across the deck where it meets the back, and the zone takes
+    # the wedge between (not only a triangle at the front corner).
+    from triton.alignment import corner_cuts, corner_zones, part_of
+
+    t = math.radians(35.0)
+    end = [-30.0 * math.sin(t), 30.0 * math.cos(t)]
+    parts = make_parts([[0.0, -30.0], [0.0, 0.0], end], land=(-20.0, 0.0))
+    xs, ys = np.meshgrid(np.arange(-30.0, 25.0, 0.5), np.arange(-30.0, 40.0, 0.5))
+    x, y = xs.ravel(), ys.ravel()
+    owner = part_of(parts, x, y)
+    depth = np.zeros(len(x))
+    along = np.zeros(len(x))
+    for i, p in enumerate(parts):
+        a = np.array(p.start)
+        u = (np.array(p.end) - a) / p.length
+        n = np.array([-u[1], u[0]])  # towards the land (-X at the front)
+        m = owner == i
+        depth[m] = (np.column_stack([x[m], y[m]]) - a) @ n
+        along[m] = (np.column_stack([x[m], y[m]]) - a) @ u
+    deck = (depth >= 0) & (depth <= 20) & (along >= 0) & (along <= 30)
+    x, y, owner, depth, along = x[deck], y[deck], owner[deck], depth[deck], along[deck]
+    zone = corner_zones(parts, x, y, 3.0)
+    (_, end1), (start2, _) = corner_cuts(parts, x, y, 3.0)
+    for i, cut in ((0, end1), (1, start2)):
+        strips = (owner == i) & (zone < 0)
+        # Whole strips: at the front and at the back the part's straight run stops at the same line.
+        front, back = strips & (depth < 1), strips & (depth > 19)
+        edge = np.max if i == 0 else np.min
+        assert abs(edge(along[front]) - edge(along[back])) < 0.6
+        assert abs(edge(along[front]) - cut) < 0.6
+    # The back of the halving line is in the zone, 20 m inland: far past 3 m from the front corner.
+    deep = (owner == 0) & (depth > 18)
+    assert (zone[deep & (along > along[deep].max() - 1)] == 0).all()
+    assert end1 < parts[0].length - 3.0 - 5.0

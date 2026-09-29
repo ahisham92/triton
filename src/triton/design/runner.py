@@ -7,7 +7,15 @@ from collections.abc import Callable, Collection
 from dataclasses import replace
 from typing import Any
 
-from ..alignment import corner_zones, element_in_part, part_elements, section_parts, tag_part, trim_ends
+from ..alignment import (
+    corner_cuts,
+    corner_zones,
+    element_in_part,
+    part_elements,
+    section_parts,
+    tag_part,
+    trim_ends,
+)
 from ..axes import infer_axes, set_signs
 from ..elements import ElementType
 from ..forces import scale_forces
@@ -477,6 +485,11 @@ def _design(
                 for part, own, geo, key in runs(name)
             ]
         length = element.corner_zone_length
+        # Where each part's strips stop: from the whole deck, the same for its piles.
+        first = next(
+            sh.frame for sh in sheets[name].values() if not sh.frame.empty
+        )  # every combination: the same nodes
+        cuts = corner_cuts(parts, first["X"].to_numpy(float), first["Y"].to_numpy(float), length)
         pile_names = {
             n: sheets[n] for n, e in section.elements.items() if isinstance(e, PileInput) and n in sheets
         }
@@ -487,7 +500,7 @@ def _design(
             want = -1 if zone is None else zone
 
             def keep(x, y, want=want):
-                return corner_zones(parts, x, y, length) == want
+                return corner_zones(parts, x, y, length, cuts) == want
 
             own = part_elements({name: sheets[name]}, parts, part, axes, keep).get(name) or {}
             own = {c: sh for c, sh in own.items() if not sh.frame.empty}
@@ -505,13 +518,15 @@ def _design(
     def corner_note(element: SlabInput, part: Any, zone: int | None, n: int) -> str:
         if zone is None:
             return (
-                f"Corner zone designed on its own (slab setting): the deck within "
-                f"{element.corner_zone_length:g} m of the corner along the front beam is left out of this "
-                "part's strips and stations."
+                f"Corner zone designed on its own (slab setting): this part's strips stop on a line square "
+                f"across the deck, {element.corner_zone_length:g} m short of the corner's wedge (the deck "
+                "past the square line through the back end of the line halving the corner, or through the "
+                "corner itself when that is nearer). The wedge and those metres are designed on their own."
             )
         return (
-            f"Corner zone{'' if n == 2 else f' {zone + 1}'}, {part.name}'s side: the deck within "
-            f"{element.corner_zone_length:g} m of the corner along the front beam, designed per 1 m cell "
+            f"Corner zone{'' if n == 2 else f' {zone + 1}'}, {part.name}'s side: the deck from where "
+            f"{part.name}'s strips stop ({element.corner_zone_length:g} m short of the corner's wedge) "
+            "to the line halving the corner, designed per 1 m cell "
             f"(no strips) in {part.name}'s bar directions, its moments resolved into them."
         )
 

@@ -1286,15 +1286,16 @@ class SlabInput(_ConcreteSection):
         "strips",
         title="Corner zone",
         description="A corner berth: In the strips: each part's column and field strips run up to the "
-        "corner. Designed on its own: the deck within the corner zone length either side of each corner "
-        "(along the front beam) is left out of the strips and stations and designed per 1 m cell, each "
-        "side in its own part's bar directions.",
+        "corner. Designed on its own: each part's strips stop on a line square across the deck, the corner "
+        "zone length short of the corner's wedge (the deck past the square line through the back end of "
+        "the line halving the corner); the wedge and those metres are designed per 1 m cell, each side of "
+        "the halving line in its own part's bar directions.",
     )
     corner_zone_length: float = _m(
         "Corner zone length, each side of the corner",
         5.0,
         gt=0,
-        description="Measured along the front beam from the corner, square to each part.",
+        description="How far short of the corner's wedge each part's strips stop, square to the part.",
     )
     twisting: Literal["ignore", "wood_armer"] = Field(
         "ignore",

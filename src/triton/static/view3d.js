@@ -171,10 +171,39 @@ export function stripCell(sd, x, y) {
   return { s, t, strip, st };
 }
 
+// A square cut where a strip's or a station's edge crosses it, each piece coloured for what it is: the
+// strips and stations are drawn at their true widths, not rounded to whole squares. [[x0, x1, y0, y1,
+// category, cell]] in the frame the deck was designed in, or null when the square is all one thing.
+export function cellPieces(sd, x, y, size, strips, cat) {
+  const h = size / 2;
+  const alongX = sd.along === "X";
+  // Strips: cut across (t); stations: cut along (the stations' distances turned into x or y).
+  const cutX = strips ? !alongX : alongX;
+  const lo = (cutX ? x : y) - h, hi = (cutX ? x : y) + h;
+  let edges;
+  if (strips) {
+    const lines = [...sd.lines].sort((a, b) => a - b);
+    const mids = lines.slice(1).map((L, i) => (L + lines[i]) / 2);
+    edges = [...lines.flatMap((L) => [L - sd.column_width_m / 2, L + sd.column_width_m / 2]), ...mids.flatMap((M) => [M - sd.field_width_m / 2, M + sd.field_width_m / 2])];
+  } else edges = (sd.stations || []).map((b) => sd.origin + sd.sign * b);
+  const cuts = [lo, ...edges.filter((e) => e > lo + 0.02 && e < hi - 0.02).sort((a, b) => a - b), hi];
+  if (cuts.length === 2) return null;
+  const out = [];
+  for (let i = 0; i < cuts.length - 1; i++) {
+    const m = (cuts[i] + cuts[i + 1]) / 2;
+    const c = cutX ? stripCell(sd, m, y) : stripCell(sd, x, m);
+    const k = cat(c);
+    const last = out[out.length - 1];
+    if (last && last[4] === k) (cutX ? (last[1] = cuts[i + 1]) : (last[3] = cuts[i + 1]));
+    else out.push(cutX ? [cuts[i], cuts[i + 1], y - h, y + h, k, c] : [x - h, x + h, cuts[i], cuts[i + 1], k, c]);
+  }
+  return out.length > 1 ? out : null;
+}
+
 function zoneWords(sd, c, strips) {
   const across = sd.along === "X" ? "Y" : "X";
   if (strips && c.strip.kind === "corner")
-    return `corner zone, designed on its own: ${sd.corner.length} m each side of the corner, per 1 m square with no strips (uniform), in this part's bar directions`;
+    return `corner zone, designed on its own: the wedge round the corner and ${sd.corner.length} m more each side, per 1 m square with no strips (uniform), in this part's bar directions`;
   if (strips)
     return c.strip.kind === "column"
       ? `column strip on the pile line at ${across} ${c.strip.at.toFixed(1)}, ${sd.column_width_m} m wide`
@@ -193,7 +222,7 @@ function zonesLegendHtml(view, list) {
   const sw = (c) => `<i style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${c};margin-right:4px;vertical-align:-1px"></i>`;
   if (view === "strips")
     return `<div class="heat-legend"><span>Column and field strips (reinforcement in ${esc(sd.along)} direction, M${sd.along === "X" ? "11" : "22"})</span>
-      <p>${sw(STRIP_FILL[0])}column strip (C) on each pile line, ${sd.column_width_m} m wide · ${sw(STRIP_FILL[1])}field strip (F) between them, ${sd.field_width_m} m wide · ${sw(STRIP_FILL[2])}between the strips${list.some((q) => q.sd.corner) ? ` · ${sw(STRIP_FILL[3])}corner zone, designed on its own (${list.find((q) => q.sd.corner).sd.corner.length} m each side of the corner, uniform, no strips)` : ""} · rings: piles</p>
+      <p>${sw(STRIP_FILL[0])}column strip (C) on each pile line, ${sd.column_width_m} m wide · ${sw(STRIP_FILL[1])}field strip (F) between them, ${sd.field_width_m} m wide · ${sw(STRIP_FILL[2])}outside the strips' widths: the deck's edges past the outer pile lines, and gaps where pile lines are further apart than a column and a field strip (they take the nearest field strip's bars, their moments not counted in it)${list.some((q) => q.sd.corner) ? ` · ${sw(STRIP_FILL[3])}corner zone, designed on its own (the wedge round the corner and ${list.find((q) => q.sd.corner).sd.corner.length} m more each side, uniform, no strips)` : ""} · rings: piles · ${sw("rgba(150,158,168,0.22)")}no colour: deck not designed here (the 2 m left out at each end of the berth, set on the Sections tab)</p>
       <p>At each station every column strip is designed together, and every field strip, from the ${sd.across === "peak" ? "peak" : "average"} moment across the strip's width. Tap a square for its strip.</p></div>`;
   // Every part of a corner on the same stations: listed once.
   const same = list.length > 1 && list.every((q) => JSON.stringify(q.sd.stations.slice(1, -1)) === JSON.stringify(sd.stations.slice(1, -1)));
@@ -201,7 +230,7 @@ function zonesLegendHtml(view, list) {
   return `<div class="heat-legend"><span>Stations along ${esc(sd.along)}, from the ${esc(sd.from)}</span><p>${shown
     .map(({ key, sd: q }) => `${list.length > 1 ? `<b>${esc(key)}:</b> ` : ""}${q.stations.slice(0, -1)
       .map((b0, i) => `${sw(`rgb(${STATION_TINTS[i % STATION_TINTS.length]})`)}S${i + 1} ${b0} to ${q.stations[i + 1]} m`).join(" · ")}`).join("<br>")}</p>
-    <p>Each station takes the worst cut inside it, and every square of it gets that station's bars. Tap a square for its station.</p></div>`;
+    <p>Each station takes the worst cut inside it, and every square of it gets that station's bars. At a corner the stations run round the corner zone, measured square to each part, so they meet at the line halving the corner. Rings: piles. ${sw("rgba(150,158,168,0.22)")}No colour: deck not designed here (the 2 m left out at each end of the berth, set on the Sections tab). Tap a square for its station.</p></div>`;
 }
 
 // The groups a governing pin is in: each station it holds a check of ("Part 2 · Station 4.00 to 8.00"),
@@ -723,9 +752,10 @@ export class View3D {
       const sd = this.scene.strips?.[k];
       if (!sd) return { bands: [], color: heat, words: null };
       const strips = this.view === "strips";
+      const cat = (c) => (strips ? { column: 0, field: 1, between: 2, corner: 3 }[c.strip.kind] : c.st < 0 ? null : c.st);
       const bands = (this.scene.bands?.[k] || []).map((r) => {
         const c = stripCell(sd, r[0], r[1]);
-        return [r[0], r[1], r[2], strips ? { column: 0, field: 1, between: 2, corner: 3 }[c.strip.kind] : c.st < 0 ? null : c.st, r[4], r[5], c];
+        return [r[0], r[1], r[2], cat(c), r[4], r[5], c, c.strip.kind === "corner" ? null : cellPieces(sd, r[0], r[1], r[4], strips, cat)];
       });
       return {
         bands,
@@ -830,13 +860,20 @@ export class View3D {
                 tip: `${e.element} at X ${x}, Y ${y}: ${why === "pile" ? "over a pile head: the results inside the pile are FE peaks in the connection and are left out; bending is taken at the pile face" : "no Plaxis node in this cell: nothing to design here; the basic mesh runs through it"}` });
               continue;
             }
+            if (size && row[7]) {
+              // Strips and stations: a square cut where an edge crosses it.
+              for (const [x0, x1, y0, y1, k, c] of row[7])
+                items.push({ kind: "quad", pts: [[x0 - 0.01, y0 - 0.01, z], [x1 + 0.01, y0 - 0.01, z], [x1 + 0.01, y1 + 0.01, z], [x0 - 0.01, y1 + 0.01, z]],
+                  faded, element: e.element, fill: src.color(k), stroke: false, tip: `${e.element}: ${src.words(k, [0, 0, 0, k, 0, 0, c])}` });
+              continue;
+            }
             if (size) {
               // Slabs: square cells of the zone grid. A square with no result of its own (over a pile head,
               // or no Plaxis node in it) shows the worst of the squares round it; those over a pile are outlined.
               const h = size / 2 + 0.01;
               const what = src.words ? src.words(u, row) : `bending needs ${Math.round(u * 100)}% of the bars`;
               items.push({ kind: "quad", pts: [[x - h, y - h, z], [x + h, y - h, z], [x + h, y + h, z], [x - h, y + h, z]],
-                faded, element: e.element, fill: src.color(u), stroke: why === "pile",
+                faded, element: e.element, fill: src.color(u), stroke: why === "pile" && this.view !== "strips" && this.view !== "stations",
                 tip: `${e.element} at X ${x}, Y ${y}: ${what}${why ? `. ${GAP_WHY[why] || ""}` : ""}` });
               continue;
             }
