@@ -674,6 +674,9 @@ export class View3D {
             : this.legend
           ? legendHtml()
           : "";
+    const arrows = govern ? [] : (this.scene.arrows || []).filter((x) => x.short);
+    if (arrows.length)
+      this.host.querySelector(".v3d-legend").insertAdjacentHTML("beforeend", `<div class="heat-legend"><span>Local axes of ${esc(this.scene.selected || "")} (the arrows on the picture; the X Y Z key in the corner shows where Plaxis's X and Y point)</span><p>${arrows.map((x) => esc(x.label)).join("<br>")}</p></div>`);
     const gp = this.host.querySelector("[data-gov-pick]");
     if (gp)
       gp.onchange = () => {
@@ -1661,6 +1664,7 @@ export class View3D {
     }
     const boxes = []; // the labels drawn, so the next one moves clear of them
     for (const it of this.items) if (it.kind === "arrow") this._arrow(ctx, it, ink, boxes);
+    if (!this.scene.caption?.length) this._axesKey(ctx, ink);
     // A caption on the picture itself (a recorded video carries it).
     const cap = this.scene.caption;
     if (cap?.length) {
@@ -1706,7 +1710,10 @@ export class View3D {
       ctx.fill();
     }
     ctx.font = "600 12px system-ui, sans-serif";
-    const w = ctx.measureText(a.label).width;
+    // The short name on the picture (a long one pushed off the edge hid its own arrow); the key under
+    // the picture says what each carries.
+    const text = a.short || a.label;
+    const w = ctx.measureText(text).width;
     const lx = Math.max(4, Math.min(this.w - w - 4, to[0] + (n > 4 ? (dx / n) * 8 : 8) - (dx < -4 ? w : 0)));
     let ly = Math.max(14, Math.min(this.h - 4, to[1] + (n > 4 ? (dy / n) * 12 : -8) + 4));
     const hit = () => boxes.some((b) => lx < b[0] + b[2] && lx + w > b[0] && ly - 12 < b[1] + 16 && ly + 4 > b[1]);
@@ -1717,7 +1724,53 @@ export class View3D {
     ctx.fillRect(lx - 3, ly - 12, w + 6, 16);
     ctx.globalAlpha = 1;
     ctx.fillStyle = ink;
-    ctx.fillText(a.label, lx, ly);
+    ctx.fillText(text, lx, ly);
+  }
+
+  // Plaxis's X, Y and Z in the lower left corner, turning with the camera, so the plan's way up is never
+  // taken for Y.
+  _axesKey(ctx, ink) {
+    const { right, up } = this._basis();
+    const len = 22, ox = len + 18, oy = this.h - len - 18;
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = getComputedStyle(this.host).getPropertyValue("--panel").trim() || "#fff";
+    ctx.beginPath();
+    ctx.arc(ox, oy, len + 14, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.font = "700 12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    [["X", [1, 0, 0]], ["Y", [0, 1, 0]], ["Z", [0, 0, 1]]].forEach(([name, u]) => {
+      const dx = u[0] * right[0] + u[1] * right[1] + u[2] * right[2];
+      const dy = -(u[0] * up[0] + u[1] * up[1] + u[2] * up[2]);
+      const n = Math.hypot(dx, dy);
+      ctx.strokeStyle = ctx.fillStyle = ink;
+      if (n < 0.2) {
+        // Pointing at the viewer: a dot with the letter beside it.
+        ctx.beginPath();
+        ctx.arc(ox, oy, 3, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.fillText(name, ox + 9, oy + 9);
+        return;
+      }
+      const tx = ox + dx * len, ty = oy + dy * len;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      const ux = dx / n, uy = dy / n;
+      ctx.beginPath();
+      ctx.moveTo(tx, ty);
+      ctx.lineTo(tx - 6 * ux - 3 * uy, ty - 6 * uy + 3 * ux);
+      ctx.lineTo(tx - 6 * ux + 3 * uy, ty - 6 * uy - 3 * ux);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillText(name, ox + ux * (len + 8), oy + uy * (len + 8));
+    });
+    ctx.textAlign = "start";
+    ctx.textBaseline = "alphabetic";
   }
 
   _wire() {
@@ -1830,9 +1883,9 @@ function _directionArrows(el, finding) {
     const a2 = loc?.["2"] || "X";
     const a3 = loc?.["3"] || "Y";
     return [
-      { from, dir: [0, 0, -1], label: "1 (along the pile): N" },
-      { from, dir: unit[a2], label: `2 → ${a2}: Q12; M3 bends in ${a2}–Z` },
-      { from, dir: unit[a3], label: `3 → ${a3}: Q13; M2 bends in ${a3}–Z` },
+      { from, dir: [0, 0, -1], short: "1", label: "1 (along the pile): N" },
+      { from, dir: unit[a2], short: `2 = ${a2}`, label: `2 → ${a2}: Q12; M3 bends in ${a2}–Z` },
+      { from, dir: unit[a3], short: `3 = ${a3}`, label: `3 → ${a3}: Q13; M2 bends in ${a3}–Z` },
     ];
   }
   if (el.box && finding.kind === "plate") {
@@ -1842,9 +1895,9 @@ function _directionArrows(el, finding) {
     const two = finding.local["2"];
     const normal = ["X", "Y", "Z"].find((a) => a !== one && a !== two);
     return [
-      { from: mid, dir: unit[one], label: `1 → ${one}: N1, Q13; M11 → reinforcement in ${one} direction` },
-      { from: mid, dir: unit[two], label: `2 → ${two}: N2, Q23; M22 → reinforcement in ${two} direction` },
-      { from: mid, dir: unit[normal], label: `3 → ${normal}: out of plane` },
+      { from: mid, dir: unit[one], short: `1 = ${one}`, label: `1 → ${one}: N1, Q13; M11 → reinforcement in ${one} direction` },
+      { from: mid, dir: unit[two], short: `2 = ${two}`, label: `2 → ${two}: N2, Q23; M22 → reinforcement in ${two} direction` },
+      { from: mid, dir: unit[normal], short: `3 = ${normal}`, label: `3 → ${normal}: out of plane` },
     ];
   }
   return [];
