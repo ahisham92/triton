@@ -5359,6 +5359,20 @@ function barDiagrams(card, d) {
   draw();
 }
 
+// Plaxis's X and Y on a deck plan drawn with the stations across the page (sea side on the left), so
+// the way up is never taken for Y: the stations run in sd.along (its + way to the right when sd.sign
+// is +1), the other axis runs up the page.
+function planAxes(sd, W, H) {
+  const ox = W / 2 + 40, oy = H - 10, h = sd.sign < 0 ? -1 : 1;
+  const other = sd.along === "X" ? "Y" : "X";
+  const tip = (x, y, dx, dy) => `<path d="M${x},${y} l${-6 * dx - 3 * dy},${-6 * dy + 3 * dx} l${6 * dy},${-6 * dx} z" fill="var(--text)"/>`;
+  return `<g aria-label="Plaxis axes"><text class="tick" x="${h < 0 ? ox + 22 : ox - 12}" y="${oy + 1}" text-anchor="${h < 0 ? "start" : "end"}">Plaxis axes</text>
+    <line x1="${ox}" y1="${oy}" x2="${ox + 26 * h}" y2="${oy}" stroke="var(--text)" stroke-width="1.6"/>${tip(ox + 26 * h, oy, h, 0)}
+    <text x="${ox + 34 * h}" y="${oy + 4}" text-anchor="middle" font-size="12" font-weight="700" fill="var(--text)">${sd.along}</text>
+    <line x1="${ox}" y1="${oy}" x2="${ox}" y2="${oy - 24}" stroke="var(--text)" stroke-width="1.6"/>${tip(ox, oy - 24, 0, -1)}
+    <text x="${ox + 9}" y="${oy - 22}" font-size="12" font-weight="700" fill="var(--text)">${other}</text></g>`;
+}
+
 function momentPlan(card, d) {
   // Plan of the deck, sea side on the left: the ULS envelope of M11 or M22 per cell, sagging (bottom
   // face in tension) or hogging (top face in tension), with the strips and stations over it.
@@ -5395,7 +5409,7 @@ function momentPlan(card, d) {
     el.innerHTML = `<div class="chart-title">${esc(mc.names[k])}, ULS ${hog ? "hogging (top face in tension)" : "sagging (bottom face in tension)"}: largest ${fmt(vmax)} kNm/m. Sea side on the left.</div>
       <div class="legend"><span>0</span><i class="ramp" style="background:linear-gradient(90deg,rgba(${hue},.06),rgba(${hue},.94))"></i><span>${fmt(vmax)} kNm/m</span><span>dashed: column strips</span><span>lines: stations (m from the sea side)</span>${(d.punching || []).length ? "<span>circles: pile heads (the squares over them show the pile faces)</span>" : ""}</div>
       <svg viewBox="0 0 ${W} ${H}" style="max-width:${Math.round(W)}px" role="img" aria-label="Moment plan"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${rects}${heads}${strips}${stations}
-      <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text></svg>`;
+      <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text>${planAxes(sd, W, H)}</svg>`;
   };
   pick.querySelectorAll("[data-mp]").forEach((b) => (b.onclick = () => {
     mode = Number(b.dataset.mp);
@@ -5455,7 +5469,7 @@ function stripPlan(card, d) {
     }
     el.innerHTML = `<div class="chart-title">${title} Sea side on the left.</div><div class="legend">${legend}</div>
       <svg viewBox="0 0 ${W + 16} ${H}" style="max-width:${Math.round(W + 16)}px" role="img" aria-label="Strips and stations"><rect x="${X(s0)}" y="${Y(t1)}" width="${(s1 - s0) * sc}" height="${(t1 - t0) * sc}" fill="var(--miss-bg)"/>${body}${heads}${stationLines}
-      <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text></svg>`;
+      <text class="tick" x="${X(s0)}" y="${H - 14}">Sea side</text><text class="tick" x="${X(s1)}" y="${H - 14}" text-anchor="end">Rear</text>${planAxes(sd, W, H)}</svg>`;
   };
   pick.querySelectorAll("[data-sp]").forEach((x) => (x.onclick = () => {
     mode = x.dataset.sp;
