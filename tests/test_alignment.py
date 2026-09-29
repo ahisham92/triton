@@ -519,3 +519,17 @@ def test_outline_keeps_every_hull_corner(monkeypatch):
     monkeypatch.setattr(alignment, "_outline", lambda p: p)
     every = [alignment._edge_direction(p, u) for p in (pts, pts @ turn)]
     assert np.allclose(got, every)
+
+
+def test_strips_along_the_berth_are_flagged():
+    # Turned 90° the berth lies along X: found and turned back by itself, or flagged when set straight.
+    wb = turn_workbook(berth(), 90.0)
+    check = lambda d: [n for n in d["notes"] if n.startswith("Check the strip direction")]  # noqa: E731
+    (auto,) = run_section(DesignSettings(), section(), wb, only=ONLY)["slabs"]
+    assert auto["part"]["rotation_deg"] == pytest.approx(-90.0) and not check(auto)
+    (kept,) = run_section(DesignSettings(), section(alignment=Alignment(mode="straight")), wb, only=ONLY)[
+        "slabs"
+    ]
+    assert check(kept) and "should run along Y" in check(kept)[0]
+    (plain,) = run_section(DesignSettings(), section(), berth(), only=ONLY)["slabs"]
+    assert not check(plain)

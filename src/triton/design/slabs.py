@@ -2171,6 +2171,22 @@ def design_slab(
         else None
     )
     strips = frame is not None
+    if strips:
+        # The strips run across the quay, from the wall to the rear beam: a front beam that is longer along
+        # the strips than across them says the model lies the other way round (the berth along X).
+        front = next((b for b in beams if b.get("type") == "front_beam" and b.get("box")), None)
+        if front is not None:
+            fb = front["box"]
+            length = {a: fb[a][1] - fb[a][0] for a in ("X", "Y")}
+            other = "Y" if slab.strip_direction == "X" else "X"
+            if length[slab.strip_direction] > 2 * max(length[other], 0.5):
+                notes.insert(
+                    0,
+                    f"Check the strip direction: the strips run along {slab.strip_direction}, but the front "
+                    f"beam runs along {slab.strip_direction} too, so the berth lies along "
+                    f"{slab.strip_direction} in this model and the strips should run along {other} (set "
+                    f"'Strips run along' to {other} in the deck's inputs).",
+                )
     # Thickness at each station (a slab that slopes or steps), for the bars along the strips.
     h_st: dict[int, float] = {}
     if strips and slab.station_thicknesses:
