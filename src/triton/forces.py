@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from .elements import ElementSpec
@@ -18,11 +19,15 @@ AXIAL = ("N", "N_1", "N_2")
 LOCATION_COLUMNS = frozenset({"plaxis_label", "Node", "local_number", "X", "Y", "Z"})
 
 
-def scale_forces(frame: pd.DataFrame, factor: float) -> pd.DataFrame:
-    """Multiply every straining action (phase, min and max) by ``factor``; X, Y, Z are kept."""
+def scale_forces(frame: pd.DataFrame, factor) -> pd.DataFrame:
+    """Multiply every straining action (phase, min and max) by ``factor``, one number or one per row;
+    X, Y, Z are kept."""
     out = frame.copy()
     cols = [c for c in out.columns if c not in LOCATION_COLUMNS and pd.api.types.is_numeric_dtype(out[c])]
-    out[cols] = out[cols] * factor
+    if np.ndim(factor):
+        out[cols] = out[cols].mul(np.asarray(factor, dtype=float), axis=0)
+    else:
+        out[cols] = out[cols] * factor
     return out
 
 
@@ -64,8 +69,8 @@ class CombiSection:
     def __post_init__(self) -> None:
         if self.wall_thickness <= 0 or self.outer_diameter <= 2 * self.wall_thickness:
             raise ValueError("Wall thickness must be positive and smaller than the radius.")
-        if not 0 <= self.corrosion_loss < self.wall_thickness:
-            raise ValueError("Corrosion loss must be between 0 and the wall thickness.")
+        if self.corrosion_loss < 0:
+            raise ValueError("Corrosion loss cannot be negative.")
 
     @property
     def inner_diameter(self) -> float:
@@ -73,6 +78,9 @@ class CombiSection:
 
     @property
     def i_steel(self) -> float:
+        # Corrosion through the whole wall leaves no steel: it carries nothing.
+        if self.corrosion_loss >= self.wall_thickness:
+            return 0.0
         d_out = self.outer_diameter - 2 * self.corrosion_loss
         return math.pi / 64 * (d_out**4 - self.inner_diameter**4)
 

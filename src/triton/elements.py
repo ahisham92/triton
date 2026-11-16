@@ -21,6 +21,7 @@ class ResultKind(StrEnum):
 class ElementType(StrEnum):
     SHEET_PILE_WALL = "sheet_pile_wall"
     COMBI_WALL = "combi_wall"
+    DIAPHRAGM_WALL = "diaphragm_wall"
     PILE = "pile"
     SLAB = "slab"
     FRONT_BEAM = "front_beam"
@@ -55,6 +56,11 @@ _PATTERNS: list[tuple[re.Pattern[str], ElementSpec]] = [
     (
         re.compile(r"^SPW$", re.I),
         ElementSpec(ElementType.SHEET_PILE_WALL, ResultKind.PLATE, "wall", False, PLATE_ACTIONS),
+    ),
+    (
+        # A diaphragm wall front wall: a plate like the sheet pile wall, designed in concrete.
+        re.compile(r"^(D\s*-?\s*Wall|Diaphragm\s*Wall)$", re.I),
+        ElementSpec(ElementType.DIAPHRAGM_WALL, ResultKind.PLATE, "wall", True, PLATE_ACTIONS),
     ),
     (
         re.compile(r"^Combi\s*Wall$", re.I),

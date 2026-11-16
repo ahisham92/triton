@@ -81,8 +81,20 @@ def test_cage_export():
     assert pile["positions"] == [{"x": 0.0, "y": 0.0}]
     assert pile["head_level_m"] == 0.0 and pile["toe_level_m"] == -20.0
     first = pile["runs"][0]["rows"][0]
-    assert first["bar_top_m"] == 0.0
+    # The top bars run on 45φ above the pile head into the slab or beam, rounded up to 50 mm.
+    assert first["bar_top_m"] == pytest.approx(math.ceil(45 * first["diameter_mm"] / 50) * 0.05)
     assert first["bar_top_m"] - first["bar_bottom_m"] == pytest.approx(first["bar_length_m"])
+    assert all(r["rows"][0]["bar_top_m"] == r["top_m"] for r in pile["runs"][1:])
+
+
+def test_bars_into_the_element_above_count_in_lengths_and_weight():
+    with_anchor, without = design(), design(head_anchorage_factor=0)
+    top = with_anchor["curtailment"]["runs"][0]
+    assert top["above_head_m"] and all(a > 1 for a in top["above_head_m"])
+    assert without["curtailment"]["runs"][0]["above_head_m"] == [0.0] * len(top["above_head_m"])
+    assert with_anchor["steel"]["longitudinal_kg"] > without["steel"]["longitudinal_kg"]
+    flat, flat0 = design(curtail=False), design(curtail=False, head_anchorage_factor=0)
+    assert flat["steel"]["longitudinal_kg"] > flat0["steel"]["longitudinal_kg"]
 
 
 def test_cage_export_endpoint(tmp_path, monkeypatch):

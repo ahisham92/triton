@@ -16,6 +16,13 @@ for ρl.
 * Detailing to 9.5.3: hoop diameter at least max(6 mm, φl,max/4), spacing at
   most min(20·φl,min, D, 400 mm), times 0.6 for a length D below the pile
   head (slab above) and over laps of bars larger than 14 mm.
+* Link pitches are 100, 150 or 200 mm only (Ahmed, 2026-09-27): the largest of them
+  that the shear and 9.5.3 allow.
+* The links are designed, not only checked: every link size from the pile's smallest
+  link diameter (T10 by default) up is tried, and of those that pass the one with the
+  least link steel (kg per pile) is kept, so T12 @ 200 beats T10 @ 100.
+* The pile can instead be given its own link size (and pitch): those links are then
+  checked and their utilisation reported, nothing is chosen.
 """
 
 from __future__ import annotations
@@ -30,7 +37,8 @@ from ..elements import CombinationType
 from ..materials import REINFORCEMENT_GRADES, STEEL_DENSITY, concrete
 from ..project import DesignSettings, PileInput, pile_cover
 
-MIN_LINK_SPACING = 75.0  # mm, practical minimum pitch
+PITCHES = (100.0, 150.0, 200.0)  # mm, the only link pitches used (Ahmed, 2026-09-27)
+LINK_SIZES = (10, 12, 14, 16, 20, 25)
 STEP = 0.05  # m, level grid
 MIN_LINK_ZONE = 1.0  # m, shorter zones join a neighbour at the closer spacing
 
@@ -46,6 +54,14 @@ class CageZone:
     phi_max: float
     phi_min: float
     lap_below: float  # m, lap of this zone's bars below ``bottom``
+    inner_rows: tuple[tuple[float, float], ...] = ()  # (bar circle radius, bar Ø) mm of each inner row
+
+
+def inner_hoops(zone: CageZone, link: float) -> list[float]:
+    """Diameters (mm, to the link centre line) of the inner link rings: one around each inner row of
+    bars (2 rows: one ring, 3 rows: two; a half row gets its own ring too). Not counted in the shear
+    check, only in the steel."""
+    return [2 * (radius + phi / 2 + link / 2) for radius, phi in zone.inner_rows]
 
 
 def _factors(settings: DesignSettings, accidental: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -58,6 +74,72 @@ def _factors(settings: DesignSettings, accidental: np.ndarray) -> tuple[np.ndarr
 def design_shear(
     pile: PileInput, settings: DesignSettings, loads: pd.DataFrame, zones: list[CageZone]
 ) -> dict:
+    """The links of a pile: of every size from the pile's smallest link diameter up, the one that
+    passes with the least link steel; or the pile's own links, checked."""
+    own_size = getattr(pile, "link_size", None)
+    own_pitch = getattr(pile, "link_spacing", None)
+    if own_size:
+        out = _design_with(pile, settings, loads, zones, float(own_size), own_pitch)
+        out.pop("crushed", None)
+        pitch = f" @ {own_pitch:g}" if own_pitch else ""
+        out["notes"] = [f"Links set on the pile: Ø{own_size:g}{pitch}, checked, not chosen."] + out["notes"]
+        out["set_by_you"] = True
+        return out
+    start = pile.link_diameter
+    sizes = [start] + [d for d in LINK_SIZES if d > start]
+    tried = []
+    for link in sizes:
+        out = _design_with(pile, settings, loads, zones, float(link), own_pitch)
+        tried.append(out)
+        if out.get("crushed"):
+            break  # no link helps: the concrete strut crushes
+    passing = [t for t in tried if t["passed"]]
+    if passing:
+        out = min(passing, key=lambda t: (t["links_kg"], t["link_diameter_mm"]))
+    else:
+        out = min(tried, key=lambda t: (t["utilisation"] is None, t["utilisation"] or 0.0))
+    options = [
+        {
+            "link": " / ".join(dict.fromkeys(z["link"] for z in t["zones"])),
+            "link_diameter_mm": t["link_diameter_mm"],
+            "links_kg": t["links_kg"],
+            "utilisation": t["utilisation"],
+            "passed": t["passed"],
+        }
+        for t in tried
+    ]
+    for t in tried:
+        t.pop("crushed", None)
+    lighter = [o for o in options if o["passed"] and o["link_diameter_mm"] < out["link_diameter_mm"]]
+    if out["passed"] and lighter:
+        o = min(lighter, key=lambda o: o["links_kg"])
+        out["notes"] = [
+            f"Links {out['zones'][0]['link']} ({out['links_kg']:g} kg) chosen over {o['link']} "
+            f"({o['links_kg']:g} kg): less link steel."
+        ] + out["notes"]
+    elif not out["passed"] and len(tried) > 1:
+        top, best = tried[-1]["link_diameter_mm"], out["link_diameter_mm"]
+        note = f"No link from Ø{start:g} to Ø{top:g} passes; Ø{best:g} comes closest."
+        out["notes"] = [note] + out["notes"]
+    out["options"] = options
+    return out
+
+
+def _pitch(s: float) -> float:
+    """The largest of PITCHES not over ``s`` (the closest, 100 mm, when none is)."""
+    return max((p for p in PITCHES if p <= s + 1e-9), default=PITCHES[0])
+
+
+def _design_with(
+    pile: PileInput,
+    settings: DesignSettings,
+    loads: pd.DataFrame,
+    zones: list[CageZone],
+    link: float,
+    pitch: float | None = None,
+) -> dict:
+    """Links of one size. ``pitch``: the pile's own pitch, used wherever 9.5.3 allows it, whatever the
+    shear needs (the utilisation shows whether it carries it)."""
     D = pile.diameter
     r = D / 2
     ac = math.pi * r * r
@@ -65,7 +147,6 @@ def design_shear(
     fyk = REINFORCEMENT_GRADES[settings.reinforcement.grade]
     alpha_cc = settings.partial_factors.alpha_cc
     head, toe = zones[0].top, zones[-1].bottom
-    link = pile.link_diameter
     asw = math.pi * link * link / 4
 
     # Cage at each load's level.
@@ -141,23 +222,25 @@ def design_shear(
     for zn in zones[:-1]:
         if zn.phi_max > 14 and zn.lap_below > 0:
             reduced |= (levels <= zn.bottom) & (levels >= zn.bottom - zn.lap_below)
-    step = settings.reinforcement.spacing_step
     spacing = np.empty(n)
     reason = np.empty(n, dtype=object)
     for j in range(n):
         limit = s_max * (0.6 if reduced[j] else 1.0)
         s_req = asw / need_band[j] if need_band[j] > 0 else math.inf
-        s = min(limit, s_req)
-        s = max(MIN_LINK_SPACING, math.floor(s / step + 1e-9) * step)
-        spacing[j] = s
-        if s_req < limit:
+        wanted = min(limit, pitch) if pitch else min(limit, s_req)
+        spacing[j] = _pitch(wanted)
+        if pitch and pitch <= limit:
+            reason[j] = "set by you"
+        elif not pitch and s_req < limit:
             reason[j] = "shear"
         elif reduced[j]:
             reason[j] = "near slab" if levels[j] > head - D / 1000 else "at lap"
         else:
             reason[j] = "minimum"
-    if (need_band > 0).any() and asw / need_band.max() < MIN_LINK_SPACING - 1e-9:
-        notes.append(f"Ø{link:g} links would be closer than {MIN_LINK_SPACING:g} mm: use larger links.")
+    if s_max * 0.6 < PITCHES[0] - 1e-9 and reduced.any():
+        notes.append(f"9.5.3 asks for links closer than {PITCHES[0]:g} mm near the slab or at laps.")
+    elif s_max < PITCHES[0] - 1e-9:
+        notes.append(f"9.5.3 asks for links closer than {PITCHES[0]:g} mm.")
 
     if settings.piles.links == "unified":
         # One spacing over the whole pile: the closest one needed anywhere.
@@ -168,6 +251,16 @@ def design_shear(
     hoop_len = math.pi * (D - 2 * pile_cover(pile, settings) - link) / 1000  # m
     weight = sum((zz["top"] - zz["bottom"]) * 1000 / zz["spacing_mm"] * hoop_len for zz in out_zones)
     weight *= asw / 1e6 * STEEL_DENSITY
+    # Inner rings at the same size and pitch as the outer links, over each cage zone's length.
+    inner = 0.0
+    for zz in out_zones:
+        for cz in zones:
+            overlap = min(zz["top"], cz.top) - max(zz["bottom"], cz.bottom)
+            if overlap > 0 and cz.inner_rows:
+                length = sum(math.pi * dia / 1000 for dia in inner_hoops(cz, link))
+                inner += overlap * 1000 / zz["spacing_mm"] * length
+    inner *= asw / 1e6 * STEEL_DENSITY
+    rings = max((len(cz.inner_rows) for cz in zones), default=0)
     provided = np.array(
         [next(zz["spacing_mm"] for zz in out_zones if zz["bottom"] - 1e-9 <= lv) for lv in levels]
     )
@@ -189,10 +282,14 @@ def design_shear(
             "VRd_max_kN": round(float(vrd_max(cot[i])[i]), 1),
             "cot_theta": round(float(cot[i]), 2),
         },
+        "link_diameter_mm": link,
+        "crushed": bool(crushed.any()),
         "max_spacing_mm": s_max,
         "min_link_diameter_mm": link_min,
         "zones": out_zones,
-        "links_kg": round(weight, 1),
+        "links_kg": round(weight + inner, 1),
+        "inner_links_kg": round(inner, 1),
+        "inner_rings": rings,
         "profile": _profile(levels, band, v_ed, vrdc),
         "notes": notes,
     }

@@ -55,6 +55,39 @@ roughly three times as long. A workbook is read once on upload and stored with i
 design runs do not read it again. If Triton runs behind a reverse proxy (IIS, nginx), raise the
 proxy's request size limit (e.g. `client_max_body_size 200m`).
 
+**Online on PythonAnywhere, as a tab of an existing site**
+
+PythonAnywhere's web tab runs WSGI apps; Triton (FastAPI) runs there through `triton.wsgi`, mounted
+under `/triton` of the existing site and behind that site's own sign-in:
+
+1. In a PythonAnywhere Bash console, with the site's virtualenv active (Python 3.11 or later):
+   `git clone https://github.com/ahisham92/triton.git ~/triton && pip install -e ~/triton`
+   (the repository is private: clone with a GitHub token, or upload the ZIP and unzip it there).
+2. In the site's WSGI file (Web tab → WSGI configuration file), after the line that builds the site's
+   app, wrap it:
+   ```python
+   import os
+
+   os.environ["TRITON_DATA_DIR"] = "/home/<username>/triton-data"
+   from triton.wsgi import guarded, mount
+
+   # Flask with Flask-Login (for Django, see triton/wsgi.py):
+   from flask_login import current_user
+
+
+   def signed_in(environ):
+       with flask_app.request_context(environ):
+           return current_user.is_authenticated
+
+
+   application = mount(flask_app, "/triton", guarded(signed_in, sign_in_url="/login"))
+   ```
+3. Add a **Triton** tab to the site's navigation, linking to `/triton/`.
+4. Reload the web app on the Web tab.
+
+Each stored section workbook takes about 8 MB on disk (about 25 MB for a full 107 MB workbook), so a
+free account's 512 MB fills after a few sections.
+
 **Command line and tests**
 
 ```bash
@@ -70,8 +103,8 @@ the whole project. Add sections on the **Sections** tab.
 
 Each vertical element has its own **top level**: the slab soffit for a pile, the front beam soffit
 for a combi wall. Results up to 100 mm above it (Design settings, *Results taken into the slab or
-beam above*) are used and taken at the top level; higher results are FE peaks inside the
-connection and are ignored.
+beam above*) are used at their own level, and the pile is designed up to the highest of them (the
+face inside the slab); higher results are FE peaks inside the connection and are ignored.
 
 Open the web app, create a project, pick a section, then either upload its workbook on the
 **Workbook** tab and add every element it contains, or add elements by name (`Pile(5)`, `Deck`, …).
@@ -113,6 +146,27 @@ reinforcement is chosen for the least steel or the lowest cost. Projects are sav
 in `data/projects/`, with each section's checked workbook and results in
 `data/projects/{project}/{section}/` (set `TRITON_DATA_DIR` to move it). Projects saved before
 sections existed open with everything in one section; upload their workbook again.
+
+### Project files (.trt) and choosing what to export
+
+**Download project (.trt)** (bottom of every project page, `GET /api/projects/{id}/project.trt`)
+gives the whole project as one file to send to someone or keep: settings, sections, elements,
+sheet mapping and choices, each section's workbook, design results and trials. On the Projects
+page, **Open a project file** uploads a .trt (in pieces, like a workbook) and opens it as a project
+(`POST /api/projects/open/{upload}`). When a project already has its name, Triton asks: keep both
+(the new one is named "… (2)") or replace the one here. The file is plain data (JSON in a zip);
+opening one checks its workbooks again, as an upload would, and runs nothing from the file.
+
+On the Design tab, the **Export** row picks the elements that the downloads below it hold (All,
+or the ticked ones): AdSec files and Excel, reports, Revit bars and drawings each take
+`?elements=A,B`.
+
+### Title block and checking
+
+The Project tab holds the calculation document number, the revision and who prepared, checked and
+approved it; the reports print them on the cover. On the Design tab, **Checking** keeps each
+element's status (designed, returned with comments, checked, approved) with who and when; a status
+given on an earlier design is marked so.
 
 ### Working zone and isolated peaks
 
@@ -258,6 +312,12 @@ resultant moment until crack width is checked). N is in the concrete (AdSec) sig
 Plaxis N × −1. Points inside a steel casing are left out of the QP rows; where nothing is left
 (the combi wall infill, a station inside the casing) the QP rows are 1s.
 
+*Slabs* sheet: for each row of the slab table (a strip and direction, or a zone), per metre width:
+max N, min N, max M (sagging) and min M (hogging) over every combination, for QP and for ULS, plus
+the set that governs each face's bars when it is not already one of them ("governing sagging",
+"governing hogging"). M sagging +, N compression +. The row under them gives the AdSec strip width
+and the factor on these forces.
+
 *Steel* sheet: for the combi wall tube (its share of the actions) and the sheet pile wall, 10 ULS
 rows each: max and min N, M2, M3, Q1 and Q2 with the other actions at the same point, in the
 Plaxis sign. There is no most utilised row, as steel is not designed with these sets. For the
@@ -272,6 +332,56 @@ rings as circles, the first bar on +y so a half row sits behind every second out
 7 QP loads as long-term SLS cases and its 7 ULS loads as short-term ULS cases, N compression +,
 My = M2, Mz = M3. The records Triton writes match the office file byte for byte for the same
 section and loads; the rest (code, national parameters, bar rules, materials) are copied from it.
+
+Slab files, one per row of the slab table: a strip holding a whole number of the tension face's mesh
+bars, about 1 m wide (1050 mm for a 150 mm mesh, 1000 mm for 200 mm, as the office files), with both
+faces' bars and the Slabs sheet's sets, the forces per metre multiplied by width / 1000 (x 1.05 for
+1050 mm). Where the other face has a different spacing its bar count is rounded to the strip.
+
+## Over-reinforced sections
+
+Every slab strip and zone section and every beam is checked at its moment capacity (εcu2 = 0.0035):
+x/d above 0.45 (EN 1992-1-1 5.5(4), no redistribution), tension bars that would not yield, or more
+than 4% steel (9.2.1.1(3)) put a warning at the top of the slab or beam card, a ⚠ with x/d beside the
+bars in the slab table, and a line in the report. Slabs count the other face's bars in the same
+direction as compression steel; beams take the whole cage under the largest ULS compression.
+
+Slab bars are listed and drawn layer by layer: L1 is the mesh at the cover with the bars between its
+bars, then L2, L3… inside it, each with its own bars and spacing. In the bar diagrams each layer of
+additional bars is its own line; clicking a group draws a 1 m wide section through that face with
+every layer at its depth.
+
+## Method tab
+
+The project's Method tab says how each kind of element in the project is designed (the design
+modules' own descriptions, so it always matches the code), with every choice of method on Design
+settings and on each element: the one in use and the others. The slab's pile-face methods are set
+out side by side at the top.
+
+## Estimated displacements (no Plaxis displacement run)
+
+On the Design tab, under the displacements typed in from the geotechnical team, **Estimated
+displacements** works out the deflected shape of each element from the straining actions alone
+(`GET …/deflections`): the curvature M / EI from the workbook moments is integrated twice along the
+member (exact for moments that are straight lines between the nodes, so a tip load on a cantilever
+gives P L³ / 3EI). It shows each element's head (top) displacement, the largest and where it is, and a
+deflected-shape diagram, labelled as an estimate; the report adds it as 3.8 with its assumptions.
+
+* Piles and the combi wall: both ways down the member (M3 across the quay, M2 along), the pile or
+  king pile that moves most. Sheet pile wall: M11 in 1 m strips with the AZ section's EI. Slabs and
+  beams: a simple 1 m strip estimate, vertical, relative to the piles under the strip.
+* Loads: the QP combination where there is one, else the element's governing phase (ULS moments are
+  factored, so that is on the high side), or a combination picked on the panel. Load multipliers are
+  not applied; the working zone is.
+* Toe: fixed (no displacement, no rotation) by default; or held at the toe and at the firm soil level.
+* Stiffness: gross E·I by default (Ecm; the combi wall's corroded tube plus infill, the E·I split its
+  design uses; AZ catalogue inertia). Cracked: EN 1992-1-1 7.4.3 for the piles with the designed cage,
+  0.6 Ecm·Ic for the combi infill. Long term: Ecm / (1 + φ).
+
+The settings are kept per section and are not a design input: changing them never makes a design out
+of date and is open while the model is locked. The estimate is the members' own bending: it leaves out
+the soil springs, the toe moving in the ground and second-order effects, and it is only as good as the
+Plaxis moments.
 
 ## Calculation reports
 
@@ -316,7 +426,8 @@ The tube is checked in corrosion zones down its length (per wall: bottom level, 
 inside; empty: the single loss above), with γM0 = 1.10 and γM1 = 1.1 as the office sheets. A new
 wall starts with the office's king pile zones: 4.5 mm splash to −0.5, 2.5 mm immersion to −16.12,
 1.75 mm soil to −25, then 1.75 mm on both faces below the infill (the last zone runs on to the toe).
-On the sample Section 01a this gives a tube utilisation of 0.663, against 66.2% in the office sheet.
+On the sample Section 01a the zone envelope gives 0.794 in the steel-only zone (largest N and M taken
+together, class 4 effective properties with γM0); at each result with its own forces it is 0.663.
 
 - **Infill:** a circular reinforced concrete section of the tube's inner diameter, designed exactly
   like a pile (N–M cage, reductions down the length, links), from the front beam soffit to the infill
@@ -324,10 +435,21 @@ On the sample Section 01a this gives a tube utilisation of 0.663, against 66.2% 
 - **Tube, office check (default):** as the office steel sheets, elastic with class 4 effective
   properties wherever d/t > 90ε², filled or not: A_eff = A·√(90ε²/(d/t)),
   W_eff = W_el·(140ε²/(d/t))^0.25, σ = N/A_eff + M/W_eff ≤ fy/γM0, and V ≤ V_pl,Rd.
-- **Column buckling:** the king pile as a composite column over its length from the top level to the
-  toe: EI_eff = EaIa + 0.6·Ecm·Ic, N_pl,Rk = A_eff·fy + 0.85·Ac·fck (both averaged along the
-  length), Lcr = 0.7L, curve c, N_b,Rd = χ·N_pl,Rk/γM1, and N/N_b,Rd + k_yy·M/M_eff,Rd ≤ 1 with
-  k_yy = 0.9(1 + 0.6λN/N_b,Rd). Factor and curve are per wall.
+- **Office king pile sheet ("SECTION #1"), office check:** one column per corrosion zone (split where
+  the infill stops), each with the zone's largest N, V and M taken together, row by row as the sheet:
+  class, A_eff and W_eff, τ = V·S/(I·2t), N_Rd and M_Rd with γM0, bending with shear only above
+  0.5 V_pl,Rd, σ = N/A + M/W_el against fy, and column buckling. Added to the sheet: the class 3/4
+  stress with effective properties and γM0 (EN 1993-1-1 6.2.1(7)), and τ against fy/√3/γM0 (the sheet
+  divides by γ instead). Checked against Ahmed's sheet in `tests/test_combi.py`: zones 1 to 4 match
+  to 0.01%; below the infill the sheet takes the inner diameter as 1590 + 1.75 for I and W (I 6% high).
+  The card and the report show the table in the sheet's layout.
+- **Column buckling (office sheet):** EI_eff = EaIa + 0.6·Ecm·Ic per zone; N_pl,Rk = A_eff·fy +
+  0.85·Ac·fck per zone and length-weighted over the whole pile; N_cr = π²EI/Lcr² with EI of the whole
+  king pile (entered, e.g. from SAP, or the zones averaged over the length), Lcr = 0.7L with L from the
+  top level to the firm soil level (or the toe); λ from each zone's own N_pl,Rk, curve c,
+  N_b,Rd = χ·N_pl,Rk,whole/γM1, and N_c/N_b,Rd + k_yy·M/M_Rd with N_c the whole king pile's compression
+  and k_yy = 0.9(1 + 0.6λ·N_tube/N_b,Rd). fy per the grade and thickness (345 MPa for 18 mm S355)
+  unless a tube fy is entered.
 - **Tube, EN 1993 check (option), filled part:** full plastic resistance, whatever its D/t (EN 1993-5
   5.5.4(9)), with M_N,Rd = M_pl,Rd cos(πn/2) and the 6.2.8 shear reduction.
 - **Tube, EN 1993 check, below the infill:** class from EN 1993-1-1 Table 5.2 on the corroded section. Classes 1 and 2
@@ -362,8 +484,12 @@ are closer than that.
   shear, the transverse shear per metre, and the 9.2.2 minimum and spacing rules.
 - **Transverse bars:** top and bottom bars per metre from the transverse moments at each node,
   with their own QP crack widths.
-- Plate moment sign: positive M11/M22 is sagging by default (Design settings). In the sample the
-  deck's M11 peaks negative at every pile head.
+- Plate moment sign: Auto by default (Design settings). Triton reads it from the plate's own
+  equilibrium: on a 1 m grid away from the piles, walls and edges, the shears follow the slope of
+  the moments (Q = s·dM/dx) and the load the deck carries sets the sign of div Q; positive M is
+  hogging when the two share a sign, whatever sign Plaxis gives Q. A beam too narrow to read takes
+  the sign of the deck with the same local axes. The evidence is on the Workbook tab and in each
+  slab and beam's notes. Sagging or Hogging can still be set by hand. The sample reads as hogging.
 - **Bollard (front beam, optional):** the tie bars that take the bollard pull back into the deck,
   as the office drawing SC-502 (150 t, 2Ø32 straight and 3Ø32 at ±45°, 8.11° down, lapped 1600 mm
   with the slab bottom bars). The factored pull square to the quay face against
@@ -392,17 +518,44 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   and along Y), with the in-plane N of each direction. Where K exceeds K' = 0.167 the opposite
   face's bars are designed as compression steel. Each bar option is taken at its own depth, so a
   second layer or a bigger bar counts for less.
+- **Mesh spacing:** every slab is designed once with each spacing in Design settings (150 and 200 mm
+  by default), all four meshes at that spacing. The top of the slab card shows each one's kg/m³,
+  overall ratio and utilisation; the one picked (the lighter whose bars are enough until you pick,
+  or the spacing of bars you set) drives the results, drawings, AdSec files, the force-set Excel and
+  the report. The pick is kept with the section.
+- **Moment diagrams:** the slab station diagrams are drawn as structural moment diagrams, hogging
+  (top steel) up and sagging (bottom steel) down; the values keep their sign (sagging +).
+- **ULS and SLS (QP):** every moment diagram has a ULS / SLS (QP) switch with the same axes and
+  signs: the slab station diagrams, the beam's vertical bending with its utilisation (crack width
+  over its limit for QP) and the pile's moment and utilisation (crack width over its limit for QP).
 - **Mesh and additional bars:** four meshes, bottom and top, along X and along Y, each laid over
   the whole slab. The slab is split into a grid of cells (1 m by default) only to find where a mesh
   is not enough: there, additional bars go between the mesh bars (at the mesh spacing or every
-  second gap), sized for strength, the QP crack width at that face (Ø and spacing of the mix,
-  7.12) and restraint cracking. Each mesh is the one with the least steel overall, or the mesh you
-  enter (value engineering). For each layer you choose a mesh with additional bars (default) or a
+  second gap, in a second layer, or behind the mesh bars; every added layer sits inside its mesh, above the bottom mesh and below
+  the top mesh), sized for strength and the QP crack width
+  at that face (Ø and spacing of the mix, 7.12). A basic mesh is one layer giving at least the
+  minimum steel; Triton takes the lightest one within 5% of the least steel overall (a light mesh
+  with additional bars where needed, as the office's slabs), or the mesh you enter. Cells no mesh
+  can take (a thicker slab or a haunch there) are reported and do not choose the mesh. For each layer you choose a mesh with additional bars (default) or a
   mesh only, strong enough everywhere. Additional bars run in zones at least 2.5 m long (setting):
   shorter pieces take their heavier neighbour's bars, and matching runs merge into rectangles.
-  Bars are Ø10 to Ø32; a second mesh layer only for Ø25 and up.
-- **Moments at the pile faces:** designed as they are, or averaged over a ring one pile diameter
-  wide round each pile, per combination (slab setting).
+  Bars are Ø10 to Ø32. Bars fit between the mesh bars with EC2 8.2(2)'s clear spacing (the larger
+  Ø, and 32 mm by default in slabs). On the Design tab each row's bars can be built layer by layer:
+  layer 1 is the mesh at the cover with bars between its bars, then layers 2, 3… each with its own
+  Ø and spacing, and the depth of each layer is shown. Diagrams along X and along Y show the mesh of
+  each face and where additional bars are added.
+- **Moments at the pile faces** (slab setting; nodes inside a pile are always left out):
+  - *Peak:* the moments just outside the pile as they are.
+  - *Face mean* (default): each face on its own: the nodes on that face's side of the pile (beside
+    the round head too) out to one slab thickness beyond the face, over the pile diameter plus the
+    slab thickness each side, only the moment that face's bars carry (Mx at
+    the ±X faces, My at the ±Y faces) and Mxy, per combination; opposite faces are never mixed.
+  - *Ring mean:* all round the pile over a ring one diameter wide, per combination (the method
+    before 2026-09-24; it mixes opposite faces, so a 1624 face and a 40 face average to 773).
+  - *Envelope then face mean:* each node's worst value over the combinations, then the face mean.
+
+  Saved slabs set to "Average" now use the face mean, "Design" the peak. Whatever the method, the
+  strips then average across their width at each cut, per combination, and design the worst one.
 - **Mobile crane:** areas with the extra factored actions from the SAP model (factored crane minus
   factored live load, M, V, N per metre) are added to every ULS combination over each area, so
   the governing combination carries them. Pile reactions for punching stay as Plaxis gives them.
@@ -413,12 +566,18 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   stations measured from the front beam edge (2 m each side of each pile row and the spans between,
   or your own boundaries). Each station and strip gets its bars from the worst cut and its QP crack
   width, and the table gives, as the office report's slab summary: crack width, M/MRd, acting M,
-  MRd (tension bars, rectangular block) and the governing combination, per M11/M22, station and
-  strip. The uniform layout (per 1 m cell) stays as an option.
+  MRd (tension bars, rectangular block), the governing combination and what sets each face's bars,
+  per station and strip. The bars across the strips (M22) are not split into strips: one basic mesh
+  over the whole deck, with rectangular zones of additional bars only where an area needs more
+  (zones closer than the shortest bars merge). Their moments are drawn along the quay with the lines
+  of piles. The uniform layout (per 1 m cell) stays as an option.
 - **Shear per metre:** v = √(Vx² + Vy²) from d (or 2d) off the pile faces, and at least 2d where
-  punching governs. No concrete contribution where the slab is in tension; links are given per
-  cell as Ø @ s × s, sized as the office slab sheets, V = Asw/s · 0.8d · 0.8fyk (or, as a slab
-  setting, 6.2.3 with cot θ = 2.5).
+  punching governs, with the axial force in the direction of the shear (Q13 with N1, Q23 with N2).
+  No concrete contribution where the slab is in tension (office rule; EC2's 0.15σcp reduction is a
+  slab setting). Links sit at the bottom mesh spacing (or twice it) and are given in bands across the
+  deck, each band with the links its worst cell needs, as the office slab sheets; sized as
+  V = Asw/s · 0.8d · 0.8fyk (or, as a slab setting, 6.2.3 with cot θ = 2.5). Shear above VRd,max is
+  flagged, as are rows of piles with a pile missing from the workbook.
 - **Punching (6.4):** at every pile head not under a beam, from the pile face (vRd,max = 0.4·ν·fcd)
   out to u1 = π(D + 4d) at 2d, nothing inside the pile. β = 1 + 0.6π·e/(D + 4d) at u1 and at the
   pile face (6.4.5(3)); as a slab setting, the office punching sheets' β0 = 1 + 0.6π·e/D at the face.
@@ -426,8 +585,9 @@ from the directions check (bars along X take Mx). Results inside pile heads are 
   kmax·vRd,c with kmax = 1.5 (6.4.5(1), A1).
   The thickness is the slab's, a slab-wide punching thickness, or one entered per pile (slopes).
   Each pile has a plan and a section drawing of its perimeters and links.
-- **Restraint:** the basic mesh at each face against temperature and shrinkage cracking, as for the
-  beams, with R from the joint spacing (58 m by default, the office's) over the thickness.
+- **Restraint:** off by default for slabs, as the office's slab design, where temperature and
+  shrinkage come in as axial tension in the combinations. As a slab setting it can be reported, or
+  designed for, on the bars along the quay, with R as an input (0.5 by default).
 - The utilisation heat map in 3D shows, per cell, the bending steel needed over the bars given.
 
 ## Workbook format

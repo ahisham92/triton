@@ -24,6 +24,8 @@ from the length to height ratio L/H between joints:
 
 from __future__ import annotations
 
+from .stop import checkpoint
+
 E_S = 200_000.0  # MPa
 K1, K3, K4, KT = 0.8, 3.4, 0.425, 0.4
 
@@ -49,6 +51,7 @@ def crack_width(
     (0 when the section is wholly in tension). ``area`` is the face's bars (mm²) over width b (mm),
     ``cover`` is to the bars, ``spacing`` between their centres.
     """
+    checkpoint()
     if sigma_s <= 0:
         return {"wk": 0.0, "sigma_s": round(max(sigma_s, 0.0), 1), "sr_max": None, "rho_eff": None}
     hc = min(2.5 * (h - d), (h - x) / 3 if x > 0 else h / 2, h / 2)
