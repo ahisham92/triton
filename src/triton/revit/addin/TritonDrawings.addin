@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Goes in %AppData%\Autodesk\Revit\Addins\<version>\, with TritonDrawings.dll in the TritonDrawings folder beside it. -->
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Triton drawings</Name>
+    <Assembly>TritonDrawings\TritonDrawings.dll</Assembly>
+    <AddInId>6F1C2B7A-3D0E-4F5B-9C8A-2E7D41A9B0C3</AddInId>
+    <FullClassName>Triton.Revit.App</FullClassName>
+    <VendorId>TRITON</VendorId>
+    <VendorDescription>Triton reinforcement drawings</VendorDescription>
+  </AddIn>
+</RevitAddIns>

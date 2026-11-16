@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "triton"
+version = "0.1.0"
+description = "Structural design of marine structure elements from Plaxis straining actions"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "numpy>=1.26",
+    "openpyxl>=3.1",
+    "pandas>=2.1",
+    "pillow>=10.1",
+    "python-docx>=1.1",
+    "python-calamine>=0.4",
+    "python-multipart>=0.0.9",
+    "pyxlsb>=1.0.10",
+    "reportlab>=4.0",
+    "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+dev = ["httpx>=0.27", "pytest>=8", "ruff>=0.5"]
+
+[project.scripts]
+triton = "triton.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+triton = ["static/*", "revit/*.py", "revit/*.txt", "revit/addin/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Report prose: sentences are kept whole in f-strings.
+"src/triton/report.py" = ["E501"]
+"src/triton/clashes.py" = ["E501"]
+"src/triton/clash_report.py" = ["E501"]
+"src/triton/furniture.py" = ["E501"]
+"src/triton/furniture_report.py" = ["E501"]
+"src/triton/design/furniture.py" = ["E501"]
+"src/triton/design/anchors.py" = ["E501"]
+"src/triton/design/bollard.py" = ["E501"]
+"src/triton/design/protrusion.py" = ["E501"]
+# The slab design's helpers are closures over one layer, called within that layer's loop.
+"src/triton/design/slabs.py" = ["B023"]

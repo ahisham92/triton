@@ -1,0 +1,284 @@
+import numpy as np
+import pandas as pd
+
+from triton.axes import infer_axes
+from triton.elements import parse_sheet_name
+from triton.importer import SheetData
+
+
+def sheet(name, frame):
+    return SheetData(name, parse_sheet_name(name), frame)
+
+
+def piles(swap=False):
+    """Two piles loaded across the quay: M3 = 100 z², Q12 = dM3/dz; a small M2 with its Q13."""
+    rows = []
+    node = 1
+    for y in (-4.0, 4.0):
+        for z in np.linspace(-20, 0, 41):
+            m3, q12 = 100 * z**2, 200 * z
+            m2, q13 = 5 * np.sin(z), 5 * np.cos(z)
+            if swap:  # the shear columns mixed up
+                q12, q13 = q13, q12
+            rows.append(
+                {
+                    "Node": node,
+                    "X": -7.5,
+                    "Y": y,
+                    "Z": z,
+                    "N": -1000.0,
+                    "Q_12": q12,
+                    "Q_13": q13,
+                    "M_1": 0.0,
+                    "M_2": m2,
+                    "M_3": m3,
+                }
+            )
+            node += 1
+    return pd.DataFrame(rows)
+
+
+def deck(local_one="X"):
+    """A horizontal plate spanning along its local 1 axis: Q13 = dM11/dx1, Q23 = dM22/dx2."""
+    xs, ys = np.meshgrid(np.linspace(-20, 0, 21), np.linspace(-15, 15, 31))
+    x, y = xs.ravel(), ys.ravel()
+    u, v = (x, y) if local_one == "X" else (y, x)
+    frame = pd.DataFrame(
+        {
+            "Node": np.arange(len(x)) + 1,
+            "X": x,
+            "Y": y,
+            "Z": 2.7,
+            "N_1": 100.0 * np.sin(u / 3),
+            "N_2": 10.0,
+            "Q_12": 0.0,
+            "Q_23": 30 * np.cos(v / 4) / 4 * 20,
+            "Q_13": 300 * np.cos(u / 3) / 3,
+            "M_11": 300 * np.sin(u / 3),
+            "M_22": 30 * np.sin(v / 4) * 20,
+            "M_12": 0.0,
+        }
+    )
+    return frame
+
+
+def wall():
+    """A vertical wall along Y: vertical N1 builds up with depth, tiny noisy moments."""
+    rng = np.random.default_rng(1)
+    ys, zs = np.meshgrid(np.linspace(-16, 16, 17), np.linspace(-19, 2.5, 44))
+    y, z = ys.ravel(), zs.ravel()
+    n = len(y)
+    return pd.DataFrame(
+        {
+            "Node": np.arange(n) + 1,
+            "X": 0.0,
+            "Y": y,
+            "Z": z,
+            "N_1": -300 + 25 * z,
+            "N_2": -10 + 0.5 * z,
+            "Q_12": 0.0,
+            "Q_23": rng.normal(0, 1, n),
+            "Q_13": rng.normal(0, 1, n),
+            "M_11": rng.normal(0, 1, n),
+            "M_22": rng.normal(0, 1, n),
+            "M_12": rng.normal(0, 1, n),
+        }
+    )
+
+
+def elements(**frames):
+    return {el: {"PT-B-Apron": sheet(f"{el}-PT-B-Apron", f)} for el, f in frames.items()}
+
+
+def test_piles_bend_across_the_quay():
+    found, issues = infer_axes(elements(**{"Pile(1)": piles(), "SPW": wall()}))
+    pile = next(a for a in found if a["element"] == "Pile(1)")
+    assert pile["clear"] and pile["main_moment"] == "M_3" and pile["fit"] > 0.9
+    assert "X–Z plane (across the quay)" in pile["text"]
+    assert not [i for i in issues if i.element == "Pile(1)"]
+
+
+def test_mixed_up_shears_are_flagged():
+    found, issues = infer_axes(elements(**{"Pile(1)": piles(swap=True)}))
+    assert not found[0]["clear"]
+    assert [i.code for i in issues] == ["axes_unclear"]
+
+
+def test_plate_local_axes_from_the_shears():
+    for one, two in (("X", "Y"), ("Y", "X")):
+        found, _ = infer_axes(elements(Deck=deck(one), SPW=wall()))
+        d = next(a for a in found if a["element"] == "Deck")
+        assert d["clear"] and d["local"] == {"1": one, "2": two}
+    assert (
+        "Local 1 is global X (across the quay)" in infer_axes(elements(Deck=deck(), SPW=wall()))[0][0]["text"]
+    )
+
+
+def test_wall_vertical_force_from_depth():
+    found, _ = infer_axes(elements(SPW=wall()))
+    (w,) = found
+    assert w["clear"] and w["local"]["1"] == "Z" and "N1 builds up steadily with depth" in w["text"]
+
+
+def test_elements_of_one_type_that_disagree():
+    found, issues = infer_axes(
+        elements(
+            **{
+                "Pile(1)": piles(),
+                "Pile(2)": piles().rename(
+                    columns={"M_2": "M_3", "M_3": "M_2", "Q_12": "Q_13", "Q_13": "Q_12"}
+                ),
+            }
+        )
+    )
+    assert [i.code for i in issues] == ["axes_differ"]
+
+
+def loaded_plate(positive="sagging", shear_sign=1.0, name_width=(30.0, 30.0)):
+    """A plate under a downward load, simply supported on its edges: sagging Mx = A sin(px) sin(qy) with
+    Qx = dMx/dx, and div Q = -p < 0. Plaxis may call either face positive and give Q either sign."""
+    a, b = name_width
+    xs, ys = np.meshgrid(np.arange(0, a + 0.01, 0.5), np.arange(0, b + 0.01, 0.5))
+    x, y = xs.ravel(), ys.ravel()
+    p, q = np.pi / a, np.pi / b
+    mx, my = 400 * np.sin(p * x) * np.sin(q * y), 250 * np.sin(p * x) * np.sin(q * y)
+    qx, qy = 400 * p * np.cos(p * x) * np.sin(q * y), 250 * q * np.sin(p * x) * np.cos(q * y)
+    m = 1.0 if positive == "sagging" else -1.0
+    return pd.DataFrame(
+        {
+            "Node": np.arange(len(x)) + 1,
+            "X": x,
+            "Y": y,
+            "Z": 2.7,
+            "N_1": 50 * np.sin(p * x),
+            "N_2": 20 * np.cos(q * y),
+            "Q_12": 0.0,
+            "Q_13": shear_sign * qx,
+            "Q_23": shear_sign * qy,
+            "M_11": m * mx,
+            "M_22": m * my,
+            "M_12": 0.0,
+        }
+    )
+
+
+def test_plate_sign_read_from_equilibrium_whatever_the_shear_sign():
+    for positive in ("sagging", "hogging"):
+        for shear in (1.0, -1.0):
+            found, issues = infer_axes(elements(Deck=loaded_plate(positive, shear)))
+            (d,) = found
+            assert d["positive"] == positive and d["positive_clear"], (positive, shear, d.get("sign_text"))
+            assert f"Positive M11 and M22 are {positive}" in d["sign_text"]
+            assert not [i for i in issues if i.code == "plate_sign_differs"]
+
+
+def test_sag_factor_follows_the_setting_or_the_results():
+    from triton.axes import sag_factor
+
+    assert sag_factor("sagging", {"positive": "hogging"})[0] == 1.0
+    assert sag_factor("hogging", None)[0] == -1.0
+    sag, note = sag_factor("auto", {"positive": "hogging", "sign_text": "Positive M11 and M22 are hogging."})
+    assert sag == -1.0 and "Auto" in note
+    sag, note = sag_factor("auto", None)
+    assert sag == 1.0 and "could not read" in note
+
+
+def test_a_narrow_beam_takes_the_deck_sign():
+    beam = loaded_plate("hogging", 1.0, (30.0, 2.0))  # too narrow to read on its own
+    found, issues = infer_axes(elements(Deck=loaded_plate("hogging"), **{"Front Beam": beam}))
+    b = next(a for a in found if a["element"] == "Front Beam")
+    assert b["positive"] == "hogging" and b["sign_from"] == "Deck" and "as in Deck" in b["sign_text"]
+
+
+def test_nearest_nodes_on_a_big_sheet_match_every_pair():
+    """Above BRUTE_NODES the grid search finds the same neighbours (by distance) as comparing every pair."""
+    import numpy as np
+
+    from triton import axes
+
+    rng = np.random.default_rng(1)
+    p = np.column_stack([rng.uniform(0, 300, 7000), rng.uniform(-20, 0, 7000)])
+    p[:50] = p[50:100]  # nodes repeated at the same place
+    grid = axes._nearest(p, 16)
+    brute = np.array([np.argsort(((p - q) ** 2).sum(1))[:16] for q in p[::97]])
+    dist = lambda idx, q: np.sort(((p[idx] - q) ** 2).sum(-1))  # noqa: E731
+    for n, q in enumerate(p[::97]):
+        assert np.allclose(dist(grid[n * 97], q), dist(brute[n], q))
+
+
+def test_far_from_supports_matches_every_pair():
+    """The grid check of which points are clear of every support gives what comparing every pair does."""
+    import numpy as np
+
+    from triton import axes
+
+    rng = np.random.default_rng(2)
+    u, v = rng.uniform(-30, 30, 3000), rng.uniform(-10, 10, 3000)
+    su, sv = rng.uniform(-30, 30, 40), rng.uniform(-10, 10, 40)
+    brute = (np.hypot(u[:, None] - su[None, :], v[:, None] - sv[None, :]) > 1.8).all(1)
+    assert (axes._far_from(u, v, su, sv, 1.8) == brute).all()
+    assert axes._far_from(u, v, su[:0], sv[:0], 1.8).all()
+
+
+def test_an_element_can_set_its_own_sign():
+    from triton.axes import sag_factor, sign_setting
+    from triton.project import BeamInput, DesignSettings, SlabInput
+
+    settings = DesignSettings()
+    deck, beam = SlabInput(positive_moment="hogging"), BeamInput()
+    assert sign_setting(settings, beam) == settings.plate_positive_moment == "auto"
+    assert sag_factor(sign_setting(settings, deck), {"positive": "sagging"})[0] == -1.0
+    assert sag_factor(sign_setting(settings, beam), {"positive": "sagging"})[0] == 1.0
+    assert sign_setting(settings.model_copy(update={"plate_positive_moment": "hogging"}), None) == "hogging"
+
+
+def test_the_element_sign_leaves_old_fingerprints_alone():
+    from triton.project import SlabInput
+
+    assert "positive_moment" in SlabInput().model_dump()  # the fingerprint drops it at "project"
+
+
+def test_quay_line_is_each_beams_own_length_not_both_beams_together():
+    """A 34 m berth along Y whose rear beam is 30 m inland: both beams together span as far in X as in
+    Y, but each beam alone runs along Y."""
+    from triton.axes import quay_line
+
+    ys = np.linspace(-16.8, 16.8, 57)
+
+    def beam(x0, width):
+        xs, yy = np.meshgrid(np.linspace(x0, x0 + width, 4), ys)
+        return pd.DataFrame({"Node": np.arange(xs.size) + 1, "X": xs.ravel(), "Y": yy.ravel(), "Z": 3.5})
+
+    elements = {
+        "Front Beam": {"PT-C-Apron": sheet("Front Beam-PT-C-Apron", beam(-2.5, 4.5))},
+        "Rear Beam": {"PT-C-Apron": sheet("Rear Beam-PT-C-Apron", beam(-32.5, 4.0))},
+    }
+    assert quay_line(elements) == "Y"
+
+
+def test_a_beam_that_cannot_read_its_sign_follows_the_deck_set_by_hand():
+    """Plates of one model share Plaxis's sign: a beam left on Auto whose results cannot tell must not fall
+    back to sagging beside a deck the engineer set to hogging."""
+    from types import SimpleNamespace
+
+    from triton.axes import sag_factor, set_signs, sign_setting
+
+    local = {"1": "X", "2": "Y"}
+    found = {
+        "Deck": {"kind": "plate", "local": local, "nodes": 1400},
+        "Front Beam": {"kind": "plate", "local": local, "nodes": 400},
+        "Other Beam": {"kind": "plate", "local": {"1": "Y", "2": "X"}, "nodes": 100},
+    }
+    settings = SimpleNamespace(plate_positive_moment="auto")
+    elements = {
+        "Deck": SimpleNamespace(positive_moment="hogging"),
+        "Front Beam": SimpleNamespace(positive_moment="project"),
+        "Other Beam": SimpleNamespace(positive_moment="project"),
+    }
+    signs = set_signs(found, elements, settings)
+    beam = elements["Front Beam"]
+    assert sag_factor(sign_setting(settings, beam), signs["Front Beam"])[0] == -1.0
+    assert signs["Front Beam"]["sign_from"] == "Deck"
+    assert "positive" not in signs["Other Beam"]  # other local axes: nothing to share
+    elements["Deck"] = SimpleNamespace(positive_moment="project")
+    assert set_signs(found, elements, settings) is found
