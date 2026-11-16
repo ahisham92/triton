@@ -21,10 +21,12 @@ class ResultKind(StrEnum):
 class ElementType(StrEnum):
     SHEET_PILE_WALL = "sheet_pile_wall"
     COMBI_WALL = "combi_wall"
+    DIAPHRAGM_WALL = "diaphragm_wall"
     PILE = "pile"
     SLAB = "slab"
     FRONT_BEAM = "front_beam"
     REAR_BEAM = "rear_beam"
+    TRANSVERSE_BEAM = "transverse_beam"
     PORTAL_FRAME = "portal_frame"
 
 
@@ -56,6 +58,11 @@ _PATTERNS: list[tuple[re.Pattern[str], ElementSpec]] = [
         ElementSpec(ElementType.SHEET_PILE_WALL, ResultKind.PLATE, "wall", False, PLATE_ACTIONS),
     ),
     (
+        # A diaphragm wall front wall: a plate like the sheet pile wall, designed in concrete.
+        re.compile(r"^(D\s*-?\s*Wall|Diaphragm\s*Wall)$", re.I),
+        ElementSpec(ElementType.DIAPHRAGM_WALL, ResultKind.PLATE, "wall", True, PLATE_ACTIONS),
+    ),
+    (
         re.compile(r"^Combi\s*Wall$", re.I),
         ElementSpec(ElementType.COMBI_WALL, ResultKind.BEAM, "wall", True, BEAM_ACTIONS),
     ),
@@ -74,6 +81,11 @@ _PATTERNS: list[tuple[re.Pattern[str], ElementSpec]] = [
     (
         re.compile(r"^Rear\s*Beam$", re.I),
         ElementSpec(ElementType.REAR_BEAM, ResultKind.PLATE, "edge_beam", True, PLATE_ACTIONS),
+    ),
+    (
+        # Optional: not every project has transverse beams. Assumed plates like the other beams.
+        re.compile(r"^Trans(verse)?\s*Beam(\s*\(\s*\d+\s*\))?$", re.I),
+        ElementSpec(ElementType.TRANSVERSE_BEAM, ResultKind.PLATE, "transverse_beam", True, PLATE_ACTIONS),
     ),
     (
         re.compile(r"^Portal\s*Frame$", re.I),
@@ -106,6 +118,22 @@ def parse_sheet_name(name: str) -> SheetName | None:
             if pattern.match(element):
                 return SheetName(name, _normalise_element(element), combination, spec)
     return None
+
+
+def element_spec(element: str) -> ElementSpec | None:
+    """The spec of an element name as Triton knows it (Pile(3), Deck, Front Beam, ...), or None."""
+    for pattern, spec in _PATTERNS:
+        if pattern.match(element.strip()):
+            return spec
+    return None
+
+
+def mapped_sheet_name(raw: str, element: str, combination: str) -> SheetName | None:
+    """A sheet assigned by hand to an element and combination."""
+    spec = element_spec(element)
+    if spec is None or not combination.strip():
+        return None
+    return SheetName(raw, _normalise_element(element.strip()), combination.strip(), spec)
 
 
 def _normalise_element(element: str) -> str:

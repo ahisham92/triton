@@ -1,0 +1,161 @@
+import math
+
+import pytest
+from conftest import EMBEDDED_HEADER
+
+from triton.design.piles import design_pile
+from triton.project import DesignSettings, PileInput
+from triton.validation import import_sheets
+
+
+def rows(loads):
+    """Embedded beam rows from (node, z, N, Q_12, M_2) in Plaxis signs."""
+    out = [EMBEDDED_HEADER]
+    for node, z, n, q, m in loads:
+        row = ["EmbeddedBeam\\_1\\_1", node, 1, 0.0, 0.0, z]
+        for v in (n, q, 0.0, 0.0, m, 0.0):
+            row += [v, v - 1.0, v + 1.0]
+        out.append(row + [1.0, 2.0, 3.0, "N/A"])
+    return out
+
+
+def design(loads, settings=None, links="zoned", **pile):
+    sheets = import_sheets({"Pile(1)-PT-B-Apron": rows(loads), "Pile(1)-QP": rows(loads)}).elements()[
+        "Pile(1)"
+    ]
+    settings = settings or DesignSettings()
+    settings.piles.curtail = False
+    settings.piles.links = links
+    return design_pile("Pile(1)", PileInput(head_level=0.0, **pile), settings, sheets).to_dict()
+
+
+def column(n=0.0, q=100.0, m=500.0):
+    return [(i + 1, -0.5 * i, n, q, m) for i in range(41)]
+
+
+def test_concrete_shear_resistance_by_hand():
+    d = design(column(q=100.0))
+    sh = d["shear"]
+    a = d["arrangement"]
+    dd = 0.8 * 1200  # the office sheets' d = 0.8D
+    k = 1 + math.sqrt(200 / dd)
+    rho = a["area_mm2"] / 2 / (1200 * dd)
+    v = max(0.18 / 1.5 * k * (100 * rho * 40) ** (1 / 3), 0.035 * k**1.5 * math.sqrt(40))
+    assert sh["governing"]["VRd_c_kN"] == pytest.approx(v * 1200 * dd / 1e3, rel=1e-3)
+    assert sh["passed"] and {z["reason"] for z in sh["zones"]} <= {"near slab", "minimum"}
+
+
+def test_feltham_depth_and_hoop_legs_as_settings():
+    loads = column(q=1500.0)
+    office = design(loads)["shear"]
+    s = DesignSettings()
+    s.piles.shear_depth, s.piles.hoop_legs = "feltham", "feltham"
+    feltham = design(loads, s)["shear"]
+    # π/2 legs and a smaller d need closer links for the same shear.
+    assert feltham["zones"][0]["spacing_mm"] < office["zones"][0]["spacing_mm"]
+
+
+def test_detailing_zones():
+    sh = design(column())["shear"]
+    top = sh["zones"][0]
+    assert top["reason"] == "near slab" and top["top"] == 0.0 and top["bottom"] == pytest.approx(-1.2)
+    s_max = sh["max_spacing_mm"]
+    assert top["spacing_mm"] <= 0.6 * s_max and sh["zones"][-1]["spacing_mm"] <= s_max
+    assert all(z["top"] - z["bottom"] >= 1.0 - 1e-9 for z in sh["zones"])
+    assert sh["zones"][-1]["bottom"] == -20.0
+
+
+def test_no_concrete_shear_in_tension():
+    # Plaxis N > 0 is tension; it stays tension in the design sign (negative).
+    sh = design(column(n=500.0, q=1000.0), link_size=10.0)["shear"]
+    assert sh["governing"]["VRd_c_kN"] == 0.0
+    assert any(z["reason"] == "shear" for z in sh["zones"])
+    assert sh["passed"] and sh["utilisation"] <= 1.0
+
+
+def test_high_shear_needs_closer_links_and_crushing_is_reported():
+    near = design(column(q=1500.0))["shear"]
+    assert near["passed"] and min(z["spacing_mm"] for z in near["zones"]) < 300
+    crush = design(column(q=20000.0))["shear"]
+    assert not crush["passed"] and any("crushes" in n for n in crush["notes"])
+
+
+def test_link_size_rule():
+    sh = design(column(), link_diameter=6.0)["shear"]
+    assert sh["min_link_diameter_mm"] >= 6
+    # Links below the 9.5.3 minimum are not kept: the design moves up to a size that meets it.
+    d = design(column(m=6000.0), link_diameter=6.0)["shear"]
+    assert d["link_diameter_mm"] >= d["min_link_diameter_mm"]
+    assert not any("9.5.3" in n for n in d["notes"])
+
+
+def test_links_are_designed_from_t10_up():
+    assert PileInput().link_diameter == 10
+    d = design(column(q=2500.0))["shear"]
+    assert d["passed"] and d["link_diameter_mm"] > 10
+    assert min(z["spacing_mm"] for z in d["zones"]) >= 100
+    assert [o["link_diameter_mm"] for o in d["options"]] == [10, 12, 14, 16, 20, 25]
+
+
+def test_pitches_are_100_150_or_200_only():
+    for q in (100.0, 1000.0, 1500.0, 2500.0):
+        for links in ("zoned", "unified"):
+            sh = design(column(q=q), links=links)["shear"]
+            assert {z["spacing_mm"] for z in sh["zones"]} <= {100.0, 150.0, 200.0}
+            assert all(o["link"].count("@") >= 1 for o in sh["options"])
+
+
+def test_least_link_steel_wins():
+    # T10 needs 100 mm here; T12 carries it at 200 mm with less steel (Ahmed's example).
+    sh = design(column(q=1000.0))["shear"]
+    t10 = next(o for o in sh["options"] if o["link_diameter_mm"] == 10)
+    assert t10["passed"] and t10["link"].endswith("@ 100")
+    assert sh["link_diameter_mm"] == 12 and sh["zones"][0]["link"] == "Ø12 @ 200"
+    assert sh["links_kg"] == min(o["links_kg"] for o in sh["options"] if o["passed"])
+    assert sh["notes"][0].startswith("Links Ø12 @ 200") and "less link steel" in sh["notes"][0]
+    # Light shear: T10 at the largest pitch is the lightest.
+    assert design(column(q=100.0))["shear"]["zones"][0]["link"] == "Ø10 @ 200"
+
+
+def test_links_set_on_the_pile_are_checked():
+    sh = design(column(q=1000.0), link_size=10.0, link_spacing=200.0)["shear"]
+    assert sh["set_by_you"] and sh["link_diameter_mm"] == 10 and "options" not in sh
+    assert not sh["passed"] and sh["utilisation"] > 1
+    assert sh["notes"][0].startswith("Links set on the pile: Ø10 @ 200")
+    assert {z["reason"] for z in sh["zones"]} <= {"set by you", "near slab", "at lap", "minimum"}
+    # Size alone: its pitch is still chosen.
+    ok = design(column(q=1000.0), link_size=16.0)["shear"]
+    assert ok["passed"] and ok["zones"][0]["link"].startswith("Ø16 @ ")
+
+
+def test_steel_totals_include_links():
+    d = design(column())
+    st = d["steel"]
+    assert st["total_kg"] == pytest.approx(st["longitudinal_kg"] + st["links_kg"], abs=0.2)
+    assert st["kg_per_m3"] == pytest.approx(st["total_kg"] / (math.pi * 0.36 * 20), abs=0.05)
+
+
+def test_unified_links_use_one_spacing():
+    zoned = design(column())["shear"]
+    (one,) = design(column(), links="unified")["shear"]["zones"]
+    assert (one["top"], one["bottom"]) == (0.0, -20.0)
+    assert one["spacing_mm"] == min(z["spacing_mm"] for z in zoned["zones"])
+    assert DesignSettings().piles.links == "unified"
+
+
+def test_pile_link_rule_and_own_links_in_the_fingerprint():
+    from triton import fresh
+    from triton.project import Project, Section
+
+    def pile_hash(**kw):
+        section = Section(elements={"Pile(1)": PileInput(head_level=2.7, **kw)})
+        return fresh.fingerprint(Project(sections=[section]), section, None)["Pile(1)"]
+
+    own = PileInput(head_level=2.7).model_dump(mode="json")
+    left_out = ("rooms", "manholes", "channels", "construction_joints", "punching_piles")
+    for key in left_out + ("link_size", "link_spacing"):
+        if not own.get(key):
+            own.pop(key, None)
+    # Empty own links hash as before they existed, with the new link rule asking for a redesign.
+    assert pile_hash() == fresh._hash([own, fresh.PILE_LINKS_RULE])
+    assert pile_hash(link_size=12.0) != pile_hash()

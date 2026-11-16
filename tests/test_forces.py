@@ -59,7 +59,9 @@ def test_combi_section_rejects_bad_input():
     with pytest.raises(ValueError):
         CombiSection(1.0, 0.6, 0.0)
     with pytest.raises(ValueError):
-        CombiSection(1.0, 0.02, 0.02)
+        CombiSection(1.0, 0.02, -0.001)
+    # Corrosion through the whole wall leaves no steel: the concrete carries everything.
+    assert CombiSection(1.0, 0.02, 0.02).steel_share == 0 == CombiSection(1.0, 0.02, 0.03).i_steel
 
 
 def test_combi_split_matches_design_office_example():
