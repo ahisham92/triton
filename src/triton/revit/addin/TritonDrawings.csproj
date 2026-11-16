@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Triton drawings: a Revit add-in that draws a Triton drawings file (Design tab > Drawings > Revit)
+    as detail lines. Build with Visual Studio 2022: set RevitVersion below (or pass
+    -p:RevitVersion=2025) to the Revit you have, then Build > Build Solution. Revit 2025 and later run
+    on .NET 8, older ones on .NET Framework 4.8; the project picks the right one.
+  -->
+  <PropertyGroup>
+    <RevitVersion Condition="'$(RevitVersion)' == ''">2024</RevitVersion>
+    <RevitFolder Condition="'$(RevitFolder)' == ''">C:\Program Files\Autodesk\Revit $(RevitVersion)</RevitFolder>
+    <TargetFramework Condition="$(RevitVersion) &gt;= 2025">net8.0-windows</TargetFramework>
+    <TargetFramework Condition="$(RevitVersion) &lt; 2025">net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>TritonDrawings</AssemblyName>
+    <RootNamespace>Triton.Revit</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Copy the add-in and its manifest to Revit's add-in folder after each build. -->
+    <AddinFolder>$(AppData)\Autodesk\Revit\Addins\$(RevitVersion)</AddinFolder>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(RevitApiStubs)' == ''">
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitFolder)\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitFolder)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <!-- Only for checking the code compiles without Revit installed. -->
+  <ItemGroup Condition="'$(RevitApiStubs)' != ''">
+    <Reference Include="$(RevitApiStubs)" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="TritonDrawings.addin" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="InstallAddin" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT' And '$(RevitApiStubs)' == ''">
+    <MakeDir Directories="$(AddinFolder)\TritonDrawings" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(AddinFolder)\TritonDrawings" />
+    <Copy SourceFiles="TritonDrawings.addin" DestinationFolder="$(AddinFolder)" />
+  </Target>
+</Project>
