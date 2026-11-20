@@ -49,6 +49,7 @@ from . import (
     views,
 )
 from . import errors as errors_mod
+from . import films as films_mod
 from . import furniture as furniture_mod
 from . import moved as moved_piles
 from . import runner as runner_mod
@@ -114,6 +115,7 @@ ALLOWED = {".xlsb", ".xlsx", ".xlsm"}
 
 app = FastAPI(title="Triton")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.include_router(films_mod.router)
 
 
 def store() -> ProjectStore:
