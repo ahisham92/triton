@@ -34,6 +34,7 @@ const ICONS = {
   costing: P("M12 3v18M16.5 7.5c0-1.7-2-3-4.5-3s-4.5 1.3-4.5 3 2 2.6 4.5 3 4.5 1.3 4.5 3-2 3-4.5 3-4.5-1.3-4.5-3"),
   compare: P("M4 20V10h4v10M10 20V4h4v16M16 20v-7h4v7"),
   ve: P("M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z"),
+  film: P("M3 6h18v12H3zM3 9h3M3 15h3M18 9h3M18 15h3M10 9.5v5l4.5-2.5z"),
   method: P("M4 5h7a3 3 0 0 1 3 3v12a2 2 0 0 0-2-2H4zM20 5h-5a3 3 0 0 0-3 3M20 5v13h-6"),
 };
 export function tabIcon(tab, size = 22) {
@@ -58,6 +59,7 @@ export const TAB_INFO = {
   costing: ["build", "What the design costs: the totals, the cost per metre and where the money goes."],
   compare: ["build", "Several sizes and options designed side by side, with their cost."],
   ve: ["build", "Where the design can be made lighter or cheaper, element by element."],
+  film: ["build", "A short animated film of a SAP2000 analysis for the client: site, loads, reactions, movements and ratios."],
   method: ["about", "How Triton designs each element, step by step."],
 };
 

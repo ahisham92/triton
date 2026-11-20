@@ -17,6 +17,7 @@ import { tubeZonesHtml } from "./tubeview.js";
 import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
 import { projectsPage as renderProjectsPage } from "./projects.js";
 import { sectionPlace, sitesPanel } from "./sitemap.js";
+import { renderFilm } from "./film.js";
 import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper, utilText } from "./picker.js";
 
 const $app = document.getElementById("app");
@@ -433,6 +434,7 @@ async function projectPage(id, tab, sectionId) {
     ["costing", "Costing"],
     ["compare", "Comparisons"],
     ["ve", "Value engineering"],
+    ["film", "Results film"],
     ["method", "Method"],
   ];
   const picker = SECTION_TABS.has(tab)
@@ -539,6 +541,7 @@ async function projectPage(id, tab, sectionId) {
   else if (tab === "view3d") renderView3dTab(host);
   else if (tab === "costing") renderCostingTab(host);
   else if (tab === "method") renderMethodTab(host);
+  else if (tab === "film") renderFilm(host, { api, esc, ROOT, project: () => state.project, state });
   else if (tab === "ve")
     renderValueEngineering(host, {
       api, again, esc, fmt, secUrl, ROOT, tabData,
