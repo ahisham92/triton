@@ -82,7 +82,9 @@ def test_pile_file_round_trip():
         "ULS Analysis Cases",
     } <= set(recs)
     assert "Section Results" not in recs
-    assert adsec.read_forces(data) == pytest.approx(KN)
+    forces = adsec.read_forces(data)
+    assert len(forces) == len(KN)
+    assert all(f == pytest.approx(k) for f, k in zip(forces, KN, strict=True))
     assert b"500B\0GRP_ARC" in recs["Sections"] and b"STD%C%1200." in recs["Sections"]
 
 
