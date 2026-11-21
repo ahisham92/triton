@@ -158,6 +158,20 @@ def test_add_save_delete_film(project, demo):
     assert client.get(f"/api/projects/{project}/films").json() == []
 
 
+def test_saved_settings_start_new_films(project, demo):
+    _, s = demo
+    body = gzip.compress(json.dumps(s).encode())
+    assert client.get(f"/api/projects/{project}/films/defaults").json() is None
+    first = client.post(f"/api/projects/{project}/films?file=A.xlsx", content=body).json()
+    saved = {**first["settings"], "title": "Sibline Port", "seabed": -10.8, "pile_rows": "C, B, A, D"}
+    r = client.put(f"/api/projects/{project}/films/defaults", json=saved)
+    assert r.status_code == 200, r.text
+    nxt = client.post(f"/api/projects/{project}/films?file=B.xlsx", content=body).json()
+    assert nxt["settings"]["title"] == "Sibline Port" and nxt["settings"]["seabed"] == -10.8
+    assert nxt["settings"]["pile_rows"] == "C, B, A, D"
+    assert len(client.get(f"/api/projects/{project}/films").json()) == 2
+
+
 def test_bad_uploads_and_ids(project):
     r = client.post(f"/api/projects/{project}/films", content=b"not json")
     assert r.status_code == 400
