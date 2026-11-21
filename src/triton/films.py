@@ -66,6 +66,7 @@ class PileGroup(BaseModel):
         description="Combinations the capacities are checked under, comma separated, * for any "
         "characters (e.g. 'C1-*' for D+L service); empty: every combination",
     )
+    lateral_cases: str = Field("", description="Combinations for the lateral check; empty: the same as cases")
     colour: str = ""
 
 
@@ -98,6 +99,11 @@ class FilmSettings(BaseModel):
         default_factory=list, description="Pile groups (existing, new...) and capacities"
     )
     capacity_unit: Literal["kN", "t"] = "t"
+    pile_rows: str = Field(
+        "",
+        description="Names of the pile rows from the low side, comma separated (e.g. 'C, B, A, D'); "
+        "empty: A, B, C...",
+    )
 
 
 class Film(BaseModel):

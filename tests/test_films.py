@@ -252,4 +252,6 @@ def test_pile_groups_keep_rows_and_service_cases():
     )
     g = s.piles[0]
     assert (g.match, g.cases, g.tension_factor) == ("Row D", "C1-*", 0.7)
+    assert g.lateral_cases == ""
     assert FilmSettings().piles == []
+    assert FilmSettings(pile_rows="C, B, A, D").pile_rows == "C, B, A, D"

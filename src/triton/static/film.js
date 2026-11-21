@@ -83,7 +83,7 @@ function prepare(S, set) {
 
 // the piles: from each support up the near-vertical members to the deck; then their groups
 // (existing, new...) by frame or section names, with the capacities given for each
-const glob = (pat) => new RegExp(`^${pat.trim().replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i");
+const glob = (pat) => new RegExp(`^${pat.trim().replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
 function findPiles(M, set) {
   const S = M.S, J = M.J, at = new Map();
   S.frames.ends.forEach(([a, b], n) => { [a, b].forEach((j) => { if (!at.has(j)) at.set(j, []); at.get(j).push(n); }); });
@@ -110,8 +110,10 @@ function findPiles(M, set) {
   if (piles.length > 3) {
     const rx = rowsOn(0), ry = rowsOn(1), d = ry.length <= rx.length ? 1 : 0, rows = d ? ry : rx;
     if (rows.length >= 2 && rows.length <= 26 && rows.length < piles.length) {
-      piles.forEach((p) => { const r = rows.reduce((b, x, i) => (Math.abs(x - p.top[d]) < Math.abs(rows[b] - p.top[d]) ? i : b), 0); p.row = String.fromCharCode(65 + r); });
-      M.rows = rows.map((x, i) => ({ row: String.fromCharCode(65 + i), at: x, axis: d ? "Y" : "X", piles: piles.filter((p) => p.row === String.fromCharCode(65 + i)) }));
+      const given = (set.pile_rows || "").split(",").map((x) => x.trim()).filter(Boolean);
+      const name = (i) => given[i] || String.fromCharCode(65 + i);
+      piles.forEach((p) => { const r = rows.reduce((b, x, i) => (Math.abs(x - p.top[d]) < Math.abs(rows[b] - p.top[d]) ? i : b), 0); p.row = name(r); });
+      M.rows = rows.map((x, i) => ({ row: name(i), at: x, axis: d ? "Y" : "X", piles: piles.filter((p) => p.row === name(i)) }));
     }
   }
   // groups
@@ -129,6 +131,7 @@ function findPiles(M, set) {
     g.tens = g.tension != null ? g.tension * unit : g.comp != null ? (g.tension_factor ?? 0.7) * g.comp : null;
     g.lat = g.lateral != null ? g.lateral * unit : null;
     g.caseRes = (g.cases || "").split(",").map((x) => x.trim()).filter(Boolean).map(glob);
+    g.latRes = g.lateral_cases ? g.lateral_cases.split(",").map((x) => x.trim()).filter(Boolean).map(glob) : g.caseRes;
     g.count = 0;
   });
   const fallback = groups.findIndex((g) => !g.res.length);
@@ -317,7 +320,7 @@ export function direct(S, set, M) {
       const ratio = new Map(rows.map((r) => [r.i, r.ratio]));
       add({ kind: "piles", what: k2, ratio, dur: brief ? 5 : 6.5, cut: k2 === "comp", cam0: C.tall(), cam1: { ...C.tall(), yaw: C.tall().yaw + 40 }, head, legend: "util", seabedAlpha: 0.35,
         lines: [over.length ? `${over.length} pile${over.length === 1 ? "" : "s"} above the ${word} capacity, the worst ${n0(worst.ratio, 2)} (${tN(worst.d, set)} against ${tN(worst.cap, set)}, ${worst.case})` : `Every pile is within its ${word} capacity: the highest ${n0(worst.ratio, 2)} (${tN(worst.d, set)} against ${tN(worst.cap, set)})`,
-          M.groups.filter((g) => g[k2] != null).map((g) => `${g.name}: ${tN(g[k2], set)}${g.cases ? ` under ${g.cases}` : ""}`).join(", ")],
+          M.groups.filter((g) => g[k2] != null).map((g) => `${g.name}: ${tN(g[k2], set)}${(k2 === "lat" ? g.lateral_cases || g.cases : g.cases) ? ` under ${k2 === "lat" ? g.lateral_cases || g.cases : g.cases}` : ""}`).join(", ")],
         tags: over.slice(0, 3).concat(over.length ? [] : [worst]).map((r) => ({ at: M.piles[r.i].top, text: n0(r.ratio, 2) })) });
     });
   }
@@ -548,17 +551,18 @@ function pileDemand(S, M) {
   const R = S.reactions, ix = new Map(R.supports.map((j, k) => [j, k]));
   const combo = new Set(S.cases.filter((c) => c.kind === "combo").map((c) => c.name));
   const all = R.cases.filter((c) => !combo.size || combo.has(c.case));
-  const byGroup = new Map();
+  const byGroup = new Map(), latGroup = new Map();
   return M.piles.map((p) => {
     const k = ix.get(p.support), o = { comp: 0, tens: 0, lat: 0 };
     if (k == null) return o;
     const g = M.allGroups[p.group];
     if (!byGroup.has(p.group)) byGroup.set(p.group, g?.caseRes?.length ? R.cases.filter((c) => g.caseRes.some((re) => re.test(c.case))) : all);
+    if (!latGroup.has(p.group)) latGroup.set(p.group, g?.latRes?.length ? R.cases.filter((c) => g.latRes.some((re) => re.test(c.case))) : all);
+    latGroup.get(p.group).forEach((c) => { const h = c.h[k]; if (h != null && h > o.lat) { o.lat = h; o.latCase = c.case; } });
     byGroup.get(p.group).forEach((c) => {
       const up = c.fz[k], dn = c.fz_min[k], h = c.h[k];
       if (up != null && up > o.comp) { o.comp = up; o.compCase = c.case; }
       if (dn != null && -dn > o.tens) { o.tens = -dn; o.tensCase = c.case; }
-      if (h != null && h > o.lat) { o.lat = h; o.latCase = c.case; }
     });
     return o;
   });
@@ -1394,7 +1398,8 @@ function form(el, set, esc, changed) {
     <label>Steel yield strength fy (MPa), for stress ratios <input data-k="steel_fy" type="number" min="100" step="5" value="${esc(set.steel_fy ?? 355)}"></label>
     <label>Movements drawn larger by <input data-k="exaggerate" type="number" min="1" step="1" placeholder="chosen to show" value="${esc(set.exaggerate ?? "")}"></label>
     <fieldset class="film-piles"><legend>Pile capacities</legend>
-      <p class="status">Piles over their capacity glow in the film. Match picks piles by frame or section name, or by row (Row A, Row B, lettered from the low side); commas between, * for any text; empty for every other pile. Tension left empty is the factor times compression. Checked under names the combinations (e.g. C1-* for D+L service); empty for every combination.</p>
+      <p class="status">Piles over their capacity glow in the film. Match picks piles by frame or section name, or by row (Row A, Row B, lettered from the low side); commas between, * for any text; empty for every other pile. Tension left empty is the factor times compression. Checked under names the combinations (e.g. C1-* for D+L service); empty for every combination. Lateral under, when given, is used for the lateral check instead.</p>
+      <label>Row names, from the low side <input data-k="pile_rows" placeholder="A, B, C…" value="${esc(set.pile_rows || "")}" style="width:9em"></label>
       <label>Capacities in <select data-k="capacity_unit"><option value="t">tonnes</option><option value="kN">kN</option></select></label>
       <div data-pgroups></div><button class="quiet" type="button" data-padd>Add a pile group</button></fieldset>
     <fieldset class="film-hide"><legend>Shots</legend>${Object.entries(SHOTS).map(([k, v]) => `<label class="toggle"><input type="checkbox" data-shot="${k}" ${(set.hide || []).includes(k) ? "" : "checked"}> ${v}</label>`).join("")}</fieldset>`;
@@ -1403,7 +1408,7 @@ function form(el, set, esc, changed) {
   el.querySelector('[data-k="capacity_unit"]').value = set.capacity_unit || "t";
   const groups = el.querySelector("[data-pgroups]");
   const PF = [["name", "Name", "text", "8em"], ["match", "Match", "text", "8em"], ["compression", "Compression", "number", "5.5em"],
-    ["tension", "Tension", "number", "5.5em"], ["tension_factor", "or factor", "number", "4em"], ["lateral", "Lateral", "number", "5.5em"], ["cases", "Checked under", "text", "9em"]];
+    ["tension", "Tension", "number", "5.5em"], ["tension_factor", "or factor", "number", "4em"], ["lateral", "Lateral", "number", "5.5em"], ["cases", "Checked under", "text", "9em"], ["lateral_cases", "Lateral under", "text", "9em"]];
   const drawGroups = () => {
     groups.innerHTML = (set.piles || []).map((g, i) => `<div class="row film-pgroup" style="gap:6px;flex-wrap:wrap;align-items:end;border-top:1px solid var(--line, #ddd);padding-top:6px;margin-top:6px">${PF.map(([k, lab, t, w]) =>
       `<label>${lab} <input data-pg="${i}" data-pf="${k}" type="${t}" ${t === "number" ? 'step="any" min="0"' : ""} style="width:${w}" value="${esc(g[k] ?? (k === "tension_factor" ? 0.7 : ""))}"></label>`).join("")}
@@ -1418,7 +1423,7 @@ function form(el, set, esc, changed) {
   };
   drawGroups();
   el.querySelector("[data-padd]").onclick = () => {
-    (set.piles ||= []).push({ name: `Piles ${set.piles.length + 1}`, match: "", compression: null, tension: null, tension_factor: 0.7, lateral: null, cases: "" });
+    (set.piles ||= []).push({ name: `Piles ${set.piles.length + 1}`, match: "", compression: null, tension: null, tension_factor: 0.7, lateral: null, cases: "", lateral_cases: "" });
     drawGroups(); changed();
   };
   el.querySelectorAll("[data-k]").forEach((i) => (i.onchange = () => {
