@@ -6,7 +6,7 @@
 
 import { Film3D, Mesh, hex, surroundings } from "./film3d.js";
 import { WorldMap } from "./worldmap.js";
-import { fromB64, isQuake, readSap } from "./sapread.js";
+import { fromB64, isQuake, mergeModel, readSap } from "./sapread.js";
 import { heat } from "./view3d.js";
 import { loadLeaflet, makeMap, searchBox } from "./sitemap.js";
 
@@ -19,6 +19,8 @@ const rgb = (s) => s.match(/\d+/g).slice(0, 3).map((v) => +v / 255);
 const rel = (v, max) => rgb(heat(max > 0 ? clamp(Math.abs(v) / max, 0, 1) * 0.999 : 0));
 const CONC = hex("#B5B0A6"), CONC_TOP = hex("#C3BEB4"), STEEL = hex("#565C63"), PLATE = hex("#BDB8AE"), GHOST = hex("#9AA3AD"), BED = hex("#BDB091");
 const SHOTS = { loads: "What it carries", reactions: "Reactions", piles: "Pile capacities", movements: "Movements", quake: "Vibration, earthquake and waves", forces: "Member forces", design: "Utilisation" };
+// shots that show the setting: the sea less clear there, and the revetment drawn
+const SCENIC = new Set(["map", "intro", "site", "end"]);
 const RESULTS = new Set(["reactions", "piles", "move", "mode", "modal", "quake", "act", "forces", "plates", "design", "stress", "summary"]);
 
 // --- the place: map points to the model's axes ------------------------------------------------
@@ -76,7 +78,7 @@ function prepare(S, set) {
   let ext = L;
   [...site.breakwaters.flatMap((r) => r.pts), ...site.land.flatMap((l) => l.pts)].forEach((p) => { ext = Math.max(ext, 2 * Math.hypot(p[0] - centre[0], p[1] - centre[1])); });
   ext = Math.min(ext, 12 * L);
-  const M = { S, J, L, centre, seabed, wl, site, sect, seaYaw, ext, top, bottom: lo[2] };
+  const M = { S, J, L, centre, seabed, wl, site, sect, seaYaw, seaDir: [Math.cos(seaYaw * Math.PI / 180), Math.sin(seaYaw * Math.PI / 180)], ext, top, bottom: lo[2] };
   findPiles(M, set);
   return M;
 }
@@ -257,20 +259,7 @@ export function direct(S, set, M) {
       const count = Object.values(L.counts || {}).reduce((a, b) => a + b, 0);
       return { p, total, count, type: (S.patterns.find((q) => q.name === p) || {}).type || "" };
     }).filter((x) => x.total > 0).sort((a, b) => b.total - a.total);
-    pats.slice(0, brief ? 3 : 6).forEach((x, i) => {
-      const items = loadItems(S, x.p), lk = loadKind(x.p, items);
-      const big = items.reduce((b, a) => (!b || a.v > b.v ? a : b), null);
-      const unit = { area: "kN/m²", line: "kN/m", point: "kN" };
-      const what = lk === "mooring" ? `Mooring line pull at ${items.length} bollard${items.length === 1 ? "" : "s"}`
-        : lk === "berthing" ? `Ship berthing against ${items.length} fender${items.length === 1 ? "" : "s"}`
-        : lk === "horizontal" ? `${n0(items.length)} sideways load${items.length === 1 ? "" : "s"}`
-        : big?.kind === "area" ? `Spread over ${n0(items.length)} deck panel${items.length === 1 ? "" : "s"}`
-        : big?.kind === "line" ? `Along ${n0(items.length)} member${items.length === 1 ? "" : "s"}` : `${n0(items.length)} point load${items.length === 1 ? "" : "s"}`;
-      add({ kind: "loads", dur: brief ? 4.5 : 5.5, pattern: x.p, items, lk, cut: i === 0,
-        cam0: lk === "gravity" ? (i % 2 ? C.quarter2() : C.quarter()) : C.high(), cam1: lk === "gravity" ? (i % 2 ? C.quarter() : C.high()) : { ...C.wide(), pitch: 26, dist: 1.5 * M.L },
-        head: `Load: ${x.p}`, lines: [`${what}${big ? `, up to ${n0(big.v, big.v < 10 ? 1 : 0)} ${unit[big.kind]}` : ""}`, `${x.type ? x.type + ", " : ""}about ${kN(x.total)} in all${pats.length > 1 ? ` (load ${i + 1} of ${pats.length})` : ""}`],
-        legend: "relative", tags: big ? [{ at: big.tag, text: `${n0(big.v, big.v < 10 ? 1 : 0)} ${unit[big.kind]}` }] : [] });
-    });
+    loadFamilyShots(S, M, C, add, brief, pats);
     // no load tables in the file: each family of load cases (dead, live, berthing, mooring, wind,
     // waves...) as the total it puts on the structure, worked out from the base reactions
     if (!pats.length && Object.keys(S.base || {}).length) {
@@ -608,6 +597,8 @@ function layers(F, s, u) {
   const plain = { frame: () => null, area: () => null };
   const bed = keyed("bed", () => { const m = new Mesh(), R = M.ext * 3, c = M.centre; m.quad([c[0] - R, c[1] - R, M.seabed], [c[0] + R, c[1] - R, M.seabed], [c[0] + R, c[1] + R, M.seabed], [c[0] - R, c[1] + R, M.seabed], BED); return m; });
   out.push({ mesh: bed, opacity: s.seabedAlpha ?? 0.92 });
+  // where the seabed is see-through (to show the pile toes), a dark floor below the toes so the sea does not show the sky
+  if ((s.seabedAlpha ?? 0.92) < 0.9) out.push({ mesh: keyed("deep", () => { const m = new Mesh(), R = M.ext * 3, c = M.centre, z = Math.min(M.bottom, M.seabed) - 4; m.quad([c[0] - R, c[1] - R, z], [c[0] + R, c[1] - R, z], [c[0] + R, c[1] + R, z], [c[0] - R, c[1] + R, z], hex("#33424A")); return m; }), opacity: 1 });
   const grey = () => keyed("ghost", () => structure(M, { frame: () => GHOST, area: () => GHOST }));
   const grouped = { frame: (n) => (M.groups.length > 1 && M.pileOf.has(n) ? hex(M.allGroups[M.piles[M.pileOf.get(n)].group].colour) : null), area: () => null };
   if (s.kind === "build") {
@@ -641,7 +632,7 @@ function layers(F, s, u) {
     out.push({ mesh: U ? structure(M, col, { shift: U, k: k * g }) : keyed(`act-${s.case}`, () => structure(M, col)), opacity: 1 });
   } else if (s.kind === "loads") {
     out.push({ mesh: keyed("plain", () => structure(M, plain)), opacity: 1 });
-    loadScene(M, s, u).forEach((l) => out.push(l));
+    (s.real ? realScene(M, s, u, u * s.dur) : loadScene(M, s, u)).forEach((l) => out.push(l));
   } else if (s.kind === "family") {
     out.push({ mesh: keyed("plain", () => structure(M, plain)), opacity: 1 });
     out.push({ mesh: familyArrows(M, s.fam, u), opacity: 1, glow: 0.3 });
@@ -769,6 +760,331 @@ function loadScene(M, s, u) {
   out.push({ mesh: heavy, opacity: 1, glow: 0.25 });
   return out;
 }
+// --- the load cases as what they are -----------------------------------------------------------------
+// the load patterns of the file in families; each family is one shot that steps through its cases,
+// each case drawn as the thing that makes it (paving, cargo, trucks, a hopper, a crane, a ship on the
+// fender, a mooring line, wind, waves) with its values written on the picture
+const LOOKS = [
+  ["self", "Own weight", /^(DEAD|SELF|SW|OWN)/],
+  ["seg", "The next segment resting on it", /SEG\d|ADJAC|NEIGHB/],
+  ["truck", "Trucks", /TRUCK|LORRY|VEHIC|AXLE/],
+  ["hopper", "The hopper", /HOPPER/],
+  ["crane", "Construction loads", /CONSTR|CRANE/],
+  ["finish", "Finishes and services", /SDL|SIDL|FINISH|SUPER|SERVIC/],
+  ["live", "Live load: cargo on the deck", /LIVE|UDL|SURCH|STORE|CARGO/],
+  ["berthing", "Ships berthing", /BERTH|FEND|IMPACT/],
+  ["mooring", "Mooring line pulls", /BOLL|MOOR/],
+  ["wind", "Wind", /WIND/],
+  ["wave", "Waves", /WAVE|CURR/],
+  ["buoy", "Buoyancy", /BUOY/],
+  ["soil", "Soil and fill", /SOIL|FILL|EARTH/],
+  ["temp", "Temperature", /TEMP|SHRINK/],
+];
+const STEP = 3.6;
+export function loadFamilies(S) {
+  const names = Object.keys(S.loads || {}).filter((p) => loadItems(S, p).length);
+  const self = (S.patterns || []).filter((p) => p.self > 0 && !names.includes(p.name) && S.base?.[p.name]).map((p) => p.name);
+  const fams = new Map();
+  [...self, ...names].forEach((p) => {
+    const f = LOOKS.find(([, , re]) => re.test(p.toUpperCase())) || ["other", "Other loads"];
+    if (!fams.has(f[0])) fams.set(f[0], { key: f[0], label: f[1], names: [] });
+    fams.get(f[0]).names.push(p);
+  });
+  const order = [...LOOKS.map(([k]) => k), "other"];
+  return [...fams.values()].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key)).map((f) => {
+    const list = f.names, has = new Set(list), steps = [], at = new Map();
+    // friction joins the berthing case it goes with; an operating case joins its extreme twin
+    const main = (n) => { const b = n.replace(/-FRICT?(ION)?(-[A-Z0-9]+)?$/i, ""); return b !== n && has.has(b) ? b : null; };
+    const twin = (n) => ["-EXT-", "-STORM-", "-EXTREME-"].map((t) => n.replace(/-(OP|OPER|OPERATING)-/i, t)).find((x) => x !== n && has.has(x)) || null;
+    list.forEach((n) => { if (!main(n) && !twin(n)) { const st = { name: n, parts: [n], also: [] }; at.set(n, st); steps.push(st); } });
+    list.forEach((n) => { const m = main(n); if (m) at.get(m)?.parts.push(n); });
+    list.forEach((n) => { const t = twin(n); if (t && !main(n)) at.get(t)?.also.push(n); });
+    steps.forEach((st) => (st.items = st.parts.flatMap((p) => loadItems(S, p).map((o) => ({ ...o, pat: p })))));
+    return { ...f, steps };
+  });
+}
+const sum3 = (items, S) => {
+  const F = [0, 0, 0];
+  items.forEach((o) => { const k = o.kind === "area" ? areaOf(S, o.area) : o.kind === "line" ? Math.hypot(...o.a.map((v, n) => v - o.b[n])) : 1; for (let n = 0; n < 3; n++) F[n] += o.d[n] * o.v * k; });
+  return F;
+};
+const tonnes = (v) => `${n0(v / 9.81)} t`;
+const val = (v) => n0(v, v < 10 ? 1 : 0);
+// what one case puts on the structure, in a line or two
+function describe(S, M, look, st) {
+  const it = st.items, F = sum3(it, S), down = -F[2], side = Math.hypot(F[0], F[1]);
+  const by = (kind) => it.filter((o) => o.kind === kind);
+  const area = by("area"), line = by("line"), pt = by("point");
+  const peak = (list) => list.reduce((m, o) => Math.max(m, o.v), 0);
+  const m2 = area.reduce((a, o) => a + areaOf(S, o.area), 0);
+  const out = [];
+  const total = [down > 1 ? `${kN(down)} down` : down < -1 ? `${kN(-down)} up` : "", side > 1 ? `${kN(side)} sideways` : ""].filter(Boolean).join(", ");
+  if (look === "self") { const b = S.base?.[st.name] || []; const w = Math.abs(b[2] || 0); out.push(`The concrete's own weight: ${kN(w)} (${tonnes(w)}), worked out by SAP2000 from the sections`); }
+  else if (look === "finish") {
+    if (area.length) out.push(`Surfacing and services: ${val(peak(area))} kN/m² over ${n0(m2)} m² of deck (about ${n0(Math.round(peak(area) / 24 * 100) * 10)} mm of paving)`);
+    if (line.length) out.push(`Kerbs and services: ${val(peak(line))} kN/m along ${n0(line.length)} beams`);
+    if (pt.length) out.push(`Fittings: ${pt.length} × ${val(peak(pt))} kN (bollards, ladders)`);
+  } else if (look === "live" || (look === "crane" && area.length)) {
+    const p = peak(area.length ? area : line);
+    out.push(`${val(p)} kN/m² = ${n0(p / 9.81, 1)} t/m² ${look === "crane" ? "of materials and plant while it is built" : "of cargo"}${area.length ? ` over ${n0(m2)} m² of deck` : ""}${line.length ? `, ${val(peak(line))} kN/m along ${line.length} beams` : ""}`);
+  } else if (look === "truck") out.push(`${pt.length} wheels of ${val(peak(pt))} kN: a truck of about ${tonnes(down)} on the deck`);
+  else if (look === "hopper") {
+    const dn = pt.filter((o) => o.d[2] < 0), up = pt.filter((o) => o.d[2] > 0);
+    out.push(up.length ? `Off-centre load: ${dn.length} legs pressed by ${val(peak(dn))} kN, ${up.length} lifted by ${val(peak(up))} kN` : `${pt.length} legs × ${val(peak(pt))} kN = ${kN(down)} (${tonnes(down)})${line.length ? `, conveyor ${val(peak(line))} kN/m` : ""}`);
+  } else if (look === "crane") out.push(`Mobile crane: ${kN(peak(pt))} (${tonnes(peak(pt))}) on its outrigger`);
+  else if (look === "seg") out.push(`${pt.length} reactions where segment 1 rests on this one, up to ${kN(peak(pt))}`);
+  else if (look === "berthing") {
+    const h = pt.filter((o) => Math.abs(o.d[2]) < 0.5 && !/FRICT/i.test(o.pat)), fr = pt.filter((o) => /FRICT/i.test(o.pat));
+    out.push(`The ship presses ${kN(peak(h.length ? h : pt))} on the fender${fr.length ? `; friction ${fr.map((o) => `${kN(o.v)} ${Math.abs(o.d[2]) > 0.5 ? "up" : "along"}`).join(" and ")}` : ""}`);
+  } else if (look === "mooring") {
+    const sea = M.seaDir;
+    out.push(pt.map((o) => { const hz = Math.hypot(o.d[0], o.d[1]), c = hz > 1e-6 ? Math.abs(o.d[0] * sea[0] + o.d[1] * sea[1]) / hz : 0;
+      const how = o.d[2] > 0.3 ? "rising at 45°" : c > 0.9 ? "straight out to sea" : c > 0.4 ? "at 45° to the quay" : "along the quay";
+      return `${kN(o.v)} ${how}`; }).slice(0, 3).join("; ") + ` (${pt.length} bollard${pt.length === 1 ? "" : "s"})`);
+  } else if (look === "wind") out.push(`Wind on the deck and fittings: ${kN(side)} in all${line.length ? `, ${val(peak(line))} kN/m on the front beam` : ""}`);
+  else if (look === "wave") {
+    const up = area.filter((o) => o.d[2] > 0.5), dn = area.filter((o) => o.d[2] < -0.5), hl = line.filter((o) => Math.abs(o.d[2]) < 0.5), pp = pt;
+    if (up.length) out.push(`Wave slamming up under the deck: ${val(peak(up))} kN/m²${line.length ? `, ${val(peak(line))} kN/m under the beams` : ""}`);
+    if (dn.length) out.push(`Suction as the wave drops away: ${val(peak(dn))} kN/m² pulling the deck down`);
+    if (hl.length && !area.length) out.push(`Wave pushing on the beams: ${val(peak(hl))} kN/m${hl.length > 1 ? ` over ${hl.length} members` : ""}`);
+    if (pp.length) out.push(`Wave drag on the piles: up to ${val(peak(pp))} kN on each piece of pile`);
+  } else if (look === "buoy") out.push(`Buoyancy: ${val(peak(line))} kN/m lifting ${line.length} piles where they are under water`);
+  if (!out.length) out.push(`${n0(it.length)} loads, up to ${val(peak(it))} ${it[0]?.kind === "area" ? "kN/m²" : it[0]?.kind === "line" ? "kN/m" : "kN"}`);
+  if (total && look !== "self") out.push(`In all: ${total}`);
+  if (st.also.length) {
+    const a = st.also.map((n) => { const L2 = loadItems(S, n), p = L2.reduce((m, o) => Math.max(m, o.v), 0); return `${n} ${val(p)} ${L2[0]?.kind === "area" ? "kN/m²" : L2[0]?.kind === "line" ? "kN/m" : "kN"}`; });
+    out.push(`Shown at its extreme; in normal operation: ${a.join(", ")}`);
+  }
+  return out;
+}
+// the tags of a case: its largest value of each kind (where the thing is)
+function stepTags(look, st) {
+  const unit = { area: "kN/m²", line: "kN/m", point: "kN" }, tags = [];
+  ["area", "line", "point"].forEach((kind) => {
+    const list = st.items.filter((o) => o.kind === kind);
+    if (!list.length) return;
+    const big = list.reduce((b, o) => (o.v > b.v ? o : b));
+    const what = look === "truck" ? "per wheel" : look === "hopper" ? "per leg" : look === "berthing" ? (/FRICT/i.test(big.pat) ? "friction" : "berthing") : look === "mooring" ? "line pull" : "";
+    tags.push({ at: big.p, text: `${val(big.v)} ${unit[kind]}${what ? ` ${what}` : ""}` });
+  });
+  if (look === "berthing") st.items.filter((o) => /FRICT/i.test(o.pat)).slice(0, 1).forEach((o) => tags.push({ at: o.p, text: `${val(o.v)} kN friction` }));
+  return tags.slice(0, 3);
+}
+function loadFamilyShots(S, M, C, add, brief, pats) {
+  if (!pats.length) return;
+  const fams = loadFamilies(S), max = brief ? 2 : 8;
+  fams.forEach((f, i) => {
+    const steps = f.steps.slice(0, max), more = f.steps.length - steps.length, cases = f.steps.reduce((a, st) => a + st.parts.length + st.also.length, 0);
+    const look = f.key;
+    steps.forEach((st, j) => {
+      st.look = look === "crane" && st.items.every((o) => o.kind === "point") ? "crane" : look === "crane" ? "construction" : look;
+      st.head = `${f.label}: ${st.name}${st.parts.length > 1 ? ` with ${st.parts.slice(1).map((p) => p.replace(st.name, "").replace(/^-/, "")).join(", ")}` : ""}`;
+      st.lines = [...describe(S, M, look === "crane" && st.look === "construction" ? "crane" : look, st),
+        `Case ${j + 1} of ${steps.length}${more > 0 ? ` shown, ${more} more like these (${f.steps.slice(max, max + 3).map((x) => x.name).join(", ")}${more > 3 ? "…" : ""})` : ""}${cases > steps.length ? `; ${cases} load cases in this family` : ""}`];
+      st.tags = stepTags(st.look, st);
+      const pts = st.items.map((o) => o.p);
+      st.focus = pts.length ? [0, 1, 2].map((n) => pts.reduce((a, q) => a + q[n], 0) / pts.length) : M.centre;
+    });
+    const seaward = (M.seaYaw * Math.PI) / 180;
+    const cam = (() => {
+      const fc = steps[0].focus, c = { ...C.quarter(), tx: lerp(M.centre[0], fc[0], 0.6), ty: lerp(M.centre[1], fc[1], 0.6) };
+      if (look === "berthing" || look === "mooring") {
+        // from the land side, looking out over the quay to the ship
+        const o = 0.25 * M.L;
+        return [{ ...C.high(), yaw: M.seaYaw + 180 - 40, pitch: 42, dist: 2.3 * M.L, tx: fc[0] + Math.cos(seaward) * o, ty: fc[1] + Math.sin(seaward) * o },
+          { ...C.high(), yaw: M.seaYaw + 180 + 30, pitch: 36, dist: 2.0 * M.L, tx: fc[0] + Math.cos(seaward) * o, ty: fc[1] + Math.sin(seaward) * o }];
+      }
+      if (look === "wave") return [{ ...C.low(), yaw: M.seaYaw - 55, pitch: 7 }, { ...C.low(), yaw: M.seaYaw - 20, pitch: 5, dist: 0.95 * M.L }];
+      if (look === "wind") return [C.high(), C.wide()];
+      if (look === "truck" || look === "hopper" || (look === "crane" && steps.some((s2) => s2.look === "crane"))) return [{ ...c, dist: 1.15 * M.L }, { ...C.quarter2(), tx: c.tx, ty: c.ty, dist: 0.85 * M.L, pitch: 26 }];
+      if (look === "buoy" || look === "seg") return [C.quarter(), C.low()];
+      return [i % 2 ? C.quarter2() : C.quarter(), C.high()];
+    })();
+    add({ kind: "loads", real: true, dur: steps.length * STEP + 0.8, cut: i === 0, steps, look, cam0: cam[0], cam1: cam[1], head: steps[0].head, lines: steps[0].lines, legend: null, tags: steps[0].tags });
+  });
+}
+// the case on the picture now, and how far into it
+function stepOn(F, s, u) {
+  const n = s.steps.length, su = clamp((u * s.dur - 0.4) / (s.dur - 0.8), 0, 0.99999) * n, j = Math.min(n - 1, Math.floor(su));
+  const st = s.steps[j];
+  s.head = st.head; s.lines = st.lines; s.tags = st.tags; s.step = st;
+  s.lu = su - j; F.uTag = s.lu;
+}
+const PAL = ["#B03A2E", "#2E86C1", "#D68910", "#1E8449", "#7D3C98", "#A04000", "#117A65", "#5D6D7E"];
+const hash = (a, b) => { const h = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return h - Math.floor(h); };
+// plan helpers: the main direction of a set of points, their clusters
+function axisOf(pts) {
+  const c = [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length];
+  let xx = 0, yy = 0, xy = 0;
+  pts.forEach((p) => { const x = p[0] - c[0], y = p[1] - c[1]; xx += x * x; yy += y * y; xy += x * y; });
+  const an = 0.5 * Math.atan2(2 * xy, xx - yy), ex = [Math.cos(an), Math.sin(an), 0], ey = [-ex[1], ex[0], 0];
+  const s = pts.map((p) => (p[0] - c[0]) * ex[0] + (p[1] - c[1]) * ex[1]), t = pts.map((p) => (p[0] - c[0]) * ey[0] + (p[1] - c[1]) * ey[1]);
+  const z = Math.max(...pts.map((p) => p[2]));
+  return { c, ex, ey, lx: Math.max(...s) - Math.min(...s), ly: Math.max(...t) - Math.min(...t), mid: [(Math.max(...s) + Math.min(...s)) / 2, (Math.max(...t) + Math.min(...t)) / 2], z };
+}
+function clusters(list, gap) {
+  const out = [];
+  list.forEach((o) => {
+    const near = out.filter((cl) => cl.some((q) => Math.hypot(q.p[0] - o.p[0], q.p[1] - o.p[1]) <= gap));
+    if (!near.length) out.push([o]);
+    else { const m = near.flat(); m.push(o); near.forEach((cl) => out.splice(out.indexOf(cl), 1)); out.push(m); }
+  });
+  return out;
+}
+const onAxis = (A, s, t) => [A.c[0] + A.ex[0] * s + A.ey[0] * t, A.c[1] + A.ex[1] * s + A.ey[1] * t];
+function realScene(M, s, u, time) {
+  const S = M.S, st = s.step || s.steps[0], lu = s.lu ?? 0, g = ease(lu / 0.3), L = M.L, items = st.items, look = st.look;
+  const out = [], body = new Mesh(), glass = new Mesh(), arr = new Mesh();
+  const rr = L / 520, t = time;
+  const deckZ = (o) => {
+    if (o.kind === "area") { const k = S.areas.section[o.area], th = (M.sect[k]?.t || 0.3) / 2; return Math.max(...o.pts.map((q) => q[2])) + th + 0.02; }
+    return o.p[2] + 0.2;
+  };
+  const rain = (p, z, col, k = 1) => { const ph = (t * 0.7 + hash(p[0], p[1])) % 1, tip = z + (1 - ph) * 0.1 * L; arr.arrow([p[0], p[1], tip + 0.05 * L * k], [p[0], p[1], tip], rr * 1.3, col); };
+  const push = (o, col, len = 0.08 * L, r = L / 260) => {
+    // an arrow onto the point along the load's direction, the point at its tip
+    const e = o.d, k = Math.max(0.02, g);
+    arr.arrow([o.p[0] - e[0] * len * k, o.p[1] - e[1] * len * k, o.p[2] - e[2] * len * k], o.p, r, col);
+  };
+  const thin = Math.max(1, Math.round(items.filter((o) => o.kind === "area").length / 70));
+  const hull = (along, out0, wide, from) => {
+    // a ship lying along the quay, its side `out0` m out to sea from the quay face
+    const sea = M.seaDir, ex = [-sea[1], sea[0], 0], ey = [sea[0], sea[1], 0];
+    const o = [from[0] + sea[0] * (out0 + wide / 2), from[1] + sea[1] * (out0 + wide / 2)];
+    body.box(o, ex, ey, along, wide, M.wl - 6, M.wl - 0.3, hex("#7A2E24"));
+    body.box(o, ex, ey, along, wide, M.wl - 0.3, M.wl + 7, hex("#26313F"), hex("#8A929B"));
+    const bo = [o[0] - ex[0] * along * 0.4, o[1] - ex[1] * along * 0.4];
+    body.box(bo, ex, ey, along * 0.08, wide * 0.8, M.wl + 7, M.wl + 15, hex("#E8E6E1"), hex("#C9C6BF"));
+    return M.wl + 7;
+  };
+  if (look === "self") {
+    items.length || S.areas.joints.forEach((js, k) => { if (k % Math.max(1, Math.round(S.areas.joints.length / 60))) return; const pts = js.map((j) => S.joints[j]); const c = [0, 1, 2].map((n) => pts.reduce((a, q) => a + q[n], 0) / pts.length); rain(c, c[2] + 0.4, hex("#9AA3AD")); });
+    st.tags = [{ at: [M.centre[0], M.centre[1], M.top], text: kN(Math.abs(S.base?.[st.name]?.[2] || 0)) }];
+  }
+  items.forEach((o, n) => {
+    const side = Math.abs(o.d[2]) < 0.5;
+    if (look === "finish") {
+      if (o.kind === "area") {
+        const z0 = deckZ(o), h = 0.35 * g, sh = (k) => o.pts.map((q) => [q[0], q[1], z0 + k]);
+        const col = hex(hash(o.p[0], o.p[1]) > 0.5 ? "#5A5E64" : "#52565C");
+        body.panel(sh(h), col);
+        if (n % thin === 0 && g > 0.6) rain(o.p, z0 + h, hex("#A9B1B9"));
+      } else if (o.kind === "line") body.member([o.a[0], o.a[1], o.a[2] + 0.5], [o.b[0], o.b[1], o.b[2] + 0.5], 0.45, 0.6 * g + 0.01, hex("#CFC9BC"));
+      else { body.frustum([o.p[0], o.p[1], o.p[2] + 0.3], [o.p[0], o.p[1], o.p[2] + 1.2], 0.45, 0.35, hex("#2B2F33")); push(o, hex("#E3543C"), 0.05 * L); }
+    } else if (look === "live" || look === "construction") {
+      if (o.kind === "area") {
+        const z0 = deckZ(o) + (1 - g) * 10, h = Math.min(4, Math.max(0.3, o.v / (look === "live" ? 10 : 6)));
+        const c = o.p, sh = o.pts.map((q) => [c[0] + (q[0] - c[0]) * 0.9, c[1] + (q[1] - c[1]) * 0.9]);
+        const k = Math.floor(hash(Math.floor(c[0] / 6), Math.floor(c[1] / 3)) * PAL.length);
+        const col = look === "live" ? hex(PAL[k]) : hex(k % 2 ? "#B98A57" : "#A67C4E");
+        const bot = sh.map((q) => [q[0], q[1], z0]), top = sh.map((q) => [q[0], q[1], z0 + h]);
+        body.panel(top, col.map((v) => Math.min(1, v * 1.15)));
+        for (let i = 0; i < bot.length; i++) { const j = (i + 1) % bot.length; body.quad(bot[i], bot[j], top[j], top[i], col); }
+        if (n % thin === 0 && g > 0.9) rain(c, z0 + h, hex("#F2D388"), 0.7);
+        o.tag = [c[0], c[1], z0 + h];
+      } else if (o.kind === "line") push({ ...o, p: [o.p[0], o.p[1], o.p[2] + 0.3] }, hex("#E07B39"), 0.04 * L, L / 400);
+    } else if (look === "seg") push({ ...o, p: [o.p[0], o.p[1], o.p[2] + 0.2] }, hex("#8E6FBF"), 0.05 * L + 0.07 * L * Math.min(1, o.v / 500), L / 220);
+    else if (look === "buoy" && o.kind === "line") {
+      [0.2, 0.5, 0.8].forEach((q) => { const p = o.a.map((v, k) => v + (o.b[k] - v) * q); if (p[2] > M.wl) return; const ph = (t * 0.6 + q) % 1; arr.arrow([p[0] + 1, p[1], p[2] - 1.5 + ph], [p[0] + 1, p[1], p[2] + 1.5 + ph], rr * 1.6, hex("#3FC1C9")); });
+    } else if (look === "wind") {
+      push(o.kind === "line" ? { ...o, p: o.p } : o, hex("#6BB7C9"), 0.07 * L, L / 300);
+    } else if (look === "wave") {
+      if (o.kind === "area") {
+        if (n % thin) return;
+        const up = o.d[2] > 0, z = Math.min(...o.pts.map((q) => q[2])) - 0.3, len = 0.05 * L * g, ph = (t * 1.2 + hash(o.p[0], o.p[1])) % 1;
+        if (up) arr.arrow([o.p[0], o.p[1], z - len - ph * 2], [o.p[0], o.p[1], z - ph * 2 + 0.01], rr * 1.8, hex("#2F7FD0"));
+        else arr.arrow([o.p[0], o.p[1], z], [o.p[0], o.p[1], z - len], rr * 1.8, hex("#1B4F8C"));
+      } else if (o.kind === "line") { if (Math.abs(o.d[2]) < 0.5 || n % 4 === 0) push(o, hex("#2F7FD0"), 0.035 * L, L / 600); }
+      else push(o, hex("#5FA8E8"), 0.03 * L, L / 500);
+    }
+  });
+  if (look === "truck" || look === "hopper") {
+    const pts = items.filter((o) => o.kind === "point");
+    clusters(pts, look === "truck" ? 7 : 14).forEach((cl, ci) => {
+      if (cl.length < 2) { cl.forEach((o) => push(o, hex("#E3543C"))); return; }
+      const A = axisOf(cl.map((o) => o.p)), z = A.z + 0.15;
+      if (look === "truck") {
+        const len = A.lx + 3.2, wid = Math.max(2.5, A.ly + 0.6), off = (1 - g) * 30, at = (s0, t0) => onAxis(A, A.mid[0] + s0 - off, A.mid[1] + t0);
+        cl.forEach((o) => { const s0 = (o.p[0] - A.c[0]) * A.ex[0] + (o.p[1] - A.c[1]) * A.ex[1] - off, t0 = (o.p[0] - A.c[0]) * A.ey[0] + (o.p[1] - A.c[1]) * A.ey[1]; const w = onAxis(A, s0, t0); body.frustum([w[0] - A.ey[0] * 0.3, w[1] - A.ey[1] * 0.3, z + 0.55], [w[0] + A.ey[0] * 0.3, w[1] + A.ey[1] * 0.3, z + 0.55], 0.55, 0.55, hex("#1C1C1C"), 10); });
+        body.box(at(0, 0), A.ex, A.ey, len, wid * 0.9, z + 0.9, z + 1.35, hex("#3A3F44"));
+        body.box(at(-0.12 * len, 0), A.ex, A.ey, len * 0.72, wid, z + 1.35, z + 3.9, hex(PAL[(ci * 3 + 1) % PAL.length]), hex("#D9DDE1"));
+        body.box(at(0.38 * len, 0), A.ex, A.ey, len * 0.2, wid, z + 1.35, z + 3.6, hex("#E8E6E1"), hex("#C9C6BF"));
+        glass.box(at(0.47 * len, 0), A.ex, A.ey, 0.06, wid * 0.8, z + 2.5, z + 3.4, hex("#6FA7C9"));
+        if (g > 0.95) cl.forEach((o) => push({ ...o, p: [o.p[0], o.p[1], z] }, hex("#E3543C"), 0.05 * L, L / 300));
+      } else {
+        const dn = cl.filter((o) => o.d[2] <= 0), legs = cl, H = 7, at = (s0, t0) => onAxis(A, A.mid[0] + s0, A.mid[1] + t0);
+        legs.forEach((o) => body.member([o.p[0], o.p[1], z], [o.p[0], o.p[1], z + H], 0.5, 0.5, hex("#7F8C8D")));
+        const w = A.lx + 1.5, d = Math.max(A.ly + 1.5, 4), c = at(0, 0), fill = /LIVE|POS|FULL/i.test(st.name) ? 1 : /ECC/i.test(st.name) ? 0.6 : 0.15;
+        body.box(c, A.ex, A.ey, w, d, z + H, z + H + 4.5, hex("#E3B23C"), hex("#C99A2E"));
+        body.frustum([c[0], c[1], z + H], [c[0], c[1], z + H - 3.2], Math.min(w, d) * 0.48, 0.5, hex("#C99A2E"), 4);
+        if (fill > 0.2) body.frustum([c[0], c[1], z + H + 4.5], [c[0], c[1], z + H + 4.5 + 2.2 * fill], Math.min(w, d) * 0.45, 0.4, hex("#8D8172"), 10);
+        legs.forEach((o) => push({ ...o, p: [o.p[0], o.p[1], z] }, o.d[2] > 0 ? hex("#2F6FD0") : hex("#E3543C"), 0.04 * L * (0.5 + 0.5 * o.v / Math.max(...legs.map((q) => q.v))), L / 330));
+        void dn;
+      }
+    });
+    items.filter((o) => o.kind === "line").forEach((o) => { body.member([o.a[0], o.a[1], o.a[2] + 5.5], [o.b[0], o.b[1], o.b[2] + 5.5], 1.2, 0.9, hex("#95A5A6")); body.member([o.a[0], o.a[1], o.a[2]], [o.a[0], o.a[1], o.a[2] + 5.5], 0.3, 0.3, hex("#7F8C8D")); });
+  } else if (look === "crane") {
+    items.filter((o) => o.kind === "point").forEach((o) => {
+      const sea = M.seaDir, ex = [sea[0], sea[1], 0], ey = [-sea[1], sea[0], 0], z = o.p[2] + 0.2;
+      body.box([o.p[0], o.p[1]], ex, ey, 4, 11, z + 0.8, z + 2.4, hex("#F2B705"), hex("#D9A404"));
+      [[-1.6, -4.5], [1.6, -4.5], [-1.6, 4.5], [1.6, 4.5]].forEach(([a, b]) => body.frustum([o.p[0] + ex[0] * a + ey[0] * b, o.p[1] + ex[1] * a + ey[1] * b, z + 0.5], [o.p[0] + ex[0] * a + ey[0] * b + 0.3 * ey[0], o.p[1] + ex[1] * a + ey[1] * b + 0.3 * ey[1], z + 0.5], 0.5, 0.5, hex("#1C1C1C"), 10));
+      body.box([o.p[0] - ex[0] * 0.5, o.p[1] - ex[1] * 0.5], ex, ey, 3, 4, z + 2.4, z + 4.4, hex("#E8E6E1"));
+      const lift = 0.2 + 0.8 * g, top = [o.p[0] + ex[0] * 18, o.p[1] + ex[1] * 18, z + 4 + 26 * lift];
+      body.member([o.p[0], o.p[1], z + 3.5], top, 0.9, 0.9, hex("#F2B705"));
+      const hook = [top[0], top[1], Math.max(M.wl + 2, top[2] - 14)];
+      body.member(top, hook, 0.08, 0.08, hex("#222222"));
+      body.box([hook[0], hook[1]], ex, ey, 2.4, 2.4, hook[2] - 2.4, hook[2], hex("#6E7B85"));
+      push(o, hex("#E3543C"), 0.06 * L, L / 260);
+    });
+  } else if (look === "berthing") {
+    const main = items.filter((o) => o.kind === "point" && !/FRICT/i.test(o.pat));
+    const from = main[0]?.p || M.centre, sea = M.seaDir;
+    const off = 2.2 + (1 - g) * 12;
+    hull(Math.min(1.1 * L, 200), off, 24, from);
+    main.forEach((o) => {
+      body.frustum([o.p[0] + sea[0] * 0.1, o.p[1] + sea[1] * 0.1, o.p[2]], [o.p[0] + sea[0] * 2.0, o.p[1] + sea[1] * 2.0, o.p[2]], 1.0, 1.0, hex("#1C1C1C"), 14);
+      push(o, hex("#E3543C"), 0.12 * L, L / 160);
+    });
+    items.filter((o) => /FRICT/i.test(o.pat)).forEach((o) => push({ ...o, p: [o.p[0] + sea[0] * 2, o.p[1] + sea[1] * 2, o.p[2]] }, hex("#E3B23C"), 0.07 * L, L / 260));
+  } else if (look === "mooring") {
+    const sea = M.seaDir, faceAt = items[0]?.p || M.centre;
+    const deckTop = hull(Math.min(1.1 * L, 200), 3, 24, faceAt);
+    items.filter((o) => o.kind === "point").forEach((o) => {
+      const z = o.p[2] + 0.2, bt = [o.p[0], o.p[1], z + 1.0];
+      body.frustum([o.p[0], o.p[1], z], bt, 0.42, 0.32, hex("#2B2F33"), 12);
+      body.frustum(bt, [bt[0], bt[1], bt[2] + 0.18], 0.55, 0.55, hex("#2B2F33"), 12);
+      const e = o.d, s0 = e[0] * sea[0] + e[1] * sea[1];
+      let len = s0 > 0.2 ? Math.min(70, (3 + 16) / s0) : 40;
+      if (e[2] > 0.3) len = Math.min(len, (deckTop - bt[2]) / e[2]);
+      const k = 0.15 + 0.85 * g, end = bt.map((v, n) => v + e[n] * len * k), sag = (1 - g) * 3;
+      const mid = [(bt[0] + end[0]) / 2, (bt[1] + end[1]) / 2, (bt[2] + end[2]) / 2 - sag];
+      body.member(bt, mid, 0.14, 0.14, hex("#E3B23C"), 6); body.member(mid, end, 0.14, 0.14, hex("#E3B23C"), 6);
+      arr.arrow(bt, bt.map((v, n) => v + e[n] * 0.1 * L * Math.max(0.05, g)), L / 230, hex("#E3543C"));
+      o.tag = bt;
+    });
+  } else if (look === "wind") {
+    // streaks of air blowing through the scene
+    const F = sum3(items, S), h = Math.hypot(F[0], F[1]) || 1, e = [F[0] / h, F[1] / h, 0];
+    for (let q = 0; q < 26; q++) {
+      const a = hash(q, 1) - 0.5, b = hash(q, 2), ph = (t * 0.45 + hash(q, 3)) % 1, ey = [-e[1], e[0]];
+      const p0 = [M.centre[0] + ey[0] * a * 1.4 * L + e[0] * (ph - 0.6) * 1.6 * L, M.centre[1] + ey[1] * a * 1.4 * L + e[1] * (ph - 0.6) * 1.6 * L, M.top + 1 + b * 12];
+      glass.member(p0, [p0[0] + e[0] * 0.18 * L, p0[1] + e[1] * 0.18 * L, p0[2]], 0.12, 0.12, hex("#E9F4F7"));
+    }
+  } else if (look === "wave") {
+    // a swell rolling in from the sea under the deck
+    const sea = M.seaDir, ex = [-sea[1], sea[0]], R = 0.85 * L, n = 26, A = 1.4, k = (2 * Math.PI) / (0.45 * L);
+    const z = (x, y) => M.wl + A * Math.sin(k * -((x - M.centre[0]) * sea[0] + (y - M.centre[1]) * sea[1]) - 2.4 * t);
+    const P = (i, j) => { const a = -R + (2 * R * i) / n, b = -R + (2 * R * j) / n, x = M.centre[0] + ex[0] * a + sea[0] * b, y = M.centre[1] + ex[1] * a + sea[1] * b; return [x, y, z(x, y)]; };
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) glass.quad(P(i, j), P(i + 1, j), P(i + 1, j + 1), P(i, j + 1), hex("#3A8FC9"));
+  }
+  if (look === "generic" || look === "other" || look === "soil" || look === "temp") return loadScene(M, { ...s, items, lk: loadKind(st.name, items) }, lu);
+  out.push({ mesh: body, opacity: 1 });
+  out.push({ mesh: arr, opacity: 1, glow: 0.25 });
+  if (glass.p.length) out.push({ mesh: glass, opacity: look === "wave" ? 0.5 : look === "wind" ? 0.55 : 0.8 });
+  // tags follow the things as drawn
+  st.tags.forEach((tg) => { const o = items.find((q) => q.p === tg.at); if (o?.tag && o.tag !== o.p) tg.at2 = o.tag; });
+  return out;
+}
 // a family's total load as one big arrow onto the structure, pulsing, its parts split by direction
 function familyArrows(M, f, u) {
   const m = new Mesh(), g = ease(u / 0.3), L = f.rep.L, tip = famTip(M, f), t = u * 6;
@@ -851,7 +1167,7 @@ function tags(x, F, s, k, film3d) {
     if (!p) return;
     const q = film3d.project(p);
     if (!q) return;
-    const a = clamp((F.u - 0.35) / 0.1, 0, 1);
+    const a = clamp(((F.uTag ?? F.u) - 0.35) / 0.1, 0, 1);
     if (!a) return;
     x.save(); x.globalAlpha *= a;
     x.font = `700 ${Math.round(15 * k)}px ${FONT()}`;
@@ -1019,6 +1335,10 @@ function hud(x, F, s, u, i, t) {
     text(x, k, s.kind === "summary" ? "Summary" : SHOTS[{ loads: "loads", cases: "loads", combos: "loads", reactions: "reactions", family: "loads", build: "model", piles: "piles", act: "quake", move: "movements", mode: "quake", modal: "quake", quake: "quake", forces: "forces", plates: "forces", design: "design", stress: "design" }[s.kind]] || "The model", pad, 58 * k, 15, "#CFE1E7", 500);
   }
   text(x, k, "Triton", W - pad, 34 * k, 14, "rgba(255,255,255,.75)", 600, "right");
+  if (!SCENIC.has(s.kind)) {
+    const hidden = [F.M.site.land.length ? "land" : "", F.M.site.breakwaters.some((r) => r.kind === "revetment") ? "revetment" : "", F.M.site.breakwaters.some((r) => r.kind !== "revetment") ? "breakwaters" : ""].filter(Boolean);
+    if (hidden.length) text(x, k, `${hidden.join(", ").replace(/^./, (c) => c.toUpperCase()).replace(/, ([^,]*)$/, " and $1")} hidden for clarity`, W - pad, 56 * k, 13, "rgba(255,255,255,.75)", 500, "right");
+  }
   x.globalAlpha = Math.max(0, fade);
   if (s.title || s.kind === "map") {
     if (s.kind === "map") x.globalAlpha = Math.max(0, Math.min(fade, 1 - (u - 0.55) / 0.12));
@@ -1087,9 +1407,9 @@ export class Player {
     this.shots = d.shots; this.total = d.total; this.title = d.title;
     this.home = undefined;
     if (this.film3d.available()) {
-      const m = new Mesh();
-      surroundings(m, this.M.site);
-      this.film3d.setStatic({ solid: m, centre: this.M.centre, R: Math.max(this.M.ext * 3, this.M.L * 6), wl: this.M.wl, scale: this.M.L });
+      const m = new Mesh(), rv = new Mesh();
+      surroundings(m, this.M.site, rv);
+      this.film3d.setStatic({ solid: m, rev: rv, centre: this.M.centre, R: Math.max(this.M.ext * 3, this.M.L * 6), wl: this.M.wl, scale: this.M.L });
     }
   }
   frame(t) {
@@ -1097,11 +1417,14 @@ export class Player {
     if (this.stage.width !== this.w) { this.stage.width = this.w; this.stage.height = this.h; }
     let i = this.shots.findIndex((s) => t < s.t0 + s.dur); if (i < 0) i = this.shots.length - 1;
     const s = this.shots[i], u = clamp((t - s.t0) / s.dur, 0, 1);
-    this.u = u;
+    this.u = u; this.uTag = null;
     x.setTransform(1, 0, 0, 1, 0, 0);
+    if (s.steps) stepOn(this, s, u);
     if (this.film3d.available()) {
       this.film3d.setDynamic(layers(this, s, u));
-      this.film3d.draw(camAt(s, u), { width: this.w, height: this.h, time: t, waterAlpha: ["reactions", "piles"].includes(s.kind) ? 0.35 : 0.55, staticAlpha: RESULTS.has(s.kind) ? 0.4 : 1 });
+      // the sea clear enough to see the piles and their colours, except in the opening shots;
+      // the revetment only where the setting is shown (a note says so elsewhere)
+      this.film3d.draw(camAt(s, u), { width: this.w, height: this.h, time: t, waterAlpha: SCENIC.has(s.kind) ? 0.5 : 0.13, staticAlpha: SCENIC.has(s.kind) ? 1 : 0, revAlpha: SCENIC.has(s.kind) ? 1 : 0 });
       x.drawImage(this.gl, 0, 0, this.w, this.h);
     } else {
       x.fillStyle = "#16283D"; x.fillRect(0, 0, this.w, this.h);
@@ -1213,13 +1536,15 @@ export async function renderFilm(host, h) {
   host.innerHTML = `<p class="sub">A short film of a SAP2000 analysis to show the client: the site on the map, the structure in 3D in its sea with the breakwater,
       then the loads, the reactions, how it moves and how hard each member works, from green to red. Its length follows what the file holds.</p>
     <div class="panel film-add"><div class="row" style="flex-wrap:wrap;gap:10px;align-items:center">
-      <label class="button-like"><input type="file" id="film-file" accept=".s2k,.$2k,.txt,.xlsx,.xlsm,.zip,.gz,.trsap" hidden><span class="film-pick">Add SAP2000 results…</span></label>
+      <label class="button-like"><input type="file" id="film-file" accept=".s2k,.$2k,.txt,.xlsx,.xlsm,.zip,.gz,.trsap" multiple hidden><span class="film-pick">Add SAP2000 results…</span></label>
       <button class="quiet" id="film-sample">Make a sample film</button>
       <span class="status" id="film-read"></span></div>
       <p class="status">SAP2000: File &gt; Export &gt; SAP2000 .s2k text file, or Display &gt; Show Tables &gt; Export to Excel (.xlsx). Tick the model definition tables
       (joint coordinates, connectivity, section assignments, restraints, load patterns and combinations) with the analysis results (joint reactions, joint displacements, element forces)
       and the design summary tables for the utilisation. The file is read on this computer, however large: what goes to the site is a small file of all its results
-      (every case, joint, member and plate), which each film can download again as a .trsap file and which can be added here in place of the big one.</p>
+      (every case, joint, member and plate), which each film can download again as a .trsap file and which can be added here in place of the big one.
+      Results of a meshed model often come without the loads and sections: pick the results file together with the model's own .$2k/.s2k file (hold Ctrl)
+      and the two are put together, so the film shows every load case with its values.</p>
       <div class="film-bar" hidden><i></i></div></div>
     <div id="film-list"></div><div id="film-open"></div>`;
   const $ = (q) => host.querySelector(q);
@@ -1258,21 +1583,28 @@ export async function renderFilm(host, h) {
     open(f.id);
   };
   $("#film-file").onchange = async (e) => {
-    const file = e.target.files[0];
+    const files = [...e.target.files];
     e.target.value = "";
-    if (!file) return;
+    if (!files.length) return;
     bar.hidden = false;
     const began = performance.now();
     try {
-      const S = await readSap(file, (f, step, rows) => {
+      // one file, or a results file and its model file (sections and loads), put together
+      const read = [];
+      for (const [n, one] of files.entries()) read.push(await readSap(one, (f, step, rows) => {
         bar.firstElementChild.style.width = `${(f * 100).toFixed(1)}%`;
         const el = (performance.now() - began) / 1000, left = f > 0.03 ? (el / f) * (1 - f) : null;
-        status.textContent = `${step}: ${Math.floor(f * 100)}%, ${n0(rows)} rows${left != null ? `, about ${left < 90 ? Math.max(1, Math.round(left)) + " s" : Math.round(left / 60) + " min"} left` : ""}`;
-      });
+        status.textContent = `${files.length > 1 ? `${one.name} (${n + 1} of ${files.length}): ` : ""}${step}: ${Math.floor(f * 100)}%, ${n0(rows)} rows${left != null ? `, about ${left < 90 ? Math.max(1, Math.round(left)) + " s" : Math.round(left / 60) + " min"} left` : ""}`;
+      }));
+      const results = (x) => (x.reactions?.cases?.length || 0) + (x.displacements?.cases?.length || 0) + Object.keys(x.forces || {}).length + (x.modes?.length || 0);
+      const order = read.map((x, n) => n).sort((a, b) => results(read[b]) - results(read[a]));
+      let S = read[order[0]];
+      const file = files[order[0]];
+      for (const n of order.slice(1)) S = mergeModel(S, read[n]);
       status.textContent = "Sending the summary to the site…";
       const gz = await new Response(new Blob([JSON.stringify(S)]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
       const f = await api(`${base}?file=${encodeURIComponent(file.name.replace(/\.trsap$/i, ""))}`, { method: "POST", body: gz, headers: { "Content-Type": "application/gzip" } });
-      status.textContent = `Read ${n0(S.rows)} rows in ${Math.round((performance.now() - began) / 1000)} s; kept ${(gz.byteLength / 1048576).toFixed(1)} MB on the site (Download small file keeps a copy).${Object.keys(S.tables || {}).length ? "" : " No tables Triton uses were found."}`;
+      status.textContent = `Read ${n0(S.rows)} rows in ${Math.round((performance.now() - began) / 1000)} s${S.model ? `; the model file gave ${n0(S.model.loads)} loads in ${n0(Object.keys(S.loads).length)} load cases and the sections of ${n0(S.model.members)} of ${n0(S.model.of_members)} members` : ""}; kept ${(gz.byteLength / 1048576).toFixed(1)} MB on the site (Download small file keeps a copy).${Object.keys(S.tables || {}).length ? "" : " No tables Triton uses were found."}`;
       await list();
       open(f.id, S);
     } catch (err) {

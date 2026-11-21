@@ -284,3 +284,56 @@ def test_site_from_a_tritomoor_file(tmp_path):
     assert g["rocks"][0]["xy"][0] == [88.7, 53.9] and g["rocks"][0]["crest"] == 5.5
     assert g["land"][0]["xy"][1] == [-48.4, 13.4]
     assert abs(g["lat"] - 33.63) < 1e-4
+
+
+@pytest.mark.skipif(not NODE, reason="needs node")
+def test_model_file_loads_go_onto_meshed_results(tmp_path):
+    """A model file's sections and loads put onto results of the same model meshed into pieces."""
+    results = {
+        "joints": [[0, 0, 0], [5, 0, 0], [10, 0, 0], [0, 4, 0], [10, 4, 0]],
+        "frames": {"ids": [7, 8], "ends": [[0, 1], [2, 1]], "section": [0, 0], "names": ["1-1", "1-2"]},
+        "areas": {"ids": [3], "joints": [[0, 2, 4, 3]], "section": [0]},
+        "sections": [{"name": ""}],
+        "patterns": [],
+        "loads": {},
+    }
+    model = {
+        "joints": [[10, 0, 0], [0, 0, 0], [0, 4, 0], [10, 4, 0]],
+        "frames": {"ids": [0], "ends": [[1, 0]], "section": [1]},
+        "areas": {"ids": [0], "joints": [[1, 0, 3, 2]], "section": [0]},
+        "sections": [
+            {"name": "S270", "shape": "Shell", "t": 0.27},
+            {"name": "B1450x970", "d": 0.97, "b": 1.45},
+        ],
+        "patterns": [{"name": "TRUCK", "type": "Live", "self": 0}],
+        "loads": {
+            "TRUCK": {
+                "items": {
+                    "joint": [[0, 0, 0, -150]],
+                    "frame": [[0, "Gravity", 3]],
+                    "point": [[0, "Gravity", 20, 0.8]],
+                    "area": [[0, "Gravity", 30]],
+                },
+                "counts": {},
+            }
+        },
+    }
+    script = tmp_path / "m.mjs"
+    url = (STATIC / "sapread.js").as_uri()
+    script.write_text(
+        f"const m = await import({json.dumps(url)});\n"
+        f"console.log(JSON.stringify(m.mergeModel({json.dumps(results)}, {json.dumps(model)})));\n",
+        "utf-8",
+    )
+    run = subprocess.run([NODE, str(script)], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    out = json.loads(run.stdout)
+    assert [out["sections"][k]["name"] for k in out["frames"]["section"]] == ["B1450x970", "B1450x970"]
+    assert out["sections"][out["areas"]["section"][0]]["name"] == "S270"
+    it = out["loads"]["TRUCK"]["items"]
+    assert it["joint"] == [[2, 0, 0, -150]]
+    assert sorted(f[0] for f in it["frame"]) == [7, 8]
+    # 0.8 along the 10 m member is 8 m: on the second piece (10 -> 5), 0.4 from its own start
+    assert it["point"] == [[8, "Gravity", 20, 0.4]]
+    assert it["area"] == [[3, "Gravity", 30]]
+    assert out["model"]["lost"] == 0 and out["patterns"][0]["name"] == "TRUCK"
