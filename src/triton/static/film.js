@@ -1635,8 +1635,13 @@ export async function renderFilm(host, h) {
         <h3>The site on the map</h3><p class="status">Drag the red pin to where the model's origin (0, 0) is, and set the direction of its X axis. Draw the breakwater and the land around it, or find them from OpenStreetMap.</p>
         <div class="row" style="gap:6px;flex-wrap:wrap"><button class="quiet" data-draw="rock">Draw a breakwater</button><button class="quiet" data-draw="rev">Draw a revetment</button><button class="quiet" data-draw="land">Draw land</button>
           <button class="quiet" data-osm>Find breakwaters and coast nearby</button><button class="quiet" data-trito>Take the site from a TritoMoor file</button><button class="quiet" data-clear>Clear drawn</button></div>
-        <div class="film-map" data-map></div><p class="status" data-mapstat></p><div data-rocks></div></div></div>`;
+        <div class="film-map" data-map></div><p class="status" data-mapstat></p><div data-rocks></div>
+        <div class="row" style="gap:8px;align-items:center;margin-top:12px"><button class="quiet" data-default title="Every film added to this project from now on starts with these settings: title, site, map, breakwaters, land, pile capacities">Use these settings for new films</button><span class="status" data-defstat></span></div></div></div>`;
     const q = (s2) => box.querySelector(s2);
+    q("[data-default]").onclick = async () => {
+      await api(`${base}/defaults`, { method: "PUT", body: JSON.stringify(set) });
+      q("[data-defstat]").textContent = "Saved: new films in this project start with these settings.";
+    };
     const stage = q(".film-stage");
     const player = new Player(stage, S, set);
     let t = 0, playing = false, last = 0, making = false;

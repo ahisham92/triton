@@ -199,10 +199,39 @@ async def add_film(project_id: str, request: Request, file: str = "", name: str 
         raise HTTPException(400, f"That is not a results summary this page made ({e}).") from e
     lat, lon, client = _site(project_id)
     stem = Path(file).stem or "SAP2000 results"
-    settings = FilmSettings(
-        name=name or stem, title=name or stem, client=client, lat=lat, lon=lon, seabed=_guess_seabed(data)
-    )
+    saved = _defaults(project_id)
+    if saved is not None:
+        # the project's saved settings (title, site, map, piles), as set on an earlier film
+        settings = saved.model_copy(update={"name": name or saved.name or stem})
+    else:
+        settings = FilmSettings(
+            name=name or stem, title=name or stem, client=client, lat=lat, lon=lon, seabed=_guess_seabed(data)
+        )
     return _new(project_id, sap.gz_json(data), file, settings)
+
+
+def _defaults(project_id: str) -> FilmSettings | None:
+    path = _root(project_id) / "defaults.json"
+    if not path.exists():
+        return None
+    try:
+        return FilmSettings.model_validate_json(path.read_text("utf-8"))
+    except ValueError:
+        return None
+
+
+@router.get("/api/projects/{project_id}/films/defaults")
+def film_defaults(project_id: str) -> FilmSettings | None:
+    """The settings every new film of this project starts with, if some were saved."""
+    return _defaults(project_id)
+
+
+@router.put("/api/projects/{project_id}/films/defaults")
+def save_film_defaults(project_id: str, settings: FilmSettings) -> FilmSettings:
+    root = _root(project_id)
+    root.mkdir(parents=True, exist_ok=True)
+    atomic.write_text(root / "defaults.json", settings.model_dump_json(indent=1))
+    return settings
 
 
 def _guess_seabed(data: dict) -> float:
