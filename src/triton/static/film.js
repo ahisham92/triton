@@ -83,7 +83,7 @@ function prepare(S, set) {
 
 // the piles: from each support up the near-vertical members to the deck; then their groups
 // (existing, new...) by frame or section names, with the capacities given for each
-const glob = (pat) => new RegExp(`^${pat.trim().replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i");
+const glob = (pat) => new RegExp(`^${pat.trim().replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
 function findPiles(M, set) {
   const S = M.S, J = M.J, at = new Map();
   S.frames.ends.forEach(([a, b], n) => { [a, b].forEach((j) => { if (!at.has(j)) at.set(j, []); at.get(j).push(n); }); });
@@ -105,6 +105,17 @@ function findPiles(M, set) {
     const sec = S.sections[S.frames.section[frames[0]]] || {};
     piles.push({ support: sj, frames, top: J[cur], section: sec.name || "", d: sec.d || null });
   });
+  // rows of piles: tops lined up across one plan direction, lettered A, B, C... from the low side
+  const rowsOn = (d) => { const v = [...new Set(piles.map((p) => p.top[d]))].sort((a, b) => a - b), out = []; v.forEach((x) => { if (!out.length || x - out[out.length - 1].at(-1) > 0.75) out.push([x]); else out[out.length - 1].push(x); }); return out.map((c) => c.reduce((a, b) => a + b, 0) / c.length); };
+  if (piles.length > 3) {
+    const rx = rowsOn(0), ry = rowsOn(1), d = ry.length <= rx.length ? 1 : 0, rows = d ? ry : rx;
+    if (rows.length >= 2 && rows.length <= 26 && rows.length < piles.length) {
+      const given = (set.pile_rows || "").split(",").map((x) => x.trim()).filter(Boolean);
+      const name = (i) => given[i] || String.fromCharCode(65 + i);
+      piles.forEach((p) => { const r = rows.reduce((b, x, i) => (Math.abs(x - p.top[d]) < Math.abs(rows[b] - p.top[d]) ? i : b), 0); p.row = name(r); });
+      M.rows = rows.map((x, i) => ({ row: name(i), at: x, axis: d ? "Y" : "X", piles: piles.filter((p) => p.row === name(i)) }));
+    }
+  }
   // groups
   const unit = set.capacity_unit === "kN" ? 1 : 9.80665;
   let groups = (set.piles || []).map((g) => ({ ...g }));
@@ -119,11 +130,13 @@ function findPiles(M, set) {
     g.comp = g.compression != null ? g.compression * unit : null;
     g.tens = g.tension != null ? g.tension * unit : g.comp != null ? (g.tension_factor ?? 0.7) * g.comp : null;
     g.lat = g.lateral != null ? g.lateral * unit : null;
+    g.caseRes = (g.cases || "").split(",").map((x) => x.trim()).filter(Boolean).map(glob);
+    g.latRes = g.lateral_cases ? g.lateral_cases.split(",").map((x) => x.trim()).filter(Boolean).map(glob) : g.caseRes;
     g.count = 0;
   });
   const fallback = groups.findIndex((g) => !g.res.length);
   piles.forEach((p) => {
-    const names = [p.section, ...p.frames.map((n) => S.frames.names?.[n] ?? "")];
+    const names = [p.section, ...p.frames.map((n) => S.frames.names?.[n] ?? ""), ...(p.row ? [`Row ${p.row}`, p.row] : [])];
     let gi = groups.findIndex((g) => g.res.length && g.res.some((re) => names.some((nm) => re.test(nm))));
     if (gi < 0) gi = fallback >= 0 ? fallback : 0;
     p.group = gi; groups[gi].count++;
@@ -210,13 +223,15 @@ export function direct(S, set, M) {
   const sects = [...used.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${S.sections[k]?.name || "–"} (${n})`);
   if (M.piles.length) {
     const pileSecs = new Map(), beamSecs = new Map(), deckSecs = new Map();
-    M.piles.forEach((p) => { const k2 = `${p.section || "pile"}|${M.groups.length > 1 ? M.allGroups[p.group].name : ""}`; pileSecs.set(k2, (pileSecs.get(k2) || 0) + 1); });
+    M.piles.forEach((p) => { const k2 = `${p.section}|${M.groups.length > 1 && p.section ? M.allGroups[p.group].name : ""}`; pileSecs.set(k2, (pileSecs.get(k2) || 0) + 1); });
     S.frames.section.forEach((q, n) => { if (!M.pileOf.has(n)) { const nm = S.sections[q]?.name || ""; beamSecs.set(nm, (beamSecs.get(nm) || 0) + 1); } });
     S.areas.section.forEach((q) => { const sc = S.sections[q] || {}; const nm = sc.name ? `${sc.name}${sc.t ? ` (${n0(sc.t * 1000)} mm)` : ""}` : ""; deckSecs.set(nm, (deckSecs.get(nm) || 0) + 1); });
     const secLine = (map, what) => { const list = [...map].sort((a, b) => b[1] - a[1]); const named = list.filter(([n]) => n.split("|")[0]); return named.length ? `${named.slice(0, 4).map(([n, c]) => `${n.split("|")[0]}${n.split("|")[1] ? ` ${n.split("|")[1].toLowerCase()}` : ""} (${c})`).join(", ")}${named.length > 4 ? ` and ${named.length - 4} more` : ""}` : `${n0(list.reduce((a, [, c]) => a + c, 0))} ${what}; their sections were not in the file`; };
     const beamCount = S.frames.ids.length - M.pileOf.size;
     add({ kind: "build", stage: "piles", dur: 6, cam0: C.high(), cam1: C.quarter(), head: `${n0(M.piles.length)} piles`, legend: M.groups.length > 1 ? "groups" : "sections",
-      lines: [secLine(pileSecs, "piles"), M.groups.length > 1 ? M.groups.map((g) => `${g.name}: ${g.count}`).join(", ") : `From ${n0(Math.min(...M.piles.map((p) => M.J[p.support][2])), 1)} m up to the deck`] });
+      lines: [secLine(pileSecs, "piles"), M.groups.length > 1 ? M.groups.map((g) => `${g.name}: ${g.count}`).join(", ") : `From ${n0(Math.min(...M.piles.map((p) => M.J[p.support][2])), 1)} m up to the deck`,
+        M.rows ? `${M.rows.length} rows, ${M.rows.map((r) => r.row).join(", ")}, along ${M.rows[0].axis === "Y" ? "X" : "Y"}` : ""].filter(Boolean),
+      tags: (M.rows || []).map((r) => { const p = r.piles.reduce((b, q) => (q.top[r.axis === "Y" ? 0 : 1] < b.top[r.axis === "Y" ? 0 : 1] ? q : b), r.piles[0]); return { at: p.top, text: `Row ${r.row}` }; }) });
     if (beamCount > 0) add({ kind: "build", stage: "beams", dur: 5, cam0: C.quarter(), cam1: C.quarter2(), head: `${n0(beamCount)} beams`, legend: M.groups.length > 1 ? "groups" : "sections", lines: [secLine(beamSecs, "beams")] });
     if (na) add({ kind: "build", stage: "deck", dur: 5, cam0: C.quarter2(), cam1: C.high(), head: `The deck: ${n0(na)} panels`, legend: M.groups.length > 1 ? "groups" : "sections", lines: [secLine(deckSecs, "panels")] });
   } else
@@ -305,7 +320,7 @@ export function direct(S, set, M) {
       const ratio = new Map(rows.map((r) => [r.i, r.ratio]));
       add({ kind: "piles", what: k2, ratio, dur: brief ? 5 : 6.5, cut: k2 === "comp", cam0: C.tall(), cam1: { ...C.tall(), yaw: C.tall().yaw + 40 }, head, legend: "util", seabedAlpha: 0.35,
         lines: [over.length ? `${over.length} pile${over.length === 1 ? "" : "s"} above the ${word} capacity, the worst ${n0(worst.ratio, 2)} (${tN(worst.d, set)} against ${tN(worst.cap, set)}, ${worst.case})` : `Every pile is within its ${word} capacity: the highest ${n0(worst.ratio, 2)} (${tN(worst.d, set)} against ${tN(worst.cap, set)})`,
-          M.groups.filter((g) => g[k2] != null).map((g) => `${g.name}: ${tN(g[k2], set)}`).join(", ")],
+          M.groups.filter((g) => g[k2] != null).map((g) => `${g.name}: ${tN(g[k2], set)}${(k2 === "lat" ? g.lateral_cases || g.cases : g.cases) ? ` under ${k2 === "lat" ? g.lateral_cases || g.cases : g.cases}` : ""}`).join(", ")],
         tags: over.slice(0, 3).concat(over.length ? [] : [worst]).map((r) => ({ at: M.piles[r.i].top, text: n0(r.ratio, 2) })) });
     });
   }
@@ -535,15 +550,19 @@ function supportPlaces(S, R) {
 function pileDemand(S, M) {
   const R = S.reactions, ix = new Map(R.supports.map((j, k) => [j, k]));
   const combo = new Set(S.cases.filter((c) => c.kind === "combo").map((c) => c.name));
-  const cases = R.cases.filter((c) => !combo.size || combo.has(c.case));
+  const all = R.cases.filter((c) => !combo.size || combo.has(c.case));
+  const byGroup = new Map(), latGroup = new Map();
   return M.piles.map((p) => {
     const k = ix.get(p.support), o = { comp: 0, tens: 0, lat: 0 };
     if (k == null) return o;
-    cases.forEach((c) => {
+    const g = M.allGroups[p.group];
+    if (!byGroup.has(p.group)) byGroup.set(p.group, g?.caseRes?.length ? R.cases.filter((c) => g.caseRes.some((re) => re.test(c.case))) : all);
+    if (!latGroup.has(p.group)) latGroup.set(p.group, g?.latRes?.length ? R.cases.filter((c) => g.latRes.some((re) => re.test(c.case))) : all);
+    latGroup.get(p.group).forEach((c) => { const h = c.h[k]; if (h != null && h > o.lat) { o.lat = h; o.latCase = c.case; } });
+    byGroup.get(p.group).forEach((c) => {
       const up = c.fz[k], dn = c.fz_min[k], h = c.h[k];
       if (up != null && up > o.comp) { o.comp = up; o.compCase = c.case; }
       if (dn != null && -dn > o.tens) { o.tens = -dn; o.tensCase = c.case; }
-      if (h != null && h > o.lat) { o.lat = h; o.latCase = c.case; }
     });
     return o;
   });
@@ -1283,7 +1302,7 @@ export async function renderFilm(host, h) {
       <div class="panel v3d-side film-side"><h3 style="margin-top:0">The film</h3><div data-form></div>
         <h3>The site on the map</h3><p class="status">Drag the red pin to where the model's origin (0, 0) is, and set the direction of its X axis. Draw the breakwater and the land around it, or find them from OpenStreetMap.</p>
         <div class="row" style="gap:6px;flex-wrap:wrap"><button class="quiet" data-draw="rock">Draw a breakwater</button><button class="quiet" data-draw="rev">Draw a revetment</button><button class="quiet" data-draw="land">Draw land</button>
-          <button class="quiet" data-osm>Find breakwaters and coast nearby</button><button class="quiet" data-clear>Clear drawn</button></div>
+          <button class="quiet" data-osm>Find breakwaters and coast nearby</button><button class="quiet" data-trito>Take the site from a TritoMoor file</button><button class="quiet" data-clear>Clear drawn</button></div>
         <div class="film-map" data-map></div><p class="status" data-mapstat></p><div data-rocks></div></div></div>`;
     const q = (s2) => box.querySelector(s2);
     const stage = q(".film-stage");
@@ -1379,7 +1398,8 @@ function form(el, set, esc, changed) {
     <label>Steel yield strength fy (MPa), for stress ratios <input data-k="steel_fy" type="number" min="100" step="5" value="${esc(set.steel_fy ?? 355)}"></label>
     <label>Movements drawn larger by <input data-k="exaggerate" type="number" min="1" step="1" placeholder="chosen to show" value="${esc(set.exaggerate ?? "")}"></label>
     <fieldset class="film-piles"><legend>Pile capacities</legend>
-      <p class="status">Piles over their capacity glow in the film. Match picks piles by frame or section name (commas, * for any text); leave it empty for every pile. Tension left empty is the factor times compression.</p>
+      <p class="status">Piles over their capacity glow in the film. Match picks piles by frame or section name, or by row (Row A, Row B, lettered from the low side); commas between, * for any text; empty for every other pile. Tension left empty is the factor times compression. Checked under names the combinations (e.g. C1-* for D+L service); empty for every combination. Lateral under, when given, is used for the lateral check instead.</p>
+      <label>Row names, from the low side <input data-k="pile_rows" placeholder="A, B, C…" value="${esc(set.pile_rows || "")}" style="width:9em"></label>
       <label>Capacities in <select data-k="capacity_unit"><option value="t">tonnes</option><option value="kN">kN</option></select></label>
       <div data-pgroups></div><button class="quiet" type="button" data-padd>Add a pile group</button></fieldset>
     <fieldset class="film-hide"><legend>Shots</legend>${Object.entries(SHOTS).map(([k, v]) => `<label class="toggle"><input type="checkbox" data-shot="${k}" ${(set.hide || []).includes(k) ? "" : "checked"}> ${v}</label>`).join("")}</fieldset>`;
@@ -1388,7 +1408,7 @@ function form(el, set, esc, changed) {
   el.querySelector('[data-k="capacity_unit"]').value = set.capacity_unit || "t";
   const groups = el.querySelector("[data-pgroups]");
   const PF = [["name", "Name", "text", "8em"], ["match", "Match", "text", "8em"], ["compression", "Compression", "number", "5.5em"],
-    ["tension", "Tension", "number", "5.5em"], ["tension_factor", "or factor", "number", "4em"], ["lateral", "Lateral", "number", "5.5em"]];
+    ["tension", "Tension", "number", "5.5em"], ["tension_factor", "or factor", "number", "4em"], ["lateral", "Lateral", "number", "5.5em"], ["cases", "Checked under", "text", "9em"], ["lateral_cases", "Lateral under", "text", "9em"]];
   const drawGroups = () => {
     groups.innerHTML = (set.piles || []).map((g, i) => `<div class="row film-pgroup" style="gap:6px;flex-wrap:wrap;align-items:end;border-top:1px solid var(--line, #ddd);padding-top:6px;margin-top:6px">${PF.map(([k, lab, t, w]) =>
       `<label>${lab} <input data-pg="${i}" data-pf="${k}" type="${t}" ${t === "number" ? 'step="any" min="0"' : ""} style="width:${w}" value="${esc(g[k] ?? (k === "tension_factor" ? 0.7 : ""))}"></label>`).join("")}
@@ -1403,7 +1423,7 @@ function form(el, set, esc, changed) {
   };
   drawGroups();
   el.querySelector("[data-padd]").onclick = () => {
-    (set.piles ||= []).push({ name: `Piles ${set.piles.length + 1}`, match: "", compression: null, tension: null, tension_factor: 0.7, lateral: null });
+    (set.piles ||= []).push({ name: `Piles ${set.piles.length + 1}`, match: "", compression: null, tension: null, tension_factor: 0.7, lateral: null, cases: "", lateral_cases: "" });
     drawGroups(); changed();
   };
   el.querySelectorAll("[data-k]").forEach((i) => (i.onchange = () => {
@@ -1493,6 +1513,34 @@ async function siteMap(q, set, esc, changed) {
   });
   map.on("dblclick", finish);
   q("[data-clear]").onclick = () => { if (!confirm("Remove every breakwater and land area drawn for this film?")) return; set.breakwaters = []; set.land = []; redraw(); changed(); };
+  // the site as settled in a TritoMoor project: its berth position, north and the traced land and breakwaters
+  q("[data-trito]").onclick = () => {
+    const box = document.createElement("div");
+    box.className = "row film-trito";
+    box.style.cssText = "gap:8px;flex-wrap:wrap;align-items:end;margin:6px 0";
+    box.innerHTML = `<label>TritoMoor file <input type="file" accept=".trito,.json" data-tfile></label>
+      <label>Model origin at TritoMoor X <input type="number" step="0.1" data-tx0 value="${esc(set.tritomoor?.x0 ?? 0)}" style="width:6em"> m</label>
+      <label>The model's sea side <select data-tsea><option value="-Y">towards -Y (front row at low Y)</option><option value="+Y">towards +Y</option></select></label>
+      <button class="quiet" data-tgo>Use it</button>`;
+    q("[data-trito]").after(box);
+    box.querySelector("[data-tsea]").value = set.tritomoor?.sea || "-Y";
+    box.querySelector("[data-tgo]").onclick = async () => {
+      const f = box.querySelector("[data-tfile]").files[0];
+      if (!f) { stat.textContent = "Choose the TritoMoor project file (.trito) first."; return; }
+      try {
+        const tm = JSON.parse(await f.text());
+        const opt = { x0: Number(box.querySelector("[data-tx0]").value) || 0, sea: box.querySelector("[data-tsea]").value };
+        const got = fromTrito(tm, opt);
+        Object.assign(set, { lat: got.lat, lon: got.lon, bearing: got.bearing, tritomoor: { ...opt, name: got.name } });
+        set.breakwaters = [...(set.breakwaters || []).filter((r) => !r.fromTrito), ...got.rocks];
+        set.land = [...(set.land || []).filter((l) => !l.fromTrito), ...got.land];
+        pin.setLatLng([set.lat, set.lon]); map.setView([set.lat, set.lon], 15);
+        bearingRow.querySelector("[data-bearing]").value = n0(set.bearing, 1);
+        stat.textContent = `${got.name || "The TritoMoor site"}: ${got.rocks.length} breakwater${got.rocks.length === 1 ? "" : "s"} and ${got.land.length} land outline${got.land.length === 1 ? "" : "s"}, model X axis at ${n0(set.bearing, 1)} degrees from north.`;
+        box.remove(); redraw(); changed();
+      } catch (e) { stat.textContent = `That file could not be read: ${e.message}`; }
+    };
+  };
   q("[data-osm]").onclick = async () => {
     if (set.lat == null) { stat.textContent = "Put the pin on the site first."; return; }
     stat.textContent = "Asking OpenStreetMap for breakwaters and the coast within 3 km…";
@@ -1506,6 +1554,23 @@ async function siteMap(q, set, esc, changed) {
       stat.textContent = `OpenStreetMap did not answer (${e.message}). Draw them by hand instead.`;
     }
   };
+}
+
+// A TritoMoor project's site in the model's axes. TritoMoor's berth axes: X along the berth, Y from the berthing face out
+// to sea, the berth's lat/lon at its origin and site.north the direction of north from +X (degrees, anticlockwise).
+// x0: where the model's origin sits along TritoMoor's X; sea "-Y" when the model's front row is at its low Y (turned round).
+export function fromTrito(tm, { x0 = 0, sea = "-Y" } = {}) {
+  const b = tm.berth || {}, site = tm.site || {};
+  if (b.lat == null || b.lon == null) throw new Error("it has no berth position (berth lat and lon)");
+  const north = Number(site.north) || 0, flip = sea !== "+Y";
+  const xBearing = (((flip ? north + 180 : north) % 360) + 360) % 360;
+  const toM = ([x, y]) => (flip ? [x0 - x, -y] : [x - x0, y]).map((v) => Math.round(v * 100) / 100);
+  // the model's origin is x0 along TritoMoor's +X, whose bearing is site.north
+  const r = (north * Math.PI) / 180, dN = x0 * Math.cos(r), dE = x0 * Math.sin(r);
+  const lat = b.lat + dN / 110540, lon = b.lon + dE / (111320 * Math.cos((b.lat * Math.PI) / 180));
+  const rocks = (site.rock || []).filter((k) => (k.pts || []).length >= 2).map((k) => ({ name: k.name || "Breakwater", pts: [], xy: k.pts.map(toM), crest: Number(k.top) || 5, width: Number(k.w) || 12, fromTrito: true }));
+  const land = (site.land || []).filter((l) => l.length >= 3).map((l) => ({ pts: [], xy: l.map(toM), level: null, fromTrito: true }));
+  return { name: site.name || tm.name || "", lat: +lat.toFixed(7), lon: +lon.toFixed(7), bearing: Math.round(xBearing * 10) / 10, rocks, land };
 }
 
 // breakwaters, groynes and moles, and the coastline as land strips (land is on the left of a coastline way)
