@@ -105,6 +105,15 @@ function findPiles(M, set) {
     const sec = S.sections[S.frames.section[frames[0]]] || {};
     piles.push({ support: sj, frames, top: J[cur], section: sec.name || "", d: sec.d || null });
   });
+  // rows of piles: tops lined up across one plan direction, lettered A, B, C... from the low side
+  const rowsOn = (d) => { const v = [...new Set(piles.map((p) => p.top[d]))].sort((a, b) => a - b), out = []; v.forEach((x) => { if (!out.length || x - out[out.length - 1].at(-1) > 0.75) out.push([x]); else out[out.length - 1].push(x); }); return out.map((c) => c.reduce((a, b) => a + b, 0) / c.length); };
+  if (piles.length > 3) {
+    const rx = rowsOn(0), ry = rowsOn(1), d = ry.length <= rx.length ? 1 : 0, rows = d ? ry : rx;
+    if (rows.length >= 2 && rows.length <= 26 && rows.length < piles.length) {
+      piles.forEach((p) => { const r = rows.reduce((b, x, i) => (Math.abs(x - p.top[d]) < Math.abs(rows[b] - p.top[d]) ? i : b), 0); p.row = String.fromCharCode(65 + r); });
+      M.rows = rows.map((x, i) => ({ row: String.fromCharCode(65 + i), at: x, axis: d ? "Y" : "X", piles: piles.filter((p) => p.row === String.fromCharCode(65 + i)) }));
+    }
+  }
   // groups
   const unit = set.capacity_unit === "kN" ? 1 : 9.80665;
   let groups = (set.piles || []).map((g) => ({ ...g }));
@@ -119,11 +128,12 @@ function findPiles(M, set) {
     g.comp = g.compression != null ? g.compression * unit : null;
     g.tens = g.tension != null ? g.tension * unit : g.comp != null ? (g.tension_factor ?? 0.7) * g.comp : null;
     g.lat = g.lateral != null ? g.lateral * unit : null;
+    g.caseRes = (g.cases || "").split(",").map((x) => x.trim()).filter(Boolean).map(glob);
     g.count = 0;
   });
   const fallback = groups.findIndex((g) => !g.res.length);
   piles.forEach((p) => {
-    const names = [p.section, ...p.frames.map((n) => S.frames.names?.[n] ?? "")];
+    const names = [p.section, ...p.frames.map((n) => S.frames.names?.[n] ?? ""), ...(p.row ? [`Row ${p.row}`, p.row] : [])];
     let gi = groups.findIndex((g) => g.res.length && g.res.some((re) => names.some((nm) => re.test(nm))));
     if (gi < 0) gi = fallback >= 0 ? fallback : 0;
     p.group = gi; groups[gi].count++;
@@ -210,13 +220,15 @@ export function direct(S, set, M) {
   const sects = [...used.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `${S.sections[k]?.name || "–"} (${n})`);
   if (M.piles.length) {
     const pileSecs = new Map(), beamSecs = new Map(), deckSecs = new Map();
-    M.piles.forEach((p) => { const k2 = `${p.section || "pile"}|${M.groups.length > 1 ? M.allGroups[p.group].name : ""}`; pileSecs.set(k2, (pileSecs.get(k2) || 0) + 1); });
+    M.piles.forEach((p) => { const k2 = `${p.section}|${M.groups.length > 1 && p.section ? M.allGroups[p.group].name : ""}`; pileSecs.set(k2, (pileSecs.get(k2) || 0) + 1); });
     S.frames.section.forEach((q, n) => { if (!M.pileOf.has(n)) { const nm = S.sections[q]?.name || ""; beamSecs.set(nm, (beamSecs.get(nm) || 0) + 1); } });
     S.areas.section.forEach((q) => { const sc = S.sections[q] || {}; const nm = sc.name ? `${sc.name}${sc.t ? ` (${n0(sc.t * 1000)} mm)` : ""}` : ""; deckSecs.set(nm, (deckSecs.get(nm) || 0) + 1); });
     const secLine = (map, what) => { const list = [...map].sort((a, b) => b[1] - a[1]); const named = list.filter(([n]) => n.split("|")[0]); return named.length ? `${named.slice(0, 4).map(([n, c]) => `${n.split("|")[0]}${n.split("|")[1] ? ` ${n.split("|")[1].toLowerCase()}` : ""} (${c})`).join(", ")}${named.length > 4 ? ` and ${named.length - 4} more` : ""}` : `${n0(list.reduce((a, [, c]) => a + c, 0))} ${what}; their sections were not in the file`; };
     const beamCount = S.frames.ids.length - M.pileOf.size;
     add({ kind: "build", stage: "piles", dur: 6, cam0: C.high(), cam1: C.quarter(), head: `${n0(M.piles.length)} piles`, legend: M.groups.length > 1 ? "groups" : "sections",
-      lines: [secLine(pileSecs, "piles"), M.groups.length > 1 ? M.groups.map((g) => `${g.name}: ${g.count}`).join(", ") : `From ${n0(Math.min(...M.piles.map((p) => M.J[p.support][2])), 1)} m up to the deck`] });
+      lines: [secLine(pileSecs, "piles"), M.groups.length > 1 ? M.groups.map((g) => `${g.name}: ${g.count}`).join(", ") : `From ${n0(Math.min(...M.piles.map((p) => M.J[p.support][2])), 1)} m up to the deck`,
+        M.rows ? `${M.rows.length} rows, ${M.rows.map((r) => r.row).join(", ")}, along ${M.rows[0].axis === "Y" ? "X" : "Y"}` : ""].filter(Boolean),
+      tags: (M.rows || []).map((r) => { const p = r.piles.reduce((b, q) => (q.top[r.axis === "Y" ? 0 : 1] < b.top[r.axis === "Y" ? 0 : 1] ? q : b), r.piles[0]); return { at: p.top, text: `Row ${r.row}` }; }) });
     if (beamCount > 0) add({ kind: "build", stage: "beams", dur: 5, cam0: C.quarter(), cam1: C.quarter2(), head: `${n0(beamCount)} beams`, legend: M.groups.length > 1 ? "groups" : "sections", lines: [secLine(beamSecs, "beams")] });
     if (na) add({ kind: "build", stage: "deck", dur: 5, cam0: C.quarter2(), cam1: C.high(), head: `The deck: ${n0(na)} panels`, legend: M.groups.length > 1 ? "groups" : "sections", lines: [secLine(deckSecs, "panels")] });
   } else
@@ -305,7 +317,7 @@ export function direct(S, set, M) {
       const ratio = new Map(rows.map((r) => [r.i, r.ratio]));
       add({ kind: "piles", what: k2, ratio, dur: brief ? 5 : 6.5, cut: k2 === "comp", cam0: C.tall(), cam1: { ...C.tall(), yaw: C.tall().yaw + 40 }, head, legend: "util", seabedAlpha: 0.35,
         lines: [over.length ? `${over.length} pile${over.length === 1 ? "" : "s"} above the ${word} capacity, the worst ${n0(worst.ratio, 2)} (${tN(worst.d, set)} against ${tN(worst.cap, set)}, ${worst.case})` : `Every pile is within its ${word} capacity: the highest ${n0(worst.ratio, 2)} (${tN(worst.d, set)} against ${tN(worst.cap, set)})`,
-          M.groups.filter((g) => g[k2] != null).map((g) => `${g.name}: ${tN(g[k2], set)}`).join(", ")],
+          M.groups.filter((g) => g[k2] != null).map((g) => `${g.name}: ${tN(g[k2], set)}${g.cases ? ` under ${g.cases}` : ""}`).join(", ")],
         tags: over.slice(0, 3).concat(over.length ? [] : [worst]).map((r) => ({ at: M.piles[r.i].top, text: n0(r.ratio, 2) })) });
     });
   }
@@ -535,11 +547,14 @@ function supportPlaces(S, R) {
 function pileDemand(S, M) {
   const R = S.reactions, ix = new Map(R.supports.map((j, k) => [j, k]));
   const combo = new Set(S.cases.filter((c) => c.kind === "combo").map((c) => c.name));
-  const cases = R.cases.filter((c) => !combo.size || combo.has(c.case));
+  const all = R.cases.filter((c) => !combo.size || combo.has(c.case));
+  const byGroup = new Map();
   return M.piles.map((p) => {
     const k = ix.get(p.support), o = { comp: 0, tens: 0, lat: 0 };
     if (k == null) return o;
-    cases.forEach((c) => {
+    const g = M.allGroups[p.group];
+    if (!byGroup.has(p.group)) byGroup.set(p.group, g?.caseRes?.length ? R.cases.filter((c) => g.caseRes.some((re) => re.test(c.case))) : all);
+    byGroup.get(p.group).forEach((c) => {
       const up = c.fz[k], dn = c.fz_min[k], h = c.h[k];
       if (up != null && up > o.comp) { o.comp = up; o.compCase = c.case; }
       if (dn != null && -dn > o.tens) { o.tens = -dn; o.tensCase = c.case; }
@@ -1379,7 +1394,7 @@ function form(el, set, esc, changed) {
     <label>Steel yield strength fy (MPa), for stress ratios <input data-k="steel_fy" type="number" min="100" step="5" value="${esc(set.steel_fy ?? 355)}"></label>
     <label>Movements drawn larger by <input data-k="exaggerate" type="number" min="1" step="1" placeholder="chosen to show" value="${esc(set.exaggerate ?? "")}"></label>
     <fieldset class="film-piles"><legend>Pile capacities</legend>
-      <p class="status">Piles over their capacity glow in the film. Match picks piles by frame or section name (commas, * for any text); leave it empty for every pile. Tension left empty is the factor times compression.</p>
+      <p class="status">Piles over their capacity glow in the film. Match picks piles by frame or section name, or by row (Row A, Row B, lettered from the low side); commas between, * for any text; empty for every other pile. Tension left empty is the factor times compression. Checked under names the combinations (e.g. C1-* for D+L service); empty for every combination.</p>
       <label>Capacities in <select data-k="capacity_unit"><option value="t">tonnes</option><option value="kN">kN</option></select></label>
       <div data-pgroups></div><button class="quiet" type="button" data-padd>Add a pile group</button></fieldset>
     <fieldset class="film-hide"><legend>Shots</legend>${Object.entries(SHOTS).map(([k, v]) => `<label class="toggle"><input type="checkbox" data-shot="${k}" ${(set.hide || []).includes(k) ? "" : "checked"}> ${v}</label>`).join("")}</fieldset>`;
@@ -1388,7 +1403,7 @@ function form(el, set, esc, changed) {
   el.querySelector('[data-k="capacity_unit"]').value = set.capacity_unit || "t";
   const groups = el.querySelector("[data-pgroups]");
   const PF = [["name", "Name", "text", "8em"], ["match", "Match", "text", "8em"], ["compression", "Compression", "number", "5.5em"],
-    ["tension", "Tension", "number", "5.5em"], ["tension_factor", "or factor", "number", "4em"], ["lateral", "Lateral", "number", "5.5em"]];
+    ["tension", "Tension", "number", "5.5em"], ["tension_factor", "or factor", "number", "4em"], ["lateral", "Lateral", "number", "5.5em"], ["cases", "Checked under", "text", "9em"]];
   const drawGroups = () => {
     groups.innerHTML = (set.piles || []).map((g, i) => `<div class="row film-pgroup" style="gap:6px;flex-wrap:wrap;align-items:end;border-top:1px solid var(--line, #ddd);padding-top:6px;margin-top:6px">${PF.map(([k, lab, t, w]) =>
       `<label>${lab} <input data-pg="${i}" data-pf="${k}" type="${t}" ${t === "number" ? 'step="any" min="0"' : ""} style="width:${w}" value="${esc(g[k] ?? (k === "tension_factor" ? 0.7 : ""))}"></label>`).join("")}
@@ -1403,7 +1418,7 @@ function form(el, set, esc, changed) {
   };
   drawGroups();
   el.querySelector("[data-padd]").onclick = () => {
-    (set.piles ||= []).push({ name: `Piles ${set.piles.length + 1}`, match: "", compression: null, tension: null, tension_factor: 0.7, lateral: null });
+    (set.piles ||= []).push({ name: `Piles ${set.piles.length + 1}`, match: "", compression: null, tension: null, tension_factor: 0.7, lateral: null, cases: "" });
     drawGroups(); changed();
   };
   el.querySelectorAll("[data-k]").forEach((i) => (i.onchange = () => {

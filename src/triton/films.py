@@ -53,7 +53,7 @@ class PileGroup(BaseModel):
     match: str = Field(
         "",
         description="Which piles: frame names or section names, comma separated, * for any characters "
-        "(e.g. 'EX-*, 3-*'); empty: every pile not in another group",
+        "(e.g. 'EX-*, 3-*'), or rows ('Row D'); empty: every pile not in another group",
     )
     compression: float | None = Field(None, ge=0, description="Vertical capacity in compression")
     tension: float | None = Field(
@@ -61,6 +61,11 @@ class PileGroup(BaseModel):
     )
     tension_factor: float = Field(0.7, ge=0)
     lateral: float | None = Field(None, ge=0, description="Lateral capacity")
+    cases: str = Field(
+        "",
+        description="Combinations the capacities are checked under, comma separated, * for any "
+        "characters (e.g. 'C1-*' for D+L service); empty: every combination",
+    )
     colour: str = ""
 
 

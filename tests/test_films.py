@@ -241,3 +241,15 @@ def test_small_file_round_trip(demo, tmp_path):
     assert run.returncode == 0, run.stderr
     got = json.loads(run.stdout)
     assert got["same"] and got["cases"] >= 7 and got["n"] == 3 * got["joints"] and got["frames"] >= 5
+
+
+def test_pile_groups_keep_rows_and_service_cases():
+    from triton.films import FilmSettings
+
+    s = FilmSettings(
+        piles=[{"name": "New", "match": "Row D", "compression": 250, "cases": "C1-*"}],
+        capacity_unit="t",
+    )
+    g = s.piles[0]
+    assert (g.match, g.cases, g.tension_factor) == ("Row D", "C1-*", 0.7)
+    assert FilmSettings().piles == []
