@@ -78,11 +78,30 @@ function prepare(S, set) {
   let ext = L;
   [...site.breakwaters.flatMap((r) => r.pts), ...site.land.flatMap((l) => l.pts)].forEach((p) => { ext = Math.max(ext, 2 * Math.hypot(p[0] - centre[0], p[1] - centre[1])); });
   ext = Math.min(ext, 12 * L);
-  const M = { S, J, L, centre, seabed, wl, site, sect, seaYaw, seaDir: [Math.cos(seaYaw * Math.PI / 180), Math.sin(seaYaw * Math.PI / 180)], ext, top, bottom: lo[2] };
+  // the sea side, surest from the loads: a ship pushes in from the sea, a mooring line pulls out to it
+  let seaYaw2 = seaYaw;
+  const loadSea = seaFromLoads(S);
+  if (loadSea) seaYaw2 = Math.atan2(loadSea[1], loadSea[0]) * 180 / Math.PI;
+  // the top of what is drawn at deck level (beams drawn on their centre line stand above the slab)
+  let deckTop = top;
+  S.frames.ends.forEach(([a, b], n) => { const p = J[a], q = J[b]; if (!p || !q || Math.abs(p[2] - q[2]) > 0.3 || p[2] < top - 1.5) return; deckTop = Math.max(deckTop, p[2] + (sect[S.frames.section[n]]?.h || 0) / 2); });
+  S.areas.joints.forEach((js, n) => { const z = Math.max(...js.map((j) => J[j]?.[2] ?? -Infinity)); if (z > top - 1.5) deckTop = Math.max(deckTop, z + (sect[S.areas.section[n]]?.t || 0) / 2); });
+  const M = { S, J, L, centre, seabed, wl, site, sect, seaYaw: seaYaw2, seaDir: [Math.cos(seaYaw2 * Math.PI / 180), Math.sin(seaYaw2 * Math.PI / 180)], ext, top, deckTop, bottom: lo[2] };
   findPiles(M, set);
   return M;
 }
 
+function seaFromLoads(S) {
+  const pick = (re, sign) => {
+    for (const p of Object.keys(S.loads || {})) {
+      if (!re.test(p) || /FRICT/i.test(p)) continue;
+      const o = loadItems(S, p).find((q) => Math.abs(q.d[2]) < 0.3 && q.kind === "point");
+      if (o) { const h = Math.hypot(o.d[0], o.d[1]); return [sign * o.d[0] / h, sign * o.d[1] / h]; }
+    }
+    return null;
+  };
+  return pick(/BERTH|FEND/i, -1) || pick(/BOLL.*PERP|MOOR.*PERP/i, 1);
+}
 // the piles: from each support up the near-vertical members to the deck; then their groups
 // (existing, new...) by frame or section names, with the capacities given for each
 const glob = (pat) => new RegExp(`^${pat.trim().replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`, "i");
@@ -145,7 +164,7 @@ function findPiles(M, set) {
   });
   M.piles = piles; M.pileOf = pileOf; M.groups = groups.filter((g) => g.count); M.allGroups = groups;
 }
-const tN = (v, set) => (set.capacity_unit === "kN" ? `${n0(v)} kN` : `${n0(v / 9.80665)} t`);
+const tN = (v, set) => (set.capacity_unit === "kN" ? `${n0(v)} kN` : `${n0(v)} kN (${n0(v / 9.80665)} t)`);
 
 function structure(M, colour, { shift = null, k = 0, pick = null, clipZ = null } = {}) {
   const { S, J, sect } = M, m = new Mesh();
@@ -208,7 +227,7 @@ function cams(M) {
 }
 
 const n0 = (v, d = 0) => (v == null || !isFinite(v) ? "–" : Number(v).toLocaleString("en-GB", { maximumFractionDigits: d, minimumFractionDigits: d }));
-const kN = (v) => (Math.abs(v) >= 10000 ? `${n0(v / 1000, 1)} MN` : `${n0(v)} kN`);
+const kN = (v) => `${n0(v)} kN`;
 const mm = (v) => `${n0(v * 1000, Math.abs(v) < 0.01 ? 1 : 0)} mm`;
 
 export function direct(S, set, M) {
@@ -307,10 +326,11 @@ export function direct(S, set, M) {
       rows.sort((a, b) => b.ratio - a.ratio);
       const over = rows.filter((r) => r.ratio > 1), worst = rows[0];
       const ratio = new Map(rows.map((r) => [r.i, r.ratio]));
-      add({ kind: "piles", what: k2, ratio, dur: brief ? 5 : 6.5, cut: k2 === "comp", cam0: C.tall(), cam1: { ...C.tall(), yaw: C.tall().yaw + 40 }, head, legend: "util", seabedAlpha: 0.35,
+      const load = new Map(rows.map((r) => [r.i, r.d]));
+      add({ kind: "piles", what: k2, ratio, load, dur: brief ? 6 : 8, cut: k2 === "comp", cam0: C.tall(), cam1: { ...C.top(), pitch: 64, dist: 1.35 * M.L }, head: `${head}${use[0]?.head ? ", at the pile heads" : ""}`, legend: "util", seabedAlpha: 0.35,
         lines: [over.length ? `${over.length} pile${over.length === 1 ? "" : "s"} above the ${word} capacity, the worst ${n0(worst.ratio, 2)} (${tN(worst.d, set)} against ${tN(worst.cap, set)}, ${worst.case})` : `Every pile is within its ${word} capacity: the highest ${n0(worst.ratio, 2)} (${tN(worst.d, set)} against ${tN(worst.cap, set)})`,
           M.groups.filter((g) => g[k2] != null).map((g) => `${g.name}: ${tN(g[k2], set)}${(k2 === "lat" ? g.lateral_cases || g.cases : g.cases) ? ` under ${k2 === "lat" ? g.lateral_cases || g.cases : g.cases}` : ""}`).join(", ")],
-        tags: over.slice(0, 3).concat(over.length ? [] : [worst]).map((r) => ({ at: M.piles[r.i].top, text: n0(r.ratio, 2) })) });
+        tags: rows.slice(0, 4).map((r) => ({ at: [M.piles[r.i].top[0], M.piles[r.i].top[1], M.deckTop + 1.2], text: `${tN(r.d, set)}: ${n0(r.ratio, 2)}` })) });
     });
   }
   // how it moves
@@ -416,7 +436,7 @@ export function direct(S, set, M) {
   }
   // without design tables: the von Mises stress in each member against the steel's yield strength
   const fy = (set.steel_fy || 355) * 1000;
-  if (!hide.has("design") && !design.length && S.stress?.count) {
+  if (!hide.has("design") && !design.length && S.stress?.count && M.sect.some((q) => q.steel)) {
     const ids = S.frames.ids, ratio = ids.map((i) => (S.stress.svm[i] != null ? S.stress.svm[i] / fy : null));
     let worst = -1; ratio.forEach((v, n) => { if (v != null && (worst < 0 || v > ratio[worst])) worst = n; });
     const top = ratio.map((v, n) => ({ i: ids[n], ratio: v })).filter((d) => d.ratio != null).sort((a, b) => b.ratio - a.ratio).slice(0, 8);
@@ -536,11 +556,26 @@ function supportPlaces(S, R) {
   return ["corner", "edge", "side", "internal"].map((k) => best[k]).filter(Boolean);
 }
 // each pile's largest compression, tension and lateral force over the cases (combinations where there are some)
+// at the pile head (the force in its top member) where the file has member forces for every case,
+// else at its support
 function pileDemand(S, M) {
   const R = S.reactions, ix = new Map(R.supports.map((j, k) => [j, k]));
   const combo = new Set(S.cases.filter((c) => c.kind === "combo").map((c) => c.name));
   const all = R.cases.filter((c) => !combo.size || combo.has(c.case));
   const byGroup = new Map(), latGroup = new Map();
+  const full = S.full?.frames || {};
+  if (Object.keys(full).length) {
+    const names = (S.full.cases || Object.keys(full)).filter((n) => full[n]);
+    const allN = names.filter((n) => !combo.size || combo.has(n)), dec = new Map();
+    const get = (n) => { if (!dec.has(n)) dec.set(n, fromB64(full[n])); return dec.get(n); };
+    return M.piles.map((p) => {
+      const o = { comp: 0, tens: 0, lat: 0, head: true }, top = p.frames[p.frames.length - 1], g = M.allGroups[p.group];
+      const pick = (res) => (res?.length ? names.filter((n) => res.some((re) => re.test(n))) : allN);
+      pick(g?.caseRes).forEach((n) => { const a = get(n), P = a[top * 6]; if (!isFinite(P)) return; if (-P > o.comp) { o.comp = -P; o.compCase = n; } if (P > o.tens) { o.tens = P; o.tensCase = n; } });
+      pick(g?.latRes).forEach((n) => { const a = get(n), v = Math.hypot(a[top * 6 + 1] || 0, a[top * 6 + 2] || 0); if (isFinite(v) && v > o.lat) { o.lat = v; o.latCase = n; } });
+      return o;
+    });
+  }
   return M.piles.map((p) => {
     const k = ix.get(p.support), o = { comp: 0, tens: 0, lat: 0 };
     if (k == null) return o;
@@ -621,6 +656,18 @@ function layers(F, s, u) {
     out.push({ mesh: keyed("pile-ghost", () => structure(M, { frame: (n) => (M.pileOf.has(n) ? null : GHOST), area: () => GHOST }, { pick: { frame: (n) => !M.pileOf.has(n), area: () => true } })), opacity: 0.35 });
     out.push({ mesh: keyed(`piles-${s.what}`, () => structure(M, { frame: (n) => { const r = s.ratio.get(M.pileOf.get(n)); return r != null ? rgb(heat(Math.min(r, 1.2))) : GHOST; }, area: () => null }, { pick: { frame: (n) => M.pileOf.has(n) && (s.ratio.get(M.pileOf.get(n)) ?? 0) <= 1, area: () => false } })), opacity: 1 });
     out.push({ mesh: keyed(`piles-over-${s.what}`, () => structure(M, { frame: () => rgb(heat(1.1)), area: () => null }, { pick: { frame: (n) => M.pileOf.has(n) && (s.ratio.get(M.pileOf.get(n)) ?? 0) > 1, area: () => false } })), opacity: 1, glow: 0.15 + 0.45 * pulse });
+    // a bubble over each pile head: its size the load, its colour the ratio, so the most loaded stand out
+    if (s.load) {
+      const big = Math.max(...s.load.values(), 1e-9), g = ease((u - 0.15) / 0.3), b = new Mesh();
+      M.piles.forEach((p, i) => {
+        const v = s.load.get(i); if (!(v > 0) || g <= 0) return;
+        const r = Math.max(0.4, (0.045 * M.L) * Math.sqrt(v / big)) * g, z = M.deckTop + 1.2;
+        b.frustum([p.top[0], p.top[1], z - r * 0.35], [p.top[0], p.top[1], z], r * 0.8, r, rgb(heat(Math.min(s.ratio.get(i) ?? 0, 1.2))), 18);
+        b.frustum([p.top[0], p.top[1], z], [p.top[0], p.top[1], z + r * 0.45], r, r * 0.55, rgb(heat(Math.min(s.ratio.get(i) ?? 0, 1.2))), 18);
+        b.member([p.top[0], p.top[1], p.top[2]], [p.top[0], p.top[1], z - r * 0.35], 0.08, 0.08, hex("#DCE7EC"));
+      });
+      out.push({ mesh: b, opacity: 1, glow: 0.12 });
+    }
   } else if (s.kind === "act") {
     const g = swing(s, u), U = s.U || s.mode?.u, k = s.U ? s.k : 0.05 * M.L;
     const Mc = s.Mc, mmax = Mc ? Math.max(...Mc, 1e-9) : 0, big = U ? (s.big ?? (s.big = p95(U))) : 1;
@@ -805,7 +852,7 @@ export function loadFamilies(S) {
 }
 const sum3 = (items, S) => {
   const F = [0, 0, 0];
-  items.forEach((o) => { const k = o.kind === "area" ? areaOf(S, o.area) : o.kind === "line" ? Math.hypot(...o.a.map((v, n) => v - o.b[n])) : 1; for (let n = 0; n < 3; n++) F[n] += o.d[n] * o.v * k; });
+  items.forEach((o) => { const k = o.kind === "area" ? areaOf(S, S.areas.ids[o.area]) : o.kind === "line" ? Math.hypot(...o.a.map((v, n) => v - o.b[n])) : 1; for (let n = 0; n < 3; n++) F[n] += o.d[n] * o.v * k; });
   return F;
 };
 const tonnes = (v) => `${n0(v / 9.81)} t`;
@@ -816,10 +863,10 @@ function describe(S, M, look, st) {
   const by = (kind) => it.filter((o) => o.kind === kind);
   const area = by("area"), line = by("line"), pt = by("point");
   const peak = (list) => list.reduce((m, o) => Math.max(m, o.v), 0);
-  const m2 = area.reduce((a, o) => a + areaOf(S, o.area), 0);
+  const m2 = area.reduce((a, o) => a + areaOf(S, S.areas.ids[o.area]), 0);
   const out = [];
   const total = [down > 1 ? `${kN(down)} down` : down < -1 ? `${kN(-down)} up` : "", side > 1 ? `${kN(side)} sideways` : ""].filter(Boolean).join(", ");
-  if (look === "self") { const b = S.base?.[st.name] || []; const w = Math.abs(b[2] || 0); out.push(`The concrete's own weight: ${kN(w)} (${tonnes(w)}), worked out by SAP2000 from the sections`); }
+  if (look === "self") { const b = S.base?.[st.name] || []; const w = Math.abs(b[2] || 0), a2 = S.areas.ids.reduce((x, id) => x + areaOf(S, id), 0); out.push(`The concrete's own weight, spread over the whole structure: ${kN(w)} in all (${tonnes(w)})${a2 ? `, about ${n0(w / a2, 1)} kN/m² of deck (slab, beams and piles)` : ""}`); out.push("Worked out by SAP2000 from the sections and the concrete's density"); }
   else if (look === "finish") {
     if (area.length) out.push(`Surfacing and services: ${val(peak(area))} kN/m² over ${n0(m2)} m² of deck (about ${n0(Math.round(peak(area) / 24 * 100) * 10)} mm of paving)`);
     if (line.length) out.push(`Kerbs and services: ${val(peak(line))} kN/m along ${n0(line.length)} beams`);
@@ -949,17 +996,28 @@ function realScene(M, s, u, time) {
   const thin = Math.max(1, Math.round(items.filter((o) => o.kind === "area").length / 70));
   const hull = (along, out0, wide, from) => {
     // a ship lying along the quay, its side `out0` m out to sea from the quay face
+    // a hull with a pointed bow, red below the waterline, a bridge at the stern, hatch covers on deck
     const sea = M.seaDir, ex = [-sea[1], sea[0], 0], ey = [sea[0], sea[1], 0];
     const o = [from[0] + sea[0] * (out0 + wide / 2), from[1] + sea[1] * (out0 + wide / 2)];
-    body.box(o, ex, ey, along, wide, M.wl - 6, M.wl - 0.3, hex("#7A2E24"));
-    body.box(o, ex, ey, along, wide, M.wl - 0.3, M.wl + 7, hex("#26313F"), hex("#8A929B"));
-    const bo = [o[0] - ex[0] * along * 0.4, o[1] - ex[1] * along * 0.4];
-    body.box(bo, ex, ey, along * 0.08, wide * 0.8, M.wl + 7, M.wl + 15, hex("#E8E6E1"), hex("#C9C6BF"));
-    return M.wl + 7;
+    const P = (a, b, z) => [o[0] + ex[0] * a + ey[0] * b, o[1] + ex[1] * a + ey[1] * b, z];
+    const h = along / 2, w = wide / 2, bow = 0.16 * along;
+    const plan = [[-h, -w], [h - bow, -w], [h - bow * 0.35, -w * 0.62], [h, 0], [h - bow * 0.35, w * 0.62], [h - bow, w], [-h, w]];
+    const band = (z0, z1, col) => plan.forEach((q, i) => { const r = plan[(i + 1) % plan.length]; body.quad(P(q[0], q[1], z0), P(r[0], r[1], z0), P(r[0], r[1], z1), P(q[0], q[1], z1), col); });
+    band(M.wl - 7, M.wl - 0.2, hex("#7A2E24"));
+    band(M.wl - 0.2, M.wl + 6, hex("#26313F"));
+    body.panel(plan.map((q) => P(q[0], q[1], M.wl + 6)), hex("#7E868F"));
+    for (let k = 0; k < 6; k++) { const a = -h + 0.22 * along + k * 0.11 * along; body.box([P(a, 0, 0)[0], P(a, 0, 0)[1]], ex, ey, 0.09 * along, wide * 0.7, M.wl + 6, M.wl + 7.2, hex(PAL[k % PAL.length]), hex("#9AA3AD")); }
+    const bo = P(-h + 0.07 * along, 0, 0);
+    body.box([bo[0], bo[1]], ex, ey, 0.08 * along, wide * 0.85, M.wl + 6, M.wl + 18, hex("#ECEAE4"), hex("#C9C6BF"));
+    glass.box([bo[0] + ex[0] * 0.04 * along, bo[1] + ex[1] * 0.04 * along], ex, ey, 0.004 * along, wide * 0.8, M.wl + 15.5, M.wl + 17, hex("#4A6F8A"));
+    return M.wl + 6;
   };
   if (look === "self") {
-    items.length || S.areas.joints.forEach((js, k) => { if (k % Math.max(1, Math.round(S.areas.joints.length / 60))) return; const pts = js.map((j) => S.joints[j]); const c = [0, 1, 2].map((n) => pts.reduce((a, q) => a + q[n], 0) / pts.length); rain(c, c[2] + 0.4, hex("#9AA3AD")); });
-    st.tags = [{ at: [M.centre[0], M.centre[1], M.top], text: kN(Math.abs(S.base?.[st.name]?.[2] || 0)) }];
+    // spread over the whole deck: a little arrow on every few panels, and the weight per square metre
+    const W = Math.abs(S.base?.[st.name]?.[2] || 0), A2 = S.areas.ids.reduce((a, id) => a + areaOf(S, id), 0) || 1, every = Math.max(1, Math.round(S.areas.joints.length / 160));
+    let at = null;
+    S.areas.joints.forEach((js, k) => { const pts = js.map((j) => S.joints[j]); const c = [0, 1, 2].map((n) => pts.reduce((a, q) => a + q[n], 0) / pts.length); if (!at && k > S.areas.joints.length * 0.3) at = [c[0], c[1], M.deckTop + 0.3]; if (k % every === 0 && g > 0.2) { const ph = (t * 0.5 + hash(c[0], c[1])) % 1, z0 = M.deckTop + 0.15; arr.arrow([c[0], c[1], z0 + 0.035 * L + ph * 0.6], [c[0], c[1], z0 + ph * 0.6], rr * 1.1, hex("#8E99A4")); } });
+    st.tags = W ? [{ at: at || [M.centre[0], M.centre[1], M.deckTop], text: `${n0(W / A2, 1)} kN/m² on average` }] : [];
   }
   items.forEach((o, n) => {
     const side = Math.abs(o.d[2]) < 0.5;
@@ -973,7 +1031,7 @@ function realScene(M, s, u, time) {
       else { body.frustum([o.p[0], o.p[1], o.p[2] + 0.3], [o.p[0], o.p[1], o.p[2] + 1.2], 0.45, 0.35, hex("#2B2F33")); push(o, hex("#E3543C"), 0.05 * L); }
     } else if (look === "live" || look === "construction") {
       if (o.kind === "area") {
-        const z0 = deckZ(o) + (1 - g) * 10, h = Math.min(4, Math.max(0.3, o.v / (look === "live" ? 10 : 6)));
+        const z0 = deckZ(o), h = Math.max(0.05, Math.min(4, Math.max(0.3, o.v / (look === "live" ? 10 : 6))) * g);
         const c = o.p, sh = o.pts.map((q) => [c[0] + (q[0] - c[0]) * 0.9, c[1] + (q[1] - c[1]) * 0.9]);
         const k = Math.floor(hash(Math.floor(c[0] / 6), Math.floor(c[1] / 3)) * PAL.length);
         const col = look === "live" ? hex(PAL[k]) : hex(k % 2 ? "#B98A57" : "#A67C4E");
@@ -1002,15 +1060,24 @@ function realScene(M, s, u, time) {
     const pts = items.filter((o) => o.kind === "point");
     clusters(pts, look === "truck" ? 7 : 14).forEach((cl, ci) => {
       if (cl.length < 2) { cl.forEach((o) => push(o, hex("#E3543C"))); return; }
-      const A = axisOf(cl.map((o) => o.p)), z = A.z + 0.15;
+      const A = axisOf(cl.map((o) => o.p)), z = M.deckTop + 0.02;
       if (look === "truck") {
-        const len = A.lx + 3.2, wid = Math.max(2.5, A.ly + 0.6), off = (1 - g) * 30, at = (s0, t0) => onAxis(A, A.mid[0] + s0 - off, A.mid[1] + t0);
-        cl.forEach((o) => { const s0 = (o.p[0] - A.c[0]) * A.ex[0] + (o.p[1] - A.c[1]) * A.ex[1] - off, t0 = (o.p[0] - A.c[0]) * A.ey[0] + (o.p[1] - A.c[1]) * A.ey[1]; const w = onAxis(A, s0, t0); body.frustum([w[0] - A.ey[0] * 0.3, w[1] - A.ey[1] * 0.3, z + 0.55], [w[0] + A.ey[0] * 0.3, w[1] + A.ey[1] * 0.3, z + 0.55], 0.55, 0.55, hex("#1C1C1C"), 10); });
-        body.box(at(0, 0), A.ex, A.ey, len, wid * 0.9, z + 0.9, z + 1.35, hex("#3A3F44"));
-        body.box(at(-0.12 * len, 0), A.ex, A.ey, len * 0.72, wid, z + 1.35, z + 3.9, hex(PAL[(ci * 3 + 1) % PAL.length]), hex("#D9DDE1"));
-        body.box(at(0.38 * len, 0), A.ex, A.ey, len * 0.2, wid, z + 1.35, z + 3.6, hex("#E8E6E1"), hex("#C9C6BF"));
-        glass.box(at(0.47 * len, 0), A.ex, A.ey, 0.06, wid * 0.8, z + 2.5, z + 3.4, hex("#6FA7C9"));
-        if (g > 0.95) cl.forEach((o) => push({ ...o, p: [o.p[0], o.p[1], z] }, hex("#E3543C"), 0.05 * L, L / 300));
+        // a tractor and its trailer standing on the deck, its wheels on the load points
+        const span = A.lx, wid = Math.max(2.5, A.ly + 0.5), at = (s0, t0 = 0) => onAxis(A, A.mid[0] + s0, A.mid[1] + t0), R0 = 0.52;
+        cl.forEach((o) => {
+          const s0 = (o.p[0] - A.c[0]) * A.ex[0] + (o.p[1] - A.c[1]) * A.ex[1], t0 = (o.p[0] - A.c[0]) * A.ey[0] + (o.p[1] - A.c[1]) * A.ey[1];
+          [-0.18, 0.18].forEach((dt) => { const w = onAxis(A, s0, t0 + dt * Math.sign(t0 - A.mid[1] || 1)); body.frustum([w[0] - A.ey[0] * 0.15, w[1] - A.ey[1] * 0.15, z + R0], [w[0] + A.ey[0] * 0.15, w[1] + A.ey[1] * 0.15, z + R0], R0, R0, hex("#1C1C1C"), 14); });
+          const w = onAxis(A, s0, t0 + 0.38 * Math.sign(t0 - A.mid[1] || 1)); body.frustum([w[0], w[1], z + R0], [w[0] + A.ey[0] * 0.02 * Math.sign(t0 - A.mid[1] || 1), w[1] + A.ey[1] * 0.02 * Math.sign(t0 - A.mid[1] || 1), z + R0], 0.25, 0.25, hex("#B8BEC4"), 10);
+        });
+        body.box(at(0), A.ex, A.ey, span + 3.6, 1.0, z + 0.75, z + 1.15, hex("#2B2F33"));
+        body.box(at(-0.6), A.ex, A.ey, span + 1.6, wid, z + 1.25, z + 1.45, hex("#4A4F55"));
+        body.box(at(-0.6), A.ex, A.ey, span + 1.4, wid - 0.1, z + 1.45, z + 3.9, hex(PAL[(ci * 3 + 1) % PAL.length]), hex("#D9DDE1"));
+        for (let q = 1; q < 6; q++) body.box(at(-0.6 - (span + 1.4) / 2 + (q * (span + 1.4)) / 6), A.ex, A.ey, 0.08, wid + 0.04, z + 1.5, z + 3.85, hex("#3B3F44"));
+        const cab = span / 2 + 1.55;
+        body.box(at(cab), A.ex, A.ey, 2.3, wid, z + 1.0, z + 3.3, hex("#C0392B"), hex("#A93226"));
+        body.box(at(cab + 1.2), A.ex, A.ey, 0.12, wid * 0.95, z + 0.7, z + 1.2, hex("#B8BEC4"));
+        glass.box(at(cab + 1.16), A.ex, A.ey, 0.04, wid * 0.82, z + 2.2, z + 3.1, hex("#6FA7C9"));
+        if (g > 0.5) cl.forEach((o) => push({ ...o, p: [o.p[0], o.p[1], z] }, hex("#E3543C"), 0.05 * L, L / 300));
       } else {
         const dn = cl.filter((o) => o.d[2] <= 0), legs = cl, H = 7, at = (s0, t0) => onAxis(A, A.mid[0] + s0, A.mid[1] + t0);
         legs.forEach((o) => body.member([o.p[0], o.p[1], z], [o.p[0], o.p[1], z + H], 0.5, 0.5, hex("#7F8C8D")));
@@ -1025,7 +1092,7 @@ function realScene(M, s, u, time) {
     items.filter((o) => o.kind === "line").forEach((o) => { body.member([o.a[0], o.a[1], o.a[2] + 5.5], [o.b[0], o.b[1], o.b[2] + 5.5], 1.2, 0.9, hex("#95A5A6")); body.member([o.a[0], o.a[1], o.a[2]], [o.a[0], o.a[1], o.a[2] + 5.5], 0.3, 0.3, hex("#7F8C8D")); });
   } else if (look === "crane") {
     items.filter((o) => o.kind === "point").forEach((o) => {
-      const sea = M.seaDir, ex = [sea[0], sea[1], 0], ey = [-sea[1], sea[0], 0], z = o.p[2] + 0.2;
+      const sea = M.seaDir, ex = [sea[0], sea[1], 0], ey = [-sea[1], sea[0], 0], z = M.deckTop;
       body.box([o.p[0], o.p[1]], ex, ey, 4, 11, z + 0.8, z + 2.4, hex("#F2B705"), hex("#D9A404"));
       [[-1.6, -4.5], [1.6, -4.5], [-1.6, 4.5], [1.6, 4.5]].forEach(([a, b]) => body.frustum([o.p[0] + ex[0] * a + ey[0] * b, o.p[1] + ex[1] * a + ey[1] * b, z + 0.5], [o.p[0] + ex[0] * a + ey[0] * b + 0.3 * ey[0], o.p[1] + ex[1] * a + ey[1] * b + 0.3 * ey[1], z + 0.5], 0.5, 0.5, hex("#1C1C1C"), 10));
       body.box([o.p[0] - ex[0] * 0.5, o.p[1] - ex[1] * 0.5], ex, ey, 3, 4, z + 2.4, z + 4.4, hex("#E8E6E1"));
@@ -1050,7 +1117,7 @@ function realScene(M, s, u, time) {
     const sea = M.seaDir, faceAt = items[0]?.p || M.centre;
     const deckTop = hull(Math.min(1.1 * L, 200), 3, 24, faceAt);
     items.filter((o) => o.kind === "point").forEach((o) => {
-      const z = o.p[2] + 0.2, bt = [o.p[0], o.p[1], z + 1.0];
+      const z = M.deckTop, bt = [o.p[0], o.p[1], z + 1.0];
       body.frustum([o.p[0], o.p[1], z], bt, 0.42, 0.32, hex("#2B2F33"), 12);
       body.frustum(bt, [bt[0], bt[1], bt[2] + 0.18], 0.55, 0.55, hex("#2B2F33"), 12);
       const e = o.d, s0 = e[0] * sea[0] + e[1] * sea[1];
@@ -1202,6 +1269,9 @@ function summaryCard(x, F, k) {
   let ds = Object.values(S.design || {}).map((d) => d.ratio).filter((v) => v != null);
   if (ds.length) rows.push(["Highest utilisation ratio", n0(Math.max(...ds), 2)]);
   else if (st) { ds = st.ratio.filter((v) => v != null); rows.push([`Highest stress ratio (fy ${n0(F.set.steel_fy || 355)} MPa)`, n0(Math.max(...ds), 2)]); }
+  const pl = F.shots.filter((q) => q.kind === "piles");
+  let pmax = null;
+  pl.forEach((q) => { const v = Math.max(...q.ratio.values()); rows.push([`Highest pile ratio, ${{ comp: "compression", tens: "tension", lat: "lateral" }[q.what]}`, `${n0(v, 2)}${v > 1 ? ` (${[...q.ratio.values()].filter((x) => x > 1).length} piles over)` : ""}`]); pmax = Math.max(pmax ?? 0, v); });
   const rh = Math.min(34 * k, (H - 260 * k) / rows.length);
   const bw = Math.min(W - 2 * pad, 900 * k);
   panel(x, k, pad, 96 * k, bw, 90 * k + rows.length * rh + 50 * k, 0.88);
@@ -1212,8 +1282,9 @@ function summaryCard(x, F, k) {
     text(x, k, a, pad + 26 * k, y, 16, "#9FB4C2", 500);
     text(x, k, b, pad + 26 * k + bw * 0.45, y, 16.5, "#fff", 600);
   });
-  const max = ds.length ? Math.max(...ds) : null;
-  const verdict = max == null ? "Utilisation ratios were not in the file (no design tables exported)." : max <= 1 ? (st ? "Every member is below yield." : "Every member designed is within its capacity.") : "Some members are above their capacity: see the members in red.";
+  let max = ds.length ? Math.max(...ds) : null;
+  let verdict = max == null ? "Utilisation ratios were not in the file (no design tables exported)." : max <= 1 ? (st ? "Every steel member is below yield." : "Every member designed is within its capacity.") : "Some members are above their capacity: see the members in red.";
+  if (pmax != null) { max = Math.max(max ?? 0, pmax); verdict = pmax > 1 ? "Some piles carry more than their capacity: see the piles in red." : max <= 1 ? "Every pile is within its capacity." : verdict; }
   text(x, k, verdict, pad + 26 * k, 180 * k + rows.length * rh + 34 * k, 17, max == null ? "#DCE7EC" : max <= 1 ? "#8FE0C4" : "#F2A093", 600);
 }
 
