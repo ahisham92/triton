@@ -8,7 +8,7 @@ const FORCE = { N: 1e-3, KN: 1, MN: 1e3, KGF: 9.80665e-3, TONF: 9.80665, TON: 9.
 const LENGTH = { MM: 1e-3, CM: 1e-2, M: 1, IN: 0.0254, FT: 0.3048, INCH: 0.0254 };
 const MAX_LOAD_ITEMS = 4000;
 const MAX_FIELDS = 6;
-const MAX_MODES = 6;
+const MAX_MODES = 12;
 
 export function unitFactor(text) {
   const t = String(text ?? "").trim().toUpperCase().replace(/ /g, "");
@@ -167,7 +167,7 @@ export class Gather {
     if (String(rec.StepType || "").toLowerCase() !== "mode") return;
     const m = num(rec.StepNum), o = this.modes.get(m) || {};
     if (rec.Period != null) o.period = num(rec.Period);
-    for (const k of ["UX", "UY", "UZ", "RZ"]) if (rec[k] != null) o[k.toLowerCase()] = num(rec[k]);
+    for (const k of ["UX", "UY", "UZ", "RX", "RY", "RZ", "SumUX", "SumUY", "SumUZ", "SumRZ"]) if (rec[k] != null) o[k.toLowerCase()] = num(rec[k]);
     o.case = key(rec.OutputCase);
     this.modes.set(m, o);
   }
@@ -466,8 +466,15 @@ export async function readBook(file, g, onProgress) {
 
 // read a file the person picked: the summary of its model and results
 export async function readSap(file, onProgress = () => {}) {
-  const g = new Gather();
   const name = file.name.toLowerCase();
+  // a small file this page made before (the summary, gzipped): taken as it is
+  if (/\.(trsap|json)(\.gz)?$/.test(name) || name.endsWith(".trsap")) {
+    const raw = name.endsWith(".gz") || name.endsWith(".trsap") ? file.stream().pipeThrough(new DecompressionStream("gzip")) : file.stream();
+    const S = JSON.parse(await new Response(raw).text());
+    if (!S.joints || !S.frames) throw new Error("That file is not a results summary this page made.");
+    return S;
+  }
+  const g = new Gather();
   const tell = (f, step) => onProgress(Math.min(0.999, f), step, g.rows);
   let seen = 0;
   const byBytes = (size) => (b) => { seen += b; tell(seen / Math.max(1, size), "Reading"); };
@@ -491,6 +498,50 @@ export async function readSap(file, onProgress = () => {}) {
 }
 
 // --- the summary: the same shape as triton/sap.py summarise -------------------------------------
+export const isQuake = (name, type = "") => /RESPSPEC|MODHIST|NONMODHIST|SEISM|QUAKE/i.test(type) || /(^|[^A-Z])(EQ[A-Z]?|EX|EY|EZ|SEIS[A-Z]*|QUAKE|RSA)(?![A-Z])/.test(name.toUpperCase());
+
+// Float32 values as base64, for the full results kept with the summary
+function b64(arr) {
+  const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+export function fromB64(text) {
+  const s = atob(text), b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+  return new Float32Array(b.buffer);
+}
+// every output case's results, element by element (NaN where the file has none): joint movements
+// (UX UY UZ), support reactions (F1 F2 F3 M1 M2 M3, the larger of max and min), member forces
+// (P V2 V3 T M2 M3, the largest), plate forces (M11 M22 V13 V23 Fmax). Mode shapes are left out.
+function fullData(g, caseNames, supports, goodF, goodA, nj) {
+  const out = { cases: [], disp: {}, react: {}, frames: {}, areas: {} };
+  const pickRows = (a, rows, w, stride = w, off = 0) => {
+    const o = new Float32Array(rows.length * w).fill(NaN);
+    rows.forEach((i, n) => { for (let k = 0; k < w; k++) { const at = i * stride + off + k; if (at < a.length) o[n * w + k] = a[at]; } });
+    return o;
+  };
+  for (const name of caseNames) {
+    const c = g.caseIx.get(name);
+    if (g.modeIx.has(c)) continue;
+    let any = false;
+    const d = g.disp.data.get(c);
+    if (d) { out.disp[name] = b64(pickRows(d, Array.from({ length: nj }, (_, i) => i), 3)); any = true; }
+    const R = g.react.data.get(c);
+    if (R && supports.length) {
+      const o = new Float32Array(supports.length * 6).fill(NaN);
+      supports.forEach((i, n) => { for (let k = 0; k < 6; k++) { const hi = R[i * 12 + k], lo = R[i * 12 + 6 + k]; const H = hi === hi ? hi : NaN, Lo = lo === lo ? lo : NaN; o[n * 6 + k] = !(Lo === Lo) || Math.abs(H) >= Math.abs(Lo) ? H : Lo; } });
+      out.react[name] = b64(o); any = true;
+    }
+    const F = g.fforce.data.get(c);
+    if (F) { out.frames[name] = b64(pickRows(F, goodF, 6)); any = true; }
+    const A = g.sforce.data.get(c);
+    if (A) { out.areas[name] = b64(pickRows(A, goodA, 5)); any = true; }
+    if (any) out.cases.push(name);
+  }
+  return out;
+}
 const r = (v, d = 3) => (v == null || !isFinite(v) ? null : Math.round(v * 10 ** d) / 10 ** d);
 const isService = (name, info = {}) => /SLS|SERV|QP|CHAR|FREQ/.test(`${name} ${info.type || ""} ${info.design || ""}`.toUpperCase());
 
@@ -564,9 +615,11 @@ export function summarise(g) {
         const pool = scored.filter((s) => isService(s.name, info(s.name)) === service);
         if (pool.length) { const top = pool.reduce((a, b) => (b[k] > a[k] ? b : a)); if (!pick.includes(top.name)) pick.push(top.name); }
       }
+      // earthquakes (response spectrum or time history) always, for their own shot
+      scored.filter((s) => isQuake(s.name, g.caseTypes.get(g.caseIx.get(s.name)) || info(s.name).type)).slice(0, 2).forEach((s) => { if (!pick.includes(s.name)) pick.push(s.name); });
       for (const s of [...scored].sort((a, b) => Math.max(b.h, b.v) - Math.max(a.h, a.v))) { if (pick.length >= MAX_FIELDS) break; if (!pick.includes(s.name)) pick.push(s.name); }
       const by = Object.fromEntries(scored.map((s) => [s.name, s]));
-      for (const name of pick.slice(0, MAX_FIELDS)) {
+      for (const name of pick.slice(0, MAX_FIELDS + 2)) {
         const s = by[name];
         disp.cases.push({ case: name, u: s.u.map((p) => p.map((v) => r(v, 5))), h: { value: r(s.h, 5), joint: s.hj }, v: { value: r(s.v, 5), joint: s.vj } });
       }
@@ -578,7 +631,7 @@ export function summarise(g) {
   let forces = {};
   const nf = g.frames.length;
   if (g.fforce.data.size && nf) {
-    const env = new Float64Array(nf * 4), which = new Int32Array(nf * 4).fill(-1), comp = new Float64Array(nf);
+    const env = new Float64Array(nf * 4), which = new Int32Array(nf * 4).fill(-1), comp = new Float64Array(nf), tens = new Float64Array(nf);
     const idx = new Map([...g.caseIx].map(([n, c]) => [c, n]));
     for (const name of caseNames) {
       const c = g.caseIx.get(name), a = g.fforce.data.get(c);
@@ -587,11 +640,11 @@ export function summarise(g) {
         const v = (k) => { const x = i * 6 + k < a.length ? a[i * 6 + k] : NaN; return isFinite(x) ? x : 0; };
         const vals = [Math.abs(v(0)), Math.hypot(v(1), v(2)), Math.hypot(v(4), v(5)), Math.abs(v(3))];
         vals.forEach((x, k) => { if (x > env[i * 4 + k]) { env[i * 4 + k] = x; which[i * 4 + k] = c; } });
-        comp[i] = Math.min(comp[i], v(0));
+        comp[i] = Math.min(comp[i], v(0)); tens[i] = Math.max(tens[i], v(0));
       }
     }
     const col = (k) => Array.from({ length: nf }, (_, i) => r(env[i * 4 + k], 1));
-    forces = { N: col(0), V: col(1), M: col(2), T: col(3), compression: Array.from(comp, (v) => r(-v, 1) || 0),
+    forces = { N: col(0), V: col(1), M: col(2), T: col(3), compression: Array.from(comp, (v) => r(-v, 1) || 0), tension: Array.from(tens, (v) => r(v, 1) || 0),
       case: Object.fromEntries(["N", "V", "M", "T"].map((k, j) => [k, Array.from({ length: nf }, (_, i) => idx.get(which[i * 4 + j]) ?? "")])) };
   }
   let shells = {};
@@ -616,6 +669,9 @@ export function summarise(g) {
     const u = Array.from({ length: nj }, (_, i) => [0, 1, 2].map((k) => { const v = i * 3 + k < a.length ? a[i * 3 + k] : NaN; return isFinite(v) ? r(v / big, 4) : 0; }));
     modes.push({ mode: m, period: r(o.period, 4), ux: r(o.ux, 4), uy: r(o.uy, 4), uz: r(o.uz, 4), rz: r(o.rz, 4), case: o.case || "", u });
   }
+  // every mode's period and mass ratios, for the table
+  const modal = [...g.modes].sort((a, b) => a[0] - b[0]).map(([m, o]) => ({ mode: m, period: r(o.period, 4), ux: r(o.ux, 4), uy: r(o.uy, 4), uz: r(o.uz, 4), rx: r(o.rx, 4), ry: r(o.ry, 4), rz: r(o.rz, 4),
+    sumux: r(o.sumux, 4), sumuy: r(o.sumuy, 4), sumuz: r(o.sumuz, 4) }));
   // von Mises stress in the members, the largest over the output cases (combinations where there are some)
   let stress = {};
   if (g.stress.data.size && nf) {
@@ -655,7 +711,8 @@ export function summarise(g) {
     restraints: Object.fromEntries([...g.restraints].filter(([i]) => i < nj).map(([i, v]) => [String(i), v])),
     patterns: Object.entries(g.patterns).map(([name, v]) => ({ name, ...v })),
     combos: Object.entries(g.combos).map(([name, v]) => ({ name, type: v.type, parts: v.parts })),
-    cases, loads, reactions: react, displacements: disp, forces, frame_count: nf, shells, area_count: na, design, modes, stress,
+    cases, loads, reactions: react, displacements: disp, forces, frame_count: nf, shells, area_count: na, design, modes, modal, stress,
+    full: fullData(g, caseNames, supports, goodF, goodA, nj),
     base: Object.fromEntries(Object.entries(g.base).map(([k, v]) => [k, v.map((x) => r(x, 1))])),
     tables: g.tables, ignored: g.ignored, rows: g.rows,
   };

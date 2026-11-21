@@ -397,7 +397,8 @@ def write(path: Path) -> Path:
                             "Station": st,
                             "OutputCase": c,
                             "CaseType": "Combination",
-                            "P": 0.0,
+                            # the deck ties pull in the front beams and push in the back ones
+                            "P": share * (0.35 if j >= ny // 2 else -0.25) * (1.0 if kd == "beamx" else 0.6),
                             "V2": share / 2,
                             "V3": 0.0,
                             "T": 0.0,
@@ -405,6 +406,126 @@ def write(path: Path) -> Path:
                             "M3": share * kf,
                         }
                     )
+    # the modes of vibration: the deck swaying along the berth, across it, twisting, then bending
+    modes = [
+        (1, 1.46, 0.02, 0.81, 0.10),
+        (2, 1.31, 0.86, 0.01, 0.03),
+        (3, 1.08, 0.05, 0.10, 0.78),
+        (4, 0.44, 0.03, 0.04, 0.03),
+        (5, 0.39, 0.02, 0.02, 0.03),
+        (6, 0.31, 0.01, 0.01, 0.02),
+    ]
+    periods, ratios, sums = [], [], [0.0, 0.0, 0.0]
+    for m, t, ux, uy, rz in modes:
+        sums = [sums[0] + ux, sums[1] + uy, sums[2] + rz]
+        periods.append(
+            {
+                "OutputCase": "MODAL",
+                "StepType": "Mode",
+                "StepNum": float(m),
+                "Period": t,
+                "Frequency": 1 / t,
+                "CircFreq": 2 * math.pi / t,
+                "Eigenvalue": (2 * math.pi / t) ** 2,
+            }
+        )
+        ratios.append(
+            {
+                "OutputCase": "MODAL",
+                "StepType": "Mode",
+                "StepNum": float(m),
+                "Period": t,
+                "UX": ux,
+                "UY": uy,
+                "UZ": 0.0,
+                "SumUX": sums[0],
+                "SumUY": sums[1],
+                "SumUZ": 0.0,
+                "RX": 0.0,
+                "RY": 0.0,
+                "RZ": rz,
+                "SumRX": 0.0,
+                "SumRY": 0.0,
+                "SumRZ": sums[2],
+            }
+        )
+
+    def shape(m: int, x: float, y: float, z: float) -> tuple[float, float, float]:
+        s = max(0.0, (z - TOE) / (DECK - TOE)) ** 2
+        if m == 1:
+            return (0.0, s, 0.0)
+        if m == 2:
+            return (s, 0.0, 0.0)
+        if m == 3:
+            return (-s * (y - WIDTH / 2) / (WIDTH / 2), s * (x - LENGTH / 2) / (LENGTH / 2), 0.0)
+        bend = math.sin(math.pi * x * (m - 3) / LENGTH) * math.sin(math.pi * y / WIDTH) if z == DECK else 0.0
+        return (0.0, 0.0, bend * s)
+
+    for m, *_ in modes:
+        for k, (x, y, z) in xyz.items():
+            u1, u2, u3 = shape(m, x, y, z)
+            disps.append(
+                {
+                    "Joint": k,
+                    "OutputCase": "MODAL",
+                    "CaseType": "LinModal",
+                    "StepType": "Mode",
+                    "StepNum": float(m),
+                    "U1": u1,
+                    "U2": u2,
+                    "U3": u3,
+                    "R1": 0.0,
+                    "R2": 0.0,
+                    "R3": 0.0,
+                }
+            )
+    # the earthquake: a response spectrum along each axis
+    weight = sum(response({"DEAD": 1.0, "SDL": 1.0})["v"].values())
+    for case, d, frac in (("EQX", 0, 0.14), ("EQY", 1, 0.17)):
+        shear = frac * weight
+        base.append(
+            {
+                "OutputCase": case,
+                "CaseType": "LinRespSpec",
+                "StepType": "Max",
+                "GlobalFX": shear if d == 0 else 0.1 * shear,
+                "GlobalFY": shear if d == 1 else 0.1 * shear,
+                "GlobalFZ": 0.0,
+            }
+        )
+        for (_i, j), ids in pile_nodes.items():
+            reactions.append(
+                {
+                    "Joint": ids[0],
+                    "OutputCase": case,
+                    "CaseType": "LinRespSpec",
+                    "StepType": "Max",
+                    "F1": shear / n_piles if d == 0 else 0.0,
+                    "F2": shear / n_piles if d == 1 else 0.0,
+                    "F3": 0.08 * shear / n_piles * (1 + j),
+                    "M1": 0.0,
+                    "M2": 0.0,
+                    "M3": 0.0,
+                }
+            )
+        for k, (x, y, z) in xyz.items():
+            u = shape(2 if d == 0 else 1, x, y, z)
+            disps.append(
+                {
+                    "Joint": k,
+                    "OutputCase": case,
+                    "CaseType": "LinRespSpec",
+                    "StepType": "Max",
+                    "U1": abs(u[0]) * 0.055,
+                    "U2": abs(u[1]) * 0.068,
+                    "U3": 0.0,
+                    "R1": 0.0,
+                    "R2": 0.0,
+                    "R3": 0.0,
+                }
+            )
+    table("MODAL PERIODS AND FREQUENCIES", periods)
+    table("MODAL PARTICIPATING MASS RATIOS", ratios)
     table("BASE REACTIONS", base)
     table("JOINT REACTIONS", reactions)
     table("JOINT DISPLACEMENTS", disps)

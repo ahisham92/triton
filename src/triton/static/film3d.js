@@ -215,7 +215,21 @@ export function surroundings(m, site) {
       m.panel([[q[0], q[1], zl], [r[0], r[1], zl], [r[0] + nx * run, r[1] + ny * run, bed], [q[0] + nx * run, q[1] + ny * run, bed]], edgeC);
     });
   });
-  (site.breakwaters || []).forEach((R) => {
+  (site.breakwaters || []).filter((R) => R.kind === "revetment").forEach((R) => {
+    // a revetment: a crest strip on the land side and one rock slope (1:2) down to the seabed on the sea side
+    const pts = R.pts || [], w = R.width || 12, top = R.crest != null ? R.crest : 5, run = 2 * (top - bed), sd = R.seaSide || 1;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i], b = pts[i + 1], dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy); if (len < 0.01) continue;
+      const nx = (-dy / len) * sd, ny = (dx / len) * sd, n = Math.max(1, Math.round(len / 9));
+      for (let k = 0; k < n; k++) {
+        const t0 = k / n, t1 = (k + 1) / n, p0 = [a[0] + dx * t0, a[1] + dy * t0], p1 = [a[0] + dx * t1, a[1] + dy * t1];
+        const c = (p, o, z) => [p[0] + nx * o, p[1] + ny * o, z];
+        m.panel([c(p0, -w, top), c(p1, -w, top), c(p1, 0, top), c(p0, 0, top)], landC);
+        m.panel([c(p0, 0, top), c(p1, 0, top), c(p1, run, bed), c(p0, run, bed)], k % 2 ? rockC : rockD);
+      }
+    }
+  });
+  (site.breakwaters || []).filter((R) => R.kind !== "revetment").forEach((R) => {
     const pts = R.pts || [], w = (R.width || 12) / 2, top = R.crest != null ? R.crest : 5, run = 1.5 * (top - bed);
     for (let i = 0; i + 1 < pts.length; i++) {
       const a = pts[i], b = pts[i + 1], dx = b[0] - a[0], dy = b[1] - a[1], len = Math.hypot(dx, dy); if (len < 0.01) continue;
@@ -344,7 +358,8 @@ export class Film3D {
     const yaw = (cam.yaw * Math.PI) / 180, pitch = (cam.pitch * Math.PI) / 180;
     return [cam.tx + cam.dist * Math.cos(pitch) * Math.cos(yaw), cam.ty + cam.dist * Math.cos(pitch) * Math.sin(yaw), cam.tz + cam.dist * Math.sin(pitch)];
   }
-  draw(cam, { width, height, time, waterAlpha = 0.55 } = {}) {
+  // staticAlpha < 1: the surroundings (land, breakwaters, revetments) see-through, for results under them
+  draw(cam, { width, height, time, waterAlpha = 0.55, staticAlpha = 1 } = {}) {
     const gl = this.gl, canvas = this.canvas;
     if (width && (canvas.width !== width || canvas.height !== height)) { canvas.width = width; canvas.height = height; }
     if (!gl || !this.static) return false;
@@ -361,7 +376,7 @@ export class Film3D {
     const sun = [0.42, -0.5, 0.76], sl = Math.hypot(...sun);
     const t = time != null ? time : (performance.now() - this.t0) / 1000;
     let LVP = null;
-    const solids = [{ buf: this.static, opacity: 1, glow: 0 }, ...this.dyn];
+    const solids = [{ buf: this.static, opacity: staticAlpha, glow: 0 }, ...this.dyn];
     if (this.shadow && this.shadowsOn) {
       const r = Math.max(40, this.scale * 0.9), c = [cam.tx, cam.ty, 0], D = 3 * r;
       const le = [c[0] + (sun[0] / sl) * D, c[1] + (sun[1] / sl) * D, c[2] + (sun[2] / sl) * D];
