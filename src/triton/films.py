@@ -39,6 +39,7 @@ class Rock(BaseModel):
     )
     crest: float = Field(5.0, description="Crest level, m")
     width: float = Field(12.0, description="Crest width, m")
+    fromTrito: bool = Field(False, description="Taken from a TritoMoor project's site")
 
 
 class Land(BaseModel):
@@ -46,6 +47,7 @@ class Land(BaseModel):
     xy: list[list[float]] = Field(default_factory=list)
     level: float | None = Field(None, description="Ground level, m; empty: the top of the model")
     open: bool = Field(False, description="A strip along a coastline: its back edge has no slope")
+    fromTrito: bool = False
 
 
 class PileGroup(BaseModel):
@@ -99,6 +101,9 @@ class FilmSettings(BaseModel):
         default_factory=list, description="Pile groups (existing, new...) and capacities"
     )
     capacity_unit: Literal["kN", "t"] = "t"
+    tritomoor: dict | None = Field(
+        None, description="Where the site came from a TritoMoor file: x0 (m), sea ('-Y' or '+Y'), name"
+    )
     pile_rows: str = Field(
         "",
         description="Names of the pile rows from the low side, comma separated (e.g. 'C, B, A, D'); "

@@ -255,3 +255,32 @@ def test_pile_groups_keep_rows_and_service_cases():
     assert g.lateral_cases == ""
     assert FilmSettings().piles == []
     assert FilmSettings(pile_rows="C, B, A, D").pile_rows == "C, B, A, D"
+
+
+@pytest.mark.skipif(not NODE, reason="node is not installed")
+def test_site_from_a_tritomoor_file(tmp_path):
+    """A TritoMoor site (berth axes, Y out to sea) turned round onto a model whose front row is at low Y."""
+    src = (STATIC / "film.js").read_text(encoding="utf-8")
+    start = src.index("export function fromTrito")
+    body = src[start : src.index("\n}\n", start) + 3].replace("export ", "")
+    tm = {
+        "berth": {"lat": 33.63, "lon": 35.4},
+        "site": {
+            "name": "Port",
+            "north": 182.2,
+            "rock": [{"name": "Mole", "pts": [[-87.1, -53.9], [5.8, -65.5]], "w": 14, "top": 5.5}],
+            "land": [[[0, -13.4], [50, -13.4], [50, -60], [0, -60]]],
+        },
+    }
+    script = tmp_path / "t.mjs"
+    script.write_text(
+        body + f"\nconsole.log(JSON.stringify(fromTrito({json.dumps(tm)}, {{ x0: 1.6, sea: '-Y' }})));\n",
+        "utf-8",
+    )
+    run = subprocess.run([NODE, str(script)], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    g = json.loads(run.stdout)
+    assert g["bearing"] == 2.2 and g["name"] == "Port"
+    assert g["rocks"][0]["xy"][0] == [88.7, 53.9] and g["rocks"][0]["crest"] == 5.5
+    assert g["land"][0]["xy"][1] == [-48.4, 13.4]
+    assert abs(g["lat"] - 33.63) < 1e-4

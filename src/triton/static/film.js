@@ -1302,7 +1302,7 @@ export async function renderFilm(host, h) {
       <div class="panel v3d-side film-side"><h3 style="margin-top:0">The film</h3><div data-form></div>
         <h3>The site on the map</h3><p class="status">Drag the red pin to where the model's origin (0, 0) is, and set the direction of its X axis. Draw the breakwater and the land around it, or find them from OpenStreetMap.</p>
         <div class="row" style="gap:6px;flex-wrap:wrap"><button class="quiet" data-draw="rock">Draw a breakwater</button><button class="quiet" data-draw="rev">Draw a revetment</button><button class="quiet" data-draw="land">Draw land</button>
-          <button class="quiet" data-osm>Find breakwaters and coast nearby</button><button class="quiet" data-clear>Clear drawn</button></div>
+          <button class="quiet" data-osm>Find breakwaters and coast nearby</button><button class="quiet" data-trito>Take the site from a TritoMoor file</button><button class="quiet" data-clear>Clear drawn</button></div>
         <div class="film-map" data-map></div><p class="status" data-mapstat></p><div data-rocks></div></div></div>`;
     const q = (s2) => box.querySelector(s2);
     const stage = q(".film-stage");
@@ -1513,6 +1513,34 @@ async function siteMap(q, set, esc, changed) {
   });
   map.on("dblclick", finish);
   q("[data-clear]").onclick = () => { if (!confirm("Remove every breakwater and land area drawn for this film?")) return; set.breakwaters = []; set.land = []; redraw(); changed(); };
+  // the site as settled in a TritoMoor project: its berth position, north and the traced land and breakwaters
+  q("[data-trito]").onclick = () => {
+    const box = document.createElement("div");
+    box.className = "row film-trito";
+    box.style.cssText = "gap:8px;flex-wrap:wrap;align-items:end;margin:6px 0";
+    box.innerHTML = `<label>TritoMoor file <input type="file" accept=".trito,.json" data-tfile></label>
+      <label>Model origin at TritoMoor X <input type="number" step="0.1" data-tx0 value="${esc(set.tritomoor?.x0 ?? 0)}" style="width:6em"> m</label>
+      <label>The model's sea side <select data-tsea><option value="-Y">towards -Y (front row at low Y)</option><option value="+Y">towards +Y</option></select></label>
+      <button class="quiet" data-tgo>Use it</button>`;
+    q("[data-trito]").after(box);
+    box.querySelector("[data-tsea]").value = set.tritomoor?.sea || "-Y";
+    box.querySelector("[data-tgo]").onclick = async () => {
+      const f = box.querySelector("[data-tfile]").files[0];
+      if (!f) { stat.textContent = "Choose the TritoMoor project file (.trito) first."; return; }
+      try {
+        const tm = JSON.parse(await f.text());
+        const opt = { x0: Number(box.querySelector("[data-tx0]").value) || 0, sea: box.querySelector("[data-tsea]").value };
+        const got = fromTrito(tm, opt);
+        Object.assign(set, { lat: got.lat, lon: got.lon, bearing: got.bearing, tritomoor: { ...opt, name: got.name } });
+        set.breakwaters = [...(set.breakwaters || []).filter((r) => !r.fromTrito), ...got.rocks];
+        set.land = [...(set.land || []).filter((l) => !l.fromTrito), ...got.land];
+        pin.setLatLng([set.lat, set.lon]); map.setView([set.lat, set.lon], 15);
+        bearingRow.querySelector("[data-bearing]").value = n0(set.bearing, 1);
+        stat.textContent = `${got.name || "The TritoMoor site"}: ${got.rocks.length} breakwater${got.rocks.length === 1 ? "" : "s"} and ${got.land.length} land outline${got.land.length === 1 ? "" : "s"}, model X axis at ${n0(set.bearing, 1)} degrees from north.`;
+        box.remove(); redraw(); changed();
+      } catch (e) { stat.textContent = `That file could not be read: ${e.message}`; }
+    };
+  };
   q("[data-osm]").onclick = async () => {
     if (set.lat == null) { stat.textContent = "Put the pin on the site first."; return; }
     stat.textContent = "Asking OpenStreetMap for breakwaters and the coast within 3 km…";
@@ -1526,6 +1554,23 @@ async function siteMap(q, set, esc, changed) {
       stat.textContent = `OpenStreetMap did not answer (${e.message}). Draw them by hand instead.`;
     }
   };
+}
+
+// A TritoMoor project's site in the model's axes. TritoMoor's berth axes: X along the berth, Y from the berthing face out
+// to sea, the berth's lat/lon at its origin and site.north the direction of north from +X (degrees, anticlockwise).
+// x0: where the model's origin sits along TritoMoor's X; sea "-Y" when the model's front row is at its low Y (turned round).
+export function fromTrito(tm, { x0 = 0, sea = "-Y" } = {}) {
+  const b = tm.berth || {}, site = tm.site || {};
+  if (b.lat == null || b.lon == null) throw new Error("it has no berth position (berth lat and lon)");
+  const north = Number(site.north) || 0, flip = sea !== "+Y";
+  const xBearing = (((flip ? north + 180 : north) % 360) + 360) % 360;
+  const toM = ([x, y]) => (flip ? [x0 - x, -y] : [x - x0, y]).map((v) => Math.round(v * 100) / 100);
+  // the model's origin is x0 along TritoMoor's +X, whose bearing is site.north
+  const r = (north * Math.PI) / 180, dN = x0 * Math.cos(r), dE = x0 * Math.sin(r);
+  const lat = b.lat + dN / 110540, lon = b.lon + dE / (111320 * Math.cos((b.lat * Math.PI) / 180));
+  const rocks = (site.rock || []).filter((k) => (k.pts || []).length >= 2).map((k) => ({ name: k.name || "Breakwater", pts: [], xy: k.pts.map(toM), crest: Number(k.top) || 5, width: Number(k.w) || 12, fromTrito: true }));
+  const land = (site.land || []).filter((l) => l.length >= 3).map((l) => ({ pts: [], xy: l.map(toM), level: null, fromTrito: true }));
+  return { name: site.name || tm.name || "", lat: +lat.toFixed(7), lon: +lon.toFixed(7), bearing: Math.round(xBearing * 10) / 10, rocks, land };
 }
 
 // breakwaters, groynes and moles, and the coastline as land strips (land is on the left of a coastline way)
