@@ -30,6 +30,9 @@ MAX_SUMMARY = 400 * 1024 * 1024  # a summary this large unpacked is not one this
 
 class Rock(BaseModel):
     name: str = "Breakwater"
+    kind: Literal["breakwater", "revetment"] = Field(
+        "breakwater", description="A revetment slopes one way only, down to the seabed on the sea side"
+    )
     pts: list[list[float]] = Field(default_factory=list, description="[lat, lon] along its crest")
     xy: list[list[float]] = Field(
         default_factory=list, description="[x, y] in the model's axes, where it has no place on the map"
@@ -43,6 +46,22 @@ class Land(BaseModel):
     xy: list[list[float]] = Field(default_factory=list)
     level: float | None = Field(None, description="Ground level, m; empty: the top of the model")
     open: bool = Field(False, description="A strip along a coastline: its back edge has no slope")
+
+
+class PileGroup(BaseModel):
+    name: str = "Piles"
+    match: str = Field(
+        "",
+        description="Which piles: frame names or section names, comma separated, * for any characters "
+        "(e.g. 'EX-*, 3-*'); empty: every pile not in another group",
+    )
+    compression: float | None = Field(None, ge=0, description="Vertical capacity in compression")
+    tension: float | None = Field(
+        None, ge=0, description="Capacity in tension; empty: tension_factor x compression"
+    )
+    tension_factor: float = Field(0.7, ge=0)
+    lateral: float | None = Field(None, ge=0, description="Lateral capacity")
+    colour: str = ""
 
 
 class FilmSettings(BaseModel):
@@ -67,8 +86,13 @@ class FilmSettings(BaseModel):
     )
     steel_fy: float = Field(355.0, gt=0, description="Steel yield strength for stress ratios, MPa")
     hide: list[str] = Field(
-        default_factory=list, description="Shots left out: loads, reactions, movements, forces, design"
+        default_factory=list,
+        description="Shots left out: loads, reactions, movements, quake, piles, forces, design",
     )
+    piles: list[PileGroup] = Field(
+        default_factory=list, description="Pile groups (existing, new...) and capacities"
+    )
+    capacity_unit: Literal["kN", "t"] = "t"
 
 
 class Film(BaseModel):

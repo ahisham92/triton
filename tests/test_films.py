@@ -206,3 +206,38 @@ def test_page_reader_matches_python(demo, tmp_path):
             s["displacements"]["max"]["h"]["value"], rel=1e-3
         )
         assert js["frames"]["ends"] == s["frames"]["ends"]
+
+
+def test_demo_has_modes_quakes_and_tension(demo):
+    _, s = demo
+    assert [m["mode"] for m in s["modes"]] == [1, 2, 3, 4, 5, 6]
+    assert s["modal"][-1]["sumuy"] == pytest.approx(0.99, abs=0.01)
+    assert {c["name"] for c in s["cases"] if sap._is_quake(c["name"], c["type"])} == {"EQX", "EQY"}
+    assert any(c["case"] == "EQY" for c in s["displacements"]["cases"])
+    assert max(s["forces"]["tension"]) > 0 and max(s["forces"]["compression"]) > 0
+    assert not any("mode" in c["name"] for c in s["cases"])
+
+
+@pytest.mark.skipif(not NODE, reason="node is not installed")
+def test_small_file_round_trip(demo, tmp_path):
+    """The page's small file (.trsap: the summary with every case's results, gzipped) reads back as it was."""
+    path, _ = demo
+    script = tmp_path / "pack.mjs"
+    script.write_text(
+        "import { readFileSync } from 'node:fs';\n"
+        "import { gzipSync } from 'node:zlib';\n"
+        f"const m = await import({json.dumps((STATIC / 'sapread.js').as_uri())});\n"
+        "const p = process.argv[2];\n"
+        "const S = await m.readSap(new File([readFileSync(p)], 'jetty.s2k'), () => {});\n"
+        "const small = new File([gzipSync(JSON.stringify(S))], 'jetty.trsap');\n"
+        "const back = await m.readSap(small, () => {});\n"
+        "const c = back.full.cases[0], u = m.fromB64(back.full.disp[c]);\n"
+        "console.log(JSON.stringify({ same: JSON.stringify(back) === JSON.stringify(S),\n"
+        "  cases: back.full.cases.length,\n"
+        "  n: u.length, joints: S.joints.length, frames: Object.keys(back.full.frames).length }));\n",
+        "utf-8",
+    )
+    run = subprocess.run([NODE, str(script), str(path)], capture_output=True, text=True, timeout=120)
+    assert run.returncode == 0, run.stderr
+    got = json.loads(run.stdout)
+    assert got["same"] and got["cases"] >= 7 and got["n"] == 3 * got["joints"] and got["frames"] >= 5

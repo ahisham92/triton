@@ -51,6 +51,7 @@ STATE = "sap.pkl"
 # How many items of one kind the summary carries at most (the film thins the rest out).
 MAX_LOAD_ITEMS = 4000
 MAX_FIELDS = 6  # displaced shapes kept in full
+MAX_MODES = 12  # mode shapes kept
 
 
 class NotSap(ValueError):
@@ -243,6 +244,8 @@ class Gather:
         self.design: dict[int, dict] = {}
         self.base: dict[str, list[float]] = {}
         self.rows = 0
+        self.modes: dict[int, dict] = {}  # mode number: period and mass ratios
+        self.mode_ix: dict[int, int] = {}  # the case of a mode shape ("MODAL mode 3"): its mode number
 
     # indices ---------------------------------------------------------------------------------
     def _joint(self, name: Any) -> int:
@@ -422,12 +425,35 @@ class Gather:
             [self._area(rec.get("Area")), str(rec.get("Dir") or "Gravity"), 0.0 if v != v else v],
         )
 
-    def _results_case(self, rec: dict) -> tuple[int, str]:
-        c = self._case(rec.get("OutputCase"), str(rec.get("CaseType") or ""))
-        return c, str(rec.get("StepType") or "").lower()
+    def _results_case(self, rec: dict) -> tuple[int | None, str]:
+        """The output case of a results row; a mode of a modal case is a case of its own
+        ("MODAL mode 3"), kept for the first few modes only (None for the others)."""
+        step = str(rec.get("StepType") or "").lower()
+        if step == "mode":
+            m = _num(rec.get("StepNum"))
+            if not (1 <= m <= MAX_MODES):
+                return None, step
+            c = self._case(f"{_key(rec.get('OutputCase'))} mode {int(m)}", "Mode")
+            self.mode_ix[c] = int(m)
+            return c, step
+        return self._case(rec.get("OutputCase"), str(rec.get("CaseType") or "")), step
+
+    def _period(self, rec: dict, n: Any) -> None:
+        if str(rec.get("StepType") or "").lower() != "mode":
+            return
+        m = int(_num(rec.get("StepNum")))
+        o = self.modes.setdefault(m, {})
+        if rec.get("Period") is not None:
+            o["period"] = _num(rec["Period"])
+        for k in ("UX", "UY", "UZ", "RX", "RY", "RZ", "SumUX", "SumUY", "SumUZ", "SumRZ"):
+            if rec.get(k) is not None:
+                o[k.lower()] = _num(rec[k])
+        o["case"] = _key(rec.get("OutputCase"))
 
     def _reaction(self, rec: dict, n: Any) -> None:
         c, step = self._results_case(rec)
+        if c is None or c in self.mode_ix:
+            return
         i = self._joint(rec.get("Joint"))
         a = self.react.get(c, len(self.xyz))
         row = a[i]
@@ -442,16 +468,22 @@ class Gather:
 
     def _displacement(self, rec: dict, n: Any) -> None:
         c, _ = self._results_case(rec)
+        if c is None:
+            return
         i = self._joint(rec.get("Joint"))
         _fold_abs(self.disp.get(c, len(self.xyz))[i], [n("U1"), n("U2"), n("U3")])
 
     def _frame_force(self, rec: dict, n: Any) -> None:
         c, _ = self._results_case(rec)
+        if c is None or c in self.mode_ix:
+            return
         i = self._frame(rec.get("Frame"))
         _fold_abs(self.fforce.get(c, len(self.frames))[i], [n(k) for k in ("P", "V2", "V3", "T", "M2", "M3")])
 
     def _shell_force(self, rec: dict, n: Any) -> None:
         c, _ = self._results_case(rec)
+        if c is None or c in self.mode_ix:
+            return
         i = self._area(rec.get("Area"))
         v13 = n("V13") if "V13" in rec else n("VMax")
         _fold_abs(
@@ -529,8 +561,10 @@ def _handler(t: str) -> Any:
         return Gather._area_load
     if t == "JOINT REACTIONS":
         return Gather._reaction
-    if t in {"JOINT DISPLACEMENTS", "JOINT DISPLACEMENTS - ABSOLUTE"}:
+    if t == "JOINT DISPLACEMENTS":
         return Gather._displacement
+    if t in {"MODAL PERIODS AND FREQUENCIES", "MODAL PARTICIPATING MASS RATIOS"}:
+        return Gather._period
     if t in {"ELEMENT FORCES - FRAMES", "FRAME FORCES"}:
         return Gather._frame_force
     if t in {"ELEMENT FORCES - AREA SHELLS", "ELEMENT FORCES - AREA PLANES"}:
@@ -762,6 +796,37 @@ def _is_service(name: str, info: dict) -> bool:
     return any(w in t for w in ("SLS", "SERV", "QP", "CHAR", "FREQ"))
 
 
+def _is_quake(name: str, kind: str = "") -> bool:
+    if re.search(r"RESPSPEC|MODHIST|SEISM|QUAKE", kind, re.I):
+        return True
+    return re.search(r"(^|[^A-Z])(EQ[A-Z]?|EX|EY|EZ|SEIS[A-Z]*|QUAKE|RSA)(?![A-Z])", name.upper()) is not None
+
+
+def _mode_shapes(g: Gather, nj: int) -> list[dict]:
+    """The first modes of vibration, each shape scaled so that its largest movement is 1."""
+    out = []
+    for c, m in sorted(getattr(g, "mode_ix", {}).items(), key=lambda kv: kv[1]):
+        a = g.disp.data.get(c)
+        if a is None:
+            continue
+        a = np.nan_to_num(a[:nj].astype(np.float64))
+        if a.shape[0] < nj:
+            a = np.vstack([a, np.zeros((nj - a.shape[0], 3))])
+        big = float(np.abs(a).max(initial=0))
+        if big <= 0:
+            continue
+        o = g.modes.get(m, {})
+        out.append(
+            {
+                "mode": m,
+                **{k: _r(o.get(k), 4) for k in ("period", "ux", "uy", "uz", "rz")},
+                "case": o.get("case", ""),
+                "u": [[_r(v / big, 4) for v in row] for row in a.tolist()],
+            }
+        )
+    return out
+
+
 def summarise(g: Gather) -> dict:
     """The compact picture of the model and its results that the film is made from."""
     xyz = np.array(g.xyz, dtype=np.float64) if g.xyz else np.zeros((0, 3))
@@ -775,7 +840,8 @@ def summarise(g: Gather) -> dict:
     frames = [f for f in g.frames]
     good_f = [i for i, (a, b) in enumerate(frames) if a >= 0 and b >= 0 and known[a] and known[b]]
     good_a = [i for i, js in enumerate(g.areas) if len(js) >= 3 and all(known[j] for j in js)]
-    case_names = sorted(g.case_ix, key=g.case_ix.get)
+    mode_names = {n for n, c in g.case_ix.items() if c in getattr(g, "mode_ix", {})}
+    case_names = [n for n in sorted(g.case_ix, key=g.case_ix.get) if n not in mode_names]
     lo, hi = xyz[known].min(axis=0), xyz[known].max(axis=0)
 
     sect_names = sorted({g.frame_sect.get(i, "") for i in good_f} | {g.area_sect.get(i, "") for i in good_a})
@@ -917,13 +983,17 @@ def summarise(g: Gather) -> dict:
                         top = max(pool, key=lambda s: s[key])
                         if top[0] not in pick:
                             pick.append(top[0])
+            # earthquakes (response spectrum or time history) always, for their own shot
+            for s in [s for s in scored if _is_quake(s[0], g.case_types.get(g.case_ix[s[0]], ""))][:2]:
+                if s[0] not in pick:
+                    pick.append(s[0])
             for s in sorted(scored, key=lambda s: -max(s[1], s[3])):
                 if len(pick) >= MAX_FIELDS:
                     break
                 if s[0] not in pick:
                     pick.append(s[0])
             by = {s[0]: s for s in scored}
-            for name in pick[:MAX_FIELDS]:
+            for name in pick[: MAX_FIELDS + 2]:
                 s = by[name]
                 u = np.nan_to_num(s[5]).astype(np.float64)
                 disp["cases"].append(
@@ -962,12 +1032,13 @@ def summarise(g: Gather) -> dict:
             more = vals > env
             env = np.where(more, vals, env)
             which = np.where(more, c, which)
-        comp = np.zeros(nf)
+        comp, tens = np.zeros(nf), np.zeros(nf)
         for name in case_names:
             a = g.fforce.data.get(g.case_ix[name])
             if a is not None:
                 p = np.nan_to_num(a[:nf, 0].astype(np.float64))
                 comp[: len(p)] = np.minimum(comp[: len(p)], p)
+                tens[: len(p)] = np.maximum(tens[: len(p)], p)
         idx = {c: n for n, c in g.case_ix.items()}
         forces = {
             "N": [_r(v, 1) for v in env[:, 0]],
@@ -975,6 +1046,7 @@ def summarise(g: Gather) -> dict:
             "M": [_r(v, 1) for v in env[:, 2]],
             "T": [_r(v, 1) for v in env[:, 3]],
             "compression": [_r(-v, 1) for v in comp],
+            "tension": [_r(v, 1) for v in tens],
             "case": {k: [idx.get(int(c), "") for c in which[:, j]] for j, k in enumerate("NVMT")},
         }
     shells: dict[str, Any] = {}
@@ -1048,8 +1120,18 @@ def summarise(g: Gather) -> dict:
         "shells": shells,
         "area_count": na,
         "design": design,
-        # Mode shapes and frame stresses are read by the page's reader (static/sapread.js) only.
-        "modes": [],
+        "modes": _mode_shapes(g, nj),
+        "modal": [
+            {
+                "mode": m,
+                **{
+                    k: _r(o.get(k), 4)
+                    for k in ("period", "ux", "uy", "uz", "rx", "ry", "rz", "sumux", "sumuy", "sumuz")
+                },
+            }
+            for m, o in sorted(getattr(g, "modes", {}).items())
+        ],
+        # Frame stresses and the full results per case are read by the page's reader only.
         "stress": {},
         "base": {k: [_r(v, 1) for v in vals] for k, vals in g.base.items()},
         "tables": g.tables,
@@ -1067,7 +1149,7 @@ def counts(summary: dict) -> dict:
         "supports": len(summary["supports"]),
         "patterns": len(summary["patterns"]) or len(summary["loads"]),
         "cases": len(summary["cases"]),
-        "combos": len(summary["combos"]),
+        "combos": len(summary["combos"]) or sum(1 for c in summary["cases"] if c.get("kind") == "combo"),
         "designed": len(summary["design"]),
         "max_ratio": max(
             (d["ratio"] for d in summary["design"].values() if d["ratio"] is not None), default=None
