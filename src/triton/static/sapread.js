@@ -717,3 +717,91 @@ export function summarise(g) {
     tables: g.tables, ignored: g.ignored, rows: g.rows,
   };
 }
+
+// --- a model file put together with a results file ------------------------------------------------
+// SAP2000 often exports the results of the meshed model (members cut into pieces at every joint) and
+// the model itself (with its sections and loads) as two files. mergeModel(S, T) puts the model T's
+// sections, load patterns and loads onto the results S: the joints must be the same (within 2 cm);
+// a member cut into pieces takes the sections and loads of the member it is part of, a point load
+// the piece it falls on. Returns a new summary, with `model` saying how much was matched.
+export function mergeModel(S, T) {
+  if (!T?.joints || !S?.joints) throw new Error("Both files must hold the joints of the model.");
+  const tol = 0.02, cell = (v) => Math.round(v / tol);
+  const grid = new Map();
+  S.joints.forEach((p, i) => { if (p) { const k = p.map(cell).join(","); if (!grid.has(k)) grid.set(k, i); } });
+  const near = (p) => {
+    const c = p.map(cell);
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let d = -1; d <= 1; d++) {
+      const i = grid.get(`${c[0] + a},${c[1] + b},${c[2] + d}`);
+      if (i != null && Math.hypot(...S.joints[i].map((v, k) => v - p[k])) <= tol) return i;
+    }
+    return null;
+  };
+  const jmap = T.joints.map((p) => (p ? near(p) : null));
+  const known = T.joints.filter(Boolean).length, hit = jmap.filter((j) => j != null).length;
+  if (!known || hit < 0.9 * known) throw new Error(`Only ${hit} of the ${known} joints of the model are in the results file: they are not the same model.`);
+  // each piece in the results: the model member it lies along, and where along it (0..1)
+  const P = (j) => S.joints[j];
+  const pieces = T.frames.ends.map(() => []);
+  const fOf = new Array(S.frames.ends.length).fill(-1);
+  const tEnds = T.frames.ends.map(([a, b]) => (jmap[a] != null && jmap[b] != null ? [P(jmap[a]), P(jmap[b])] : null));
+  const along = (A, B, X) => {
+    const d = B.map((v, k) => v - A[k]), L2 = d[0] ** 2 + d[1] ** 2 + d[2] ** 2;
+    if (!(L2 > 1e-9)) return null;
+    const t = ((X[0] - A[0]) * d[0] + (X[1] - A[1]) * d[1] + (X[2] - A[2]) * d[2]) / L2;
+    const off = Math.hypot(...X.map((v, k) => v - (A[k] + d[k] * t)));
+    return off <= tol && t >= -1e-3 && t <= 1 + 1e-3 ? Math.min(1, Math.max(0, t)) : null;
+  };
+  S.frames.ends.forEach(([a, b], k) => {
+    const X = P(a), Y = P(b);
+    if (!X || !Y) return;
+    for (let m = 0; m < tEnds.length; m++) {
+      const e = tEnds[m];
+      if (!e) continue;
+      const t0 = along(e[0], e[1], X); if (t0 == null) continue;
+      const t1 = along(e[0], e[1], Y); if (t1 == null || Math.abs(t1 - t0) < 1e-6) continue;
+      fOf[k] = m; pieces[m].push({ k, t0: Math.min(t0, t1), t1: Math.max(t0, t1), flip: t0 > t1 });
+      break;
+    }
+  });
+  // the plates: the same corners
+  const aKey = (js, map) => js.map((j) => (map ? map[j] : j)).sort((x, y) => x - y).join(",");
+  const aOfT = new Map(T.areas.joints.map((js, m) => [aKey(js, jmap), m]));
+  const aOf = S.areas.joints.map((js) => aOfT.get(aKey(js)) ?? -1);
+  // the sections: the model's, and one with no name for anything not matched
+  const sections = T.sections.map((s) => ({ ...s }));
+  let blank = -1;
+  const none = () => (blank < 0 ? (blank = sections.push({ name: "" }) - 1) : blank);
+  const keep = (old, k) => { const s = S.sections[old]; if (!s?.name) return none(); let i = sections.findIndex((q) => q.name === s.name); if (i < 0) i = sections.push({ ...s }) - 1; return i; };
+  const fsec = S.frames.section.map((old, k) => (fOf[k] >= 0 && T.frames.section[fOf[k]] != null ? T.frames.section[fOf[k]] : keep(old, k)));
+  const asec = S.areas.section.map((old, k) => (aOf[k] >= 0 && T.areas.section[aOf[k]] != null ? T.areas.section[aOf[k]] : keep(old, k)));
+  // the loads, onto the results' joints, pieces and plates
+  const tF = new Map(T.frames.ids.map((id, m) => [id, m])), tA = new Map(T.areas.ids.map((id, m) => [id, m]));
+  const aBack = new Map(); aOf.forEach((m, k) => { if (m >= 0 && !aBack.has(m)) aBack.set(m, k); });
+  const loads = { ...(S.loads || {}) };
+  let moved = 0, lost = 0;
+  for (const [pat, L] of Object.entries(T.loads || {})) {
+    const it = L.items || {}, out = {};
+    const push = (kind, v) => { (out[kind] ??= []).push(v); moved++; };
+    (it.joint || []).forEach(([j, a, b, c]) => (jmap[j] != null ? push("joint", [jmap[j], a, b, c]) : lost++));
+    (it.frame || []).forEach(([id, d, w]) => { const m = tF.get(id); if (m == null || !pieces[m].length) { lost++; return; } pieces[m].forEach((q) => push("frame", [S.frames.ids[q.k], d, w])); });
+    (it.point || []).forEach(([id, d, f, r0]) => {
+      const m = tF.get(id), q = m == null ? null : pieces[m].find((x) => r0 >= x.t0 - 1e-6 && r0 <= x.t1 + 1e-6);
+      if (!q) { lost++; return; }
+      const loc = (r0 - q.t0) / Math.max(1e-9, q.t1 - q.t0);
+      push("point", [S.frames.ids[q.k], d, f, Math.round((q.flip ? 1 - loc : loc) * 1000) / 1000]);
+    });
+    (it.area || []).forEach(([id, d, w]) => { const m = tA.get(id), k = m == null ? null : aBack.get(m); if (k == null) { lost++; return; } push("area", [S.areas.ids[k], d, w]); });
+    loads[pat] = { items: out, counts: L.counts || {} };
+  }
+  const have = new Set((S.patterns || []).map((p) => p.name));
+  const patterns = [...(S.patterns || []), ...(T.patterns || []).filter((p) => !have.has(p.name))];
+  const matched = fOf.filter((m) => m >= 0).length;
+  return {
+    ...S, sections,
+    frames: { ...S.frames, section: fsec },
+    areas: { ...S.areas, section: asec },
+    patterns, loads,
+    model: { joints: hit, members: matched, of_members: S.frames.ends.length, plates: aOf.filter((m) => m >= 0).length, of_plates: S.areas.joints.length, loads: moved, lost },
+  };
+}

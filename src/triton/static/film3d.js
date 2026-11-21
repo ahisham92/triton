@@ -200,7 +200,8 @@ export function earclip(poly) {
 
 // The surroundings: land at its level with a slope down to the seabed, and rock breakwaters
 // (a crest of the width given, armour slopes of 1 in 1.5 each side, in blocks so the stone reads).
-export function surroundings(m, site) {
+// A second mesh `rev` takes the revetments, so a film can leave them out where they would hide the structure.
+export function surroundings(m, site, rev = m) {
   const bed = site.seabed, landC = hex("#B9B2A0"), edgeC = hex("#8B8679"), rockC = hex("#7F7A6E"), rockD = hex("#6A655A"), rockT = hex("#8E897D");
   (site.land || []).forEach((L) => {
     const poly = L.pts, zl = L.level;
@@ -224,8 +225,8 @@ export function surroundings(m, site) {
       for (let k = 0; k < n; k++) {
         const t0 = k / n, t1 = (k + 1) / n, p0 = [a[0] + dx * t0, a[1] + dy * t0], p1 = [a[0] + dx * t1, a[1] + dy * t1];
         const c = (p, o, z) => [p[0] + nx * o, p[1] + ny * o, z];
-        m.panel([c(p0, -w, top), c(p1, -w, top), c(p1, 0, top), c(p0, 0, top)], landC);
-        m.panel([c(p0, 0, top), c(p1, 0, top), c(p1, run, bed), c(p0, run, bed)], k % 2 ? rockC : rockD);
+        rev.panel([c(p0, -w, top), c(p1, -w, top), c(p1, 0, top), c(p0, 0, top)], landC);
+        rev.panel([c(p0, 0, top), c(p1, 0, top), c(p1, run, bed), c(p0, run, bed)], k % 2 ? rockC : rockD);
       }
     }
   });
@@ -266,7 +267,7 @@ export class Film3D {
     this.t0 = performance.now();
     this.shadowsOn = true;
     try {
-      const gl = canvas.getContext("webgl", { antialias: true, preserveDrawingBuffer: true }) || canvas.getContext("experimental-webgl", { preserveDrawingBuffer: true });
+      const gl = canvas.getContext("webgl", { antialias: true, alpha: false, preserveDrawingBuffer: true }) || canvas.getContext("experimental-webgl", { alpha: false, preserveDrawingBuffer: true });
       if (!gl) throw new Error("WebGL is not available in this browser.");
       this.gl = gl;
       this.progs = { solid: this.program(FS, VS), water: this.program(FSW, VSW) };
@@ -336,10 +337,11 @@ export class Film3D {
   }
   release(buf) { if (buf && this.gl) { this.gl.deleteBuffer(buf.pos); this.gl.deleteBuffer(buf.nrm); this.gl.deleteBuffer(buf.col); } }
   // the scene's fixed part: `solid` a Mesh, the sea a square of half-width R round centre at level wl
-  setStatic({ solid, centre, R, wl, scale }) {
+  setStatic({ solid, rev, centre, R, wl, scale }) {
     if (!this.gl) return;
-    this.release(this.static); this.release(this.water);
+    this.release(this.static); this.release(this.water); this.release(this.rev);
     this.static = this.upload(solid);
+    this.rev = rev && rev.p.length ? this.upload(rev) : null;
     const wm = new Mesh(), n = 40;
     for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
       const x0 = centre[0] - R + (2 * R * i) / n, x1 = centre[0] - R + (2 * R * (i + 1)) / n, y0 = centre[1] - R + (2 * R * j) / n, y1 = centre[1] - R + (2 * R * (j + 1)) / n;
@@ -359,7 +361,8 @@ export class Film3D {
     return [cam.tx + cam.dist * Math.cos(pitch) * Math.cos(yaw), cam.ty + cam.dist * Math.cos(pitch) * Math.sin(yaw), cam.tz + cam.dist * Math.sin(pitch)];
   }
   // staticAlpha < 1: the surroundings (land, breakwaters, revetments) see-through, for results under them
-  draw(cam, { width, height, time, waterAlpha = 0.55, staticAlpha = 1 } = {}) {
+  // revAlpha: the revetments (0 leaves them out)
+  draw(cam, { width, height, time, waterAlpha = 0.55, staticAlpha = 1, revAlpha = 1 } = {}) {
     const gl = this.gl, canvas = this.canvas;
     if (width && (canvas.width !== width || canvas.height !== height)) { canvas.width = width; canvas.height = height; }
     if (!gl || !this.static) return false;
@@ -376,7 +379,7 @@ export class Film3D {
     const sun = [0.42, -0.5, 0.76], sl = Math.hypot(...sun);
     const t = time != null ? time : (performance.now() - this.t0) / 1000;
     let LVP = null;
-    const solids = [{ buf: this.static, opacity: staticAlpha, glow: 0 }, ...this.dyn];
+    const solids = [...(staticAlpha > 0 ? [{ buf: this.static, opacity: staticAlpha, glow: 0 }] : []), ...(this.rev && revAlpha > 0 ? [{ buf: this.rev, opacity: Math.min(revAlpha, staticAlpha), glow: 0 }] : []), ...this.dyn];
     if (this.shadow && this.shadowsOn) {
       const r = Math.max(40, this.scale * 0.9), c = [cam.tx, cam.ty, 0], D = 3 * r;
       const le = [c[0] + (sun[0] / sl) * D, c[1] + (sun[1] / sl) * D, c[2] + (sun[2] / sl) * D];
