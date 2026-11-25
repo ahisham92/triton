@@ -3,6 +3,7 @@
 // section; "Use this size" does. app.js passes its helpers in: api, again, esc, fmt, secUrl, ROOT,
 // project(), costingHash, and used(answer) after a size was taken.
 
+import { confirmBox } from "./cdt/sdk.js";
 import { renderMatrix } from "./matrix.js";
 import { newRun, paintRun, runHtml } from "./progress.js";
 
@@ -371,7 +372,7 @@ export async function renderTrials(host, h) {
 
   const use = async (el, r) => {
     if (!r) return;
-    if (!confirm(`Give ${el.element} the size ${r.label} and take this trial as its design? Bars set by hand for its current size go.`)) return;
+    if (!(await confirmBox(`Give ${el.element} the size ${r.label} and take this trial as its design? Bars set by hand for its current size go.`, { ok: "Use this size", danger: false }))) return;
     try {
       const res = await api(`${secUrl()}/trials/use`, { method: "POST", body: JSON.stringify({ element: el.element, size: r.size }) });
       h.used(res);

@@ -9,6 +9,7 @@ import { WorldMap } from "./worldmap.js";
 import { fromB64, isQuake, mergeModel, readSap } from "./sapread.js";
 import { heat } from "./view3d.js";
 import { loadLeaflet, makeMap, searchBox } from "./sitemap.js";
+import { confirmBox } from "./cdt/sdk.js";
 
 const ease = (u) => (u < 0 ? 0 : u > 1 ? 1 : u * u * (3 - 2 * u));
 const lerp = (a, b, u) => a + (b - a) * u;
@@ -1640,7 +1641,7 @@ export async function renderFilm(host, h) {
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }));
     $("#film-list").querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
-      if (!confirm("Delete this film? Its summary and settings go; the SAP2000 file on your computer stays.")) return;
+      if (!(await confirmBox("Delete this film? Its summary and settings go; the SAP2000 file on your computer stays.", { ok: "Delete" }))) return;
       await api(`${base}/${b.dataset.del}`, { method: "DELETE" });
       if (h.state.film === b.dataset.del) { h.state.film = null; $("#film-open").innerHTML = ""; }
       list();
@@ -1920,7 +1921,7 @@ async function siteMap(q, set, esc, changed) {
     temp = (drawing.kind !== "land" ? L.polyline : L.polygon)(drawing.pts, { color: "#E3543C", dashArray: "4 4" }).addTo(map);
   });
   map.on("dblclick", finish);
-  q("[data-clear]").onclick = () => { if (!confirm("Remove every breakwater and land area drawn for this film?")) return; set.breakwaters = []; set.land = []; redraw(); changed(); };
+  q("[data-clear]").onclick = async () => { if (!(await confirmBox("Remove every breakwater and land area drawn for this film?", { ok: "Remove" }))) return; set.breakwaters = []; set.land = []; redraw(); changed(); };
   // the site as settled in a TritoMoor project: its berth position, north and the traced land and breakwaters
   q("[data-trito]").onclick = () => {
     const box = document.createElement("div");

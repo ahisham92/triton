@@ -1,0 +1,383 @@
+/* CDT SDK for the web.
+   The Dar Computational Design Team SDK (github.com/Dar-Structural-Computational-Design/CDT-SDK, CDT.Wpf 4.1.2)
+   is a WPF library, so a browser cannot load it. This file carries its theme over as CSS: the same four
+   palettes (CDT / Dar brand, light / dark) with the same token names and values, the same state ladder
+   (rest, hover, pressed, disabled, focus) and web versions of its controls. sdk.js holds the behaviour.
+
+   Rules kept from the SDK: tokens, not literals (palettes are the only place hex values live); every
+   state on every control; status is glyph + word + colour, never colour alone; 4.5:1 text, 3:1 UI. */
+
+/* ---------------------------------------------------------------- palettes */
+:root, :root[data-theme="light"] {
+  color-scheme: light;
+  --cdt-surface0: #F2F0E8; --cdt-surface1: #FBFAF6; --cdt-surface2: #FFFFFF; --cdt-surface3: #E7E4DA;
+  --cdt-sidebar: #EDEAE1; --cdt-stroke: #DED9CC; --cdt-stroke-strong: #BFB9A9;
+  --cdt-on-accent: #FFFFFF;
+  --cdt-success: #207410; --cdt-warning: #8D5918; --cdt-danger: #C42020;
+  --cdt-success-hover: #1A600D; --cdt-success-pressed: #154C0A;
+  --cdt-warning-hover: #794D15; --cdt-warning-pressed: #664011;
+  --cdt-danger-hover: #B01D1D; --cdt-danger-pressed: #9D1A1A;
+  --cdt-success-soft: #E9F1E7; --cdt-success-soft-pressed: #D7E6D4;
+  --cdt-warning-soft: #F4EEE8; --cdt-warning-soft-pressed: #EAE1D5;
+  --cdt-danger-soft: #FDF3F3; --cdt-danger-soft-border: #F0D5D5; --cdt-danger-soft-pressed: #F4D7D7;
+  --cdt-success-strong: #14470A; --cdt-warning-strong: #613D11; --cdt-danger-strong: #981919;
+  --cdt-text0: #1E1D1A; --cdt-text1: #3C3B36; --cdt-text2: #67645C; --cdt-text3: #98948A;
+  --cdt-scrim: #1E1D1A70; --cdt-glow-shadow: 0 2px 10px rgba(30, 29, 26, .18);
+  /* the utilisation bar's amber reads better as a fill than the text warning brown */
+  --cdt-amber: #E0A100;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --cdt-surface0: #1B1B19; --cdt-surface1: #232321; --cdt-surface2: #2A2A27; --cdt-surface3: #323230;
+  --cdt-sidebar: #1F1F1D; --cdt-stroke: #353532; --cdt-stroke-strong: #4A4A46;
+  --cdt-on-accent: #1B1B19;
+  --cdt-success: #6BDE4A; --cdt-warning: #FB9B24; --cdt-danger: #F87171;
+  --cdt-success-hover: #5FDB3B; --cdt-success-pressed: #52D82C;
+  --cdt-warning-hover: #FB9312; --cdt-warning-pressed: #F78B05;
+  --cdt-danger-hover: #F76060; --cdt-danger-pressed: #F64F4F;
+  --cdt-success-soft: #2C3926; --cdt-success-soft-pressed: #334C2A;
+  --cdt-warning-soft: #3D3121; --cdt-warning-soft-pressed: #533D22;
+  --cdt-danger-soft: #332321; --cdt-danger-soft-border: #5E3735; --cdt-danger-soft-pressed: #523433;
+  --cdt-success-strong: #8EE675; --cdt-warning-strong: #FCB256; --cdt-danger-strong: #FAA2A2;
+  --cdt-text0: #F2EFE9; --cdt-text1: #D6D2CA; --cdt-text2: #9F9B92; --cdt-text3: #6E6A62;
+  --cdt-scrim: #0C0C0BB8; --cdt-glow-shadow: 0 0 14px color-mix(in srgb, var(--cdt-accent) 55%, transparent);
+  --cdt-amber: #FBB124;
+}
+/* The accent family: Dar teal (default) or CDT blue. */
+:root, :root[data-brand="dar"] {
+  --cdt-accent: #147165; --cdt-accent-hover: #115E54; --cdt-accent-pressed: #0D4A42; --cdt-accent-bright: #1FAE9B;
+  --cdt-accent-soft: #E3EEED; --cdt-accent-wash: #F3F8F7; --cdt-accent-soft-pressed: #D5E5E3; --cdt-accent-strong: #0C463E;
+  --cdt-focus: #147165; --cdt-logo: #32DAC4; --cdt-row-selected: #14716540;
+}
+:root[data-theme="dark"][data-brand="dar"], :root[data-theme="dark"]:not([data-brand]) {
+  --cdt-accent: #32DAC4; --cdt-accent-hover: #24C9B4; --cdt-accent-pressed: #20AF9C; --cdt-accent-bright: #6EE5D5;
+  --cdt-accent-soft: #243531; --cdt-accent-wash: #1D2825; --cdt-accent-soft-pressed: #264B45; --cdt-accent-strong: #5DE2D0;
+  --cdt-focus: #6EE5D5; --cdt-row-selected: #32DAC440;
+}
+:root[data-brand="cdt"] {
+  --cdt-accent: #1C63BC; --cdt-accent-hover: #1958A8; --cdt-accent-pressed: #164E94; --cdt-accent-bright: #3D86E2;
+  --cdt-accent-soft: #E4ECF7; --cdt-accent-wash: #F4F7FC; --cdt-accent-soft-pressed: #D6E3F3; --cdt-accent-strong: #154C90;
+  --cdt-focus: #1C63BC; --cdt-row-selected: #1C63BC40;
+}
+:root[data-theme="dark"][data-brand="cdt"] {
+  --cdt-accent: #4B9FF3; --cdt-accent-hover: #3A96F2; --cdt-accent-pressed: #2A8DF1; --cdt-accent-bright: #84BEF7;
+  --cdt-accent-soft: #28323A; --cdt-accent-wash: #1F262A; --cdt-accent-soft-pressed: #2C3E4F; --cdt-accent-strong: #7BB8F6;
+  --cdt-focus: #84BEF7; --cdt-row-selected: #4B9FF340;
+}
+
+/* Triton's own names, pointed at the CDT roles (canvas / cards / inputs / hover tint). */
+:root[data-theme] {
+  --bg: var(--cdt-surface0); --panel: var(--cdt-surface1); --input: var(--cdt-surface2);
+  --text: var(--cdt-text0); --text-2: var(--cdt-text1); --muted: var(--cdt-text2); --text-3: var(--cdt-text3);
+  --line: var(--cdt-stroke); --miss-bg: var(--cdt-surface3);
+  --ok: var(--cdt-success); --ok-bg: var(--cdt-success-soft);
+  --warn: var(--cdt-warning); --warn-bg: var(--cdt-warning-soft);
+  --err: var(--cdt-danger); --err-bg: var(--cdt-danger-soft);
+  --accent: var(--cdt-accent); --accent-bg: var(--cdt-accent-soft); --on-accent: var(--cdt-on-accent);
+  --brand: var(--cdt-accent-strong); --brand-2: var(--cdt-accent); --brand-soft: var(--cdt-accent-soft);
+  --field-line: var(--cdt-stroke-strong); --field-line-hover: var(--cdt-text3); --field-focus: var(--cdt-accent);
+  --field-bg: var(--cdt-surface2); --field-head: var(--cdt-surface3); --grid: var(--cdt-stroke);
+  --cdt-font: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --cdt-display: "Segoe UI Variable Display", "Inter", "Segoe UI", system-ui, sans-serif;
+  --cdt-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+}
+
+/* ---------------------------------------------------------------- base */
+body { font-family: var(--cdt-font); background: var(--bg); color: var(--text); }
+h1, .tb-text b { font-family: var(--cdt-display); font-weight: 650; }
+::selection { background: color-mix(in srgb, var(--cdt-accent) 28%, transparent); }
+:focus-visible { outline: 2px solid var(--cdt-focus); outline-offset: 2px; }
+:where(input, select, textarea):focus-visible { outline: none; }
+* { scrollbar-width: thin; scrollbar-color: var(--cdt-stroke-strong) transparent; }
+
+/* Header: the Dar mark beside Triton, and the theme / brand switches. */
+header.top { background: var(--cdt-surface1); }
+header.top::after { background: linear-gradient(90deg, var(--cdt-accent-strong), var(--cdt-accent) 55%, var(--cdt-logo)); }
+header.top .in { max-width: 1100px; }
+.cdt-head-tools { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.cdt-dar-logo { display: inline-block; width: 32px; height: 18px; color: var(--cdt-logo); flex: none; }
+.cdt-dar-logo path { fill: currentColor; }
+:root[data-theme="light"] .cdt-dar-logo { color: var(--cdt-accent); }
+.cdt-by { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; }
+@media (max-width: 720px) { .cdt-by span { display: none; } header.top nav a { margin-right: 6px; } }
+
+/* ---------------------------------------------------------------- buttons (CDT.*Button) */
+button, .cdt-btn { transition: background-color .12s, border-color .12s, color .12s, box-shadow .12s; }
+:where(button:not([class]), button.primary, button.small:not(.quiet)):hover:not(:disabled) { background: var(--cdt-accent-hover); box-shadow: var(--cdt-glow-shadow); }
+:where(button:not([class]), button.primary, button.small:not(.quiet)):active:not(:disabled) { background: var(--cdt-accent-pressed); }
+:where(button:not([class]), button.primary):disabled { opacity: 1; background: var(--cdt-surface3); color: var(--cdt-text3); box-shadow: none; }
+button.quiet { color: var(--cdt-accent); border-color: var(--cdt-stroke-strong); background: transparent; }
+button.quiet:hover:not(:disabled) { background: var(--cdt-surface3); color: var(--cdt-text0); }
+button.quiet:active:not(:disabled) { background: var(--cdt-accent-soft); }
+button.quiet:disabled, button.danger:disabled { background: transparent; border-color: var(--cdt-stroke); }
+button.danger { color: var(--cdt-danger); border-color: var(--cdt-danger); }
+button.danger:hover:not(:disabled) { background: var(--cdt-danger-soft); color: var(--cdt-danger-strong); }
+button.danger:active:not(:disabled) { background: var(--cdt-danger-soft-pressed); }
+.cdt-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-weight: 500; border-radius: 8px;
+  padding: 6px 14px; cursor: pointer; border: 1px solid transparent; text-decoration: none; }
+.cdt-btn.primary { background: var(--cdt-accent); color: var(--cdt-on-accent); }
+.cdt-btn.primary:hover { background: var(--cdt-accent-hover); box-shadow: var(--cdt-glow-shadow); }
+.cdt-btn.primary:active { background: var(--cdt-accent-pressed); }
+.cdt-btn.secondary { background: transparent; color: var(--cdt-text0); border-color: var(--cdt-stroke-strong); }
+.cdt-btn.secondary:hover { background: var(--cdt-surface3); }
+.cdt-btn.secondary:active { background: var(--cdt-accent-soft); }
+.cdt-btn.ghost { background: transparent; color: var(--cdt-text1); }
+.cdt-btn.ghost:hover { background: var(--cdt-surface3); color: var(--cdt-text0); }
+.cdt-btn.danger { background: var(--cdt-danger); color: var(--cdt-on-accent); }
+.cdt-btn.danger:hover { background: var(--cdt-danger-hover); }
+.cdt-btn.danger:active { background: var(--cdt-danger-pressed); }
+.cdt-btn.soft-danger { background: transparent; color: var(--cdt-danger); border-color: var(--cdt-danger); }
+.cdt-btn.soft-danger:hover { background: var(--cdt-danger-soft); color: var(--cdt-danger-strong); }
+.cdt-btn.link { background: none; border: 0; padding: 0; min-height: 0; color: var(--cdt-accent); text-decoration: underline; text-underline-offset: 2px; }
+.cdt-btn:disabled { background: var(--cdt-surface3); color: var(--cdt-text3); border-color: transparent; box-shadow: none; cursor: default; }
+
+/* ---------------------------------------------------------------- segmented control (CDT.SegmentedList) */
+.cdt-seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 8px; background: var(--cdt-surface3); border: 1px solid var(--cdt-stroke); }
+.cdt-seg button { all: unset; box-sizing: border-box; cursor: pointer; padding: 3px 10px; border-radius: 6px; font-size: 12.5px; color: var(--cdt-text1);
+  display: inline-flex; align-items: center; gap: 5px; min-height: 26px; }
+.cdt-seg button:hover { background: var(--cdt-surface1); color: var(--cdt-text0); }
+.cdt-seg button[aria-pressed="true"] { background: var(--cdt-surface2); color: var(--cdt-accent-strong); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.cdt-seg button:focus-visible { outline: 2px solid var(--cdt-focus); outline-offset: 1px; }
+.cdt-seg svg { width: 14px; height: 14px; }
+
+/* ---------------------------------------------------------------- chips, badges, status (CDT.Chip / Badge / OutcomeLabel / StatusDot) */
+.cdt-chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--cdt-accent-soft); color: var(--cdt-accent-strong); }
+.cdt-badge { display: inline-flex; align-items: center; padding: 0 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  background: var(--cdt-surface3); color: var(--cdt-text1); border: 1px solid var(--cdt-stroke); }
+.cdt-outcome, .sev { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 0 9px 0 6px; font-size: 11.5px; font-weight: 700;
+  letter-spacing: .03em; line-height: 20px; }
+.cdt-outcome::before, .sev::before { font-size: 11px; width: 13px; text-align: center; }
+.cdt-outcome.ok, .sev.ok { background: var(--cdt-success-soft); color: var(--cdt-success-strong); }
+.cdt-outcome.ok::before, .sev.ok::before { content: "✓"; }
+.cdt-outcome.warning, .sev.warning { background: var(--cdt-warning-soft); color: var(--cdt-warning-strong); }
+.cdt-outcome.warning::before, .sev.warning::before { content: "!"; }
+.cdt-outcome.error, .sev.error { background: var(--cdt-danger-soft); color: var(--cdt-danger-strong); }
+.cdt-outcome.error::before, .sev.error::before { content: "✕"; }
+.cdt-outcome.info, .sev.info { background: var(--cdt-accent-soft); color: var(--cdt-accent-strong); }
+.cdt-outcome.info::before, .sev.info::before { content: "i"; font-style: italic; font-family: Georgia, serif; }
+.cdt-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--cdt-text3); vertical-align: middle; }
+.cdt-dot.ok { background: var(--cdt-success); } .cdt-dot.warn { background: var(--cdt-warning); animation: cdt-pulse 1.1s ease-in-out infinite; }
+.cdt-dot.error { background: var(--cdt-danger); }
+:root[data-theme="dark"] .cdt-dot.ok, :root[data-theme="dark"] .save-state.saved::before { box-shadow: 0 0 8px var(--cdt-success); }
+:root[data-theme="dark"] .cdt-dot.error, :root[data-theme="dark"] .save-state.unsaved::before { box-shadow: 0 0 8px var(--cdt-danger); }
+@keyframes cdt-pulse { 50% { opacity: .35; } }
+.cdt-kbd { font-family: var(--cdt-mono); font-size: 11px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--cdt-stroke-strong);
+  border-bottom-width: 2px; background: var(--cdt-surface2); color: var(--cdt-text1); }
+
+/* ---------------------------------------------------------------- utilisation bar (cdt:UtilizationBar) */
+.cdt-util { display: inline-flex; align-items: center; gap: 8px; min-width: 120px; width: 100%; font-variant-numeric: tabular-nums; }
+.cdt-util-label { font-size: 12px; color: var(--muted); min-width: 0; flex: 0 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cdt-util-track { position: relative; flex: 1 1 60px; height: 8px; border-radius: 4px; background: var(--cdt-surface3); overflow: visible; min-width: 48px; }
+.cdt-util-track > i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--cdt-success); }
+.cdt-util-track > b { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--cdt-text1); border-radius: 1px; }
+.cdt-util-num { font-weight: 700; min-width: 3.2em; text-align: right; font-size: 13px; }
+.cdt-util-num::after { margin-left: 3px; font-size: 11px; }
+.cdt-util.ok .cdt-util-num { color: var(--cdt-success); } .cdt-util.ok .cdt-util-num::after { content: "✓"; }
+.cdt-util.warn .cdt-util-track > i { background: var(--cdt-amber); } .cdt-util.warn .cdt-util-num { color: var(--cdt-warning); } .cdt-util.warn .cdt-util-num::after { content: "!"; }
+.cdt-util.bad .cdt-util-track > i { background: var(--cdt-danger); } .cdt-util.bad .cdt-util-num { color: var(--cdt-danger); } .cdt-util.bad .cdt-util-num::after { content: "✕"; }
+.cdt-util.none .cdt-util-num { color: var(--muted); }
+td.cdt-util-cell, td.cell.cdt-util-cell { background: transparent !important; min-width: 150px; padding-top: 4px; padding-bottom: 4px; }
+.cdt-util-stack { display: grid; gap: 8px 12px; grid-template-columns: minmax(120px, max-content) 1fr auto; align-items: center; }
+.cdt-util-stack .cdt-util-label { font-size: 13px; color: var(--text-2); }
+.cdt-util-stack .cdt-util { display: contents; }
+
+/* ---------------------------------------------------------------- info bar, toasts (cdt:InfoBar) */
+.cdt-infobar { display: flex; gap: 10px; align-items: flex-start; padding: 10px 14px; border-radius: 10px; margin: 0 0 12px;
+  border: 1px solid; font-size: 14px; }
+.cdt-infobar .cdt-ib-glyph { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 12px;
+  color: var(--cdt-on-accent); margin-top: 1px; }
+.cdt-infobar .cdt-ib-body { flex: 1; min-width: 0; }
+.cdt-infobar .cdt-ib-title { font-weight: 700; margin-right: 6px; }
+.cdt-infobar .cdt-ib-close { all: unset; cursor: pointer; padding: 0 4px; color: var(--muted); font-size: 16px; line-height: 1; border-radius: 4px; }
+.cdt-infobar .cdt-ib-close:hover { color: var(--text); background: var(--cdt-surface3); }
+.cdt-infobar.info { background: var(--cdt-accent-wash); border-color: color-mix(in srgb, var(--cdt-accent) 45%, transparent); }
+.cdt-infobar.info .cdt-ib-glyph { background: var(--cdt-accent); }
+.cdt-infobar.success { background: var(--cdt-success-soft); border-color: color-mix(in srgb, var(--cdt-success) 45%, transparent); }
+.cdt-infobar.success .cdt-ib-glyph { background: var(--cdt-success); }
+.cdt-infobar.warning { background: var(--cdt-warning-soft); border-color: color-mix(in srgb, var(--cdt-warning) 45%, transparent); }
+.cdt-infobar.warning .cdt-ib-glyph { background: var(--cdt-warning); }
+.cdt-infobar.error { background: var(--cdt-danger-soft); border-color: var(--cdt-danger-soft-border); }
+.cdt-infobar.error .cdt-ib-glyph { background: var(--cdt-danger); }
+.cdt-toasts { position: fixed; right: 16px; bottom: 72px; z-index: 90; display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 32px)); }
+.cdt-toasts .cdt-infobar { margin: 0; box-shadow: 0 8px 24px rgba(0,0,0,.16); animation: cdt-in .18s ease-out; background-clip: padding-box; }
+.cdt-toasts .cdt-infobar.info { background: var(--cdt-surface2); }
+@keyframes cdt-in { from { transform: translateY(8px); opacity: 0; } }
+/* The lock bar reads as an info bar. */
+.lockbar { background: var(--cdt-accent-wash); border-color: color-mix(in srgb, var(--cdt-accent) 45%, transparent); }
+
+/* ---------------------------------------------------------------- empty state (cdt:EmptyState) */
+.cdt-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 28px 16px; color: var(--muted); }
+.cdt-empty .cdt-empty-glyph { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; background: var(--cdt-accent-soft);
+  color: var(--cdt-accent); margin-bottom: 4px; }
+.cdt-empty .cdt-empty-glyph svg { width: 26px; height: 26px; }
+.cdt-empty b { color: var(--text); font-size: 15px; }
+.cdt-empty p { margin: 0; max-width: 46ch; font-size: 13.5px; }
+.cdt-empty .cdt-empty-action { margin-top: 8px; }
+
+/* ---------------------------------------------------------------- busy dots and skeletons (BusyDots / CDT.Skeleton) */
+.cdt-busy { display: inline-flex; gap: 3px; vertical-align: middle; margin-right: 7px; }
+.cdt-busy i { width: 6px; height: 6px; border-radius: 50%; background: var(--cdt-accent); animation: cdt-bounce 1s ease-in-out infinite; }
+.cdt-busy i:nth-child(2) { animation-delay: .15s; } .cdt-busy i:nth-child(3) { animation-delay: .3s; }
+@keyframes cdt-bounce { 0%, 80%, 100% { transform: scale(.55); opacity: .45; } 40% { transform: scale(1); opacity: 1; } }
+.cdt-skeleton { display: block; border-radius: 6px; min-height: 14px;
+  background: linear-gradient(90deg, var(--cdt-surface3) 25%, var(--cdt-surface1) 50%, var(--cdt-surface3) 75%) 0 0 / 300% 100%;
+  animation: cdt-shimmer 1.4s linear infinite; }
+@keyframes cdt-shimmer { to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { .cdt-busy i, .cdt-skeleton, .cdt-dot.warn { animation: none; } }
+
+/* ---------------------------------------------------------------- step indicator (cdt:StepIndicator) */
+.cdt-steps { display: flex; align-items: flex-start; margin: 4px 0 14px; padding: 0; list-style: none; overflow-x: auto; }
+.cdt-steps li { flex: 1 1 0; min-width: 58px; display: flex; flex-direction: column; align-items: center; gap: 4px; position: relative;
+  font-size: 12px; color: var(--muted); text-align: center; }
+.cdt-steps li::before { content: ""; position: absolute; top: 12px; left: calc(-50% + 14px); right: calc(50% + 14px); height: 2px; background: var(--cdt-stroke); }
+.cdt-steps li:first-child::before { display: none; }
+.cdt-steps li.done::before, .cdt-steps li.current::before { background: var(--cdt-accent); }
+.cdt-steps .n { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 12px;
+  border: 2px solid var(--cdt-stroke-strong); background: var(--cdt-surface2); color: var(--cdt-text2); position: relative; z-index: 1; }
+.cdt-steps li.done .n { background: var(--cdt-accent); border-color: var(--cdt-accent); color: var(--cdt-on-accent); }
+.cdt-steps li.done .n span { display: none; } .cdt-steps li.done .n::after { content: "✓"; }
+.cdt-steps li.current .n { border-color: var(--cdt-accent); color: var(--cdt-accent-strong); box-shadow: 0 0 0 4px var(--cdt-accent-soft); }
+.cdt-steps li.current { color: var(--text); font-weight: 600; }
+.cdt-steps li.bad .n { border-color: var(--cdt-danger); color: var(--cdt-danger); }
+.cdt-steps button { all: unset; cursor: pointer; display: contents; }
+
+/* The paged forms' steps (look.js pageBlocks, formart pages) drawn as the SDK's step indicator: numbered
+   circles on one line, the open page ringed; the "All on one page" switch stays a pill at the end. */
+.page-steps { gap: 0; row-gap: 8px; align-items: stretch; }
+.page-step:not(.all) { position: relative; border: 0; background: transparent; border-radius: 8px; padding: 4px 10px 4px 4px; min-height: 30px; }
+.page-step:not(.all):hover { background: var(--cdt-surface3); }
+.page-step:not(.all) + .page-step:not(.all)::before { content: ""; width: 14px; height: 2px; background: var(--cdt-stroke-strong); margin: 0 4px 0 -8px; }
+.page-step .n { width: 24px; height: 24px; border: 2px solid var(--cdt-stroke-strong); background: var(--cdt-surface2); color: var(--cdt-text2); }
+.page-step.on { background: transparent; color: var(--cdt-accent-strong); }
+.page-step.on .n { background: var(--cdt-accent); border-color: var(--cdt-accent); color: var(--cdt-on-accent); box-shadow: 0 0 0 4px var(--cdt-accent-soft); }
+.page-step.bad .n { border-color: var(--cdt-danger); background: var(--cdt-danger); color: var(--cdt-on-accent); }
+.page-step.all { margin-left: 10px; border-radius: 999px; border: 1px dashed var(--cdt-stroke-strong); color: var(--cdt-text1); background: transparent; }
+.page-step.all.on { border-style: solid; border-color: var(--cdt-accent); background: var(--cdt-accent-soft); color: var(--cdt-accent-strong); }
+
+/* ---------------------------------------------------------------- tabs (CDT.TabControl) */
+.tabs { border-bottom-color: var(--cdt-stroke); }
+.tabs button { min-height: 0; font-weight: 500; }
+.tabs button.on { color: var(--cdt-accent-strong); background: var(--cdt-accent-soft); }
+.tabs button:hover:not(.on) { background: var(--cdt-surface3); box-shadow: none; }
+
+/* ---------------------------------------------------------------- cards and panels (CDT.Card) */
+.panel, fieldset, .count { background: var(--cdt-surface1); border-color: var(--cdt-stroke); }
+.panel { box-shadow: 0 1px 2px rgba(30, 29, 26, .05); }
+.stat.warn { background: color-mix(in srgb, var(--cdt-amber) 9%, var(--panel)); }
+.stat.warn { --sc: var(--cdt-amber); }
+.stat.warn .stat-value { color: var(--cdt-warning); }
+fieldset > legend { color: var(--cdt-accent-strong); background: var(--cdt-accent-soft); }
+.field label { color: var(--text-2); }
+
+/* ---------------------------------------------------------------- inputs (CDT.TextBox, NumberBox) */
+:where(input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="color"]), select, textarea) { box-shadow: none; }
+.inputwrap { box-shadow: none; }
+.cdt-number { font-variant-numeric: tabular-nums; }
+td .cdt-number { text-align: right; }
+.cdt-number.cdt-invalid, .inputwrap:has(.cdt-invalid) { border-color: var(--cdt-danger) !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--cdt-danger) 18%, transparent) !important; }
+.cdt-number-tip { position: fixed; z-index: 95; pointer-events: none; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600;
+  background: var(--cdt-text0); color: var(--cdt-surface1); font-variant-numeric: tabular-nums; box-shadow: 0 4px 12px rgba(0,0,0,.18); white-space: nowrap; }
+.cdt-number-tip.bad { background: var(--cdt-danger); color: #fff; }
+.cdt-number-tip::before { content: ""; position: absolute; top: -4px; left: 12px; width: 8px; height: 8px; transform: rotate(45deg); background: inherit; }
+:where(select):where(:not([multiple])) { background-color: var(--cdt-surface2); }
+:root[data-theme="dark"] select:not([multiple]) {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%239F9B92'/%3E%3C/svg%3E") !important; }
+
+/* Toggle switch (CDT.ToggleSwitch) on any checkbox with class cdt-switch. */
+input[type="checkbox"].cdt-switch { appearance: none; -webkit-appearance: none; width: 34px; height: 20px; border-radius: 999px; position: relative;
+  background: var(--cdt-surface3); border: 1px solid var(--cdt-stroke-strong); cursor: pointer; transition: background-color .15s; vertical-align: -5px; margin: 0; }
+input[type="checkbox"].cdt-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--cdt-text2); transition: transform .15s, background-color .15s; }
+input[type="checkbox"].cdt-switch:checked { background: var(--cdt-accent); border-color: var(--cdt-accent); }
+input[type="checkbox"].cdt-switch:checked::after { transform: translateX(14px); background: var(--cdt-on-accent); }
+input[type="checkbox"].cdt-switch:disabled { opacity: .5; cursor: default; }
+
+/* ---------------------------------------------------------------- searchable combo box (cdt:SearchableComboBox) */
+.cdt-combo { position: relative; display: inline-block; min-width: 200px; }
+.cdt-combo > select { position: absolute !important; opacity: 0 !important; pointer-events: none !important; inset: 0; width: 100% !important; }
+.cdt-combo-input { width: 100%; }
+.cdt-combo-list { position: fixed; z-index: 96; max-height: 320px; overflow-y: auto; background: var(--cdt-surface2); border: 1px solid var(--cdt-stroke-strong);
+  border-radius: 8px; box-shadow: 0 10px 28px rgba(0,0,0,.18); padding: 4px; font-size: 14px; }
+.cdt-combo-list .grp { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; padding: 6px 8px 2px; }
+.cdt-combo-list .opt { padding: 5px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cdt-combo-list .opt.on { background: var(--cdt-accent-soft); color: var(--cdt-accent-strong); }
+.cdt-combo-list .opt.sel { font-weight: 600; }
+.cdt-combo-list .opt.sel::before { content: "✓ "; color: var(--cdt-accent); }
+.cdt-combo-list .opt[aria-disabled="true"] { color: var(--cdt-text3); cursor: default; }
+.cdt-combo-list mark { background: transparent; color: var(--cdt-accent-strong); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.cdt-combo-list .none { padding: 8px; color: var(--muted); }
+
+/* ---------------------------------------------------------------- data grid (CDT.DataGrid + DataGridFilter) */
+table.cdt-grid th { position: sticky; top: 0; z-index: 2; }
+table.cdt-grid th.cdt-sortable { cursor: pointer; user-select: none; }
+table.cdt-grid th.cdt-sortable:hover { background: var(--cdt-surface3); color: var(--text); }
+table.cdt-grid th .cdt-th { display: inline-flex; align-items: center; gap: 4px; }
+table.cdt-grid th .cdt-sort { width: 10px; color: var(--cdt-accent); font-size: 10px; }
+table.cdt-grid th .cdt-funnel { all: unset; cursor: pointer; width: 18px; height: 18px; display: inline-grid; place-items: center; border-radius: 4px;
+  color: var(--cdt-text3); margin-left: 2px; }
+table.cdt-grid th .cdt-funnel:hover { background: var(--cdt-surface2); color: var(--text); }
+table.cdt-grid th .cdt-funnel.on { color: var(--cdt-on-accent); background: var(--cdt-accent); }
+table.cdt-grid th .cdt-funnel svg { width: 11px; height: 11px; }
+table.cdt-grid tbody tr:hover td { background: color-mix(in srgb, var(--cdt-accent) 6%, transparent); }
+table.cdt-grid tr.cdt-hidden { display: none; }
+.cdt-grid-foot { font-size: 12px; color: var(--muted); margin: 4px 2px 0; display: flex; gap: 10px; align-items: center; }
+.cdt-filter-pop { position: fixed; z-index: 96; width: 250px; background: var(--cdt-surface2); border: 1px solid var(--cdt-stroke-strong); border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(0,0,0,.18); padding: 8px; font-size: 13px; }
+.cdt-filter-pop input[type="search"] { width: 100%; margin-bottom: 6px; }
+.cdt-filter-pop .vals { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.cdt-filter-pop label { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.cdt-filter-pop label:hover { background: var(--cdt-surface3); }
+.cdt-filter-pop label .c { margin-left: auto; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.cdt-filter-pop .acts { display: flex; justify-content: space-between; gap: 6px; margin-top: 8px; }
+.cdt-filter-pop .acts button { padding: 4px 10px; font-size: 12.5px; min-height: 28px; }
+
+/* ---------------------------------------------------------------- dialogs (cdt:DialogHost, CdtMessageBox) */
+dialog.cdt-dialog { border: 1px solid var(--cdt-stroke); border-radius: 14px; padding: 0; max-width: min(520px, calc(100vw - 32px)); width: 100%;
+  background: var(--cdt-surface1); color: var(--text); box-shadow: 0 24px 60px rgba(0,0,0,.3); }
+dialog.cdt-dialog::backdrop { background: var(--cdt-scrim); backdrop-filter: blur(1.5px); }
+dialog.cdt-dialog[open] { animation: cdt-pop .16s ease-out; }
+@keyframes cdt-pop { from { transform: translateY(6px) scale(.98); opacity: 0; } }
+.cdt-dialog form { margin: 0; }
+.cdt-dialog .cdt-dlg-head { display: flex; gap: 12px; align-items: flex-start; padding: 18px 20px 6px; }
+.cdt-dialog .cdt-dlg-glyph { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 800;
+  background: var(--cdt-accent-soft); color: var(--cdt-accent); }
+.cdt-dialog.danger .cdt-dlg-glyph { background: var(--cdt-danger-soft); color: var(--cdt-danger); }
+.cdt-dialog.warning .cdt-dlg-glyph { background: var(--cdt-warning-soft); color: var(--cdt-warning); }
+.cdt-dialog h3 { margin: 4px 0 0; font-family: var(--cdt-display); font-size: 17px; color: var(--text); }
+.cdt-dialog .cdt-dlg-body { padding: 4px 20px 6px 66px; white-space: pre-line; font-size: 14px; color: var(--text-2); max-height: 50vh; overflow-y: auto; }
+.cdt-dialog .cdt-dlg-body input { width: 100%; margin-top: 10px; }
+.cdt-dialog .cdt-dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px 18px; }
+
+/* ---------------------------------------------------------------- property list (CDT.PropertyList) */
+.cdt-props { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 4px 16px; font-size: 13.5px; margin: 0; }
+.cdt-props dt { color: var(--muted); }
+.cdt-props dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- info tip (cdt:InfoTip) */
+.cdt-infotip { all: unset; display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; cursor: help; vertical-align: -3px;
+  border: 1.5px solid var(--cdt-accent); color: var(--cdt-accent); font: italic 700 10.5px Georgia, serif; margin-left: 4px; }
+.cdt-infotip:hover, .cdt-infotip:focus-visible { border-color: var(--cdt-warning); color: var(--cdt-warning); }
+.cdt-tip { position: fixed; z-index: 97; max-width: 420px; padding: 8px 10px; border-radius: 8px; background: var(--cdt-surface2); color: var(--text);
+  border: 1px solid var(--cdt-stroke-strong); box-shadow: 0 10px 28px rgba(0,0,0,.18); font-size: 12.5px; pointer-events: none; }
+.cdt-tip img { display: block; max-width: 100%; max-height: 300px; margin-bottom: 6px; border-radius: 4px; }
+
+/* ---------------------------------------------------------------- gallery page (#/ui) */
+.cdt-gallery h2 { margin-top: 26px; display: flex; align-items: baseline; gap: 10px; }
+.cdt-gallery h2 code { font-size: 12px; color: var(--muted); font-weight: 500; font-family: var(--cdt-mono); }
+.cdt-gallery .specimen { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.cdt-gallery .specimen + .specimen { margin-top: 10px; }
+.cdt-gallery .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.cdt-swatch { width: 120px; border-radius: 8px; overflow: hidden; border: 1px solid var(--cdt-stroke); font-size: 11px; }
+.cdt-swatch i { display: block; height: 34px; }
+.cdt-swatch span { display: block; padding: 3px 6px; font-family: var(--cdt-mono); color: var(--muted); }
+
+/* Helpers */
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.inputwrap .cdt-combo { flex: 1; min-width: 0; }
+.inputwrap .cdt-combo-input { border: 0 !important; box-shadow: none !important; background: transparent; }
+td .cdt-combo { min-width: 9em; width: 100%; }
+@media (max-width: 720px) {
+  header.top .in { flex-wrap: wrap; row-gap: 8px; }
+  .cdt-head-tools { margin-left: 0; width: 100%; }
+}

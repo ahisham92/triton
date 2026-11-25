@@ -27,6 +27,14 @@ def test_index_page():
     assert 'class="home"' not in r.text
 
 
+def test_index_loads_the_cdt_sdk_controls():
+    r = client.get("/")
+    assert 'href="static/cdt/cdt.css?v=' in r.text
+    assert '"./static/cdt/sdk.js": "./static/cdt/sdk.js?v=' in r.text
+    assert '"./static/cdt/units.js"' in r.text
+    assert client.get("/static/cdt/sdk.js").status_code == 200
+
+
 def test_index_links_back_to_the_host_site(monkeypatch):
     monkeypatch.setenv("TRITON_HOME_URL", "/")
     monkeypatch.setenv("TRITON_HOME_LABEL", "Project Control")

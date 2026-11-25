@@ -5,6 +5,8 @@
 // changes the design. app.js passes its helpers in: api, again, esc, fmt, secUrl, ROOT, project(),
 // sectionId(), designHash.
 
+import { confirmBox } from "./cdt/sdk.js";
+
 const STATE = {
   passes: ["flag-ok", "Passes"],
   "fails now": ["flag-bad", "Fails now"],
@@ -275,7 +277,7 @@ export async function renderMovedPiles(host, h) {
     if (stop) stop.onclick = () => (running.stopped = true);
     const del = out.querySelector("#mv-del");
     if (del) del.onclick = async () => {
-      if (!confirm(`Delete "${draft.name}"?`)) return;
+      if (!(await confirmBox(`Delete "${draft.name}"?`, { ok: "Delete" }))) return;
       data = await api(`${secUrl()}/moved-piles/${draft.id}`, { method: "DELETE" });
       choose(data.scenarios[0]?.scenario.id ?? null);
       draw();

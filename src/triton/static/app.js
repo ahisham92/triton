@@ -16,11 +16,17 @@ import { pageBlocks, tabBanner, tabGroupColor, statTiles, shareBar } from "./loo
 import { tubeZonesHtml } from "./tubeview.js";
 import { DESIGN_PAGES, ELEMENT_PAGES, SECTION_PAGES } from "./formart.js";
 import { projectsPage as renderProjectsPage } from "./projects.js";
+import * as cdt from "./cdt/sdk.js";
+import { galleryPage } from "./cdt/gallery.js";
 import { sectionPlace, sitesPanel } from "./sitemap.js";
 import { renderFilm } from "./film.js";
 import { ALL, KINDS, flowDiagram, foldable, guessKind, keepPick, kindColor, kindIcon, pageForm, picked, quaySketch, setFolded, statusOf, stepper, utilText } from "./picker.js";
 
 const $app = document.getElementById("app");
+// The CDT SDK (Dar Computational Design Team) controls and theme: cdt/sdk.js, cdt/cdt.css.
+cdt.init();
+const headTools = document.getElementById("cdt-head-tools");
+if (headTools) headTools.innerHTML = `${cdt.themeSwitch()}<a class="cdt-by" href="#/ui" title="The CDT SDK controls Triton uses">${cdt.darLogo()}<span>CDT SDK</span></a>`;
 // Where Triton is served: "" at the site root, or e.g. "/triton" when mounted inside another site.
 const ROOT = new URL(".", location.href.split("#")[0]).pathname.replace(/\/$/, "");
 const esc = (s) =>
@@ -100,6 +106,7 @@ function route() {
   const m = hash.match(/^\/project\/([a-f0-9]+)(?:\/(\w+))?(?:\/([a-f0-9]+))?$/);
   if (m) return projectPage(m[1], m[2] || "info", m[3]);
   if (hash === "/check") return checkPage();
+  if (hash === "/ui") return galleryPage($app);
   return projectsPage();
 }
 
@@ -129,8 +136,8 @@ function wireOpenProject() {
         <button class="danger" id="trt-replace">Replace it</button>
         <button class="quiet" id="trt-cancel">Cancel</button>`;
       document.getElementById("trt-keep").onclick = () => finish(id, { if_exists: "keep" });
-      document.getElementById("trt-replace").onclick = () => {
-        if (!confirm(`Replace "${r.name}" with the project in the file? The one here is deleted, with its workbooks and results.`)) return;
+      document.getElementById("trt-replace").onclick = async () => {
+        if (!(await cdt.confirmBox(`Replace "${r.name}" with the project in the file? The one here is deleted, with its workbooks and results.`, { ok: "Replace it" }))) return;
         finish(id, { if_exists: "replace", replace_id: p.id });
       };
       document.getElementById("trt-cancel").onclick = async () => {
@@ -141,7 +148,7 @@ function wireOpenProject() {
       };
       return;
     }
-    if (r.notes?.length) alert(r.notes.join("\n\n"));
+    if (r.notes?.length) await cdt.alertBox(r.notes.join("\n\n"), { title: "Opened, with notes" });
     location.hash = `#/project/${r.id}/info`;
   };
   const finish = async (id, body) => {
@@ -476,13 +483,13 @@ async function projectPage(id, tab, sectionId) {
   }));
   if (tab === "info") {
     document.getElementById("delete").onclick = async () => {
-      if (!confirm(`Delete "${p.info.name}"? This cannot be undone.`)) return;
+      if (!(await cdt.confirmBox(`Delete "${p.info.name}"? This cannot be undone.`, { ok: "Delete" }))) return;
       await api(`${ROOT}/api/projects/${id}`, { method: "DELETE" });
       state = null;
       location.hash = "#/";
     };
     document.getElementById("duplicate").onclick = async () => {
-      const name = prompt("Name of the copy", `${p.info.name} copy`);
+      const name = await cdt.promptBox("Name of the copy", `${p.info.name} copy`, { ok: "Duplicate" });
       if (name === null) return;
       if (state.dirty) await save(); // what was just typed goes into the copy too
       const copy = await api(`${ROOT}/api/projects/${id}/duplicate`, { method: "POST", body: JSON.stringify({ name }) });
@@ -712,10 +719,11 @@ function applyLock() {
   const unlock = document.getElementById("unlock");
   if (unlock)
     unlock.onclick = async () => {
-      const ok = confirm(
+      const ok = await cdt.confirmBox(
         `Unlock ${held.map((s) => s.name).join(", ")} to edit?\n\nAs you change an input, the design results it affects are deleted (a shared input such as a ` +
           "design setting or the workbook deletes the whole section's), so no out-of-date results are kept. Results of " +
           "elements you don't touch stay. Files you already downloaded are not affected.",
+        { ok: "Unlock", danger: false },
       );
       if (!ok) return;
       if (state.dirty) await save();
@@ -1203,15 +1211,15 @@ function renderSections(host) {
       state.sectionId = s.id;
       location.hash = tabHash("elements");
     };
-    card.querySelector("[data-copy]").onclick = () => {
+    card.querySelector("[data-copy]").onclick = async () => {
       const taken = new Set(p.sections.map((x) => x.name.trim().toLowerCase()));
       let name = `${s.name} copy`;
       for (let k = 2; taken.has(name.toLowerCase()); k++) name = `${s.name} copy ${k}`;
-      name = prompt("Name of the new section (it starts with this section's settings):", name)?.trim();
+      name = (await cdt.promptBox("Name of the new section", name, { title: "Copy the section", ok: "Copy" }))?.trim();
       if (name) addSection(name, s.id, document.getElementById("sec-status"));
     };
-    card.querySelector("[data-remove]").onclick = () => {
-      if (!confirm(`Remove "${s.name}" with its elements, workbook and results when you save?`)) return;
+    card.querySelector("[data-remove]").onclick = async () => {
+      if (!(await cdt.confirmBox(`Remove "${s.name}" with its elements, workbook and results when you save?`, { ok: "Remove" }))) return;
       p.sections.splice(i, 1);
       markDirty();
       route();
@@ -1689,7 +1697,7 @@ async function copyProblem(job, button) {
     await navigator.clipboard.writeText(text);
     button.textContent = "Copied: paste it in the chat";
   } catch {
-    window.prompt("Copy these details and paste them in the chat:", text);
+    await cdt.promptBox("Copy these details and paste them in the chat:", text, { title: "Copy the details", ok: "Done" });
   }
 }
 
@@ -2161,7 +2169,7 @@ function wireDeleteTabs(data, url) {
     some.onclick = async () => {
       const names = picked();
       const list = names.length > 6 ? `${names.slice(0, 6).join(", ")} and ${names.length - 6} more` : names.join(", ");
-      if (!confirm(`Delete ${names.length} tab(s) from this section's workbook?\n\n${list}\n\nResults designed from them will show as out of date.`)) return;
+      if (!(await cdt.confirmBox(`Delete ${names.length} tab(s) from this section's workbook?\n\n${list}\n\nResults designed from them will show as out of date.`, { ok: "Delete" }))) return;
       status.textContent = "Deleting…";
       try {
         await api(`${url}/workbook/delete`, { method: "POST", body: JSON.stringify({ sheets: names }) });
@@ -2171,7 +2179,7 @@ function wireDeleteTabs(data, url) {
       }
     };
     panel.querySelector("#del-all").onclick = async () => {
-      if (!confirm(`Delete the whole workbook of ${sec().name}? The section keeps its elements and settings, and its results show as out of date until a new workbook is uploaded and designed.`)) return;
+      if (!(await cdt.confirmBox(`Delete the whole workbook of ${sec().name}? The section keeps its elements and settings, and its results show as out of date until a new workbook is uploaded and designed.`, { ok: "Delete" }))) return;
       status.textContent = "Deleting…";
       try {
         await api(`${url}/workbook`, { method: "DELETE" });
@@ -2893,8 +2901,8 @@ async function openSheet(url, name, refresh, start = null) {
       else Object.assign(view, { sort: null, desc: false });
       load(null);
     }));
-    box.querySelector("#sheet-close").onclick = () => {
-      if (edits.size && !confirm("Close without saving your cell edits?")) return;
+    box.querySelector("#sheet-close").onclick = async () => {
+      if (edits.size && !(await cdt.confirmBox("Close without saving your cell edits?", { ok: "Close" }))) return;
       box.remove();
     };
     box.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => load(Number(b.dataset.go))));
@@ -3558,7 +3566,7 @@ async function designAll(project, mode, changedOnly = false) {
   const on = await api(`${ROOT}/api/runner`).then((r) => r.on).catch(() => false);
   if (on) {
     const q = await api(`${ROOT}/api/projects/${project.id}/design-all`, { method: "POST", body: JSON.stringify({ mode, changed_only: changedOnly }) }).catch((e) => {
-      alert(e.message);
+      cdt.toast(e.message, { severity: "error", title: "Not started" });
       return null;
     });
     if (q) await followServerQueue(project, q);
@@ -3745,7 +3753,7 @@ function standardHtml(res) {
       const tip = (o.checks || []).map((c) => `${c.check}: ${fmt(c.utilisation, 2)}${c.passed ? "" : " (fails)"}`).join("\n");
       return `<tr><td>${esc(e.element)}</td>
         <td class="cell ${o.workable ? "ok" : "error"}">${o.workable ? "Workable" : "Not workable"}</td>
-        <td class="cell ${o.utilisation != null && o.utilisation <= 1 + 1e-6 ? "ok" : "error"}" title="${esc(tip)}">${fmt(o.utilisation, 2)}</td>
+        ${cdt.utilCell(o.utilisation, { tip })}
         <td>${esc(o.governs || "–")}</td><td>${fmt(o.kg_per_m3)}</td><td>${o.ratio_pct == null ? "–" : `${fmt(o.ratio_pct, 2)}%`}</td>
         <td>${(o.why || []).map((w) => esc(w)).join("<br>") || "–"}</td></tr>`;
     })
@@ -3806,7 +3814,7 @@ function drawCards(res, full = res, withBars = full) {
       const sh = p.shear;
       const kg = p.steel?.kg_per_m3 ?? p.curtailment?.steel_ratio_kg_m3 ?? p.steel_ratio_kg_m3;
       return `<tr><td>${esc(p.element)}</td><td>${a ? esc(a.label) : "–"}${p.user_set ? ' <span class="chip small-chip">set by you</span>' : ""}</td>
-        <td class="cell ${p.utilisation != null && p.utilisation <= 1 ? "ok" : "error"}">${fmt(p.utilisation, 2)}</td>
+        ${cdt.utilCell(p.utilisation)}
         <td>${sh ? esc(sh.zones[0].link) : "–"}</td>
         <td class="cell ${sh ? (sh.passed ? "ok" : "error") : ""}">${sh ? fmt(sh.utilisation, 2) : "–"}</td>
         <td class="cell ${p.cracks?.wk_mm == null ? "" : p.cracks.passed ? "ok" : "error"}">${p.cracks?.wk_mm == null ? "–" : `${fmt(p.cracks.wk_mm, 2)} / ${fmt(p.cracks.limit_mm, 2)} = ${fmt(p.cracks.wk_mm / p.cracks.limit_mm, 2)}`}</td>
@@ -4878,7 +4886,7 @@ function stripTable(d) {
   const line = (r, i) => `<tr data-row="${i}"><td>${esc(stripRowName(r))}${r.user_set ? '<span class="user-chip">your bars</span>' : ""}</td>
     <td class="cell ${r.wk_mm == null || r.wk_mm <= r.wk_limit_mm ? "ok" : "error"}" title="${esc(r.qp?.face || "")} face">${r.wk_mm == null ? "–" : fmt(r.wk_mm, 3)}</td>
     <td>${r.qp?.M_kNm_per_m == null ? "–" : `${fmt(r.qp.M_kNm_per_m)} / ${fmt(r.qp.N_kN_per_m)}`}</td><td>${esc(r.qp?.combination || "–")}</td>
-    <td class="cell ${r.ratio != null && r.ratio <= 1 ? "ok" : "error"}" title="${esc(r.face)} face">${fmt(r.ratio, 2)}</td><td>${fmt(r.M_kNm_per_m)}${r.N_kN_per_m == null ? "" : ` / ${fmt(r.N_kN_per_m)}`}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
+    ${cdt.utilCell(r.ratio, { tip: `${r.face} face` })}<td>${fmt(r.M_kNm_per_m)}${r.N_kN_per_m == null ? "" : ` / ${fmt(r.N_kN_per_m)}`}</td><td>${fmt(r.MRd_kNm_per_m)}</td>
     <td>${esc(r.combination)}</td><td>${barsCell(r, "bottom")}</td><td>${barsCell(r, "top")}</td><td class="set-by">${setBy(r)}</td>
     <td><button class="quiet" data-bars="${i}">Change bars</button></td></tr>`;
   return `<h3 style="margin-top:18px">Slab design results</h3>
@@ -5568,7 +5576,7 @@ function slabCard(d) {
     <div class="scroll"><table><tr><th>Layer</th><th>Mesh</th><th>Additional bars (layers above the bottom mesh / below the top mesh)</th><th>Utilisation</th><th>Set by cracking</th><th>d</th></tr>
       ${Object.entries(layers).map(([k, l]) => `<tr><td>${esc(LAYER_NAME[k] || k)}</td><td><b>${esc(l.basic.label)}</b> (${fmt(l.basic.as_mm2_per_m)} mm²/m)${l.basic.set_by === "user" ? "<br><span class=\"status\">your mesh</span>" : ""}</td>
         <td>${l.mode === "mesh_only" ? "mesh only (your choice)" : l.zones.length ? `${l.zones.length} zones: ${esc([...new Set(l.zones.map((z) => z.label))].join(", "))}` : "none needed"}</td>
-        <td class="cell ${l.utilisation <= 1 ? "ok" : "error"}">${fmt(l.utilisation, 2)}</td><td>${fmt(l.cells_set_by_cracks)} cells</td><td>${fmt(l.d_mm)} mm</td></tr>`).join("")}
+        ${cdt.utilCell(l.utilisation)}<td>${fmt(l.cells_set_by_cracks)} cells</td><td>${fmt(l.d_mm)} mm</td></tr>`).join("")}
     </table></div>
     <div class="row" style="margin:10px 0 4px">${Object.keys(layers).map((k, i) => `<button class="quiet${i ? "" : " on"}" data-layer="${k}">${esc(LAYER_NAME[k] || k)}</button>`).join("")}${sh.links?.length ? `<button class="quiet" data-layer="shear">Shear links</button>` : ""}</div>
     <div class="chart wide" data-kind="plan"></div>
@@ -5857,7 +5865,7 @@ function beamCard(b) {
     <p>King piles ${fmt(b.truss.spacing_m, 2)} m apart${b.truss.spacing_from === "input" ? "" : " (from the workbook)"}, lever arm ${fmt(b.truss.lever_arm_mm)} mm, θ = ${fmt(b.truss.theta_deg, 1)}°: T = ${fmt(b.truss.tie_factor, 3)} P on ${fmt(b.truss.As_provided_mm2)} mm² of bottom bars at ${fmt(b.truss.working_stress_MPa)} MPa.</p>
     <div class="scroll"><table><tr><th>Case</th><th>Slab mm</th><th>P kN</th><th>T kN</th><th>A<sub>s,req</sub> mm²</th><th>Ratio</th></tr>
       ${b.truss.cases.map((c) => `<tr><td>${esc(c.case)}</td><td>${fmt(c.slab_thickness_mm)}</td><td>${fmt(c.P_kN)}</td><td>${fmt(c.T_kN)}</td><td>${fmt(c.As_req_mm2)}</td>
-        <td class="cell ${c.utilisation <= 1 ? "ok" : "error"}">${fmt(c.utilisation, 2)}</td></tr>`).join("")}</table></div>
+        ${cdt.utilCell(c.utilisation)}</tr>`).join("")}</table></div>
     <p class="status">${esc(b.truss.method)}</p>` : b.truss?.note ? `<p class="status">${esc(b.truss.note)}</p>` : ""}
     ${b.rooms?.length ? `<p class="status">${b.rooms.length === 1 ? "A room is" : `${b.rooms.length} rooms are`} cut into this beam: see the Openings tab (${b.rooms.every((r) => r.passed) ? "all pass" : "some fail"}).</p>` : ""}
     ${setsBlock(b.governing_sets, "N in the concrete sign convention (compression +). M3 is the vertical bending of the beam section (sagging +), M2 the horizontal bending; z is the position along the beam.")}
@@ -6771,7 +6779,7 @@ function jointsBlock(list) {
       <td>${j.crossing ? `${esc(j.crossing.label)}<br>${fmt(val(j, "provided"))} ${pm(j)}` : "–"}</td>
       <td>${j.v_Edi_MPa != null ? `${fmt(j.v_Edi_MPa, 2)} / ${fmt(j.v_Rdi_MPa, 2)} MPa (max ${fmt(j.v_Rdi_max_MPa, 2)})` : "–"}</td>
       <td>${val(j, "needed") == null ? "–" : j.tension_added === false ? `${fmt(val(j, "needed"))} ${pm(j)} shear friction<br><span class="status">tension for N with M ${fmt(val(j, "tension"))}, checked in the element design</span>` : `${fmt(val(j, "tension"))} tension + ${fmt(val(j, "shear"))} shear = ${fmt(val(j, "needed"))} ${pm(j)}`}</td>
-      <td>${j.utilisation != null ? `<b class="${j.utilisation > 1 ? "bad" : ""}">${fmt(j.utilisation, 2)}</b>` : "–"}</td>
+      ${cdt.utilCell(j.utilisation)}
       <td>${extra(j) || esc(j.status || "")}${(j.laps || []).map((w) => `<br><span class="status">${esc(w)}</span>`).join("")}</td>
       <td>${j.passed == null ? "" : j.passed ? '<span class="sev ok">OK</span>' : '<span class="sev error">more bars</span>'}</td></tr>`).join("")}
     </table></div>
@@ -6790,7 +6798,7 @@ function curtailmentBlock(c) {
         <td>${r.bar_lengths_m.map((x) => fmt(x, 2)).join(" / ")} m</td>
         <td>${r.above_head_m?.length ? `${r.above_head_m.map((x) => fmt(x, 2)).join(" / ")} m` : "–"}</td>
         <td>${r.joint === "toe" ? "toe" : r.joint === "coupler" ? "couplers" : `lap ${r.lap_below_m.map((x) => fmt(x, 2)).join(" / ")} m`}</td>
-        <td class="${r.utilisation > 1 ? "bad" : ""}">${fmt(r.utilisation, 2)}</td><td class="${r.crack_utilisation > 1 ? "bad" : ""}">${r.crack_utilisation == null ? "–" : fmt(r.crack_utilisation, 2)}</td></tr>`).join("")}
+        ${cdt.utilCell(r.utilisation)}${cdt.utilCell(r.crack_utilisation)}</tr>`).join("")}
     </table>
     ${c.notes.map((n) => `<p class="status">${esc(n)}</p>`).join("")}</div></div>`;
 }
