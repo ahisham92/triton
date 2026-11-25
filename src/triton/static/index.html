@@ -4,14 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Triton</title>
+<script>
+  // The CDT theme before the first paint, so a dark page never flashes light (cdt/sdk.js keeps it after).
+  (function () {
+    var t = "auto", b = "dar";
+    try { t = localStorage.getItem("cdt.theme") || t; b = localStorage.getItem("cdt.brand") || b; } catch (e) {}
+    if (t === "auto") t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", t);
+    document.documentElement.setAttribute("data-brand", b);
+  })();
+</script>
 <link rel="stylesheet" href="static/style.css">
 <link rel="stylesheet" href="static/projects.css">
+<link rel="stylesheet" href="static/cdt/cdt.css">
 <link rel="icon" type="image/svg+xml" href="static/logo.svg">
 </head>
 <body>
 <header class="top"><div class="in">
   <a class="brand" href="#/"><img src="static/logo.svg" alt="">Triton</a>
   <nav><a href="#/">Projects</a><a href="#/check">Check a workbook</a></nav>
+  <span class="cdt-head-tools" id="cdt-head-tools"></span>
 </div></header>
 <main id="app"></main>
 <script type="module" src="static/app.js"></script>

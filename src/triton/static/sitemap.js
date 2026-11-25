@@ -2,6 +2,8 @@
 // Project tab and each section's place on the Sections tab. Leaflet with OpenStreetMap tiles (free, no
 // key), loaded from cdnjs the first time a map is shown; a satellite layer is one click away.
 
+import { confirmBox } from "./cdt/sdk.js";
+
 const LEAFLET = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4";
 const esc = (s) =>
   String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -205,9 +207,9 @@ export function sitesPanel(project, changed) {
         draw();
         if (hasPoint(site)) map?.setView([site.lat, site.lon], Math.max(map.getZoom(), 12));
       }));
-      row.querySelector("[data-del]").onclick = () => {
+      row.querySelector("[data-del]").onclick = async () => {
         const n = sectionsAt(site.id).length;
-        if (!confirm(`Remove the site "${site.name}"?${n ? ` Its ${n} section${n === 1 ? "" : "s"} will have no site until you place ${n === 1 ? "it" : "them"} again.` : ""}`)) return;
+        if (!(await confirmBox(`Remove the site "${site.name}"?${n ? ` Its ${n} section${n === 1 ? "" : "s"} will have no site until you place ${n === 1 ? "it" : "them"} again.` : ""}`, { ok: "Remove" }))) return;
         info.sites.splice(i, 1);
         for (const s of project.sections) if (s.location?.site === site.id) s.location.site = "";
         if (active === site.id) active = info.sites[0]?.id ?? null;

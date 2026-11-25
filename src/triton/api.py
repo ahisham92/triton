@@ -127,14 +127,17 @@ def store() -> ProjectStore:
 def index() -> HTMLResponse:
     page = (STATIC / "index.html").read_text(encoding="utf-8")
     # A new version of a file gets a new address, so no browser keeps running an old one.
-    for name in ("app.js", "style.css", "projects.css"):
-        page = page.replace(f"static/{name}", f"static/{name}?v={int((STATIC / name).stat().st_mtime)}")
+    for name in ("app.js", "style.css", "projects.css", "cdt/cdt.css"):
+        page = page.replace(f'static/{name}"', f'static/{name}?v={int((STATIC / name).stat().st_mtime)}"')
     # The modules app.js imports get new addresses too, through an import map.
-    modules = {
-        f"./static/{f.name}": f"./static/{f.name}?v={int(f.stat().st_mtime)}"
-        for f in sorted(STATIC.glob("*.js"))
-        if f.name != "app.js"
-    }
+    # The CDT SDK's web controls sit in static/cdt.
+    scripts = [
+        f for f in [*sorted(STATIC.glob("*.js")), *sorted(STATIC.glob("cdt/*.js"))] if f.name != "app.js"
+    ]
+    modules = {}
+    for f in scripts:
+        rel = f.relative_to(STATIC).as_posix()
+        modules[f"./static/{rel}"] = f"./static/{rel}?v={int(f.stat().st_mtime)}"
     imports = f'<script type="importmap">{json.dumps({"imports": modules})}</script>\n'
     page = page.replace('<script type="module"', imports + '<script type="module"', 1)
     home = os.environ.get("TRITON_HOME_URL")
